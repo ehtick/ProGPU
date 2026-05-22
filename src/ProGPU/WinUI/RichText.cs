@@ -92,6 +92,13 @@ public class RichTextBlock : FrameworkElement
         set { if (_fontSize != value) { _fontSize = value; Invalidate(); } }
     }
 
+    private Brush? _foreground;
+    public Brush? Foreground
+    {
+        get => _foreground;
+        set { if (_foreground != value) { _foreground = value; Invalidate(); } }
+    }
+
     public TextAlignment TextAlignment
     {
         get => _textAlignment;
@@ -203,7 +210,7 @@ public class RichTextBlock : FrameworkElement
                     {
                         var remapped = wc;
                         float shift = wc.Position.X - lastWordStartCursorX;
-                        remapped.Position = new Vector2(Padding.Left + shift, cursorY + fontAscent);
+                        remapped.Position = new Vector2(Padding.Left + shift, cursorY);
                         currentLine.Add(remapped);
                         
                         ushort wIdx = Font.GetGlyphIndex(remapped.Info.Character);
@@ -211,7 +218,7 @@ public class RichTextBlock : FrameworkElement
                     }
 
                     // Add current character
-                    var pos = new Vector2(cursorX, cursorY + fontAscent);
+                    var pos = new Vector2(cursorX, cursorY);
                     currentLine.Add(new PositionedRichChar { Info = rc, Position = pos });
                     cursorX += advance;
                     lastWordStart = 0;
@@ -228,7 +235,7 @@ public class RichTextBlock : FrameworkElement
                 }
             }
 
-            var charPos = new Vector2(cursorX, cursorY + fontAscent);
+            var charPos = new Vector2(cursorX, cursorY);
             currentLine.Add(new PositionedRichChar { Info = rc, Position = charPos });
             cursorX += advance;
         }
@@ -302,7 +309,7 @@ public class RichTextBlock : FrameworkElement
             }
             else
             {
-                context.DrawText(runBuffer, Font, style.FontSize, style.Foreground, startPos);
+                context.DrawText(runBuffer, Font, style.FontSize, style.Foreground!, startPos);
                 runBuffer = pc.Info.Character.ToString();
                 startPos = pc.Position;
                 style = pc.Info;
@@ -311,7 +318,7 @@ public class RichTextBlock : FrameworkElement
 
         if (runBuffer.Length > 0)
         {
-            context.DrawText(runBuffer, Font, style.FontSize, style.Foreground, startPos);
+            context.DrawText(runBuffer, Font, style.FontSize, style.Foreground!, startPos);
         }
 
         base.OnRender(context);
@@ -598,12 +605,14 @@ public class RichEditBox : Control
             _blockView.PerformRichLayout(Size.X - Padding.Horizontal);
             var pcs = _blockView.PositionedChars;
 
-            Vector2 caretPos = new Vector2(Padding.Left, Padding.Top + FontSize);
+            Vector2 caretPos = new Vector2(Padding.Left, Padding.Top);
+            float caretH = FontSize;
             if (pcs.Count > 0)
             {
                 int cIdx = Math.Clamp(CaretIndex, 0, pcs.Count - 1);
                 var pc = pcs[cIdx];
                 caretPos = pc.Position;
+                caretH = pc.Info.FontSize;
                 if (CaretIndex >= pcs.Count)
                 {
                     // place caret at end of last char
@@ -612,7 +621,7 @@ public class RichEditBox : Control
                 }
             }
 
-            Rect caretRect = new Rect(caretPos.X, caretPos.Y - FontSize + 2f, 1.5f, FontSize + 2f);
+            Rect caretRect = new Rect(caretPos.X, caretPos.Y, 1.5f, caretH + 2f);
             context.DrawRectangle(new SolidColorBrush(0xFFFFFFFF), null, caretRect);
         }
     }

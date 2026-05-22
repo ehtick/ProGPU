@@ -42,6 +42,13 @@ public class FlowDocument : FrameworkElement
         set { _fontSize = value; Invalidate(); }
     }
 
+    private Brush? _foreground;
+    public Brush? Foreground
+    {
+        get => _foreground;
+        set { _foreground = value; Invalidate(); }
+    }
+
     public int ColumnCount
     {
         get => _columnCount;
@@ -159,7 +166,7 @@ public class FlowDocument : FrameworkElement
                     _positionedChars.Add(new PositionedRichChar
                     {
                         Info = rc,
-                        Position = new Vector2(runningX, cursorY + fontAscent)
+                        Position = new Vector2(runningX, cursorY)
                     });
                     runningX += advance;
                 }
@@ -229,7 +236,7 @@ public class FlowDocument : FrameworkElement
             }
             else
             {
-                context.DrawText(runBuffer, Font, style.FontSize, style.Foreground, startPos);
+                context.DrawText(runBuffer, Font, style.FontSize, style.Foreground!, startPos);
                 runBuffer = pc.Info.Character.ToString();
                 startPos = pc.Position;
                 style = pc.Info;
@@ -238,7 +245,7 @@ public class FlowDocument : FrameworkElement
 
         if (runBuffer.Length > 0)
         {
-            context.DrawText(runBuffer, Font, style.FontSize, style.Foreground, startPos);
+            context.DrawText(runBuffer, Font, style.FontSize, style.Foreground!, startPos);
         }
 
         base.OnRender(context);

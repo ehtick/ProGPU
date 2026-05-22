@@ -596,9 +596,19 @@ public unsafe class Compositor : IDisposable
 
     private void CompileTextCommand(RenderCommand cmd, TextVisual? textNode, Matrix4x4 transform)
     {
-        if (textNode == null || textNode.Font == null || cmd.Text == null) return;
+        var font = cmd.Font ?? textNode?.Font;
+        if (font == null || cmd.Text == null) return;
 
-        var layout = textNode.GetOrUpdateLayout(_atlas);
+        TextLayout? layout;
+        if (textNode != null)
+        {
+            layout = textNode.GetOrUpdateLayout(_atlas);
+        }
+        else
+        {
+            layout = new TextLayout(cmd.Text, font, cmd.FontSize, 10000f, TextAlignment.Left, _atlas);
+        }
+
         if (layout == null) return;
 
         var brush = cmd.Brush as SolidColorBrush;
@@ -610,8 +620,8 @@ public unsafe class Compositor : IDisposable
             if (info.Width == 0 || info.Height == 0) continue;
 
             // Bounding box of the glyph quad
-            float x0 = runGlyph.Position.X;
-            float y0 = runGlyph.Position.Y;
+            float x0 = runGlyph.Position.X + cmd.Position.X;
+            float y0 = runGlyph.Position.Y + cmd.Position.Y;
             float x1 = x0 + info.Width;
             float y1 = y0 + info.Height;
 

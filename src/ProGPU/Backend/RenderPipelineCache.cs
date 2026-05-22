@@ -116,73 +116,78 @@ public unsafe class RenderPipelineCache : IDisposable
         // Vertex buffer layouts pinning
         VertexBufferLayout* layoutsPtr = null;
         int layoutsCount = 0;
-        
         if (vertexBufferLayouts != null && vertexBufferLayouts.Length > 0)
         {
             layoutsCount = vertexBufferLayouts.Length;
-            fixed (VertexBufferLayout* pLayouts = vertexBufferLayouts)
+        }
+
+        RenderPipeline* pipeline = null;
+
+        fixed (VertexBufferLayout* pLayouts = vertexBufferLayouts)
+        {
+            if (vertexBufferLayouts != null && vertexBufferLayouts.Length > 0)
             {
                 layoutsPtr = pLayouts;
             }
+
+            var vertexState = new VertexState
+            {
+                Module = shaderModule,
+                EntryPoint = (byte*)vsEntryPtr,
+                BufferCount = (uint)layoutsCount,
+                Buffers = layoutsPtr
+            };
+
+            var depthStencilState = new DepthStencilState
+            {
+                Format = depthFormat,
+                DepthWriteEnabled = false,
+                DepthCompare = CompareFunction.Always,
+                StencilFront = new StencilFaceState
+                {
+                    Compare = stencilCompare,
+                    FailOp = stencilFail,
+                    DepthFailOp = stencilDepthFail,
+                    PassOp = stencilPass
+                },
+                StencilBack = new StencilFaceState
+                {
+                    Compare = stencilCompare,
+                    FailOp = stencilFail,
+                    DepthFailOp = stencilDepthFail,
+                    PassOp = stencilPass
+                },
+                StencilReadMask = 0xFF,
+                StencilWriteMask = 0xFF,
+                DepthBias = 0,
+                DepthBiasSlopeScale = 0f,
+                DepthBiasClamp = 0f
+            };
+
+            var desc = new RenderPipelineDescriptor
+            {
+                Label = (byte*)labelPtr,
+                Layout = null, // Auto-layout derived from shaders
+                Vertex = vertexState,
+                Primitive = new PrimitiveState
+                {
+                    Topology = topology,
+                    StripIndexFormat = IndexFormat.Undefined,
+                    FrontFace = FrontFace.Ccw,
+                    CullMode = CullMode.None
+                },
+                DepthStencil = enableDepthStencil ? &depthStencilState : null,
+                Multisample = new MultisampleState
+                {
+                    Count = 1,
+                    Mask = 0xFFFFFFFF,
+                    AlphaToCoverageEnabled = false
+                },
+                Fragment = &fragmentState
+            };
+
+            pipeline = _context.Wgpu.DeviceCreateRenderPipeline(_context.Device, &desc);
         }
-
-        var vertexState = new VertexState
-        {
-            Module = shaderModule,
-            EntryPoint = (byte*)vsEntryPtr,
-            BufferCount = (uint)layoutsCount,
-            Buffers = layoutsPtr
-        };
-
-        var depthStencilState = new DepthStencilState
-        {
-            Format = depthFormat,
-            DepthWriteEnabled = false,
-            DepthCompare = CompareFunction.Always,
-            StencilFront = new StencilFaceState
-            {
-                Compare = stencilCompare,
-                FailOp = stencilFail,
-                DepthFailOp = stencilDepthFail,
-                PassOp = stencilPass
-            },
-            StencilBack = new StencilFaceState
-            {
-                Compare = stencilCompare,
-                FailOp = stencilFail,
-                DepthFailOp = stencilDepthFail,
-                PassOp = stencilPass
-            },
-            StencilReadMask = 0xFF,
-            StencilWriteMask = 0xFF,
-            DepthBias = 0,
-            DepthBiasSlopeScale = 0f,
-            DepthBiasClamp = 0f
-        };
-
-        var desc = new RenderPipelineDescriptor
-        {
-            Label = (byte*)labelPtr,
-            Layout = null, // Auto-layout derived from shaders
-            Vertex = vertexState,
-            Primitive = new PrimitiveState
-            {
-                Topology = topology,
-                StripIndexFormat = IndexFormat.Undefined,
-                FrontFace = FrontFace.Ccw,
-                CullMode = CullMode.None
-            },
-            DepthStencil = enableDepthStencil ? &depthStencilState : null,
-            Multisample = new MultisampleState
-            {
-                Count = 1,
-                Mask = 0xFFFFFFFF,
-                AlphaToCoverageEnabled = false
-            },
-            Fragment = &fragmentState
-        };
-
-        var pipeline = _context.Wgpu.DeviceCreateRenderPipeline(_context.Device, &desc);
 
         SilkMarshal.Free(vsEntryPtr);
         SilkMarshal.Free(fsEntryPtr);

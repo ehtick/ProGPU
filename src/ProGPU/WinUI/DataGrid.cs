@@ -192,7 +192,6 @@ public class DataGrid : Control
             // Click in Scrollbar area
             else if (TotalBodyHeight > ViewportHeight && e.Position.X >= Size.X - 10f)
             {
-                float scrollbarWidth = 6f;
                 float viewportH = ViewportHeight;
                 float thumbHeight = Math.Max(24f, (viewportH / TotalBodyHeight) * viewportH);
                 float scrollableHeight = TotalBodyHeight - viewportH;

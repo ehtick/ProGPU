@@ -14,6 +14,9 @@ using ProGPU.Vector;
 using ProGPU.Text;
 using ProGPU.Compute;
 using ProGPU.Virtualization;
+using ProGPU.WinUI;
+using Button = ProGPU.WinUI.Button;
+using StackPanel = ProGPU.WinUI.StackPanel;
 
 namespace ProGPU.Samples;
 
@@ -26,30 +29,56 @@ public static unsafe class Program
     private static ComputeAccelerator? _compute;
 
     private static TtfFont? _font;
-    private static GridPanel? _rootGrid;
-    private static TextVisual? _statsText;
-    private static VirtualizingScrollPanel? _virtualScrollPanel;
-    private static GearCanvasVisual? _gearCanvasVisual;
+    private static ProGPU.WinUI.Grid? _rootGrid;
+    private static Border? _showcaseContainer;
 
-    private static readonly List<SliderControl> _sliders = new();
-    private static ToggleButton? _animToggle;
+    // Active diagnostic metric stats
+    private static RichTextBlock? _statsText;
+    private static Vector2 _mousePos;
+    private static string _activeFocusedName = "None";
 
+    // Category pages and sidebar selections
+    private static string _activeCategory = "Basic Input";
+    private static Button? _basicInputTabBtn;
+    private static Button? _panelsTabBtn;
+    private static Button? _textTabBtn;
+    private static Button? _dataTabBtn;
+    private static Button? _computeTabBtn;
+
+    // Compute FX variables
     private static float _blurRadius = 8f;
     private static float _shadowRadius = 8f;
     private static Vector2 _shadowOffset = new Vector2(4f, 4f);
     private static bool _animateGear = true;
     private static float _gearRotation = 0f;
 
+    // Diagnostic timing
     private static readonly Stopwatch _frameStopwatch = new();
     private static double _fpsAccumulator = 0;
     private static int _frameCount = 0;
     private static double _currentFps = 60;
     private static double _cpuFrameTimeMs = 0;
 
+    // Compute effect textures
     private static GpuTexture? _canvasSourceTexture;
     private static GpuTexture? _canvasTempTexture;
     private static GpuTexture? _canvasBlurTexture;
     private static GpuTexture? _canvasShadowTexture;
+
+    // Basic Input Page Interactive State
+    private static int _clickCount = 0;
+    private static string _checkboxStatus = "Unchecked";
+    private static float _sliderValue = 50f;
+
+    // Data Virtualization Page Data Set
+    public class LogItem
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public double Latency { get; set; }
+    }
+    private static readonly List<object> _logItems = new();
 
     public static float GetBlurRadius() => _blurRadius;
     public static float GetShadowRadius() => _shadowRadius;
@@ -57,11 +86,10 @@ public static unsafe class Program
 
     public static void Main()
     {
-        // 1. Create native desktop window option using GLFW
         var options = WindowOptions.Default;
         options.Size = new Vector2D<int>(1280, 800);
-        options.Title = "ProGPU Substrate - 1,000,000 Record Glassmorphic Dashboard";
-        options.API = GraphicsAPI.None; // Zero OpenGL, standard WebGPU context bypass
+        options.Title = "ProGPU Substrate - High-Performance WinUI Gallery Dashboard";
+        options.API = GraphicsAPI.None;
 
         _window = Window.Create(options);
 
@@ -70,10 +98,9 @@ public static unsafe class Program
         _window.Render += OnWindowRender;
         _window.Resize += OnWindowResize;
 
-        Console.WriteLine("[ProGPU.Samples] Starting GPU-first UI Infrastructure Dashboard...");
+        Console.WriteLine("[ProGPU.Samples] Starting GPU-first UI Infrastructure Controls Gallery...");
         _window.Run();
         
-        // Cleanup after closing
         Cleanup();
     }
 
@@ -81,34 +108,37 @@ public static unsafe class Program
     {
         if (_window == null) return;
 
-        // 2. Initialize WebGPU Context
         _wgpuContext = new WgpuContext();
         _wgpuContext.Initialize(_window);
 
-        // 3. Instantiate Dual-Compositor pipelines (screen Bgra8Unorm, offscreen Rgba8Unorm)
         _screenCompositor = new Compositor(_wgpuContext, _wgpuContext.SwapChainFormat);
         _offscreenCompositor = new Compositor(_wgpuContext, TextureFormat.Rgba8Unorm);
         _compute = new ComputeAccelerator(_wgpuContext);
 
-        // 4. Load system Arial TrueType font outline parser
         string fontPath = "/System/Library/Fonts/Supplemental/Arial.ttf";
         if (!File.Exists(fontPath))
         {
-            // Fallback for Windows or Linux if they run this later
             fontPath = "Arial.ttf";
         }
 
         if (File.Exists(fontPath))
         {
-            Console.WriteLine($"[ProGPU.Samples] Loading TrueType Font: {fontPath}");
+            Console.WriteLine($"[ProGPU.Samples] Loading System Font: {fontPath}");
             _font = new TtfFont(fontPath);
+            ushort testIdx = _font.GetGlyphIndex('A');
+            var testOutline = _font.GetGlyphOutline(testIdx);
+            Console.WriteLine($"[ProGPU.Samples] Test Glyph 'A' Index: {testIdx}, Outline Figures: {testOutline?.Figures.Count ?? -1}");
+            if (testOutline != null && testOutline.Figures.Count > 0)
+            {
+                var fig = testOutline.Figures[0];
+                Console.WriteLine($"[ProGPU.Samples] Figure StartPoint: {fig.StartPoint}, Segments Count: {fig.Segments.Count}");
+            }
         }
         else
         {
-            throw new FileNotFoundException("Arial.ttf is required to execute typography. Ensure a standard Arial TrueType font path is available.");
+            throw new FileNotFoundException("Arial.ttf is required to execute typography. Ensure standard Arial TrueType font path is available.");
         }
 
-        // 5. Build dynamic Offscreen effect textures
         _canvasSourceTexture = new GpuTexture(_wgpuContext, 600, 600, TextureFormat.Rgba8Unorm, 
             TextureUsage.RenderAttachment | TextureUsage.TextureBinding | TextureUsage.StorageBinding | TextureUsage.CopySrc);
         _canvasTempTexture = new GpuTexture(_wgpuContext, 600, 600, TextureFormat.Rgba8Unorm, 
@@ -118,376 +148,771 @@ public static unsafe class Program
         _canvasShadowTexture = new GpuTexture(_wgpuContext, 600, 600, TextureFormat.Rgba8Unorm, 
             TextureUsage.TextureBinding | TextureUsage.StorageBinding);
 
-        // 6. Build retaining scene graph layout
-        BuildSceneGraph();
+        // Pre-populate virtualized grid dataset
+        GenerateLogItems();
 
-        // 7. Setup Mouse and Input Handlers
+        BuildSceneGraph();
         SetupInput();
+    }
+
+    private static void GenerateLogItems()
+    {
+        _logItems.Clear();
+        for (int i = 0; i < 10000; i++)
+        {
+            _logItems.Add(new LogItem
+            {
+                Id = i + 1,
+                Name = $"Dispatcher.QueueEvent #{i + 1:N0}",
+                Status = (i % 3 == 0) ? "OK" : ((i % 3 == 1) ? "PENDING" : "WARNING"),
+                Latency = Math.Abs(Math.Sin(i * 0.05) * 45.0 + Math.Cos(i * 0.2) * 5.0 + 10.0)
+            });
+        }
     }
 
     private static void BuildSceneGraph()
     {
         if (_wgpuContext == null || _font == null) return;
 
-        // Root grid containing: Top Header + Body Content
-        _rootGrid = new GridPanel
+        // 1. Root Grid containing Header + Main Body + Bottom Diagnostics Bar
+        _rootGrid = new ProGPU.WinUI.Grid
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch
         };
-        _rootGrid.RowDefinitions.Add(new GridLength(70, GridUnitType.Absolute)); // Row 0
-        _rootGrid.RowDefinitions.Add(new GridLength(1, GridUnitType.Star));     // Row 1
+        _rootGrid.RowDefinitions.Add(new GridLength(70, GridUnitType.Absolute));  // Row 0: Header
+        _rootGrid.RowDefinitions.Add(new GridLength(1, GridUnitType.Star));      // Row 1: Content Workspace
+        _rootGrid.RowDefinitions.Add(new GridLength(32, GridUnitType.Absolute));  // Row 2: Status bar
 
-        // HEADER
-        var headerBar = new BorderPanel
+        // 2. HEADER
+        var headerBar = new Border
         {
             Background = new SolidColorBrush(0x0C0C12FF),
-            Border = new Pen(new SolidColorBrush(0x222230FF), 1.5f),
+            BorderBrush = new SolidColorBrush(0x222230FF),
+            BorderThickness = new Thickness(0, 0, 0, 1.5f),
             Padding = new Thickness(20, 10, 20, 10),
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch
         };
 
-        var headerGrid = new GridPanel();
+        var headerGrid = new ProGPU.WinUI.Grid();
         headerGrid.ColumnDefinitions.Add(new GridLength(1f, GridUnitType.Star));
         headerGrid.ColumnDefinitions.Add(new GridLength(300f, GridUnitType.Absolute));
 
-        var titleText = new TextVisual
-        {
-            Text = "ProGPU Substrate Dashboard",
-            FontSize = 20f,
-            Brush = new SolidColorBrush(0xFFFFFFFF),
-            Font = _font,
-            VerticalAlignment = VerticalAlignment.Center
-        };
-        headerGrid.SetColumn(titleText, 0);
+        var titleText = new RichTextBlock { Font = _font, FontSize = 20f, VerticalAlignment = VerticalAlignment.Center };
+        titleText.Inlines.Add(new Bold(new Run("ProGPU WinUI Gallery")));
         headerGrid.AddChild(titleText);
+        ProGPU.WinUI.Grid.SetColumn(titleText, 0);
 
-        var subtitleText = new TextVisual
-        {
-            Text = ".NET 10 cross-platform high-performance engine",
-            FontSize = 11f,
-            Brush = new SolidColorBrush(0x8888A0FF),
-            Font = _font,
-            VerticalAlignment = VerticalAlignment.Bottom,
-            Alignment = TextAlignment.Right
+        var subtitleText = new RichTextBlock 
+        { 
+            Font = _font, 
+            FontSize = 11f, 
+            VerticalAlignment = VerticalAlignment.Center,
+            TextAlignment = TextAlignment.Right
         };
-        headerGrid.SetColumn(subtitleText, 1);
+        subtitleText.Inlines.Add(new Run(".NET 10 cross-platform high-performance engine showcase"));
         headerGrid.AddChild(subtitleText);
+        ProGPU.WinUI.Grid.SetColumn(subtitleText, 1);
 
-        headerBar.AddChild(headerGrid);
-        _rootGrid.SetRow(headerBar, 0);
+        headerBar.Child = headerGrid;
         _rootGrid.AddChild(headerBar);
+        ProGPU.WinUI.Grid.SetRow(headerBar, 0);
 
-        // BODY Workspace
-        var bodyGrid = new GridPanel();
-        bodyGrid.ColumnDefinitions.Add(new GridLength(320, GridUnitType.Absolute)); // Col 0: Controls
-        bodyGrid.ColumnDefinitions.Add(new GridLength(1, GridUnitType.Star));     // Col 1: Vector canvas
-        bodyGrid.ColumnDefinitions.Add(new GridLength(380, GridUnitType.Absolute)); // Col 2: Virtual list log
+        // 3. BODY WORKSPACE (Sidebar + Showcase Area)
+        var bodyGrid = new ProGPU.WinUI.Grid();
+        bodyGrid.ColumnDefinitions.Add(new GridLength(280, GridUnitType.Absolute)); // Col 0: Sidebar selection
+        bodyGrid.ColumnDefinitions.Add(new GridLength(1, GridUnitType.Star));      // Col 1: active view
 
-        // Sidebar Card
-        var sidebarCard = new BorderPanel
+        // SIDEBAR CARD
+        var sidebarCard = new Border
         {
             CornerRadius = 8f,
             Background = new SolidColorBrush(0x13131AFF),
-            Border = new Pen(new SolidColorBrush(0x2A2A38FF), 1f),
-            Padding = new Thickness(15),
+            BorderBrush = new SolidColorBrush(0x2A2A38FF),
+            BorderThickness = new Thickness(1f),
+            Padding = new Thickness(12),
             Margin = new Thickness(10)
         };
 
-        var leftStack = new StackPanel { Orientation = Orientation.Vertical };
-
-        var panelTitle = new TextVisual
-        {
-            FontSize = 15f,
-            Text = "PRO-GPU CONTROLS",
-            Brush = new SolidColorBrush(0x00E5FFFF),
-            Font = _font,
-            Margin = new Thickness(0, 0, 0, 15)
-        };
-        leftStack.AddChild(panelTitle);
-
-        var diagTitle = new TextVisual
-        {
-            FontSize = 11f,
-            Text = "DIAGNOSTICS & METRICS",
-            Brush = new SolidColorBrush(0x888899FF),
-            Font = _font,
-            Margin = new Thickness(0, 10, 0, 5)
-        };
-        leftStack.AddChild(diagTitle);
-
-        _statsText = new TextVisual
-        {
-            FontSize = 11f,
-            Text = "FPS: -- | CPU: -- ms",
-            Brush = new SolidColorBrush(0xBBBBC5FF),
-            Font = _font,
-            Margin = new Thickness(0, 0, 0, 15)
-        };
-        leftStack.AddChild(_statsText);
-
-        var slidersTitle = new TextVisual
-        {
-            FontSize = 11f,
-            Text = "WGSL COMPUTE EFFECTS",
-            Brush = new SolidColorBrush(0x888899FF),
-            Font = _font,
-            Margin = new Thickness(0, 10, 0, 5)
-        };
-        leftStack.AddChild(slidersTitle);
-
-        var blurSlider = new SliderControl("Backdrop Blur", 0f, 20f, _blurRadius, "px");
-        blurSlider.ValueChanged += (s, val) => _blurRadius = val;
-        leftStack.AddChild(blurSlider);
-        _sliders.Add(blurSlider);
-
-        var shadowSlider = new SliderControl("Shadow Blur", 0f, 20f, _shadowRadius, "px");
-        shadowSlider.ValueChanged += (s, val) => _shadowRadius = val;
-        leftStack.AddChild(shadowSlider);
-        _sliders.Add(shadowSlider);
-
-        var offsetXSlider = new SliderControl("Shadow Offset X", -20f, 20f, _shadowOffset.X, "px");
-        offsetXSlider.ValueChanged += (s, val) => _shadowOffset.X = val;
-        leftStack.AddChild(offsetXSlider);
-        _sliders.Add(offsetXSlider);
-
-        var offsetYSlider = new SliderControl("Shadow Offset Y", -20f, 20f, _shadowOffset.Y, "px");
-        offsetYSlider.ValueChanged += (s, val) => _shadowOffset.Y = val;
-        leftStack.AddChild(offsetYSlider);
-        _sliders.Add(offsetYSlider);
-
-        var btnTitle = new TextVisual
-        {
-            FontSize = 11f,
-            Text = "VECTOR COG ANIMATION",
-            Brush = new SolidColorBrush(0x888899FF),
-            Font = _font,
-            Margin = new Thickness(0, 10, 0, 5)
-        };
-        leftStack.AddChild(btnTitle);
-
-        _animToggle = new ToggleButton("Rotate Gears", _animateGear);
-        _animToggle.CheckedChanged += (s, val) => _animateGear = val;
-        leftStack.AddChild(_animToggle);
-
-        sidebarCard.AddChild(leftStack);
-        bodyGrid.SetColumn(sidebarCard, 0);
-        bodyGrid.AddChild(sidebarCard);
-
-        // Center Panel Canvas
-        _gearCanvasVisual = new GearCanvasVisual(_font)
-        {
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Stretch
-        };
+        var sidebarStack = new StackPanel { Orientation = Orientation.Vertical };
         
-        var canvasContainer = new BorderPanel
+        var panelTitle = new RichTextBlock { Font = _font, FontSize = 12f, Margin = new Thickness(5, 5, 5, 15) };
+        panelTitle.Inlines.Add(new Bold(new Run("CONTROLS & PANELS")));
+        sidebarStack.AddChild(panelTitle);
+
+        // Define beautiful tab switching buttons
+        _basicInputTabBtn = CreateSidebarButton("Basic Input", "Basic Inputs");
+        _basicInputTabBtn.Click += (s, e) => SwitchCategory("Basic Input");
+        sidebarStack.AddChild(_basicInputTabBtn);
+
+        _panelsTabBtn = CreateSidebarButton("Layout Panels", "Layout Panels");
+        _panelsTabBtn.Click += (s, e) => SwitchCategory("Layout Panels");
+        sidebarStack.AddChild(_panelsTabBtn);
+
+        _textTabBtn = CreateSidebarButton("Text & Documents", "Text & Documents");
+        _textTabBtn.Click += (s, e) => SwitchCategory("Text & Documents");
+        sidebarStack.AddChild(_textTabBtn);
+
+        _dataTabBtn = CreateSidebarButton("Data Virtualization", "Data Virtualization");
+        _dataTabBtn.Click += (s, e) => SwitchCategory("Data Virtualization");
+        sidebarStack.AddChild(_dataTabBtn);
+
+        _computeTabBtn = CreateSidebarButton("Compute FX", "Compute FX");
+        _computeTabBtn.Click += (s, e) => SwitchCategory("Compute FX");
+        sidebarStack.AddChild(_computeTabBtn);
+
+        sidebarCard.Child = sidebarStack;
+        bodyGrid.AddChild(sidebarCard);
+        ProGPU.WinUI.Grid.SetColumn(sidebarCard, 0);
+
+        // SHOWCASE CONTAINER
+        _showcaseContainer = new Border
         {
             CornerRadius = 8f,
             Background = new SolidColorBrush(0x0C0C12FF),
-            Border = new Pen(new SolidColorBrush(0x222230FF), 1f),
-            Margin = new Thickness(0, 10, 0, 10)
+            BorderBrush = new SolidColorBrush(0x222230FF),
+            BorderThickness = new Thickness(1f),
+            Margin = new Thickness(0, 10, 10, 10),
+            Padding = new Thickness(16)
         };
 
-        var displayCanvas = new GpuTextureCanvas(_canvasSourceTexture!, _canvasShadowTexture!, _canvasBlurTexture!);
-        canvasContainer.AddChild(displayCanvas);
-        
-        bodyGrid.SetColumn(canvasContainer, 1);
-        bodyGrid.AddChild(canvasContainer);
+        bodyGrid.AddChild(_showcaseContainer);
+        ProGPU.WinUI.Grid.SetColumn(_showcaseContainer, 1);
 
-        // Right Panel List
-        var rightPanelCard = new BorderPanel
-        {
-            CornerRadius = 8f,
-            Background = new SolidColorBrush(0x13131AFF),
-            Border = new Pen(new SolidColorBrush(0x2A2A38FF), 1f),
-            Padding = new Thickness(10),
-            Margin = new Thickness(10)
-        };
+        _rootGrid.AddChild(bodyGrid);
+        ProGPU.WinUI.Grid.SetRow(bodyGrid, 1);
 
-        var rightStack = new StackPanel { Orientation = Orientation.Vertical };
-        var listTitle = new TextVisual
+        // 4. BOTTOM DIAGNOSTICS STATUS BAR
+        var statusBar = new Border
         {
-            FontSize = 13f,
-            Text = "SYSTEM ACTIVITY LOGS",
-            Brush = new SolidColorBrush(0x00FF88FF),
-            Font = _font,
-            Margin = new Thickness(5, 5, 5, 10)
-        };
-        rightStack.AddChild(listTitle);
-
-        _virtualScrollPanel = new VirtualizingScrollPanel
-        {
-            ItemsCount = 1000000,
-            ItemHeight = 55f,
+            Background = new SolidColorBrush(0x07070BFF),
+            BorderBrush = new SolidColorBrush(0x1A1A26FF),
+            BorderThickness = new Thickness(0, 1.5f, 0, 0),
+            Padding = new Thickness(16, 4, 16, 4),
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch
         };
 
-        _virtualScrollPanel.CreateVisualFactory = () =>
+        _statsText = new RichTextBlock
         {
-            var rowCard = new BorderPanel
-            {
-                CornerRadius = 6f,
-                Background = new SolidColorBrush(0x1E1E26FF),
-                Border = new Pen(new SolidColorBrush(0x333344FF), 1f),
-                Margin = new Thickness(5, 4, 5, 4),
-                Padding = new Thickness(10, 5, 10, 5),
-                HorizontalAlignment = HorizontalAlignment.Stretch
-            };
-
-            var grid = new GridPanel
-            {
-                HorizontalAlignment = HorizontalAlignment.Stretch,
-                VerticalAlignment = VerticalAlignment.Stretch
-            };
-            grid.ColumnDefinitions.Add(new GridLength(1f, GridUnitType.Star));
-            grid.ColumnDefinitions.Add(new GridLength(100f, GridUnitType.Absolute));
-
-            var logText = new TextVisual
-            {
-                FontSize = 11f,
-                Brush = new SolidColorBrush(0xE0E0E0FF),
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            grid.SetColumn(logText, 0);
-            grid.AddChild(logText);
-
-            var latencyText = new TextVisual
-            {
-                FontSize = 11f,
-                Brush = new SolidColorBrush(0x00FF88FF),
-                VerticalAlignment = VerticalAlignment.Center,
-                Alignment = TextAlignment.Right
-            };
-            grid.SetColumn(latencyText, 1);
-            grid.AddChild(latencyText);
-
-            rowCard.AddChild(grid);
-            return rowCard;
+            FontSize = 11f,
+            Foreground = new SolidColorBrush(0x888899FF),
+            Font = _font,
+            VerticalAlignment = VerticalAlignment.Center
         };
+        _statsText.Inlines.Add(new Run("FPS: -- | CPU: -- ms | Cursor: (0, 0) | Focused Element: None"));
+        statusBar.Child = _statsText;
+        _rootGrid.AddChild(statusBar);
+        ProGPU.WinUI.Grid.SetRow(statusBar, 2);
 
-        _virtualScrollPanel.BindVisualCallback = (visual, index) =>
-        {
-            var rowCard = (BorderPanel)visual;
-            var grid = (GridPanel)rowCard.Children[0];
-            var logText = (TextVisual)grid.Children[0];
-            var latencyText = (TextVisual)grid.Children[1];
-
-            logText.Text = $"System.Dispatch #{(index + 1):N0} [OK]";
-            logText.Font = _font;
-
-            double latency = Math.Abs(Math.Sin(index * 0.05) * 45.0 + Math.Cos(index * 0.2) * 5.0 + 10.0);
-            latencyText.Text = $"{latency:F1} ms";
-            latencyText.Font = _font;
-
-            if (latency > 35.0)
-            {
-                latencyText.Brush = new SolidColorBrush(0xFF5555FF);
-                rowCard.Border = new Pen(new SolidColorBrush(0xFF555540), 1f);
-            }
-            else if (latency > 20.0)
-            {
-                latencyText.Brush = new SolidColorBrush(0xFFB800FF);
-                rowCard.Border = new Pen(new SolidColorBrush(0xFFB80040), 1f);
-            }
-            else
-            {
-                latencyText.Brush = new SolidColorBrush(0x00FF88FF);
-                rowCard.Border = new Pen(new SolidColorBrush(0x00FF8840), 1f);
-            }
-        };
-
-        rightStack.AddChild(_virtualScrollPanel);
-        rightPanelCard.AddChild(rightStack);
-
-        bodyGrid.SetColumn(rightPanelCard, 2);
-        bodyGrid.AddChild(rightPanelCard);
-
-        _rootGrid.SetRow(bodyGrid, 1);
-        _rootGrid.AddChild(bodyGrid);
+        // Initial tab render
+        SwitchCategory("Basic Input");
     }
+
+    private static Button CreateSidebarButton(string categoryName, string displayText)
+    {
+        var btn = new Button
+        {
+            Margin = new Thickness(0, 4, 0, 4),
+            Padding = new Thickness(12, 10, 12, 10),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            CornerRadius = 6f
+        };
+        
+        var content = new RichTextBlock { Font = _font, FontSize = 12f };
+        content.Inlines.Add(new Run(displayText));
+        btn.Content = content;
+        
+        return btn;
+    }
+
+    private static void SwitchCategory(string categoryName)
+    {
+        _activeCategory = categoryName;
+
+        // Dynamic visual selection updates
+        UpdateSidebarButtonStates();
+
+        if (_showcaseContainer == null || _font == null) return;
+
+        // Instantiate selected categories
+        _showcaseContainer.Child = categoryName switch
+        {
+            "Basic Input" => CreateBasicInputView(),
+            "Layout Panels" => CreateLayoutPanelsView(),
+            "Text & Documents" => CreateTextDocumentsView(),
+            "Data Virtualization" => CreateDataVirtualizationView(),
+            "Compute FX" => CreateComputeFxView(),
+            _ => null
+        };
+
+        _rootGrid?.Invalidate();
+    }
+
+    private static void UpdateSidebarButtonStates()
+    {
+        var activeBrush = new SolidColorBrush(0x0078D740); // translucent blue active
+        var normalBrush = new SolidColorBrush(0xFFFFFF0D); // translucent default
+
+        if (_basicInputTabBtn != null) _basicInputTabBtn.Background = _activeCategory == "Basic Input" ? activeBrush : normalBrush;
+        if (_panelsTabBtn != null) _panelsTabBtn.Background = _activeCategory == "Layout Panels" ? activeBrush : normalBrush;
+        if (_textTabBtn != null) _textTabBtn.Background = _activeCategory == "Text & Documents" ? activeBrush : normalBrush;
+        if (_dataTabBtn != null) _dataTabBtn.Background = _activeCategory == "Data Virtualization" ? activeBrush : normalBrush;
+        if (_computeTabBtn != null) _computeTabBtn.Background = _activeCategory == "Compute FX" ? activeBrush : normalBrush;
+    }
+
+    // ===================================================
+    // Page Creation Views
+    // ===================================================
+
+    private static FrameworkElement CreateBasicInputView()
+    {
+        var stack = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(10) };
+
+        var title = new RichTextBlock { Font = _font, FontSize = 18f, Margin = new Thickness(0, 0, 0, 10) };
+        title.Inlines.Add(new Bold(new Run("Basic Input Controls & State Routing")));
+        stack.AddChild(title);
+
+        var description = new RichTextBlock { Font = _font, FontSize = 12f, Margin = new Thickness(0, 0, 0, 20) };
+        description.Inlines.Add(new Run("This page showcases standard high-performance input controls. Pointer hovers, clicks, and drag operations are natively routed down the recursive SceneGraph with real-time UI invalidation."));
+        stack.AddChild(description);
+
+        // 1. BUTTON
+        var btnGroup = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 15) };
+        var interactiveBtn = new Button { Width = 180f, Height = 36f, CornerRadius = 6f };
+        var btnText = new RichTextBlock { Font = _font, FontSize = 12f };
+        btnText.Inlines.Add(new Run($"Click Count: {_clickCount}"));
+        interactiveBtn.Content = btnText;
+        
+        interactiveBtn.Click += (s, e) =>
+        {
+            _clickCount++;
+            btnText.Inlines.Clear();
+            btnText.Inlines.Add(new Run($"Click Count: {_clickCount}"));
+            btnText.Invalidate();
+        };
+        btnGroup.AddChild(interactiveBtn);
+
+        var btnDesc = new RichTextBlock { Font = _font, FontSize = 11f, Margin = new Thickness(15, 8, 0, 0) };
+        btnDesc.Inlines.Add(new Run("Hover and press. Clicks increment count state directly."));
+        btnGroup.AddChild(btnDesc);
+        stack.AddChild(btnGroup);
+
+        // 2. CHECKBOX
+        var checkGroup = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 15) };
+        var customCheck = new CheckBox { IsChecked = _checkboxStatus == "Checked" };
+        var checkLabel = new RichTextBlock { Font = _font, FontSize = 12f };
+        checkLabel.Inlines.Add(new Run("Enable high-fidelity render features"));
+        customCheck.Content = checkLabel;
+
+        var checkStatus = new RichTextBlock { Font = _font, FontSize = 11f, Margin = new Thickness(30, 4, 0, 0) };
+        checkStatus.Inlines.Add(new Run($"Current state: {_checkboxStatus}"));
+
+        customCheck.CheckedChanged += (s, e) =>
+        {
+            _checkboxStatus = customCheck.IsChecked ? "Checked" : "Unchecked";
+            checkStatus.Inlines.Clear();
+            checkStatus.Inlines.Add(new Run($"Current state: {_checkboxStatus}"));
+            checkStatus.Invalidate();
+        };
+
+        checkGroup.AddChild(customCheck);
+        checkGroup.AddChild(checkStatus);
+        stack.AddChild(checkGroup);
+
+        // Disabled Option to demonstrate visual states
+        var disabledCheck = new CheckBox { IsEnabled = false, IsChecked = true, Margin = new Thickness(0, 0, 0, 15) };
+        var disabledLabel = new RichTextBlock { Font = _font, FontSize = 12f };
+        disabledLabel.Inlines.Add(new Run("Disabled read-only setting (Always checked)"));
+        disabledCheck.Content = disabledLabel;
+        stack.AddChild(disabledCheck);
+
+        // 3. SLIDER
+        var sliderTitle = new RichTextBlock { Font = _font, FontSize = 12f, Margin = new Thickness(0, 10, 0, 4) };
+        sliderTitle.Inlines.Add(new Bold(new Run($"Accent Glow Intensity: {_sliderValue:F0}%")));
+        stack.AddChild(sliderTitle);
+
+        var accentSlider = new ProGPU.WinUI.Slider { Minimum = 0f, Maximum = 100f, Value = _sliderValue, Width = 300f, Margin = new Thickness(0, 0, 0, 15) };
+        accentSlider.ValueChanged += (s, e) =>
+        {
+            _sliderValue = accentSlider.Value;
+            sliderTitle.Inlines.Clear();
+            sliderTitle.Inlines.Add(new Bold(new Run($"Accent Glow Intensity: {_sliderValue:F0}%")));
+            sliderTitle.Invalidate();
+        };
+        stack.AddChild(accentSlider);
+
+        return stack;
+    }
+
+    private static FrameworkElement CreateLayoutPanelsView()
+    {
+        var grid = new ProGPU.WinUI.Grid { Margin = new Thickness(5) };
+        grid.RowDefinitions.Add(new GridLength(60, GridUnitType.Absolute));   // Description
+        grid.RowDefinitions.Add(new GridLength(1, GridUnitType.Star));       // Main panels showcase
+        grid.RowDefinitions.Add(new GridLength(140, GridUnitType.Absolute));  // Canvas absolute layout
+
+        var descText = new RichTextBlock { Font = _font, FontSize = 12f };
+        descText.Inlines.Add(new Run("Showcasing standard WinUI panels. "));
+        descText.Inlines.Add(new Bold(new Run("Grid")));
+        descText.Inlines.Add(new Run(" divides workspace recursively using star/fixed/auto cells, "));
+        descText.Inlines.Add(new Bold(new Run("StackPanel")));
+        descText.Inlines.Add(new Run(" manages vertical/horizontal flow packs, and "));
+        descText.Inlines.Add(new Bold(new Run("Canvas")));
+        descText.Inlines.Add(new Run(" allows absolute X/Y placements."));
+        grid.AddChild(descText);
+        ProGPU.WinUI.Grid.SetRow(descText, 0);
+
+        // 1. Grid & Stack Panel Showroom
+        var showroomGrid = new ProGPU.WinUI.Grid();
+        showroomGrid.ColumnDefinitions.Add(new GridLength(1f, GridUnitType.Star));
+        showroomGrid.ColumnDefinitions.Add(new GridLength(1f, GridUnitType.Star));
+
+        // Column 0: 2x2 Grid cell attachments
+        var innerGrid = new ProGPU.WinUI.Grid();
+        innerGrid.RowDefinitions.Add(new GridLength(1f, GridUnitType.Star));
+        innerGrid.RowDefinitions.Add(new GridLength(1f, GridUnitType.Star));
+        innerGrid.ColumnDefinitions.Add(new GridLength(1f, GridUnitType.Star));
+        innerGrid.ColumnDefinitions.Add(new GridLength(1f, GridUnitType.Star));
+
+        var card1 = new Border { Margin = new Thickness(4), Background = new SolidColorBrush(0xFF555520), CornerRadius = 6f };
+        var cardText1 = new RichTextBlock { Font = _font, FontSize = 11f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        cardText1.Inlines.Add(new Run("Cell (0, 0)"));
+        card1.Child = cardText1;
+        innerGrid.AddChild(card1);
+        ProGPU.WinUI.Grid.SetRow(card1, 0);
+        ProGPU.WinUI.Grid.SetColumn(card1, 0);
+
+        var card2 = new Border { Margin = new Thickness(4), Background = new SolidColorBrush(0x00FF8820), CornerRadius = 6f };
+        var cardText2 = new RichTextBlock { Font = _font, FontSize = 11f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        cardText2.Inlines.Add(new Run("Cell (0, 1)"));
+        card2.Child = cardText2;
+        innerGrid.AddChild(card2);
+        ProGPU.WinUI.Grid.SetRow(card2, 0);
+        ProGPU.WinUI.Grid.SetColumn(card2, 1);
+
+        var card3 = new Border { Margin = new Thickness(4), Background = new SolidColorBrush(0x00E5FF20), CornerRadius = 6f };
+        var cardText3 = new RichTextBlock { Font = _font, FontSize = 11f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        cardText3.Inlines.Add(new Run("Cell (1, 0)"));
+        card3.Child = cardText3;
+        innerGrid.AddChild(card3);
+        ProGPU.WinUI.Grid.SetRow(card3, 1);
+        ProGPU.WinUI.Grid.SetColumn(card3, 0);
+
+        var card4 = new Border { Margin = new Thickness(4), Background = new SolidColorBrush(0xA100FF20), CornerRadius = 6f };
+        var cardText4 = new RichTextBlock { Font = _font, FontSize = 11f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        cardText4.Inlines.Add(new Run("Cell (1, 1)"));
+        card4.Child = cardText4;
+        innerGrid.AddChild(card4);
+        ProGPU.WinUI.Grid.SetRow(card4, 1);
+        ProGPU.WinUI.Grid.SetColumn(card4, 1);
+
+        var leftGroup = new Border
+        {
+            Margin = new Thickness(5),
+            Background = new SolidColorBrush(0xFFFFFF08),
+            BorderBrush = new SolidColorBrush(0xFFFFFF15),
+            BorderThickness = new Thickness(1f),
+            CornerRadius = 8f,
+            Padding = new Thickness(8)
+        };
+        leftGroup.Child = innerGrid;
+        showroomGrid.AddChild(leftGroup);
+        ProGPU.WinUI.Grid.SetColumn(leftGroup, 0);
+
+        // Column 1: StackPanel layout
+        var rightStack = new StackPanel { Orientation = Orientation.Vertical };
+        var stackTitle = new RichTextBlock { Font = _font, FontSize = 12f, Margin = new Thickness(8, 0, 0, 8) };
+        stackTitle.Inlines.Add(new Bold(new Run("Vertical Stack Panel")));
+        rightStack.AddChild(stackTitle);
+
+        for (int i = 1; i <= 3; i++)
+        {
+            var item = new Border
+            {
+                Height = 32f,
+                Margin = new Thickness(4),
+                Background = new SolidColorBrush(0xFFFFFF15),
+                CornerRadius = 4f
+            };
+            var itemText = new RichTextBlock { Font = _font, FontSize = 11f, Margin = new Thickness(10, 8, 0, 0) };
+            itemText.Inlines.Add(new Run($"Stack Item #{i}"));
+            item.Child = itemText;
+            rightStack.AddChild(item);
+        }
+
+        var horizontalStackTitle = new RichTextBlock { Font = _font, FontSize = 12f, Margin = new Thickness(8, 12, 0, 8) };
+        horizontalStackTitle.Inlines.Add(new Bold(new Run("Horizontal Flow Row")));
+        rightStack.AddChild(horizontalStackTitle);
+
+        var horzFlow = new StackPanel { Orientation = Orientation.Horizontal };
+        for (int i = 1; i <= 3; i++)
+        {
+            var item = new Border
+            {
+                Width = 72f,
+                Height = 28f,
+                Margin = new Thickness(4),
+                Background = new SolidColorBrush(0x00E5FF25),
+                CornerRadius = 4f
+            };
+            var itemText = new RichTextBlock { Font = _font, FontSize = 10f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            itemText.Inlines.Add(new Run($"Flow #{i}"));
+            item.Child = itemText;
+            horzFlow.AddChild(item);
+        }
+        rightStack.AddChild(horzFlow);
+
+        var rightGroup = new Border
+        {
+            Margin = new Thickness(5),
+            Background = new SolidColorBrush(0xFFFFFF08),
+            BorderBrush = new SolidColorBrush(0xFFFFFF15),
+            BorderThickness = new Thickness(1f),
+            CornerRadius = 8f,
+            Padding = new Thickness(8)
+        };
+        rightGroup.Child = rightStack;
+        showroomGrid.AddChild(rightGroup);
+        ProGPU.WinUI.Grid.SetColumn(rightGroup, 1);
+
+        grid.AddChild(showroomGrid);
+        ProGPU.WinUI.Grid.SetRow(showroomGrid, 1);
+
+        // 2. Canvas Absolute Layout (Row 2)
+        var canvasPanel = new Canvas { HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch };
+        var canvasDesc = new RichTextBlock { Font = _font, FontSize = 11f, Margin = new Thickness(8, 4, 0, 0) };
+        canvasDesc.Inlines.Add(new Bold(new Run("Absolute Canvas Coordinates:")));
+        canvasPanel.AddChild(canvasDesc);
+        Canvas.SetLeft(canvasDesc, 8f);
+        Canvas.SetTop(canvasDesc, 4f);
+
+        // Renders overlapping absolute positioned panels
+        var cardColors = new uint[] { 0xFF5555CC, 0x00FF88CC, 0x00E5FFCC };
+        for (int i = 0; i < 3; i++)
+        {
+            var overlappingCard = new Border
+            {
+                Width = 140f,
+                Height = 45f,
+                Background = new SolidColorBrush(cardColors[i]),
+                CornerRadius = 6f
+            };
+            var overlappingText = new RichTextBlock { Font = _font, FontSize = 10f, Margin = new Thickness(12, 14, 0, 0) };
+            overlappingText.Inlines.Add(new Bold(new Run($"Absolute Panel #{i + 1}")));
+            overlappingCard.Child = overlappingText;
+            
+            canvasPanel.AddChild(overlappingCard);
+            Canvas.SetLeft(overlappingCard, 30f + i * 90f);
+            Canvas.SetTop(overlappingCard, 35f + i * 20f);
+        }
+
+        var canvasGroup = new Border
+        {
+            Margin = new Thickness(5),
+            Background = new SolidColorBrush(0xFFFFFF08),
+            BorderBrush = new SolidColorBrush(0xFFFFFF15),
+            BorderThickness = new Thickness(1f),
+            CornerRadius = 8f
+        };
+        canvasGroup.Child = canvasPanel;
+        grid.AddChild(canvasGroup);
+        ProGPU.WinUI.Grid.SetRow(canvasGroup, 2);
+
+        return grid;
+    }
+
+    private static FrameworkElement CreateTextDocumentsView()
+    {
+        var grid = new ProGPU.WinUI.Grid();
+        grid.ColumnDefinitions.Add(new GridLength(1f, GridUnitType.Star));
+        grid.ColumnDefinitions.Add(new GridLength(1.1f, GridUnitType.Star));
+
+        // Column 0: Interactive text typing editors
+        var leftStack = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(8) };
+        
+        var editorTitle = new RichTextBlock { Font = _font, FontSize = 14f, Margin = new Thickness(0, 0, 0, 5) };
+        editorTitle.Inlines.Add(new Bold(new Run("Caret-Interactive Input Arenas")));
+        leftStack.AddChild(editorTitle);
+
+        var editorDesc = new RichTextBlock { Font = _font, FontSize = 11f, Margin = new Thickness(0, 0, 0, 15) };
+        editorDesc.Inlines.Add(new Run("Input focus is obtained on clicking, enabling caret positioning, arrow-key navigation, backspace deletions, and live character typing."));
+        leftStack.AddChild(editorDesc);
+
+        // TextBox (Single line)
+        var textboxLabel = new RichTextBlock { Font = _font, FontSize = 12f, Margin = new Thickness(0, 0, 0, 4) };
+        textboxLabel.Inlines.Add(new Bold(new Run("Standard TextBox (Single Line)")));
+        leftStack.AddChild(textboxLabel);
+
+        var textEntry = new TextBox 
+        { 
+            Font = _font, 
+            Text = "ProGPU typing", 
+            Width = 300f, 
+            Height = 32f, 
+            Margin = new Thickness(0, 0, 0, 20) 
+        };
+        leftStack.AddChild(textEntry);
+
+        // RichEditBox (Multi line)
+        var richeditLabel = new RichTextBlock { Font = _font, FontSize = 12f, Margin = new Thickness(0, 0, 0, 4) };
+        richeditLabel.Inlines.Add(new Bold(new Run("Interactive RichEditBox (Formatted Runs)")));
+        leftStack.AddChild(richeditLabel);
+
+        var richEntry = new RichEditBox 
+        { 
+            Font = _font, 
+            Width = 300f, 
+            Height = 150f 
+        };
+        leftStack.AddChild(richEntry);
+
+        grid.AddChild(leftStack);
+        ProGPU.WinUI.Grid.SetColumn(leftStack, 0);
+
+        // Column 1: Multi-column FlowDocument
+        var rightStack = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(8) };
+        var docTitle = new RichTextBlock { Font = _font, FontSize = 14f, Margin = new Thickness(8, 0, 0, 5) };
+        docTitle.Inlines.Add(new Bold(new Run("Multi-Column Structured FlowDocument")));
+        rightStack.AddChild(docTitle);
+
+        var flowDoc = new FlowDocument 
+        { 
+            Font = _font, 
+            FontSize = 12f, 
+            ColumnCount = 2, 
+            ColumnGap = 20f,
+            Height = 270f
+        };
+        
+        flowDoc.Paragraphs.Add(new Paragraph(
+            new Bold(new Run("High Performance Typography\n")),
+            new Run("The new substrate text layout is powered by real-time signed distance field atlas packing, producing extremely sharp vector paths at any scale without performance hits.")
+        ));
+
+        flowDoc.Paragraphs.Add(new Paragraph(
+            new Italic(new Run("Dual Column Balancing:\n")),
+            new Run("Text flows perfectly between multiple adjacent columns. FlowDocument manages margin gaps, alignment bounds, and paragraphs dynamically on WebGPU substrates.")
+        ));
+
+        flowDoc.Paragraphs.Add(new Paragraph(
+            new Run("This matches modern WinUI XAML document layers completely, delivering advanced visualization out of the box.")
+        ));
+
+        var docBorder = new Border
+        {
+            Background = new SolidColorBrush(0xFFFFFF0D),
+            BorderBrush = new SolidColorBrush(0xFFFFFF20),
+            BorderThickness = new Thickness(1f),
+            CornerRadius = 8f,
+            Margin = new Thickness(4)
+        };
+        docBorder.Child = flowDoc;
+        rightStack.AddChild(docBorder);
+
+        grid.AddChild(rightStack);
+        ProGPU.WinUI.Grid.SetColumn(rightStack, 1);
+
+        return grid;
+    }
+
+    private static FrameworkElement CreateDataVirtualizationView()
+    {
+        var grid = new ProGPU.WinUI.Grid();
+        grid.RowDefinitions.Add(new GridLength(70, GridUnitType.Absolute));   // Header
+        grid.RowDefinitions.Add(new GridLength(1, GridUnitType.Star));       // Recycled Grid
+
+        var descStack = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(8) };
+        var listTitle = new RichTextBlock { Font = _font, FontSize = 14f };
+        listTitle.Inlines.Add(new Bold(new Run("10,000 Record Virtualized DataGrid")));
+        descStack.AddChild(listTitle);
+
+        var listDesc = new RichTextBlock { Font = _font, FontSize = 11f, Margin = new Thickness(0, 2, 0, 0) };
+        listDesc.Inlines.Add(new Run("Ultra-fast vertical scroll recycling displays massive datasets at locked 60 FPS. Click on any header column to "));
+        listDesc.Inlines.Add(new Bold(new Run("sort alphanumerically")));
+        listDesc.Inlines.Add(new Run(", and click rows to change selected indices."));
+        descStack.AddChild(listDesc);
+
+        grid.AddChild(descStack);
+        ProGPU.WinUI.Grid.SetRow(descStack, 0);
+
+        // Virtualized DataGrid setup
+        var dataGrid = new ProGPU.WinUI.DataGrid
+        {
+            Font = _font,
+            RowHeight = 28f,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            Margin = new Thickness(4)
+        };
+
+        // Define columns
+        dataGrid.Columns.Add(new DataGridColumn("ID", 70f, "Id"));
+        dataGrid.Columns.Add(new DataGridColumn("Activity Name", 230f, "Name"));
+        dataGrid.Columns.Add(new DataGridColumn("Status", 110f, "Status"));
+        dataGrid.Columns.Add(new DataGridColumn("Latency", 100f, "Latency"));
+
+        // Setup direct, reflection-free binding for maximum speed
+        dataGrid.CellValueBinding = (item, prop) =>
+        {
+            if (item is LogItem log)
+            {
+                return prop switch
+                {
+                    "Id" => log.Id.ToString(),
+                    "Name" => log.Name,
+                    "Status" => log.Status,
+                    "Latency" => $"{log.Latency:F1} ms",
+                    _ => string.Empty
+                };
+            }
+            return string.Empty;
+        };
+
+        // Populate logs
+        foreach (var log in _logItems)
+        {
+            dataGrid.AddItem(log);
+        }
+
+        grid.AddChild(dataGrid);
+        ProGPU.WinUI.Grid.SetRow(dataGrid, 1);
+
+        return grid;
+    }
+
+    private static FrameworkElement CreateComputeFxView()
+    {
+        var grid = new ProGPU.WinUI.Grid();
+        grid.ColumnDefinitions.Add(new GridLength(280, GridUnitType.Absolute)); // Compute adjust sliders
+        grid.ColumnDefinitions.Add(new GridLength(1, GridUnitType.Star));      // WebGPU offscreen effect canvas
+
+        var leftStack = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(8) };
+        var computeTitle = new RichTextBlock { Font = _font, FontSize = 14f, Margin = new Thickness(0, 0, 0, 5) };
+        computeTitle.Inlines.Add(new Bold(new Run("WGSL Compute Accelerator")));
+        leftStack.AddChild(computeTitle);
+
+        var computeDesc = new RichTextBlock { Font = _font, FontSize = 11f, Margin = new Thickness(0, 0, 0, 15) };
+        computeDesc.Inlines.Add(new Run("Adjust dynamic WGSL pixel processors running in parallel with the scene compositing passes."));
+        leftStack.AddChild(computeDesc);
+
+        // Sliders for compute
+        var blurLabel = new RichTextBlock { Font = _font, FontSize = 12f, Margin = new Thickness(0, 5, 0, 2) };
+        blurLabel.Inlines.Add(new Bold(new Run($"Backdrop Blur: {_blurRadius:F1} px")));
+        leftStack.AddChild(blurLabel);
+
+        var blurSlider = new ProGPU.WinUI.Slider { Minimum = 0f, Maximum = 20f, Value = _blurRadius, Width = 250f, Margin = new Thickness(0, 0, 0, 15) };
+        blurSlider.ValueChanged += (s, e) =>
+        {
+            _blurRadius = blurSlider.Value;
+            blurLabel.Inlines.Clear();
+            blurLabel.Inlines.Add(new Bold(new Run($"Backdrop Blur: {_blurRadius:F1} px")));
+            blurLabel.Invalidate();
+        };
+        leftStack.AddChild(blurSlider);
+
+        var shadowLabel = new RichTextBlock { Font = _font, FontSize = 12f, Margin = new Thickness(0, 5, 0, 2) };
+        shadowLabel.Inlines.Add(new Bold(new Run($"Shadow Radius: {_shadowRadius:F1} px")));
+        leftStack.AddChild(shadowLabel);
+
+        var shadowSlider = new ProGPU.WinUI.Slider { Minimum = 0f, Maximum = 20f, Value = _shadowRadius, Width = 250f, Margin = new Thickness(0, 0, 0, 15) };
+        shadowSlider.ValueChanged += (s, e) =>
+        {
+            _shadowRadius = shadowSlider.Value;
+            shadowLabel.Inlines.Clear();
+            shadowLabel.Inlines.Add(new Bold(new Run($"Shadow Radius: {_shadowRadius:F1} px")));
+            shadowLabel.Invalidate();
+        };
+        leftStack.AddChild(shadowSlider);
+
+        var offsetXLabel = new RichTextBlock { Font = _font, FontSize = 12f, Margin = new Thickness(0, 5, 0, 2) };
+        offsetXLabel.Inlines.Add(new Bold(new Run($"Shadow Offset X: {_shadowOffset.X:F1} px")));
+        leftStack.AddChild(offsetXLabel);
+
+        var offsetXSlider = new ProGPU.WinUI.Slider { Minimum = -20f, Maximum = 20f, Value = _shadowOffset.X, Width = 250f, Margin = new Thickness(0, 0, 0, 15) };
+        offsetXSlider.ValueChanged += (s, e) =>
+        {
+            _shadowOffset.X = offsetXSlider.Value;
+            offsetXLabel.Inlines.Clear();
+            offsetXLabel.Inlines.Add(new Bold(new Run($"Shadow Offset X: {_shadowOffset.X:F1} px")));
+            offsetXLabel.Invalidate();
+        };
+        leftStack.AddChild(offsetXSlider);
+
+        var offsetYLabel = new RichTextBlock { Font = _font, FontSize = 12f, Margin = new Thickness(0, 5, 0, 2) };
+        offsetYLabel.Inlines.Add(new Bold(new Run($"Shadow Offset Y: {_shadowOffset.Y:F1} px")));
+        leftStack.AddChild(offsetYLabel);
+
+        var offsetYSlider = new ProGPU.WinUI.Slider { Minimum = -20f, Maximum = 20f, Value = _shadowOffset.Y, Width = 250f, Margin = new Thickness(0, 0, 0, 15) };
+        offsetYSlider.ValueChanged += (s, e) =>
+        {
+            _shadowOffset.Y = offsetYSlider.Value;
+            offsetYLabel.Inlines.Clear();
+            offsetYLabel.Inlines.Add(new Bold(new Run($"Shadow Offset Y: {_shadowOffset.Y:F1} px")));
+            offsetYLabel.Invalidate();
+        };
+        leftStack.AddChild(offsetYSlider);
+
+        // Toggle Cogs Animation Button
+        var toggleAnimBtn = new Button { Width = 185f, Height = 34f, CornerRadius = 6f, Margin = new Thickness(0, 10, 0, 0) };
+        var toggleBtnText = new RichTextBlock { Font = _font, FontSize = 12f };
+        toggleBtnText.Inlines.Add(new Run(_animateGear ? "Stop Vector Rotation" : "Start Vector Rotation"));
+        toggleAnimBtn.Content = toggleBtnText;
+
+        toggleAnimBtn.Click += (s, e) =>
+        {
+            _animateGear = !_animateGear;
+            toggleBtnText.Inlines.Clear();
+            toggleBtnText.Inlines.Add(new Run(_animateGear ? "Stop Vector Rotation" : "Start Vector Rotation"));
+            toggleBtnText.Invalidate();
+        };
+        leftStack.AddChild(toggleAnimBtn);
+
+        grid.AddChild(leftStack);
+        ProGPU.WinUI.Grid.SetColumn(leftStack, 0);
+
+        // Center WebGPU texture offscreen render Canvas (Column 1)
+        _gearCanvasVisual = new GearCanvasVisual(_font!)
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch
+        };
+
+        var displayCanvas = new GpuTextureCanvas(_canvasSourceTexture!, _canvasShadowTexture!, _canvasBlurTexture!);
+        
+        var canvasContainer = new Border
+        {
+            CornerRadius = 8f,
+            Background = new SolidColorBrush(0x0C0C12FF),
+            BorderBrush = new SolidColorBrush(0x222230FF),
+            BorderThickness = new Thickness(1f),
+            Margin = new Thickness(5),
+            Child = displayCanvas
+        };
+
+        grid.AddChild(canvasContainer);
+        ProGPU.WinUI.Grid.SetColumn(canvasContainer, 1);
+
+        return grid;
+    }
+
+    private static GearCanvasVisual? _gearCanvasVisual;
 
     private static void SetupInput()
     {
-        if (_window == null) return;
+        if (_window == null || _rootGrid == null) return;
 
         var input = _window.CreateInput();
-        foreach (var mouse in input.Mice)
+        
+        // Initialize WinUI Input Routing System with root grid scene node
+        InputSystem.Initialize(input, _rootGrid);
+
+        // Bubble-up PointerMoved coordinate tracking in root grid status
+        _rootGrid.PointerMoved += (sender, args) =>
         {
-            mouse.Scroll += (m, wheel) =>
-            {
-                if (_virtualScrollPanel != null)
-                {
-                    // Dynamic viewport scroll
-                    _virtualScrollPanel.ScrollOffset -= wheel.Y * 20f;
-                    _rootGrid?.Invalidate();
-                }
-            };
-
-            bool isMouseDown = false;
-            mouse.MouseDown += (m, button) =>
-            {
-                if (button == MouseButton.Left)
-                {
-                    isMouseDown = true;
-                    var pos = mouse.Position;
-                    Vector2 mousePos = new Vector2(pos.X, pos.Y);
-                    
-                    // Hit test Sidebar controls (starts at X=10, Y=80)
-                    if (mousePos.X >= 10 && mousePos.X <= 310 && mousePos.Y >= 80)
-                    {
-                        foreach (var slider in _sliders)
-                        {
-                            Vector2 localPos = mousePos - slider.Offset;
-                            if (slider.HandleMouseDown(localPos))
-                            {
-                                _rootGrid?.Invalidate();
-                                break;
-                            }
-                        }
-
-                        if (_animToggle != null)
-                        {
-                            Vector2 localPos = mousePos - _animToggle.Offset;
-                            if (_animToggle.HandleMouseDown(localPos))
-                            {
-                                _rootGrid?.Invalidate();
-                            }
-                        }
-                    }
-                }
-            };
-
-            mouse.MouseUp += (m, button) =>
-            {
-                if (button == MouseButton.Left)
-                {
-                    isMouseDown = false;
-                }
-            };
-
-            mouse.MouseMove += (m, pos) =>
-            {
-                if (isMouseDown)
-                {
-                    Vector2 mousePos = new Vector2(pos.X, pos.Y);
-                    if (mousePos.X >= 10 && mousePos.X <= 310 && mousePos.Y >= 80)
-                    {
-                        foreach (var slider in _sliders)
-                        {
-                            Vector2 localPos = mousePos - slider.Offset;
-                            if (slider.HandleMouseDown(localPos))
-                            {
-                                _rootGrid?.Invalidate();
-                                break;
-                            }
-                        }
-                    }
-                }
-            };
-        }
+            _mousePos = args.Position;
+        };
     }
 
     private static void OnWindowUpdate(double delta)
@@ -498,6 +923,19 @@ public static unsafe class Program
             if (_gearRotation > Math.PI * 2) _gearRotation -= (float)(Math.PI * 2);
             _rootGrid?.Invalidate();
         }
+
+        // Keep active focused control tracking updated
+        if (InputSystem.FocusedElement != null)
+        {
+            var typeName = InputSystem.FocusedElement.GetType().Name;
+            _activeFocusedName = string.IsNullOrEmpty(InputSystem.FocusedElement.Name) 
+                ? typeName 
+                : $"{typeName} ({InputSystem.FocusedElement.Name})";
+        }
+        else
+        {
+            _activeFocusedName = "None";
+        }
     }
 
     private static void OnWindowRender(double delta)
@@ -507,16 +945,17 @@ public static unsafe class Program
 
         _frameStopwatch.Restart();
 
-        // 1. Perform Measure and Arrange negotiate sizing layouts
+        // 1. Size negotiation: Measure & Arrange entire WinUI graph
         _rootGrid.Measure(new Vector2(_window.Size.X, _window.Size.Y));
         _rootGrid.Arrange(new Rect(0, 0, _window.Size.X, _window.Size.Y));
 
-        // Update animated cogs matrix transformations
-        if (_gearCanvasVisual != null)
+        // Update animated cogs if currently in Compute FX Showcase View
+        if (_activeCategory == "Compute FX" && _gearCanvasVisual != null)
         {
+            _gearCanvasVisual.Measure(new Vector2(_window.Size.X - 300f, _window.Size.Y - 140f));
+            _gearCanvasVisual.Arrange(new Rect(0, 0, _window.Size.X - 300f, _window.Size.Y - 140f));
             _gearCanvasVisual.UpdateRotation(_gearRotation);
 
-            // 2. Offscreen Canvas render (Gears subtree)
             uint canvasW = (uint)Math.Max(1f, _gearCanvasVisual.Size.X);
             uint canvasH = (uint)Math.Max(1f, _gearCanvasVisual.Size.Y);
 
@@ -527,13 +966,11 @@ public static unsafe class Program
                 _canvasBlurTexture.Resize(canvasW, canvasH);
                 _canvasShadowTexture.Resize(canvasW, canvasH);
 
-                // Render vector gears directly to our Rgba8Unorm canvas source texture
                 _offscreenCompositor.RenderScene(_gearCanvasVisual, canvasW, canvasH, _canvasSourceTexture.ViewPtr);
 
-                // 3. Execute real-time dynamic WGSL compute shaders
                 if (_shadowRadius > 0)
                 {
-                    var shadowColor = new Vector4(0f, 0f, 0f, 0.65f); // elegant shadow alpha
+                    var shadowColor = new Vector4(0f, 0f, 0f, 0.65f);
                     _compute.ApplyDropShadow(_canvasSourceTexture, _canvasShadowTexture, _shadowOffset, shadowColor, _shadowRadius);
                 }
 
@@ -544,7 +981,7 @@ public static unsafe class Program
             }
         }
 
-        // 4. Update dynamic overlay diagnostics labels
+        // 2. Metrics & stats overlay updates
         _cpuFrameTimeMs = _frameStopwatch.Elapsed.TotalMilliseconds;
         
         _frameCount++;
@@ -558,10 +995,12 @@ public static unsafe class Program
 
         if (_statsText != null)
         {
-            _statsText.Text = $"FPS: {_currentFps:F0} | CPU: {_cpuFrameTimeMs:F2} ms | Virtual Recycled: 1,000,000 cogs";
+            _statsText.Inlines.Clear();
+            _statsText.Inlines.Add(new Run($"FPS: {_currentFps:F0} | CPU Frame: {_cpuFrameTimeMs:F2} ms | Cursor: ({_mousePos.X:F0}, {_mousePos.Y:F0}) | Focused: {_activeFocusedName}"));
+            _statsText.PerformRichLayout(1200f);
         }
 
-        // 5. Get current swapchain view and render primary dashboard layout
+        // 3. Swapchain present
         TextureView* targetView = null;
         if (_wgpuContext.Surface != null)
         {
@@ -588,7 +1027,6 @@ public static unsafe class Program
         {
             _screenCompositor.RenderScene(_rootGrid, (uint)_window.Size.X, (uint)_window.Size.Y, targetView);
             
-            // Present screen surface
             _wgpuContext.Wgpu.SurfacePresent(_wgpuContext.Surface);
             _wgpuContext.Wgpu.TextureViewRelease(targetView);
         }
@@ -614,7 +1052,6 @@ public static unsafe class Program
         _wgpuContext?.Dispose();
     }
 
-    // Mathematical Hollow Gear geometry path builder
     public static PathGeometry CreateGearPath(Vector2 center, float innerRadius, float outerRadius, int teethCount, float toothDepth)
     {
         var path = new PathGeometry();
@@ -652,7 +1089,6 @@ public static unsafe class Program
         
         path.Figures.Add(fig);
 
-        // Circular cutout center hole
         var cutoutFig = new PathFigure { IsClosed = true, IsFilled = true };
         float cutRadius = innerRadius * 0.6f;
         int circleSegments = 32;
@@ -676,244 +1112,7 @@ public static unsafe class Program
 // Custom Sibling Layout & Rendering Visual Nodes
 // ==========================================
 
-public class BorderPanel : LayoutNode
-{
-    public Brush? Background { get; set; }
-    public Pen? Border { get; set; }
-    public float CornerRadius { get; set; }
-
-    public override void OnRender(DrawingContext context)
-    {
-        if (Background != null || Border != null)
-        {
-            if (CornerRadius <= 0f)
-            {
-                context.DrawRectangle(Background, Border, new Rect(Vector2.Zero, Size));
-            }
-            else
-            {
-                var roundedPath = CreateRoundedRectPath(new Rect(Vector2.Zero, Size), CornerRadius);
-                context.DrawPath(Background, Border, roundedPath);
-            }
-        }
-        base.OnRender(context);
-    }
-
-    private static PathGeometry CreateRoundedRectPath(Rect rect, float r)
-    {
-        var geo = new PathGeometry();
-        var fig = new PathFigure(new Vector2(rect.X + r, rect.Y), isClosed: true);
-        
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + rect.Width - r, rect.Y)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X + rect.Width, rect.Y), new Vector2(rect.X + rect.Width, rect.Y + r)));
-        
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + rect.Width, rect.Y + rect.Height - r)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X + rect.Width, rect.Y + rect.Height), new Vector2(rect.X + rect.Width - r, rect.Y + rect.Height)));
-        
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + r, rect.Y + rect.Height)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X, rect.Y + rect.Height), new Vector2(rect.X, rect.Y + rect.Height - r)));
-        
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X, rect.Y + r)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X, rect.Y), new Vector2(rect.X + r, rect.Y)));
-        
-        geo.Figures.Add(fig);
-        return geo;
-    }
-}
-
-public class SliderControl : LayoutNode
-{
-    private float _value;
-    public float Min { get; set; }
-    public float Max { get; set; }
-    public string Label { get; set; }
-    public string Unit { get; set; }
-
-    public float Value
-    {
-        get => _value;
-        set
-        {
-            float clamped = Math.Clamp(value, Min, Max);
-            if (_value != clamped)
-            {
-                _value = clamped;
-                UpdateLabel();
-                Invalidate();
-                ValueChanged?.Invoke(this, _value);
-            }
-        }
-    }
-
-    public event EventHandler<float>? ValueChanged;
-
-    private readonly TextVisual _labelText;
-    private readonly BorderPanel _track;
-    private readonly BorderPanel _thumb;
-
-    public SliderControl(string label, float min, float max, float initialValue, string unit = "")
-    {
-        Label = label;
-        Min = min;
-        Max = max;
-        Unit = unit;
-        HeightConstraint = 42f;
-        Margin = new Thickness(0, 4, 0, 4);
-
-        _labelText = new TextVisual
-        {
-            FontSize = 11f,
-            Brush = new SolidColorBrush(0x888899FF),
-            Size = new Vector2(280f, 15f),
-            Font = Program.GetFont()
-        };
-
-        _track = new BorderPanel
-        {
-            Background = new SolidColorBrush(0x242430FF),
-            CornerRadius = 3f,
-            HeightConstraint = 6f,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 3, 0, 3)
-        };
-
-        _thumb = new BorderPanel
-        {
-            Background = new SolidColorBrush(0x00E5FFFF),
-            CornerRadius = 6f,
-            WidthConstraint = 12f,
-            HeightConstraint = 12f,
-            VerticalAlignment = VerticalAlignment.Center
-        };
-
-        var mainStack = new StackPanel { Orientation = Orientation.Vertical };
-        mainStack.AddChild(_labelText);
-        
-        var trackContainer = new GridPanel();
-        trackContainer.AddChild(_track);
-        trackContainer.AddChild(_thumb);
-        mainStack.AddChild(trackContainer);
-        
-        AddChild(mainStack);
-
-        Value = initialValue;
-        UpdateLabel();
-    }
-
-    public void UpdateLabel()
-    {
-        _labelText.Text = $"{Label}: {Value:F1} {Unit}";
-        _labelText.Font = Program.GetFont();
-    }
-
-    protected override void ArrangeOverride(Rect arrangeRect)
-    {
-        base.ArrangeOverride(arrangeRect);
-
-        float percent = (Value - Min) / (Max - Min);
-        float trackWidth = Size.X;
-        float thumbWidth = 12f;
-        float thumbX = percent * (trackWidth - thumbWidth);
-
-        _thumb.Offset = new Vector2(thumbX, _thumb.Offset.Y);
-    }
-
-    public bool HandleMouseDown(Vector2 localPos)
-    {
-        if (localPos.Y >= 15f && localPos.Y <= 42f)
-        {
-            float percent = Math.Clamp(localPos.X / Size.X, 0f, 1f);
-            Value = Min + percent * (Max - Min);
-            return true;
-        }
-        return false;
-    }
-}
-
-public class ToggleButton : LayoutNode
-{
-    private bool _checked;
-    public string Label { get; set; }
-
-    public bool Checked
-    {
-        get => _checked;
-        set
-        {
-            if (_checked != value)
-            {
-                _checked = value;
-                UpdateState();
-                Invalidate();
-                CheckedChanged?.Invoke(this, _checked);
-            }
-        }
-    }
-
-    public event EventHandler<bool>? CheckedChanged;
-
-    private readonly BorderPanel _card;
-    private readonly TextVisual _text;
-
-    public ToggleButton(string label, bool initialValue)
-    {
-        Label = label;
-        _checked = initialValue;
-        HeightConstraint = 32f;
-        Margin = new Thickness(0, 6, 0, 6);
-
-        _card = new BorderPanel
-        {
-            CornerRadius = 5f,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Stretch
-        };
-
-        _text = new TextVisual
-        {
-            FontSize = 11f,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-            Font = Program.GetFont()
-        };
-
-        _card.AddChild(_text);
-        AddChild(_card);
-
-        UpdateState();
-    }
-
-    private void UpdateState()
-    {
-        _text.Font = Program.GetFont();
-        if (_checked)
-        {
-            _card.Background = new SolidColorBrush(0x8B00FFFF); // bright purple
-            _card.Border = new Pen(new SolidColorBrush(0xD080FFFF), 1f);
-            _text.Text = $"{Label}: ON";
-            _text.Brush = new SolidColorBrush(0xFFFFFFFF);
-        }
-        else
-        {
-            _card.Background = new SolidColorBrush(0x1F1F28FF);
-            _card.Border = new Pen(new SolidColorBrush(0x383848FF), 1f);
-            _text.Text = $"{Label}: OFF";
-            _text.Brush = new SolidColorBrush(0x777788FF);
-        }
-    }
-
-    public bool HandleMouseDown(Vector2 localPos)
-    {
-        if (localPos.X >= 0 && localPos.X <= Size.X && localPos.Y >= 0 && localPos.Y <= Size.Y)
-        {
-            Checked = !Checked;
-            return true;
-        }
-        return false;
-    }
-}
-
-public class GearCanvasVisual : LayoutNode
+public class GearCanvasVisual : FrameworkElement
 {
     private readonly DrawingVisual _gear1;
     private readonly DrawingVisual _gear2;
@@ -960,7 +1159,7 @@ public class GearCanvasVisual : LayoutNode
     }
 }
 
-public class GpuTextureCanvas : LayoutNode
+public class GpuTextureCanvas : FrameworkElement
 {
     private readonly GpuTexture _source;
     private readonly GpuTexture _shadow;
