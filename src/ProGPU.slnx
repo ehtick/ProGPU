@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="ProGPU.Samples/ProGPU.Samples.csproj" />
+  <Project Path="ProGPU/ProGPU.csproj" />
+</Solution>
