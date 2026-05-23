@@ -50,19 +50,19 @@ public unsafe class GlyphAtlas : IDisposable
         _context = context;
         _atlasSize = atlasSize;
         
-        // Use R8Unorm for dynamic alpha mapping (highly memory efficient)
+        // Use Rgba8Unorm for dynamic alpha mapping (highly memory efficient and WebGPU Storage standard-compliant)
         // With TextureUsage.StorageBinding to allow Compute Shader writing directly to it
         _atlasTexture = new GpuTexture(
             _context, 
             _atlasSize, 
             _atlasSize, 
-            TextureFormat.R8Unorm, 
+            TextureFormat.Rgba8Unorm, 
             TextureUsage.TextureBinding | TextureUsage.CopyDst | TextureUsage.StorageBinding, 
             "Dynamic Glyph Atlas"
         );
 
         // Fill with zero initially to clear the atlas texture
-        byte[] clearData = new byte[_atlasSize * _atlasSize];
+        byte[] clearData = new byte[_atlasSize * _atlasSize * 4];
         _atlasTexture.WritePixels(new ReadOnlySpan<byte>(clearData));
 
         // Compile and create the compute pipeline
@@ -205,7 +205,7 @@ public unsafe class GlyphAtlas : IDisposable
                                 _currentY = 2;
                                 _currentRowHeight = 0;
 
-                                byte[] clearData = new byte[_atlasSize * _atlasSize];
+                                byte[] clearData = new byte[_atlasSize * _atlasSize * 4];
                                 _atlasTexture.WritePixels(new ReadOnlySpan<byte>(clearData));
                             }
 

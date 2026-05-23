@@ -87,12 +87,12 @@ public unsafe class PathAtlas : IDisposable
             _context,
             _atlasSize,
             _atlasSize,
-            TextureFormat.R8Unorm,
+            TextureFormat.Rgba8Unorm,
             TextureUsage.TextureBinding | TextureUsage.CopyDst | TextureUsage.StorageBinding,
             "Dynamic Path Atlas"
         );
 
-        byte[] clearData = new byte[_atlasSize * _atlasSize];
+        byte[] clearData = new byte[_atlasSize * _atlasSize * 4];
         _atlasTexture.WritePixels(new ReadOnlySpan<byte>(clearData));
 
         _pipelineCache = new RenderPipelineCache(_context);
@@ -258,7 +258,7 @@ public unsafe class PathAtlas : IDisposable
             _currentY = 2;
             _currentRowHeight = 0;
 
-            byte[] clearData = new byte[_atlasSize * _atlasSize];
+            byte[] clearData = new byte[_atlasSize * _atlasSize * 4];
             _atlasTexture.WritePixels(new ReadOnlySpan<byte>(clearData));
         }
 

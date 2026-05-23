@@ -369,7 +369,7 @@ struct Segment {
 @group(0) @binding(0) var<uniform> uniforms: GlyphUniforms;
 @group(0) @binding(1) var<storage, read> glyphRecords: array<GlyphRecord>;
 @group(0) @binding(2) var<storage, read> segments: array<Segment>;
-@group(0) @binding(3) var atlasTexture: texture_storage_2d<r8unorm, write>;
+@group(0) @binding(3) var atlasTexture: texture_storage_2d<rgba8unorm, write>;
 
 fn solve_quadratic(a: f32, b: f32, c: f32, roots: ptr<function, array<f32, 2>>, root_count: ptr<function, u32>) {
     if (abs(a) < 0.00001) {
@@ -545,7 +545,7 @@ struct Segment {
 @group(0) @binding(0) var<uniform> uniforms: PathUniforms;
 @group(0) @binding(1) var<storage, read> pathRecords: array<PathRecord>;
 @group(0) @binding(2) var<storage, read> segments: array<Segment>;
-@group(0) @binding(3) var atlasTexture: texture_storage_2d<r8unorm, write>;
+@group(0) @binding(3) var atlasTexture: texture_storage_2d<rgba8unorm, write>;
 
 fn solve_quadratic(a: f32, b: f32, c: f32, roots: ptr<function, array<f32, 2>>, root_count: ptr<function, u32>) {
     if (abs(a) < 0.00001) {
