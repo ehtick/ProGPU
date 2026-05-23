@@ -381,6 +381,38 @@ public class NavigationViewItem : Control
 
                     drewCustomIcon = true;
                 }
+                else if (Icon == "🏁" || Text == "MotionMark Showcase")
+                {
+                    // Premium custom checkered flag vector icon
+                    
+                    // 1. Draw flagpole
+                    var flagpole = PathGeometry.Parse(Invariant($"M {startX + 2} {startY + 1} H {startX + 3.5f} V {startY + 15} H {startX + 2} Z"));
+                    context.DrawPath(translucentHeavyBrush, null, flagpole);
+
+                    // Flagpole knob
+                    var knob = PathGeometry.Parse(Invariant($"M {startX + 1.5f} {startY + 1} Q {startX + 1.5f} {startY + 0} {startX + 2.75f} {startY + 0} Q {startX + 4} {startY + 0} {startX + 4} {startY + 1} Q {startX + 4} {startY + 2} {startX + 2.75f} {startY + 2} Q {startX + 1.5f} {startY + 2} {startX + 1.5f} {startY + 1} Z"));
+                    context.DrawPath(textPrimary, null, knob);
+
+                    // 2. Draw waving flag background (filled with translucentBrush for modern glass feel)
+                    var flagBg = PathGeometry.Parse(Invariant($"M {startX + 4} {startY + 2} Q {startX + 7.6f} {startY + 3.8f} {startX + 11.3f} {startY + 1.8f} Q {startX + 13.1f} {startY + 1.0f} {startX + 15} {startY + 2} V {startY + 9} Q {startX + 13.1f} {startY + 8.0f} {startX + 11.3f} {startY + 8.8f} Q {startX + 7.6f} {startY + 10.8f} {startX + 4} {startY + 9} Z"));
+                    context.DrawPath(translucentBrush, primaryPen, flagBg);
+
+                    // 3. Draw checkered filled cells (filled with textPrimary)
+                    // Row 1, Col 1
+                    var cell1 = PathGeometry.Parse(Invariant($"M {startX + 4} {startY + 2} Q {startX + 5.8f} {startY + 2.9f} {startX + 7.6f} {startY + 2.8f} V {startY + 6.1f} Q {startX + 5.8f} {startY + 6.2f} {startX + 4} {startY + 5.5f} Z"));
+                    context.DrawPath(textPrimary, null, cell1);
+
+                    // Row 1, Col 3
+                    var cell3 = PathGeometry.Parse(Invariant($"M {startX + 11.3f} {startY + 1.8f} Q {startX + 13.1f} {startY + 1.0f} {startX + 15} {startY + 2} V {startY + 5.5f} Q {startX + 13.1f} {startY + 4.5f} {startX + 11.3f} {startY + 5.0f} Z"));
+                    context.DrawPath(textPrimary, null, cell3);
+
+                    // Row 2, Col 2
+                    var cell5 = PathGeometry.Parse(Invariant($"M {startX + 7.6f} {startY + 6.1f} Q {startX + 9.5f} {startY + 6.1f} {startX + 11.3f} {startY + 5.0f} V {startY + 8.4f} Q {startX + 9.5f} {startY + 9.5f} {startX + 7.6f} {startY + 9.3f} Z"));
+                    context.DrawPath(textPrimary, null, cell5);
+
+                    drewCustomIcon = true;
+                }
+
 
                 if (!drewCustomIcon)
                 {

@@ -222,22 +222,35 @@ public static unsafe class Program
             Margin = new Thickness(0, 0, 10, 0),
             VerticalAlignment = VerticalAlignment.Center
         };
-        var themeBtnText = new RichTextBlock { Font = _font, FontSize = 11f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-        var themeRun = new Run("🌙 Dark");
+        var themeStack = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var themeIcon = new ThemeToggleIconControl
+        {
+            Margin = new Thickness(0, 0, 6, 0),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var themeBtnText = new RichTextBlock { Font = _font, FontSize = 11f, VerticalAlignment = VerticalAlignment.Center };
+        var themeRun = new Run("Dark");
         themeBtnText.Inlines.Add(new Bold(themeRun));
-        themeBtn.Content = themeBtnText;
+        themeStack.AddChild(themeIcon);
+        themeStack.AddChild(themeBtnText);
+        themeBtn.Content = themeStack;
 
         themeBtn.Click += (s, e) =>
         {
             if (ThemeManager.CurrentTheme == ElementTheme.Dark)
             {
                 ThemeManager.CurrentTheme = ElementTheme.Light;
-                themeRun.Text = "☀️ Light";
+                themeRun.Text = "Light";
             }
             else
             {
                 ThemeManager.CurrentTheme = ElementTheme.Dark;
-                themeRun.Text = "🌙 Dark";
+                themeRun.Text = "Dark";
             }
         };
         headerGrid.AddChild(themeBtn);
