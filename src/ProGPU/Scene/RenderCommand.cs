@@ -63,6 +63,8 @@ public struct RenderCommand
     public TtfFont? Font;
     public float FontSize;
     public Vector2 Position;
+    public bool IsBold;
+    public bool IsItalic;
 
     // Texture properties
     public GpuTexture? Texture;
@@ -94,7 +96,7 @@ public class DrawingContext
         });
     }
 
-    public void DrawText(string text, TtfFont font, float fontSize, Brush brush, Vector2 position)
+    public void DrawText(string text, TtfFont font, float fontSize, Brush brush, Vector2 position, bool isBold = false, bool isItalic = false)
     {
         Commands.Add(new RenderCommand
         {
@@ -103,7 +105,9 @@ public class DrawingContext
             Font = font,
             FontSize = fontSize,
             Brush = brush,
-            Position = position
+            Position = position,
+            IsBold = isBold,
+            IsItalic = isItalic
         });
     }
 

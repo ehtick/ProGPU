@@ -9,7 +9,12 @@ using ProGPU.Text;
 
 namespace ProGPU.WinUI;
 
-public abstract class TextElement
+public abstract class Block
+{
+    public float MarginBottom { get; set; } = 12f;
+}
+
+public abstract class TextElement : Block
 {
     public Brush? Foreground { get; set; }
     public float? FontSize { get; set; }
@@ -82,6 +87,64 @@ public class InlineUIContainer : Inline
     }
 }
 
+public class ListBlock : Inline
+{
+    public List<ListItem> Items { get; } = new();
+    public bool IsOrdered { get; set; } // false: bullet, true: numbered
+    public float Indentation { get; set; } = 24f;
+}
+
+public class ListItem : Span
+{
+    public ListItem() { }
+    public ListItem(params Inline[] inlines) : base(inlines) { }
+}
+
+public class Table : Inline
+{
+    public List<TableRow> Rows { get; } = new();
+    public float CellPadding { get; set; } = 8f;
+    public float BorderThickness { get; set; } = 1f;
+    public Brush? BorderBrush { get; set; }
+    public List<float>? ColumnWidths { get; set; }
+
+    public Table() { }
+    public Table(params TableRow[] rows)
+    {
+        Rows.AddRange(rows);
+    }
+}
+
+public class TableRow
+{
+    public List<TableCell> Cells { get; } = new();
+
+    public TableRow() { }
+    public TableRow(params TableCell[] cells)
+    {
+        Cells.AddRange(cells);
+    }
+}
+
+public class TableCell : Span
+{
+    public Brush? Background { get; set; }
+
+    public TableCell() { }
+    public TableCell(params Inline[] inlines) : base(inlines) { }
+    public TableCell(string text) : base(new Run(text)) { }
+}
+
+public class TableVisualDecoration
+{
+    public Rect Rect;
+    public Brush? Background;
+    public float BorderThickness;
+    public Brush? BorderBrush;
+    public bool IsTop;
+    public bool IsLeft;
+}
+
 public struct RichChar
 {
     public char Character;
@@ -92,6 +155,8 @@ public struct RichChar
     public bool IsUnderline;
     public Inline? SourceInline;
     public FrameworkElement? EmbeddedElement;
+    public float LeftIndent;    // Bullet list indents
+    public float BulletOffset;  // Bullet negative gutter shift
 }
 
 public class PositionedRichChar
@@ -106,6 +171,7 @@ public class RichTextBlock : FrameworkElement
     private float _fontSize = 14f;
     private TextAlignment _textAlignment = TextAlignment.Left;
     private readonly List<PositionedRichChar> _positionedChars = new();
+    private readonly List<TableVisualDecoration> _tableDecorations = new();
 
     public List<Inline> Inlines { get; } = new();
 
@@ -230,6 +296,7 @@ public class RichTextBlock : FrameworkElement
     public void PerformRichLayout(float maxWidth)
     {
         _positionedChars.Clear();
+        _tableDecorations.Clear();
         if (Font == null) return;
 
         var charList = new List<RichChar>();
@@ -240,7 +307,7 @@ public class RichTextBlock : FrameworkElement
 
         foreach (var inline in Inlines)
         {
-            AccumulateInlines(inline, charList, defaultFg, FontSize, false, false, false, null);
+            AccumulateInlines(inline, charList, defaultFg, FontSize, false, false, false, null, 0f);
         }
 
         if (charList.Count == 0) return;
@@ -258,6 +325,76 @@ public class RichTextBlock : FrameworkElement
         float lastWordStartCursorX = Padding.Left;
 
         float availableWidth = maxWidth - Padding.Horizontal;
+        bool hasResetLineIndent = false;
+
+        void CommitLines(List<List<PositionedRichChar>> linesToCommit, float availW)
+        {
+            for (int l = 0; l < linesToCommit.Count; l++)
+            {
+                var line = linesToCommit[l];
+                if (line.Count == 0) continue;
+
+                float lineW = 0f;
+                var lastPc = line[^1];
+                float lastAdv = 0f;
+                if (lastPc.Info.EmbeddedElement != null)
+                {
+                    lastAdv = lastPc.Info.EmbeddedElement.DesiredSize.X + 4f;
+                }
+                else
+                {
+                    lastAdv = Font.GetAdvanceWidth(Font.GetGlyphIndex(lastPc.Info.Character), lastPc.Info.FontSize);
+                }
+                lineW = lastPc.Position.X + lastAdv - Padding.Left;
+
+                float shiftX = 0f;
+                if (TextAlignment == TextAlignment.Right)
+                {
+                    shiftX = availW - lineW;
+                }
+                else if (TextAlignment == TextAlignment.Center)
+                {
+                    shiftX = (availW - lineW) / 2f;
+                }
+                else if (TextAlignment == TextAlignment.Justify)
+                {
+                    bool isLastLine = (l == linesToCommit.Count - 1);
+                    int spaceCount = 0;
+                    for (int k = 0; k < line.Count - 1; k++)
+                    {
+                        if (line[k].Info.Character == ' ' || line[k].Info.Character == '\t')
+                            spaceCount++;
+                    }
+
+                    if (!isLastLine && spaceCount > 0 && lineW < availW)
+                    {
+                        float extraW = availW - lineW;
+                        float spaceAddition = extraW / spaceCount;
+                        float runningAddition = 0f;
+                        for (int k = 0; k < line.Count; k++)
+                        {
+                            var pc = line[k];
+                            pc.Position.X += runningAddition;
+                            if (pc.Info.Character == ' ' || pc.Info.Character == '\t')
+                            {
+                                runningAddition += spaceAddition;
+                            }
+                        }
+                    }
+                }
+
+                if (shiftX > 0f && !float.IsInfinity(shiftX))
+                {
+                    foreach (var pc in line)
+                    {
+                        pc.Position.X += shiftX;
+                    }
+                }
+
+                _positionedChars.AddRange(line);
+            }
+            linesToCommit.Clear();
+        }
 
         for (int i = 0; i < charList.Count; i++)
         {
@@ -271,6 +408,22 @@ public class RichTextBlock : FrameworkElement
                 cursorX = Padding.Left;
                 cursorY += lineSpacing;
                 lastWordStart = -1;
+                hasResetLineIndent = false;
+                continue;
+            }
+
+            if (c == '\uFFFD' && rc.SourceInline is Table table)
+            {
+                if (currentLine.Count > 0)
+                {
+                    lines.Add(currentLine);
+                    currentLine = new List<PositionedRichChar>();
+                }
+                CommitLines(lines, availableWidth);
+                cursorX = Padding.Left;
+                LayoutTable(table, ref cursorY, availableWidth, rc.LeftIndent);
+                lastWordStart = -1;
+                hasResetLineIndent = false;
                 continue;
             }
 
@@ -304,7 +457,7 @@ public class RichTextBlock : FrameworkElement
             }
 
             // Word wrap
-            if (cursorX + advance > maxWidth - Padding.Right && cursorX > Padding.Left)
+            if (cursorX + advance > maxWidth - Padding.Right && cursorX > Padding.Left + rc.LeftIndent)
             {
                 if (lastWordStart > 0)
                 {
@@ -316,14 +469,16 @@ public class RichTextBlock : FrameworkElement
                     lines.Add(currentLine);
                     currentLine = new List<PositionedRichChar>();
 
-                    cursorX = Padding.Left;
+                    float wrapStart = Padding.Left + (wrapped.Count > 0 ? wrapped[0].Info.LeftIndent : rc.LeftIndent);
+                    cursorX = wrapStart;
                     cursorY += lineSpacing;
+                    hasResetLineIndent = true;
 
                     foreach (var wc in wrapped)
                     {
                         var remapped = wc;
                         float shift = wc.Position.X - lastWordStartCursorX;
-                        remapped.Position = new Vector2(Padding.Left + shift, cursorY);
+                        remapped.Position = new Vector2(wrapStart + shift, cursorY);
                         currentLine.Add(remapped);
                         
                         float wAdv = 0f;
@@ -336,15 +491,25 @@ public class RichTextBlock : FrameworkElement
                             ushort wIdx = Font.GetGlyphIndex(remapped.Info.Character);
                             wAdv = Font.GetAdvanceWidth(wIdx, remapped.Info.FontSize);
                         }
-                        cursorX = Padding.Left + shift + wAdv;
+                        cursorX = wrapStart + shift + wAdv;
                     }
 
                     // Add current character
-                    var pos = new Vector2(cursorX, cursorY);
+                    if (rc.BulletOffset == 0 && !hasResetLineIndent)
+                    {
+                        cursorX = Padding.Left + rc.LeftIndent;
+                        hasResetLineIndent = true;
+                    }
+                    float finalXVal = cursorX;
+                    if (rc.BulletOffset > 0)
+                    {
+                        finalXVal = Padding.Left + rc.LeftIndent - rc.BulletOffset + (cursorX - Padding.Left);
+                    }
+                    var pos = new Vector2(finalXVal, cursorY);
                     currentLine.Add(new PositionedRichChar { Info = rc, Position = pos });
                     cursorX += advance;
                     lastWordStart = 0;
-                    lastWordStartCursorX = Padding.Left;
+                    lastWordStartCursorX = Padding.Left + rc.LeftIndent;
                     continue;
                 }
                 else
@@ -352,12 +517,24 @@ public class RichTextBlock : FrameworkElement
                     // hard wrap
                     lines.Add(currentLine);
                     currentLine = new List<PositionedRichChar>();
-                    cursorX = Padding.Left;
+                    float wrapStart = Padding.Left + rc.LeftIndent;
+                    cursorX = wrapStart;
                     cursorY += lineSpacing;
+                    hasResetLineIndent = true;
                 }
             }
 
-            var charPos = new Vector2(cursorX, cursorY);
+            if (rc.BulletOffset == 0 && !hasResetLineIndent)
+            {
+                cursorX = Padding.Left + rc.LeftIndent;
+                hasResetLineIndent = true;
+            }
+            float finalX = cursorX;
+            if (rc.BulletOffset > 0)
+            {
+                finalX = Padding.Left + rc.LeftIndent - rc.BulletOffset + (cursorX - Padding.Left);
+            }
+            var charPos = new Vector2(finalX, cursorY);
             currentLine.Add(new PositionedRichChar { Info = rc, Position = charPos });
             cursorX += advance;
         }
@@ -367,71 +544,7 @@ public class RichTextBlock : FrameworkElement
             lines.Add(currentLine);
         }
 
-        // Apply horizontal alignments inside this block's lines
-        for (int l = 0; l < lines.Count; l++)
-        {
-            var line = lines[l];
-            if (line.Count == 0) continue;
-
-            float lineW = 0f;
-            var lastPc = line[^1];
-            float lastAdv = 0f;
-            if (lastPc.Info.EmbeddedElement != null)
-            {
-                lastAdv = lastPc.Info.EmbeddedElement.DesiredSize.X + 4f;
-            }
-            else
-            {
-                lastAdv = Font.GetAdvanceWidth(Font.GetGlyphIndex(lastPc.Info.Character), lastPc.Info.FontSize);
-            }
-            lineW = lastPc.Position.X + lastAdv - Padding.Left;
-
-            float shiftX = 0f;
-            if (TextAlignment == TextAlignment.Right)
-            {
-                shiftX = availableWidth - lineW;
-            }
-            else if (TextAlignment == TextAlignment.Center)
-            {
-                shiftX = (availableWidth - lineW) / 2f;
-            }
-            else if (TextAlignment == TextAlignment.Justify)
-            {
-                bool isLastLine = (l == lines.Count - 1);
-                int spaceCount = 0;
-                for (int k = 0; k < line.Count - 1; k++)
-                {
-                    if (line[k].Info.Character == ' ' || line[k].Info.Character == '\t')
-                        spaceCount++;
-                }
-
-                if (!isLastLine && spaceCount > 0 && lineW < availableWidth)
-                {
-                    float extraW = availableWidth - lineW;
-                    float spaceAddition = extraW / spaceCount;
-                    float runningAddition = 0f;
-                    for (int k = 0; k < line.Count; k++)
-                    {
-                        var pc = line[k];
-                        pc.Position.X += runningAddition;
-                        if (pc.Info.Character == ' ' || pc.Info.Character == '\t')
-                        {
-                            runningAddition += spaceAddition;
-                        }
-                    }
-                }
-            }
-
-            if (shiftX > 0f && !float.IsInfinity(shiftX))
-            {
-                foreach (var pc in line)
-                {
-                    pc.Position.X += shiftX;
-                }
-            }
-
-            _positionedChars.AddRange(line);
-        }
+        CommitLines(lines, availableWidth);
 
         // Clean up children that are no longer referenced
         foreach (var child in currentChildren)
@@ -443,7 +556,7 @@ public class RichTextBlock : FrameworkElement
         }
     }
 
-    public void AccumulateInlines(Inline inline, List<RichChar> list, Brush defaultFg, float defaultSize, bool isBold, bool isItalic, bool isUnderline, Inline? parentInline = null)
+    public void AccumulateInlines(Inline inline, List<RichChar> list, Brush defaultFg, float defaultSize, bool isBold, bool isItalic, bool isUnderline, Inline? parentInline = null, float leftIndent = 0f)
     {
         Brush fg = inline.Foreground ?? defaultFg;
         float size = inline.FontSize ?? defaultSize;
@@ -461,7 +574,8 @@ public class RichTextBlock : FrameworkElement
                     IsBold = isBold,
                     IsItalic = isItalic,
                     IsUnderline = isUnderline,
-                    SourceInline = source
+                    SourceInline = source,
+                    LeftIndent = leftIndent
                 });
             }
         }
@@ -476,8 +590,62 @@ public class RichTextBlock : FrameworkElement
                 IsItalic = isItalic,
                 IsUnderline = isUnderline,
                 SourceInline = uic,
-                EmbeddedElement = uic.Child
+                EmbeddedElement = uic.Child,
+                LeftIndent = leftIndent
             });
+        }
+        else if (inline is ListBlock listBlock)
+        {
+            int itemIdx = 1;
+            foreach (var item in listBlock.Items)
+            {
+                if (list.Count > 0 && list[^1].Character != '\n')
+                {
+                    list.Add(new RichChar { Character = '\n', Foreground = fg, FontSize = size, SourceInline = item, LeftIndent = leftIndent });
+                }
+
+                string prefix = listBlock.IsOrdered ? $"{itemIdx}. " : "• ";
+                itemIdx++;
+
+                foreach (char bulletChar in prefix)
+                {
+                    list.Add(new RichChar
+                    {
+                        Character = bulletChar,
+                        Foreground = fg,
+                        FontSize = size,
+                        IsBold = isBold,
+                        IsItalic = isItalic,
+                        IsUnderline = isUnderline,
+                        SourceInline = item,
+                        LeftIndent = leftIndent + listBlock.Indentation,
+                        BulletOffset = listBlock.Indentation - 8f
+                    });
+                }
+
+                foreach (var sub in item.Inlines)
+                {
+                    AccumulateInlines(sub, list, fg, size, isBold, isItalic, isUnderline, item, leftIndent + listBlock.Indentation);
+                }
+            }
+        }
+        else if (inline is Table table)
+        {
+            if (list.Count > 0 && list[^1].Character != '\n')
+            {
+                list.Add(new RichChar { Character = '\n', Foreground = fg, FontSize = size, SourceInline = table, LeftIndent = leftIndent });
+            }
+
+            list.Add(new RichChar
+            {
+                Character = '\uFFFD',
+                Foreground = fg,
+                FontSize = size,
+                SourceInline = table,
+                LeftIndent = leftIndent
+            });
+
+            list.Add(new RichChar { Character = '\n', Foreground = fg, FontSize = size, SourceInline = table, LeftIndent = leftIndent });
         }
         else if (inline is Span span)
         {
@@ -492,14 +660,29 @@ public class RichTextBlock : FrameworkElement
 
             foreach (var sub in span.Inlines)
             {
-                AccumulateInlines(sub, list, fg, size, nextBold, nextItalic, nextUnderline, span is Hyperlink ? span : source);
+                AccumulateInlines(sub, list, fg, size, nextBold, nextItalic, nextUnderline, span is Hyperlink ? span : source, leftIndent);
             }
         }
     }
 
     public override void OnRender(DrawingContext context)
     {
-        if (Font == null || _positionedChars.Count == 0) return;
+        if (Font == null) return;
+
+        // Draw table decorations (backgrounds and borders)
+        foreach (var dec in _tableDecorations)
+        {
+            if (dec.Background != null)
+            {
+                context.DrawRectangle(dec.Background, null, dec.Rect);
+            }
+            if (dec.BorderBrush != null && dec.BorderThickness > 0f)
+            {
+                context.DrawRectangle(null, new Pen(dec.BorderBrush, dec.BorderThickness), dec.Rect);
+            }
+        }
+
+        if (_positionedChars.Count == 0) return;
 
         // Draw translucent Segoe Blue highlighted selection boxes behind selected characters
         if (SelectionStart >= 0 && SelectionLength > 0)
@@ -576,7 +759,7 @@ public class RichTextBlock : FrameworkElement
     private void RenderRun(DrawingContext context, string text, Vector2 pos, RichChar style)
     {
         if (Font == null) return;
-        context.DrawText(text, Font, style.FontSize, style.Foreground!, pos);
+        context.DrawText(text, Font, style.FontSize, style.Foreground!, pos, style.IsBold, style.IsItalic);
         if (style.IsUnderline)
         {
             float runW = 0f;
@@ -586,6 +769,237 @@ public class RichTextBlock : FrameworkElement
                 runW += Font.GetAdvanceWidth(idx, style.FontSize);
             }
             context.DrawRectangle(style.Foreground, null, new Rect(pos.X, pos.Y + style.FontSize - 1f, runW, 1f));
+        }
+    }
+
+    private List<PositionedRichChar> LayoutCellChars(TableCell cell, float cellWidth, float cellPadding, out float cellHeight)
+    {
+        var positionedChars = new List<PositionedRichChar>();
+        cellHeight = cellPadding * 2f;
+        if (Font == null) return positionedChars;
+
+        var charList = new List<RichChar>();
+        var defaultFg = Foreground ?? new SolidColorBrush(0xFFFFFFFF);
+        foreach (var inline in cell.Inlines)
+        {
+            AccumulateInlines(inline, charList, defaultFg, FontSize, false, false, false, null, 0f);
+        }
+
+        if (charList.Count == 0) return positionedChars;
+
+        float scale = FontSize / Font.UnitsPerEm;
+        float lineSpacing = (Font.Ascender - Font.Descender + Font.LineGap) * scale;
+
+        float cursorX = cellPadding;
+        float cursorY = cellPadding;
+        float maxTextW = cellWidth - cellPadding * 2f;
+
+        var lines = new List<List<PositionedRichChar>>();
+        var currentLine = new List<PositionedRichChar>();
+        int lastWordStart = -1;
+        float lastWordStartCursorX = cellPadding;
+
+        for (int i = 0; i < charList.Count; i++)
+        {
+            var rc = charList[i];
+            char c = rc.Character;
+
+            if (c == '\n')
+            {
+                lines.Add(currentLine);
+                currentLine = new List<PositionedRichChar>();
+                cursorX = cellPadding;
+                cursorY += lineSpacing;
+                lastWordStart = -1;
+                continue;
+            }
+
+            float advance = 0f;
+            if (rc.EmbeddedElement != null)
+            {
+                rc.EmbeddedElement.Measure(new Vector2(maxTextW, float.PositiveInfinity));
+                advance = rc.EmbeddedElement.DesiredSize.X + 4f;
+            }
+            else
+            {
+                ushort gIdx = Font.GetGlyphIndex(c);
+                advance = Font.GetAdvanceWidth(gIdx, rc.FontSize);
+            }
+
+            if (c == ' ' || c == '\t')
+            {
+                lastWordStart = -1;
+            }
+            else if (lastWordStart == -1)
+            {
+                lastWordStart = currentLine.Count;
+                lastWordStartCursorX = cursorX;
+            }
+
+            if (cursorX + advance > cellWidth - cellPadding && cursorX > cellPadding)
+            {
+                if (lastWordStart > 0)
+                {
+                    int wrapCount = currentLine.Count - lastWordStart;
+                    var wrapped = currentLine.GetRange(lastWordStart, wrapCount);
+                    currentLine.RemoveRange(lastWordStart, wrapCount);
+
+                    lines.Add(currentLine);
+                    currentLine = new List<PositionedRichChar>();
+
+                    cursorX = cellPadding;
+                    cursorY += lineSpacing;
+
+                    foreach (var wc in wrapped)
+                    {
+                        var remapped = wc;
+                        float shift = wc.Position.X - lastWordStartCursorX;
+                        remapped.Position = new Vector2(cellPadding + shift, cursorY);
+                        currentLine.Add(remapped);
+
+                        float wAdv = 0f;
+                        if (remapped.Info.EmbeddedElement != null)
+                        {
+                            wAdv = remapped.Info.EmbeddedElement.DesiredSize.X + 4f;
+                        }
+                        else
+                        {
+                            ushort wIdx = Font.GetGlyphIndex(remapped.Info.Character);
+                            wAdv = Font.GetAdvanceWidth(wIdx, remapped.Info.FontSize);
+                        }
+                        cursorX = cellPadding + shift + wAdv;
+                    }
+
+                    var pos = new Vector2(cursorX, cursorY);
+                    currentLine.Add(new PositionedRichChar { Info = rc, Position = pos });
+                    cursorX += advance;
+                    lastWordStart = 0;
+                    lastWordStartCursorX = cellPadding;
+                    continue;
+                }
+                else
+                {
+                    lines.Add(currentLine);
+                    currentLine = new List<PositionedRichChar>();
+                    cursorX = cellPadding;
+                    cursorY += lineSpacing;
+                }
+            }
+
+            var charPos = new Vector2(cursorX, cursorY);
+            currentLine.Add(new PositionedRichChar { Info = rc, Position = charPos });
+            cursorX += advance;
+        }
+
+        if (currentLine.Count > 0)
+        {
+            lines.Add(currentLine);
+        }
+
+        foreach (var line in lines)
+        {
+            positionedChars.AddRange(line);
+        }
+
+        if (positionedChars.Count > 0)
+        {
+            float maxCharY = 0f;
+            foreach (var pc in positionedChars)
+            {
+                maxCharY = Math.Max(maxCharY, pc.Position.Y + pc.Info.FontSize);
+            }
+            cellHeight = maxCharY + cellPadding;
+        }
+
+        return positionedChars;
+    }
+
+    private void LayoutTable(Table table, ref float cursorY, float availableWidth, float leftIndent)
+    {
+        int numCols = 0;
+        foreach (var row in table.Rows)
+        {
+            numCols = Math.Max(numCols, row.Cells.Count);
+        }
+        if (numCols == 0) return;
+
+        float[] colWidths = new float[numCols];
+        float remainingW = availableWidth - leftIndent;
+        if (table.ColumnWidths != null && table.ColumnWidths.Count > 0)
+        {
+            for (int col = 0; col < numCols; col++)
+            {
+                if (col < table.ColumnWidths.Count)
+                {
+                    colWidths[col] = table.ColumnWidths[col];
+                }
+                else
+                {
+                    colWidths[col] = remainingW / (numCols - col);
+                }
+                remainingW -= colWidths[col];
+            }
+        }
+        else
+        {
+            float eqW = remainingW / numCols;
+            for (int col = 0; col < numCols; col++)
+            {
+                colWidths[col] = eqW;
+            }
+        }
+
+        foreach (var row in table.Rows)
+        {
+            var rowCellChars = new List<List<PositionedRichChar>>();
+            float[] cellHeights = new float[row.Cells.Count];
+
+            for (int col = 0; col < row.Cells.Count; col++)
+            {
+                var cell = row.Cells[col];
+                float colW = colWidths[col];
+                var pcList = LayoutCellChars(cell, colW, table.CellPadding, out float cHeight);
+                rowCellChars.Add(pcList);
+                cellHeights[col] = cHeight;
+            }
+
+            float rowHeight = 0f;
+            foreach (float ch in cellHeights)
+            {
+                rowHeight = Math.Max(rowHeight, ch);
+            }
+            if (rowHeight == 0f) rowHeight = FontSize + table.CellPadding * 2f;
+
+            float currentCellX = Padding.Left + leftIndent;
+            for (int col = 0; col < row.Cells.Count; col++)
+            {
+                var cell = row.Cells[col];
+                float colW = colWidths[col];
+                var cellRect = new Rect(currentCellX, cursorY, colW, rowHeight);
+
+                _tableDecorations.Add(new TableVisualDecoration
+                {
+                    Rect = cellRect,
+                    Background = cell.Background,
+                    BorderThickness = table.BorderThickness,
+                    BorderBrush = table.BorderBrush
+                });
+
+                var pcList = rowCellChars[col];
+                foreach (var pc in pcList)
+                {
+                    var remapped = new PositionedRichChar
+                    {
+                        Info = pc.Info,
+                        Position = new Vector2(pc.Position.X + currentCellX, pc.Position.Y + cursorY)
+                    };
+                    _positionedChars.Add(remapped);
+                }
+
+                currentCellX += colW;
+            }
+
+            cursorY += rowHeight;
         }
     }
 }

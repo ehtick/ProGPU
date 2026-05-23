@@ -880,81 +880,93 @@ public unsafe class Compositor : IDisposable
             var info = runGlyph.Glyph;
             if (info.Width == 0 || info.Height == 0) continue;
 
-            // Bounding box of the glyph quad.
-            // These coordinates correctly reflect the glyph padding (including any SDF spread/antialiasing padding)
-            // scaled to the target font size via the GlyphRasterizer, ensuring no clipping of the SDF spread.
-            float x0 = runGlyph.Position.X + cmd.Position.X;
-            float y0 = runGlyph.Position.Y + cmd.Position.Y;
-            float x1 = x0 + info.Width;
-            float y1 = y0 + info.Height;
+            int passCount = cmd.IsBold ? 2 : 1;
+            float boldOffset = cmd.FontSize * 0.035f;
 
-            // Transform vertices on CPU
-            var v0 = Vector2.Transform(new Vector2(x0, y0), transform);
-            var v1 = Vector2.Transform(new Vector2(x1, y0), transform);
-            var v2 = Vector2.Transform(new Vector2(x1, y1), transform);
-            var v3 = Vector2.Transform(new Vector2(x0, y1), transform);
-
-            ushort idxStart = (ushort)_textVerticesList.Count;
-
-            // Set dynamic UV texture mappings
-            var uv0 = new Vector2(info.TexCoordMin.X, info.TexCoordMin.Y);
-            var uv1 = new Vector2(info.TexCoordMax.X, info.TexCoordMin.Y);
-            var uv2 = new Vector2(info.TexCoordMax.X, info.TexCoordMax.Y);
-            var uv3 = new Vector2(info.TexCoordMin.X, info.TexCoordMax.Y);
-
-            if (_activeClipRect.HasValue)
+            for (int pass = 0; pass < passCount; pass++)
             {
-                float rx1 = v0.X;
-                float ry1 = v0.Y;
-                float rx2 = v2.X;
-                float ry2 = v2.Y;
+                float xOffset = pass * boldOffset;
+                float x0 = runGlyph.Position.X + cmd.Position.X + xOffset;
+                float y0 = runGlyph.Position.Y + cmd.Position.Y;
+                float x1 = x0 + info.Width;
+                float y1 = y0 + info.Height;
 
-                float cx1 = Math.Max(rx1, _activeClipRect.Value.X);
-                float cy1 = Math.Max(ry1, _activeClipRect.Value.Y);
-                float cx2 = Math.Min(rx2, _activeClipRect.Value.X + _activeClipRect.Value.Width);
-                float cy2 = Math.Min(ry2, _activeClipRect.Value.Y + _activeClipRect.Value.Height);
+                float skewFactor = cmd.IsItalic ? 0.22f : 0f;
+                float yBase = cmd.Position.Y + cmd.FontSize * 0.8f; // Baseline anchor
 
-                if (cx2 <= cx1 || cy2 <= cy1) continue; // Completely clipped!
+                float sx0 = x0 - (y0 - yBase) * skewFactor;
+                float sx1 = x1 - (y0 - yBase) * skewFactor;
+                float sx2 = x1 - (y1 - yBase) * skewFactor;
+                float sx3 = x0 - (y1 - yBase) * skewFactor;
 
-                float dx = rx2 - rx1;
-                float dy = ry2 - ry1;
+                // Transform vertices on CPU
+                var v0 = Vector2.Transform(new Vector2(sx0, y0), transform);
+                var v1 = Vector2.Transform(new Vector2(sx1, y0), transform);
+                var v2 = Vector2.Transform(new Vector2(sx2, y1), transform);
+                var v3 = Vector2.Transform(new Vector2(sx3, y1), transform);
 
-                uv0 = new Vector2(
-                    info.TexCoordMin.X + (cx1 - rx1) / dx * (info.TexCoordMax.X - info.TexCoordMin.X),
-                    info.TexCoordMin.Y + (cy1 - ry1) / dy * (info.TexCoordMax.Y - info.TexCoordMin.Y)
-                );
-                uv1 = new Vector2(
-                    info.TexCoordMin.X + (cx2 - rx1) / dx * (info.TexCoordMax.X - info.TexCoordMin.X),
-                    info.TexCoordMin.Y + (cy1 - ry1) / dy * (info.TexCoordMax.Y - info.TexCoordMin.Y)
-                );
-                uv2 = new Vector2(
-                    info.TexCoordMin.X + (cx2 - rx1) / dx * (info.TexCoordMax.X - info.TexCoordMin.X),
-                    info.TexCoordMin.Y + (cy2 - ry1) / dy * (info.TexCoordMax.Y - info.TexCoordMin.Y)
-                );
-                uv3 = new Vector2(
-                    info.TexCoordMin.X + (cx1 - rx1) / dx * (info.TexCoordMax.X - info.TexCoordMin.X),
-                    info.TexCoordMin.Y + (cy2 - ry1) / dy * (info.TexCoordMax.Y - info.TexCoordMin.Y)
-                );
+                ushort idxStart = (ushort)_textVerticesList.Count;
 
-                v0 = new Vector2(cx1, cy1);
-                v1 = new Vector2(cx2, cy1);
-                v2 = new Vector2(cx2, cy2);
-                v3 = new Vector2(cx1, cy2);
+                // Set dynamic UV texture mappings
+                var uv0 = new Vector2(info.TexCoordMin.X, info.TexCoordMin.Y);
+                var uv1 = new Vector2(info.TexCoordMax.X, info.TexCoordMin.Y);
+                var uv2 = new Vector2(info.TexCoordMax.X, info.TexCoordMax.Y);
+                var uv3 = new Vector2(info.TexCoordMin.X, info.TexCoordMax.Y);
+
+                if (_activeClipRect.HasValue)
+                {
+                    float rx1 = v0.X;
+                    float ry1 = v0.Y;
+                    float rx2 = v2.X;
+                    float ry2 = v2.Y;
+
+                    float cx1 = Math.Max(rx1, _activeClipRect.Value.X);
+                    float cy1 = Math.Max(ry1, _activeClipRect.Value.Y);
+                    float cx2 = Math.Min(rx2, _activeClipRect.Value.X + _activeClipRect.Value.Width);
+                    float cy2 = Math.Min(ry2, _activeClipRect.Value.Y + _activeClipRect.Value.Height);
+
+                    if (cx2 <= cx1 || cy2 <= cy1) continue; // Completely clipped!
+
+                    float dx = rx2 - rx1;
+                    float dy = ry2 - ry1;
+
+                    uv0 = new Vector2(
+                        info.TexCoordMin.X + (cx1 - rx1) / dx * (info.TexCoordMax.X - info.TexCoordMin.X),
+                        info.TexCoordMin.Y + (cy1 - ry1) / dy * (info.TexCoordMax.Y - info.TexCoordMin.Y)
+                    );
+                    uv1 = new Vector2(
+                        info.TexCoordMin.X + (cx2 - rx1) / dx * (info.TexCoordMax.X - info.TexCoordMin.X),
+                        info.TexCoordMin.Y + (cy1 - ry1) / dy * (info.TexCoordMax.Y - info.TexCoordMin.Y)
+                    );
+                    uv2 = new Vector2(
+                        info.TexCoordMin.X + (cx2 - rx1) / dx * (info.TexCoordMax.X - info.TexCoordMin.X),
+                        info.TexCoordMin.Y + (cy2 - ry1) / dy * (info.TexCoordMax.Y - info.TexCoordMin.Y)
+                    );
+                    uv3 = new Vector2(
+                        info.TexCoordMin.X + (cx1 - rx1) / dx * (info.TexCoordMax.X - info.TexCoordMin.X),
+                        info.TexCoordMin.Y + (cy2 - ry1) / dy * (info.TexCoordMax.Y - info.TexCoordMin.Y)
+                    );
+
+                    v0 = new Vector2(cx1, cy1);
+                    v1 = new Vector2(cx2, cy1);
+                    v2 = new Vector2(cx2, cy2);
+                    v3 = new Vector2(cx1, cy2);
+                }
+
+                _textVerticesList.Add(new VectorVertex(v0, color, uv0));
+                _textVerticesList.Add(new VectorVertex(v1, color, uv1));
+                _textVerticesList.Add(new VectorVertex(v2, color, uv2));
+                _textVerticesList.Add(new VectorVertex(v3, color, uv3));
+
+                // Quads Triangle Indices
+                _textIndicesList.Add(idxStart);
+                _textIndicesList.Add((ushort)(idxStart + 1));
+                _textIndicesList.Add((ushort)(idxStart + 2));
+
+                _textIndicesList.Add(idxStart);
+                _textIndicesList.Add((ushort)(idxStart + 2));
+                _textIndicesList.Add((ushort)(idxStart + 3));
             }
-
-            _textVerticesList.Add(new VectorVertex(v0, color, uv0));
-            _textVerticesList.Add(new VectorVertex(v1, color, uv1));
-            _textVerticesList.Add(new VectorVertex(v2, color, uv2));
-            _textVerticesList.Add(new VectorVertex(v3, color, uv3));
-
-            // Quads Triangle Indices
-            _textIndicesList.Add(idxStart);
-            _textIndicesList.Add((ushort)(idxStart + 1));
-            _textIndicesList.Add((ushort)(idxStart + 2));
-
-            _textIndicesList.Add(idxStart);
-            _textIndicesList.Add((ushort)(idxStart + 2));
-            _textIndicesList.Add((ushort)(idxStart + 3));
         }
     }
 

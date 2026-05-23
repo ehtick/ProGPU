@@ -872,25 +872,62 @@ public static unsafe class Program
         var flowDoc = new FlowDocument 
         { 
             Font = _font, 
-            FontSize = 12f, 
+            FontSize = 11.5f, 
             ColumnCount = 2, 
-            ColumnGap = 20f,
-            Height = 270f
+            ColumnGap = 22f,
+            Height = 330f
         };
         
-        flowDoc.Paragraphs.Add(new Paragraph(
-            new Bold(new Run("High Performance Typography\n")),
-            new Run("The new substrate text layout is powered by real-time signed distance field atlas packing, producing extremely sharp vector paths at any scale without performance hits.")
+        flowDoc.Blocks.Add(new Paragraph(
+            new Bold(new Run("GPU Substrate Typography\n")),
+            new Run("The new text layout is powered by real-time SDF atlas packing, producing extremely sharp vector paths with synthetic "),
+            new Bold(new Run("bold")),
+            new Run(", "),
+            new Italic(new Run("italic")),
+            new Run(", and "),
+            new Bold(new Italic(new Run("bold-italic obliques"))),
+            new Run(" rendering seamlessly.")
         ));
 
-        flowDoc.Paragraphs.Add(new Paragraph(
-            new Italic(new Run("Dual Column Balancing:\n")),
-            new Run("Text flows perfectly between multiple adjacent columns. FlowDocument manages margin gaps, alignment bounds, and paragraphs dynamically on WebGPU substrates.")
+        // Add a clean bullet list block
+        var bulletList = new ListBlock { IsOrdered = false, Indentation = 18f };
+        bulletList.Items.Add(new ListItem(new Run("GPU-accelerated text layout")));
+        bulletList.Items.Add(new ListItem(new Run("Flow balance across column paths")));
+        bulletList.Items.Add(new ListItem(new Run("Crisp vector borders and tables")));
+        flowDoc.Blocks.Add(bulletList);
+
+        flowDoc.Blocks.Add(new Paragraph(
+            new Italic(new Run("Flow-Balanced Columns:\n")),
+            new Run("Text flows between columns automatically, managing margins, alignment bounds, and paragraphs dynamically.")
         ));
 
-        flowDoc.Paragraphs.Add(new Paragraph(
-            new Run("This matches modern WinUI XAML document layers completely, delivering advanced visualization out of the box.")
+        // Add a beautiful structured vector table
+        var table = new Table
+        {
+            CellPadding = 5f,
+            BorderThickness = 1f,
+            BorderBrush = new SolidColorBrush(0xFFFFFF25),
+            ColumnWidths = new List<float> { 70f, 100f }
+        };
+
+        // Table Header
+        var headerRow = new TableRow(
+            new TableCell(new Bold(new Run("Metric"))) { Background = new SolidColorBrush(0xFFFFFF15) },
+            new TableCell(new Bold(new Run("Compositor Value"))) { Background = new SolidColorBrush(0xFFFFFF15) }
+        );
+        table.Rows.Add(headerRow);
+
+        // Table Rows
+        table.Rows.Add(new TableRow(
+            new TableCell(new Run("FPS")),
+            new TableCell(new Bold(new Run("60.0 fps")))
         ));
+        table.Rows.Add(new TableRow(
+            new TableCell(new Run("Shaders")),
+            new TableCell(new Italic(new Run("SDF WebGPU")))
+        ));
+
+        flowDoc.Blocks.Add(table);
 
         var docBorder = new Border
         {
