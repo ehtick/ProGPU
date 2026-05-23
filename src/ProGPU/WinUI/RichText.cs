@@ -373,6 +373,261 @@ public class RichEditBox : Control
     private bool _isDraggingSelection = false;
     private readonly HashSet<Key> _pressedKeys = new();
 
+    private class UndoState
+    {
+        public List<RichChar> Chars { get; }
+        public int CaretIndex { get; }
+        public int SelectionStart { get; }
+        public int SelectionLength { get; }
+
+        public UndoState(List<RichChar> chars, int caretIndex, int selectionStart, int selectionLength)
+        {
+            Chars = new List<RichChar>(chars);
+            CaretIndex = caretIndex;
+            SelectionStart = selectionStart;
+            SelectionLength = selectionLength;
+        }
+    }
+
+    private readonly Stack<UndoState> _undoStack = new();
+    private readonly Stack<UndoState> _redoStack = new();
+
+    private void SaveUndoState()
+    {
+        _undoStack.Push(new UndoState(GetFlatChars(), CaretIndex, SelectionStart, SelectionLength));
+        _redoStack.Clear();
+    }
+
+    public void Undo()
+    {
+        if (_undoStack.Count == 0) return;
+
+        var currentState = new UndoState(GetFlatChars(), CaretIndex, SelectionStart, SelectionLength);
+        _redoStack.Push(currentState);
+
+        var previousState = _undoStack.Pop();
+        ApplyUndoState(previousState);
+    }
+
+    public void Redo()
+    {
+        if (_redoStack.Count == 0) return;
+
+        var currentState = new UndoState(GetFlatChars(), CaretIndex, SelectionStart, SelectionLength);
+        _undoStack.Push(currentState);
+
+        var nextState = _redoStack.Pop();
+        ApplyUndoState(nextState);
+    }
+
+    private void ApplyUndoState(UndoState state)
+    {
+        Inlines.Clear();
+        Inlines.AddRange(RebuildInlinesFromChars(state.Chars));
+        _blockView.Invalidate();
+        
+        SelectionStart = state.SelectionStart;
+        SelectionLength = state.SelectionLength;
+        CaretIndex = state.CaretIndex;
+
+        Invalidate();
+    }
+
+    private string GetSelectedText()
+    {
+        if (SelectionLength <= 0) return string.Empty;
+        var chars = GetFlatChars();
+        if (chars.Count == 0) return string.Empty;
+
+        int start = Math.Clamp(SelectionStart, 0, chars.Count);
+        int length = Math.Clamp(SelectionLength, 0, chars.Count - start);
+        if (length == 0) return string.Empty;
+
+        var sb = new System.Text.StringBuilder();
+        for (int i = start; i < start + length; i++)
+        {
+            sb.Append(chars[i].Character);
+        }
+        return sb.ToString();
+    }
+
+    private void InsertText(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+
+        if (SelectionLength > 0)
+        {
+            DeleteSelection();
+        }
+
+        var chars = GetFlatChars();
+        int insertIdx = Math.Clamp(CaretIndex, 0, chars.Count);
+
+        RichChar style = new RichChar
+        {
+            Character = ' ',
+            Foreground = _blockView.Foreground ?? new SolidColorBrush(0xFFFFFFFF),
+            FontSize = FontSize,
+            IsBold = false,
+            IsItalic = false,
+            IsUnderline = false
+        };
+
+        if (chars.Count > 0)
+        {
+            int refIdx = insertIdx > 0 ? insertIdx - 1 : 0;
+            style = chars[refIdx];
+        }
+
+        var newChars = new List<RichChar>();
+        foreach (char c in text)
+        {
+            newChars.Add(new RichChar
+            {
+                Character = c,
+                Foreground = style.Foreground,
+                FontSize = style.FontSize,
+                IsBold = style.IsBold,
+                IsItalic = style.IsItalic,
+                IsUnderline = style.IsUnderline
+            });
+        }
+
+        chars.InsertRange(insertIdx, newChars);
+
+        Inlines.Clear();
+        Inlines.AddRange(RebuildInlinesFromChars(chars));
+        _blockView.Invalidate();
+        Invalidate();
+
+        CaretIndex = insertIdx + text.Length;
+    }
+
+    private static class ClipboardHelper
+    {
+        private static string _globalStaticBuffer = string.Empty;
+
+        public static void SetText(string text)
+        {
+            _globalStaticBuffer = text;
+            try
+            {
+                if (OperatingSystem.IsMacOS())
+                {
+                    RunProcess("pbcopy", "", text);
+                }
+                else if (OperatingSystem.IsWindows())
+                {
+                    RunProcess("powershell", "-NoProfile -Command \"[Console]::InputEncoding = [System.Text.Encoding]::UTF8; Set-Clipboard\"", text);
+                }
+                else if (OperatingSystem.IsLinux())
+                {
+                    if (IsCommandAvailable("xclip"))
+                    {
+                        RunProcess("xclip", "-selection clipboard", text);
+                    }
+                    else if (IsCommandAvailable("xsel"))
+                    {
+                        RunProcess("xsel", "--clipboard --input", text);
+                    }
+                }
+            }
+            catch
+            {
+                // Fallback to static buffer
+            }
+        }
+
+        public static string GetText()
+        {
+            try
+            {
+                if (OperatingSystem.IsMacOS())
+                {
+                    return ReadProcessOutput("pbpaste");
+                }
+                else if (OperatingSystem.IsWindows())
+                {
+                    return ReadProcessOutput("powershell", "-NoProfile -Command \"Get-Clipboard\"");
+                }
+                else if (OperatingSystem.IsLinux())
+                {
+                    if (IsCommandAvailable("xclip"))
+                    {
+                        return ReadProcessOutput("xclip", "-selection clipboard -o");
+                    }
+                    else if (IsCommandAvailable("xsel"))
+                    {
+                        return ReadProcessOutput("xsel", "--clipboard --output");
+                    }
+                }
+            }
+            catch
+            {
+                // Fallback to static buffer
+            }
+            return _globalStaticBuffer;
+        }
+
+        private static void RunProcess(string filename, string arguments, string input)
+        {
+            using var process = new System.Diagnostics.Process();
+            process.StartInfo.FileName = filename;
+            process.StartInfo.Arguments = arguments;
+            process.StartInfo.UseShellExecute = false;
+            process.StartInfo.RedirectStandardInput = true;
+            process.StartInfo.RedirectStandardOutput = true;
+            process.StartInfo.RedirectStandardError = true;
+            process.StartInfo.CreateNoWindow = true;
+            process.Start();
+
+            if (!string.IsNullOrEmpty(input))
+            {
+                using (var writer = process.StandardInput)
+                {
+                    writer.Write(input);
+                }
+            }
+            process.WaitForExit(1000); // 1 second timeout
+        }
+
+        private static string ReadProcessOutput(string filename, string arguments = "")
+        {
+            using var process = new System.Diagnostics.Process();
+            process.StartInfo.FileName = filename;
+            process.StartInfo.Arguments = arguments;
+            process.StartInfo.UseShellExecute = false;
+            process.StartInfo.RedirectStandardOutput = true;
+            process.StartInfo.RedirectStandardError = true;
+            process.StartInfo.CreateNoWindow = true;
+            process.Start();
+            string output = process.StandardOutput.ReadToEnd();
+            process.WaitForExit(1000); // 1 second timeout
+            return output.TrimEnd('\r', '\n');
+        }
+
+        private static bool IsCommandAvailable(string command)
+        {
+            try
+            {
+                using var process = new System.Diagnostics.Process();
+                process.StartInfo.FileName = "which";
+                process.StartInfo.Arguments = command;
+                process.StartInfo.UseShellExecute = false;
+                process.StartInfo.RedirectStandardOutput = true;
+                process.StartInfo.CreateNoWindow = true;
+                process.Start();
+                process.WaitForExit(500);
+                return process.ExitCode == 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+    }
+
+
     public int SelectionStart
     {
         get => _selectionStart;
@@ -572,6 +827,13 @@ public class RichEditBox : Control
     {
         if (IsEnabled && IsFocused)
         {
+            // Avoid inserting control characters
+            if (char.IsControl(e.Character) && e.Character != '\n' && e.Character != '\r' && e.Character != '\t')
+            {
+                return;
+            }
+
+            SaveUndoState();
             if (SelectionLength > 0)
             {
                 DeleteSelection();
@@ -646,22 +908,73 @@ public class RichEditBox : Control
                                _pressedKeys.Contains(Key.SuperLeft) || 
                                _pressedKeys.Contains(Key.SuperRight);
 
+            bool isShift = _pressedKeys.Contains(Key.ShiftLeft) || 
+                           _pressedKeys.Contains(Key.ShiftRight);
+
             if (isCtrlOrCmd)
             {
+                if (e.Key == Key.Z)
+                {
+                    Undo();
+                    e.Handled = true;
+                    return;
+                }
+                if (e.Key == Key.Y)
+                {
+                    Redo();
+                    e.Handled = true;
+                    return;
+                }
+                if (e.Key == Key.C)
+                {
+                    string text = GetSelectedText();
+                    if (!string.IsNullOrEmpty(text))
+                    {
+                        ClipboardHelper.SetText(text);
+                    }
+                    e.Handled = true;
+                    return;
+                }
+                if (e.Key == Key.X)
+                {
+                    string text = GetSelectedText();
+                    if (!string.IsNullOrEmpty(text))
+                    {
+                        ClipboardHelper.SetText(text);
+                        SaveUndoState();
+                        DeleteSelection();
+                    }
+                    e.Handled = true;
+                    return;
+                }
+                if (e.Key == Key.V)
+                {
+                    string text = ClipboardHelper.GetText();
+                    if (!string.IsNullOrEmpty(text))
+                    {
+                        SaveUndoState();
+                        InsertText(text);
+                    }
+                    e.Handled = true;
+                    return;
+                }
                 if (e.Key == Key.B)
                 {
+                    if (SelectionLength > 0) SaveUndoState();
                     ToggleStyle("bold");
                     e.Handled = true;
                     return;
                 }
                 if (e.Key == Key.I)
                 {
+                    if (SelectionLength > 0) SaveUndoState();
                     ToggleStyle("italic");
                     e.Handled = true;
                     return;
                 }
                 if (e.Key == Key.U)
                 {
+                    if (SelectionLength > 0) SaveUndoState();
                     ToggleStyle("underline");
                     e.Handled = true;
                     return;
@@ -670,6 +983,10 @@ public class RichEditBox : Control
 
             if (e.Key == Key.Backspace)
             {
+                if (SelectionLength > 0 || CaretIndex > 0)
+                {
+                    SaveUndoState();
+                }
                 if (SelectionLength > 0)
                 {
                     DeleteSelection();
@@ -684,6 +1001,10 @@ public class RichEditBox : Control
             }
             else if (e.Key == Key.Delete)
             {
+                if (SelectionLength > 0 || CaretIndex < GetTotalCharacters())
+                {
+                    SaveUndoState();
+                }
                 if (SelectionLength > 0)
                 {
                     DeleteSelection();
@@ -697,30 +1018,64 @@ public class RichEditBox : Control
             }
             else if (e.Key == Key.Left)
             {
-                if (SelectionLength > 0)
+                if (isShift)
                 {
-                    CaretIndex = SelectionStart;
-                    SelectionLength = 0;
+                    if (SelectionLength == 0)
+                    {
+                        _selectionAnchor = CaretIndex;
+                    }
+                    if (CaretIndex > 0)
+                    {
+                        CaretIndex--;
+                        SelectionStart = Math.Min(_selectionAnchor, CaretIndex);
+                        SelectionLength = Math.Abs(_selectionAnchor - CaretIndex);
+                    }
                     e.Handled = true;
                 }
-                else if (CaretIndex > 0)
+                else
                 {
-                    CaretIndex--;
-                    e.Handled = true;
+                    if (SelectionLength > 0)
+                    {
+                        CaretIndex = SelectionStart;
+                        SelectionLength = 0;
+                        e.Handled = true;
+                    }
+                    else if (CaretIndex > 0)
+                    {
+                        CaretIndex--;
+                        e.Handled = true;
+                    }
                 }
             }
             else if (e.Key == Key.Right)
             {
-                if (SelectionLength > 0)
+                if (isShift)
                 {
-                    CaretIndex = SelectionStart + SelectionLength;
-                    SelectionLength = 0;
+                    if (SelectionLength == 0)
+                    {
+                        _selectionAnchor = CaretIndex;
+                    }
+                    if (CaretIndex < GetTotalCharacters())
+                    {
+                        CaretIndex++;
+                        SelectionStart = Math.Min(_selectionAnchor, CaretIndex);
+                        SelectionLength = Math.Abs(_selectionAnchor - CaretIndex);
+                    }
                     e.Handled = true;
                 }
-                else if (CaretIndex < GetTotalCharacters())
+                else
                 {
-                    CaretIndex++;
-                    e.Handled = true;
+                    if (SelectionLength > 0)
+                    {
+                        CaretIndex = SelectionStart + SelectionLength;
+                        SelectionLength = 0;
+                        e.Handled = true;
+                    }
+                    else if (CaretIndex < GetTotalCharacters())
+                    {
+                        CaretIndex++;
+                        e.Handled = true;
+                    }
                 }
             }
         }
@@ -827,7 +1182,37 @@ public class RichEditBox : Control
         return newInlines;
     }
 
-    private void ToggleStyle(string styleType)
+    public void Copy()
+    {
+        string text = GetSelectedText();
+        if (!string.IsNullOrEmpty(text))
+        {
+            ClipboardHelper.SetText(text);
+        }
+    }
+
+    public void Cut()
+    {
+        string text = GetSelectedText();
+        if (!string.IsNullOrEmpty(text))
+        {
+            ClipboardHelper.SetText(text);
+            SaveUndoState();
+            DeleteSelection();
+        }
+    }
+
+    public void Paste()
+    {
+        string text = ClipboardHelper.GetText();
+        if (!string.IsNullOrEmpty(text))
+        {
+            SaveUndoState();
+            InsertText(text);
+        }
+    }
+
+    public void ToggleStyle(string styleType)
     {
         if (SelectionLength == 0) return;
 

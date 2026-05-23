@@ -40,6 +40,10 @@ public class DataGrid : Control
     private float _dragStartMouseY;
     private int _hoveredRowIndex = -1;
     private bool _isPointerOverScrollbar;
+    private int _resizingColumnIndex = -1;
+    private float _resizeStartMouseX;
+    private float _resizeStartWidth;
+    private int _hoveredSeparatorIndex = -1;
 
     private DataGridColumn? _sortingColumn;
     private readonly List<object> _itemsSource = new();
@@ -184,10 +188,27 @@ public class DataGrid : Control
     {
         if (IsEnabled)
         {
-            // Click inside Header: Column Sorting
+            // Click inside Header: Column Sorting / Resizing
             if (e.Position.Y <= _headerHeight)
             {
+                // First check if within 4px of any column separator for resizing
                 float runningX = Padding.Left;
+                for (int i = 0; i < Columns.Count; i++)
+                {
+                    float separatorX = runningX + Columns[i].Width;
+                    if (Math.Abs(e.Position.X - separatorX) <= 4f)
+                    {
+                        _resizingColumnIndex = i;
+                        _resizeStartMouseX = e.Position.X;
+                        _resizeStartWidth = Columns[i].Width;
+                        e.Handled = true;
+                        return;
+                    }
+                    runningX = separatorX;
+                }
+
+                // Otherwise, sorting
+                runningX = Padding.Left;
                 foreach (var col in Columns)
                 {
                     if (e.Position.X >= runningX && e.Position.X <= runningX + col.Width)
@@ -270,12 +291,14 @@ public class DataGrid : Control
     public override void OnPointerReleased(PointerRoutedEventArgs e)
     {
         _isDraggingScroll = false;
+        _resizingColumnIndex = -1;
         base.OnPointerReleased(e);
     }
 
     public override void OnPointerExited(PointerRoutedEventArgs e)
     {
         _hoveredRowIndex = -1;
+        _hoveredSeparatorIndex = -1;
         _isPointerOverScrollbar = false;
         base.OnPointerExited(e);
     }
@@ -285,6 +308,45 @@ public class DataGrid : Control
         if (IsEnabled)
         {
             _isPointerOverScrollbar = e.Position.X >= Size.X - 12f;
+
+            if (_resizingColumnIndex != -1)
+            {
+                float deltaX = e.Position.X - _resizeStartMouseX;
+                float newWidth = Math.Max(20f, _resizeStartWidth + deltaX);
+                Columns[_resizingColumnIndex].Width = newWidth;
+
+                if (_editingRow != -1)
+                {
+                    UpdateCellEditorLayout();
+                }
+
+                Invalidate();
+                e.Handled = true;
+                return;
+            }
+
+            // Detect mouse movement in column headers for resize zones
+            int hoveredSep = -1;
+            if (e.Position.Y <= _headerHeight)
+            {
+                float runningX = Padding.Left;
+                for (int i = 0; i < Columns.Count; i++)
+                {
+                    float separatorX = runningX + Columns[i].Width;
+                    if (Math.Abs(e.Position.X - separatorX) <= 4f)
+                    {
+                        hoveredSep = i;
+                        break;
+                    }
+                    runningX = separatorX;
+                }
+            }
+
+            if (_hoveredSeparatorIndex != hoveredSep)
+            {
+                _hoveredSeparatorIndex = hoveredSep;
+                Invalidate();
+            }
 
             if (e.Position.Y > _headerHeight && e.Position.X < Size.X - 12f)
             {
@@ -374,8 +436,9 @@ public class DataGrid : Control
 
         context.DrawRectangle(headerBg, null, new Rect(0, 0, Size.X, _headerHeight));
 
-        foreach (var col in Columns)
+        for (int i = 0; i < Columns.Count; i++)
         {
+            var col = Columns[i];
             Rect colRect = new Rect(runningX, 0, col.Width, _headerHeight);
             context.DrawRectangle(null, colBorder, colRect);
 
@@ -389,6 +452,13 @@ public class DataGrid : Control
                 string sortIndicator = col.IsAscending ? " ▲" : " ▼";
                 float headerTextW = col.Header.Length * (FontSize * 0.6f); // approximate width
                 context.DrawText(sortIndicator, Font, FontSize - 2f, new SolidColorBrush(0x0078D4FF), new Vector2(runningX + 8f + headerTextW, textY));
+            }
+
+            // Draw highlight if this separator is hovered or being resized
+            if (i == _hoveredSeparatorIndex || i == _resizingColumnIndex)
+            {
+                float separatorX = runningX + col.Width;
+                context.DrawRectangle(new SolidColorBrush(0x0078D4FF), null, new Rect(separatorX - 1f, 0f, 2f, _headerHeight));
             }
 
             runningX += col.Width;
@@ -420,7 +490,7 @@ public class DataGrid : Control
             }
             else if (r % 2 == 1)
             {
-                rowBg = new SolidColorBrush(0xFFFFFF05); // Alternate row background
+                rowBg = new SolidColorBrush(0xFFFFFF0C); // Subtle translucent visual overlay background on odd-indexed rows
             }
 
             Rect rowRect = new Rect(0, rowY, Size.X, _rowHeight);

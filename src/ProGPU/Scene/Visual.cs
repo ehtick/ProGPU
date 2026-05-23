@@ -171,7 +171,7 @@ public class DrawingVisual : Visual
     }
 }
 
-public class TextVisual : LayoutNode
+public class TextVisual : ProGPU.WinUI.FrameworkElement
 {
     private string _text = string.Empty;
     private TtfFont? _font;

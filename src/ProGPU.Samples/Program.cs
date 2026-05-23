@@ -357,6 +357,50 @@ public static unsafe class Program
         };
         stack.AddChild(accentSlider);
 
+        // 4. TOOGLE SWITCH
+        var toggleGroup = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 5, 0, 15) };
+        var interactiveToggle = new ToggleSwitch { IsOn = true };
+        var toggleLabel = new RichTextBlock { Font = _font, FontSize = 12f };
+        toggleLabel.Inlines.Add(new Run("Enable High-Fidelity Rendering"));
+        interactiveToggle.Content = toggleLabel;
+
+        var toggleStatusText = new RichTextBlock { Font = _font, FontSize = 11f, Margin = new Thickness(20, 4, 0, 0) };
+        toggleStatusText.Inlines.Add(new Run("State: Active"));
+        interactiveToggle.Toggled += (s, e) =>
+        {
+            toggleStatusText.Inlines.Clear();
+            toggleStatusText.Inlines.Add(new Run(interactiveToggle.IsOn ? "State: Active" : "State: Inactive"));
+            toggleStatusText.Invalidate();
+        };
+        toggleGroup.AddChild(interactiveToggle);
+        toggleGroup.AddChild(toggleStatusText);
+        stack.AddChild(toggleGroup);
+
+        // 5. COMBOBOX
+        var comboTitle = new RichTextBlock { Font = _font, FontSize = 12f, Margin = new Thickness(0, 5, 0, 4) };
+        comboTitle.Inlines.Add(new Bold(new Run("UI Accent Theme Colors Selection:")));
+        stack.AddChild(comboTitle);
+
+        var customCombo = new ComboBox { Font = _font };
+        customCombo.Items.Add(new ComboBoxItem("Segoe Blue (Default)"));
+        customCombo.Items.Add(new ComboBoxItem("Emerald Green"));
+        customCombo.Items.Add(new ComboBoxItem("Crimson Red"));
+        customCombo.Items.Add(new ComboBoxItem("Amber Gold"));
+        
+        var comboStatus = new RichTextBlock { Font = _font, FontSize = 11f, Margin = new Thickness(0, 4, 0, 15) };
+        comboStatus.Inlines.Add(new Run("Selected theme: Segoe Blue (Default)"));
+        customCombo.SelectionChanged += (s, e) =>
+        {
+            if (customCombo.SelectedItem != null)
+            {
+                comboStatus.Inlines.Clear();
+                comboStatus.Inlines.Add(new Run($"Selected theme: {customCombo.SelectedItem.Text}"));
+                comboStatus.Invalidate();
+            }
+        };
+        stack.AddChild(customCombo);
+        stack.AddChild(comboStatus);
+
         return stack;
     }
 
@@ -545,6 +589,76 @@ public static unsafe class Program
         var pivotItem2 = new PivotItem("Absolute Canvas Positions", canvasGroup);
         pivot.Items.Add(pivotItem2);
 
+        // Tab 3: TabView Control
+        var tabViewContainer = new TabView
+        {
+            Font = _font,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch
+        };
+
+        // Create standard default tabs
+        var tabItem1 = new TabViewItem("Home Tab")
+        {
+            Content = new Border
+            {
+                Background = new SolidColorBrush(0x13131AFF),
+                CornerRadius = 8f,
+                Padding = new Thickness(20),
+                Child = new RichTextBlock
+                {
+                    Font = _font,
+                    FontSize = 14f,
+                    Inlines = { new Bold(new Run("Welcome to your TabView Home Page!\n\n")), new Run("This TabView supports adding new tabs by clicking the '+' button on the right, and closing existing ones using the 'x' close buttons.") }
+                }
+            }
+        };
+
+        var tabItem2 = new TabViewItem("Analytics")
+        {
+            Content = new Border
+            {
+                Background = new SolidColorBrush(0x0C0C12FF),
+                CornerRadius = 8f,
+                Padding = new Thickness(20),
+                Child = new RichTextBlock
+                {
+                    Font = _font,
+                    FontSize = 14f,
+                    Inlines = { new Bold(new Run("Real-Time Graphics Analytics Data\n\n")), new Run("WebGL/WebGPU performance is locked at a stable 60 FPS under massive parallel draw call buffers.") }
+                }
+            }
+        };
+
+        tabViewContainer.TabItems.Add(tabItem1);
+        tabViewContainer.TabItems.Add(tabItem2);
+
+        int nextTabId = 3;
+        tabViewContainer.TabAddRequested += (s, e) =>
+        {
+            var newTab = new TabViewItem($"New Tab #{nextTabId}")
+            {
+                Content = new Border
+                {
+                    Background = new SolidColorBrush(0x13131AFF),
+                    CornerRadius = 8f,
+                    Padding = new Thickness(20),
+                    Child = new RichTextBlock
+                    {
+                        Font = _font,
+                        FontSize = 14f,
+                        Inlines = { new Bold(new Run($"Active Dynamic Tab Room #{nextTabId}\n\n")), new Run("TabView leverages viewport virtualization logic to dynamically balance graphics render loads.") }
+                    }
+                }
+            };
+            nextTabId++;
+            tabViewContainer.TabItems.Add(newTab);
+            tabViewContainer.SelectedItem = newTab;
+        };
+
+        var pivotItem3 = new PivotItem("TabView Dynamic Pages", tabViewContainer);
+        pivot.Items.Add(pivotItem3);
+
         grid.AddChild(pivot);
         ProGPU.WinUI.Grid.SetRow(pivot, 1);
 
@@ -602,6 +716,55 @@ public static unsafe class Program
         richEntry.Inlines.Add(new Underline(new Run("Ctrl+U (Underline)")));
         richEntry.Inlines.Add(new Run(" to toggle style, or type over selection."));
         leftStack.AddChild(richEntry);
+
+        // Formatting & Actions Buttons row (Undo, Redo, Bold, Italic, Underline, Copy, Paste)
+        var actionBtns1 = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 8, 0, 4) };
+        
+        var undoBtn = new Button { Width = 60f, Height = 28f, CornerRadius = 4f, Margin = new Thickness(0, 0, 4, 0) };
+        undoBtn.Content = new TextVisual { Text = "Undo", FontSize = 11f, Brush = new SolidColorBrush(0xFFFFFFFF), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        undoBtn.Click += (s, e) => richEntry.Undo();
+
+        var redoBtn = new Button { Width = 60f, Height = 28f, CornerRadius = 4f, Margin = new Thickness(0, 0, 4, 0) };
+        redoBtn.Content = new TextVisual { Text = "Redo", FontSize = 11f, Brush = new SolidColorBrush(0xFFFFFFFF), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        redoBtn.Click += (s, e) => richEntry.Redo();
+
+        var boldBtn = new Button { Width = 60f, Height = 28f, CornerRadius = 4f, Margin = new Thickness(0, 0, 4, 0) };
+        boldBtn.Content = new TextVisual { Text = "Bold", FontSize = 11f, Brush = new SolidColorBrush(0xFFFFFFFF), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        boldBtn.Click += (s, e) => richEntry.ToggleStyle("bold");
+
+        var italicBtn = new Button { Width = 60f, Height = 28f, CornerRadius = 4f, Margin = new Thickness(0, 0, 4, 0) };
+        italicBtn.Content = new TextVisual { Text = "Italic", FontSize = 11f, Brush = new SolidColorBrush(0xFFFFFFFF), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        italicBtn.Click += (s, e) => richEntry.ToggleStyle("italic");
+
+        var underlineBtn = new Button { Width = 60f, Height = 28f, CornerRadius = 4f };
+        underlineBtn.Content = new TextVisual { Text = "Underline", FontSize = 11f, Brush = new SolidColorBrush(0xFFFFFFFF), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        underlineBtn.Click += (s, e) => richEntry.ToggleStyle("underline");
+
+        actionBtns1.AddChild(undoBtn);
+        actionBtns1.AddChild(redoBtn);
+        actionBtns1.AddChild(boldBtn);
+        actionBtns1.AddChild(italicBtn);
+        actionBtns1.AddChild(underlineBtn);
+        leftStack.AddChild(actionBtns1);
+
+        var actionBtns2 = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 10) };
+        
+        var copyBtn = new Button { Width = 60f, Height = 28f, CornerRadius = 4f, Margin = new Thickness(0, 0, 4, 0) };
+        copyBtn.Content = new TextVisual { Text = "Copy", FontSize = 11f, Brush = new SolidColorBrush(0xFFFFFFFF), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        copyBtn.Click += (s, e) => richEntry.Copy();
+
+        var cutBtn = new Button { Width = 60f, Height = 28f, CornerRadius = 4f, Margin = new Thickness(0, 0, 4, 0) };
+        cutBtn.Content = new TextVisual { Text = "Cut", FontSize = 11f, Brush = new SolidColorBrush(0xFFFFFFFF), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        cutBtn.Click += (s, e) => richEntry.Cut();
+
+        var pasteBtn = new Button { Width = 60f, Height = 28f, CornerRadius = 4f };
+        pasteBtn.Content = new TextVisual { Text = "Paste", FontSize = 11f, Brush = new SolidColorBrush(0xFFFFFFFF), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        pasteBtn.Click += (s, e) => richEntry.Paste();
+
+        actionBtns2.AddChild(copyBtn);
+        actionBtns2.AddChild(cutBtn);
+        actionBtns2.AddChild(pasteBtn);
+        leftStack.AddChild(actionBtns2);
 
         grid.AddChild(leftStack);
         ProGPU.WinUI.Grid.SetColumn(leftStack, 0);
