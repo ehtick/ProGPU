@@ -63,6 +63,7 @@ public struct RichChar
     public float FontSize;
     public bool IsBold;
     public bool IsItalic;
+    public bool IsUnderline;
 }
 
 public class PositionedRichChar
@@ -79,6 +80,9 @@ public class RichTextBlock : FrameworkElement
     private readonly List<PositionedRichChar> _positionedChars = new();
 
     public List<Inline> Inlines { get; } = new();
+
+    public int SelectionStart { get; set; } = -1;
+    public int SelectionLength { get; set; } = 0;
 
     public TtfFont? Font
     {
@@ -143,7 +147,7 @@ public class RichTextBlock : FrameworkElement
 
         foreach (var inline in Inlines)
         {
-            AccumulateInlines(inline, charList, defaultFg, FontSize, false, false);
+            AccumulateInlines(inline, charList, defaultFg, FontSize, false, false, false);
         }
 
         if (charList.Count == 0) return;
@@ -252,7 +256,7 @@ public class RichTextBlock : FrameworkElement
         }
     }
 
-    private void AccumulateInlines(Inline inline, List<RichChar> list, Brush defaultFg, float defaultSize, bool isBold, bool isItalic)
+    public void AccumulateInlines(Inline inline, List<RichChar> list, Brush defaultFg, float defaultSize, bool isBold, bool isItalic, bool isUnderline)
     {
         Brush fg = inline.Foreground ?? defaultFg;
         float size = inline.FontSize ?? defaultSize;
@@ -267,7 +271,8 @@ public class RichTextBlock : FrameworkElement
                     Foreground = fg,
                     FontSize = size,
                     IsBold = isBold,
-                    IsItalic = isItalic
+                    IsItalic = isItalic,
+                    IsUnderline = isUnderline
                 });
             }
         }
@@ -275,9 +280,10 @@ public class RichTextBlock : FrameworkElement
         {
             bool nextBold = isBold || (span is Bold);
             bool nextItalic = isItalic || (span is Italic);
+            bool nextUnderline = isUnderline || (span is Underline);
             foreach (var sub in span.Inlines)
             {
-                AccumulateInlines(sub, list, fg, size, nextBold, nextItalic);
+                AccumulateInlines(sub, list, fg, size, nextBold, nextItalic, nextUnderline);
             }
         }
     }
@@ -285,6 +291,22 @@ public class RichTextBlock : FrameworkElement
     public override void OnRender(DrawingContext context)
     {
         if (Font == null || _positionedChars.Count == 0) return;
+
+        // Draw translucent Segoe Blue highlighted selection boxes behind selected characters
+        if (SelectionStart >= 0 && SelectionLength > 0)
+        {
+            var highlightBrush = new SolidColorBrush(0x0078D435); // Translucent Segoe Blue
+            for (int i = 0; i < _positionedChars.Count; i++)
+            {
+                if (i >= SelectionStart && i < SelectionStart + SelectionLength)
+                {
+                    var pc = _positionedChars[i];
+                    ushort gIdx = Font.GetGlyphIndex(pc.Info.Character);
+                    float advance = Font.GetAdvanceWidth(gIdx, pc.Info.FontSize);
+                    context.DrawRectangle(highlightBrush, null, new Rect(pc.Position.X, pc.Position.Y, advance, pc.Info.FontSize));
+                }
+            }
+        }
 
         // Group same-style adjacent characters into single runs
         string runBuffer = "";
@@ -301,6 +323,7 @@ public class RichTextBlock : FrameworkElement
             }
             else if (pc.Info.IsBold == style.IsBold &&
                      pc.Info.IsItalic == style.IsItalic &&
+                     pc.Info.IsUnderline == style.IsUnderline &&
                      pc.Info.FontSize == style.FontSize &&
                      pc.Info.Foreground.Equals(style.Foreground) &&
                      Math.Abs(pc.Position.Y - startPos.Y) < 1f)
@@ -310,6 +333,11 @@ public class RichTextBlock : FrameworkElement
             else
             {
                 context.DrawText(runBuffer, Font, style.FontSize, style.Foreground!, startPos);
+                if (style.IsUnderline)
+                {
+                    float runW = pc.Position.X - startPos.X;
+                    context.DrawRectangle(style.Foreground, null, new Rect(startPos.X, startPos.Y + style.FontSize - 1f, runW, 1f));
+                }
                 runBuffer = pc.Info.Character.ToString();
                 startPos = pc.Position;
                 style = pc.Info;
@@ -319,6 +347,13 @@ public class RichTextBlock : FrameworkElement
         if (runBuffer.Length > 0)
         {
             context.DrawText(runBuffer, Font, style.FontSize, style.Foreground!, startPos);
+            if (style.IsUnderline)
+            {
+                var lastPc = _positionedChars[_positionedChars.Count - 1];
+                float advance = Font.GetAdvanceWidth(Font.GetGlyphIndex(lastPc.Info.Character), lastPc.Info.FontSize);
+                float runW = lastPc.Position.X + advance - startPos.X;
+                context.DrawRectangle(style.Foreground, null, new Rect(startPos.X, startPos.Y + style.FontSize - 1f, runW, 1f));
+            }
         }
 
         base.OnRender(context);
@@ -331,6 +366,34 @@ public class RichEditBox : Control
     private float _fontSize = 14f;
     private int _caretIndex;
     private readonly RichTextBlock _blockView;
+
+    private int _selectionStart = 0;
+    private int _selectionLength = 0;
+    private int _selectionAnchor = 0;
+    private bool _isDraggingSelection = false;
+    private readonly HashSet<Key> _pressedKeys = new();
+
+    public int SelectionStart
+    {
+        get => _selectionStart;
+        set
+        {
+            _selectionStart = value;
+            _blockView.SelectionStart = value;
+            Invalidate();
+        }
+    }
+
+    public int SelectionLength
+    {
+        get => _selectionLength;
+        set
+        {
+            _selectionLength = value;
+            _blockView.SelectionLength = value;
+            Invalidate();
+        }
+    }
 
     public List<Inline> Inlines => _blockView.Inlines;
 
@@ -359,6 +422,22 @@ public class RichEditBox : Control
                 Invalidate();
             }
         }
+    }
+
+    public override void OnVisualStateChanged()
+    {
+        base.OnVisualStateChanged();
+        if (!IsFocused)
+        {
+            _pressedKeys.Clear();
+            _isDraggingSelection = false;
+        }
+    }
+
+    public override void OnKeyUp(KeyRoutedEventArgs e)
+    {
+        _pressedKeys.Remove(e.Key);
+        base.OnKeyUp(e);
     }
 
     public RichEditBox()
@@ -413,6 +492,10 @@ public class RichEditBox : Control
 
             if (pcs.Count == 0)
             {
+                SelectionStart = 0;
+                SelectionLength = 0;
+                _selectionAnchor = 0;
+                _isDraggingSelection = true;
                 CaretIndex = 0;
                 return;
             }
@@ -430,7 +513,58 @@ public class RichEditBox : Control
                 }
             }
 
+            _selectionAnchor = bestIdx;
+            SelectionStart = bestIdx;
+            SelectionLength = 0;
+            _isDraggingSelection = true;
             CaretIndex = bestIdx;
+        }
+    }
+
+    public override void OnPointerReleased(PointerRoutedEventArgs e)
+    {
+        if (IsEnabled)
+        {
+            base.OnPointerReleased(e);
+            _isDraggingSelection = false;
+        }
+    }
+
+    public override void OnPointerMoved(PointerRoutedEventArgs e)
+    {
+        if (IsEnabled)
+        {
+            base.OnPointerMoved(e);
+            if (_isDraggingSelection)
+            {
+                float clickX = e.Position.X - Padding.Left;
+                float clickY = e.Position.Y - Padding.Top;
+                
+                _blockView.PerformRichLayout(Size.X - Padding.Horizontal);
+                var pcs = _blockView.PositionedChars;
+
+                if (pcs.Count > 0)
+                {
+                    int currentIdx = 0;
+                    float bestDist = float.PositiveInfinity;
+
+                    for (int i = 0; i < pcs.Count; i++)
+                    {
+                        var dist = Vector2.Distance(pcs[i].Position, new Vector2(clickX, clickY));
+                        if (dist < bestDist)
+                        {
+                            bestDist = dist;
+                            currentIdx = i;
+                        }
+                    }
+
+                    int start = Math.Min(_selectionAnchor, currentIdx);
+                    int length = Math.Abs(_selectionAnchor - currentIdx);
+                    SelectionStart = start;
+                    SelectionLength = length;
+                    CaretIndex = currentIdx;
+                }
+            }
         }
     }
 
@@ -438,6 +572,10 @@ public class RichEditBox : Control
     {
         if (IsEnabled && IsFocused)
         {
+            if (SelectionLength > 0)
+            {
+                DeleteSelection();
+            }
             InsertChar(e.Character);
             CaretIndex++;
             e.Handled = true;
@@ -501,9 +639,43 @@ public class RichEditBox : Control
     {
         if (IsEnabled && IsFocused)
         {
+            _pressedKeys.Add(e.Key);
+
+            bool isCtrlOrCmd = _pressedKeys.Contains(Key.ControlLeft) || 
+                               _pressedKeys.Contains(Key.ControlRight) || 
+                               _pressedKeys.Contains(Key.SuperLeft) || 
+                               _pressedKeys.Contains(Key.SuperRight);
+
+            if (isCtrlOrCmd)
+            {
+                if (e.Key == Key.B)
+                {
+                    ToggleStyle("bold");
+                    e.Handled = true;
+                    return;
+                }
+                if (e.Key == Key.I)
+                {
+                    ToggleStyle("italic");
+                    e.Handled = true;
+                    return;
+                }
+                if (e.Key == Key.U)
+                {
+                    ToggleStyle("underline");
+                    e.Handled = true;
+                    return;
+                }
+            }
+
             if (e.Key == Key.Backspace)
             {
-                if (CaretIndex > 0)
+                if (SelectionLength > 0)
+                {
+                    DeleteSelection();
+                    e.Handled = true;
+                }
+                else if (CaretIndex > 0)
                 {
                     DeleteChar(CaretIndex - 1);
                     CaretIndex--;
@@ -512,7 +684,12 @@ public class RichEditBox : Control
             }
             else if (e.Key == Key.Delete)
             {
-                if (CaretIndex < GetTotalCharacters())
+                if (SelectionLength > 0)
+                {
+                    DeleteSelection();
+                    e.Handled = true;
+                }
+                else if (CaretIndex < GetTotalCharacters())
                 {
                     DeleteChar(CaretIndex);
                     e.Handled = true;
@@ -520,7 +697,13 @@ public class RichEditBox : Control
             }
             else if (e.Key == Key.Left)
             {
-                if (CaretIndex > 0)
+                if (SelectionLength > 0)
+                {
+                    CaretIndex = SelectionStart;
+                    SelectionLength = 0;
+                    e.Handled = true;
+                }
+                else if (CaretIndex > 0)
                 {
                     CaretIndex--;
                     e.Handled = true;
@@ -528,7 +711,13 @@ public class RichEditBox : Control
             }
             else if (e.Key == Key.Right)
             {
-                if (CaretIndex < GetTotalCharacters())
+                if (SelectionLength > 0)
+                {
+                    CaretIndex = SelectionStart + SelectionLength;
+                    SelectionLength = 0;
+                    e.Handled = true;
+                }
+                else if (CaretIndex < GetTotalCharacters())
                 {
                     CaretIndex++;
                     e.Handled = true;
@@ -570,6 +759,139 @@ public class RichEditBox : Control
                 }
             }
         }
+    }
+
+    private List<RichChar> GetFlatChars()
+    {
+        var list = new List<RichChar>();
+        var defaultFg = _blockView.Foreground ?? new SolidColorBrush(0xFFFFFFFF);
+        foreach (var inline in Inlines)
+        {
+            _blockView.AccumulateInlines(inline, list, defaultFg, FontSize, false, false, false);
+        }
+        return list;
+    }
+
+    private List<Inline> RebuildInlinesFromChars(List<RichChar> chars)
+    {
+        var newInlines = new List<Inline>();
+        if (chars.Count == 0)
+        {
+            return newInlines;
+        }
+
+        int i = 0;
+        while (i < chars.Count)
+        {
+            int start = i;
+            var c = chars[i];
+            
+            while (i < chars.Count && 
+                   chars[i].IsBold == c.IsBold &&
+                   chars[i].IsItalic == c.IsItalic &&
+                   chars[i].IsUnderline == c.IsUnderline &&
+                   chars[i].FontSize == c.FontSize &&
+                   Equals(chars[i].Foreground, c.Foreground))
+            {
+                i++;
+            }
+
+            var sb = new System.Text.StringBuilder();
+            for (int k = start; k < i; k++)
+            {
+                sb.Append(chars[k].Character);
+            }
+
+            Inline element = new Run(sb.ToString())
+            {
+                Foreground = c.Foreground,
+                FontSize = c.FontSize
+            };
+
+            if (c.IsBold)
+            {
+                element = new Bold(element);
+            }
+            if (c.IsItalic)
+            {
+                element = new Italic(element);
+            }
+            if (c.IsUnderline)
+            {
+                element = new Underline(element);
+            }
+
+            newInlines.Add(element);
+        }
+
+        return newInlines;
+    }
+
+    private void ToggleStyle(string styleType)
+    {
+        if (SelectionLength == 0) return;
+
+        var chars = GetFlatChars();
+        if (chars.Count == 0) return;
+
+        int start = Math.Clamp(SelectionStart, 0, chars.Count);
+        int end = Math.Clamp(SelectionStart + SelectionLength, 0, chars.Count);
+        if (start >= end) return;
+
+        bool allHaveStyle = true;
+        for (int k = start; k < end; k++)
+        {
+            bool hasStyle = styleType switch
+            {
+                "bold" => chars[k].IsBold,
+                "italic" => chars[k].IsItalic,
+                "underline" => chars[k].IsUnderline,
+                _ => false
+            };
+            if (!hasStyle)
+            {
+                allHaveStyle = false;
+                break;
+            }
+        }
+
+        bool targetState = !allHaveStyle;
+        for (int k = start; k < end; k++)
+        {
+            var c = chars[k];
+            if (styleType == "bold") c.IsBold = targetState;
+            else if (styleType == "italic") c.IsItalic = targetState;
+            else if (styleType == "underline") c.IsUnderline = targetState;
+            chars[k] = c;
+        }
+
+        Inlines.Clear();
+        Inlines.AddRange(RebuildInlinesFromChars(chars));
+        _blockView.Invalidate();
+        Invalidate();
+    }
+
+    private void DeleteSelection()
+    {
+        if (SelectionLength == 0) return;
+
+        var chars = GetFlatChars();
+        if (chars.Count == 0) return;
+
+        int start = Math.Clamp(SelectionStart, 0, chars.Count);
+        int length = Math.Clamp(SelectionLength, 0, chars.Count - start);
+        if (length == 0) return;
+
+        chars.RemoveRange(start, length);
+
+        CaretIndex = start;
+        SelectionStart = start;
+        SelectionLength = 0;
+
+        Inlines.Clear();
+        Inlines.AddRange(RebuildInlinesFromChars(chars));
+        _blockView.Invalidate();
+        Invalidate();
     }
 
     protected override Vector2 MeasureOverride(Vector2 availableSize)
@@ -630,7 +952,7 @@ public class RichEditBox : Control
             {
                 int cIdx = Math.Clamp(CaretIndex, 0, pcs.Count - 1);
                 var pc = pcs[cIdx];
-                caretPos = pc.Position;
+                caretPos = pc.Position + new Vector2(Padding.Left, Padding.Top);
                 caretH = pc.Info.FontSize;
                 if (CaretIndex >= pcs.Count)
                 {

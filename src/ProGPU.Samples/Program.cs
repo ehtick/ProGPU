@@ -30,7 +30,6 @@ public static unsafe class Program
 
     private static TtfFont? _font;
     private static ProGPU.WinUI.Grid? _rootGrid;
-    private static Border? _showcaseContainer;
 
     // Active diagnostic metric stats
     private static RichTextBlock? _statsText;
@@ -39,11 +38,7 @@ public static unsafe class Program
 
     // Category pages and sidebar selections
     private static string _activeCategory = "Basic Input";
-    private static Button? _basicInputTabBtn;
-    private static Button? _panelsTabBtn;
-    private static Button? _textTabBtn;
-    private static Button? _dataTabBtn;
-    private static Button? _computeTabBtn;
+    private static NavigationView? _navigationView;
 
     // Compute FX variables
     private static float _blurRadius = 8f;
@@ -221,75 +216,47 @@ public static unsafe class Program
         _rootGrid.AddChild(headerBar);
         ProGPU.WinUI.Grid.SetRow(headerBar, 0);
 
-        // 3. BODY WORKSPACE (Sidebar + Showcase Area)
-        var bodyGrid = new ProGPU.WinUI.Grid();
-        bodyGrid.ColumnDefinitions.Add(new GridLength(280, GridUnitType.Absolute)); // Col 0: Sidebar selection
-        bodyGrid.ColumnDefinitions.Add(new GridLength(1, GridUnitType.Star));      // Col 1: active view
-
-        // SIDEBAR CARD
-        var sidebarCard = new Border
+        // 3. BODY WORKSPACE (Premium Sidebar Navigation View)
+        _navigationView = new NavigationView
         {
-            CornerRadius = 8f,
-            Background = new SolidColorBrush(0x13131AFF), // Mica background styling
-            BorderBrush = new SolidColorBrush(0xFFFFFF15), // Translucent border outline
-            BorderThickness = new Thickness(1f),
-            Padding = new Thickness(12),
-            Margin = new Thickness(10)
+            Font = _font,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch
         };
 
-        var sidebarStack = new StackPanel { Orientation = Orientation.Vertical };
-        
-        var panelTitle = new RichTextBlock { Font = _font, FontSize = 12f, Margin = new Thickness(5, 5, 5, 15) };
-        panelTitle.Inlines.Add(new Run("CONTROLS & PANELS") { Foreground = new SolidColorBrush(0x0078D4FF) });
-        sidebarStack.AddChild(panelTitle);
+        // Persistent page visual trees
+        var basicInputItem = new NavigationViewItem("Basic Input", "🖱", CreateBasicInputView());
+        var panelsItem = new NavigationViewItem("Layout Panels", "🔲", CreateLayoutPanelsView());
+        var textItem = new NavigationViewItem("Text & Documents", "📄", CreateTextDocumentsView());
+        var dataItem = new NavigationViewItem("Data Virtualization", "📊", CreateDataVirtualizationView());
+        var computeItem = new NavigationViewItem("Compute FX", "⚙", CreateComputeFxView());
 
-        // Define beautiful tab switching buttons
-        _basicInputTabBtn = CreateSidebarButton("Basic Input", "Basic Inputs");
-        _basicInputTabBtn.Click += (s, e) => SwitchCategory("Basic Input");
-        sidebarStack.AddChild(_basicInputTabBtn);
+        _navigationView.MenuItems.Add(basicInputItem);
+        _navigationView.MenuItems.Add(panelsItem);
+        _navigationView.MenuItems.Add(textItem);
+        _navigationView.MenuItems.Add(dataItem);
+        _navigationView.MenuItems.Add(computeItem);
 
-        _panelsTabBtn = CreateSidebarButton("Layout Panels", "Layout Panels");
-        _panelsTabBtn.Click += (s, e) => SwitchCategory("Layout Panels");
-        sidebarStack.AddChild(_panelsTabBtn);
-
-        _textTabBtn = CreateSidebarButton("Text & Documents", "Text & Documents");
-        _textTabBtn.Click += (s, e) => SwitchCategory("Text & Documents");
-        sidebarStack.AddChild(_textTabBtn);
-
-        _dataTabBtn = CreateSidebarButton("Data Virtualization", "Data Virtualization");
-        _dataTabBtn.Click += (s, e) => SwitchCategory("Data Virtualization");
-        sidebarStack.AddChild(_dataTabBtn);
-
-        _computeTabBtn = CreateSidebarButton("Compute FX", "Compute FX");
-        _computeTabBtn.Click += (s, e) => SwitchCategory("Compute FX");
-        sidebarStack.AddChild(_computeTabBtn);
-
-        sidebarCard.Child = sidebarStack;
-        bodyGrid.AddChild(sidebarCard);
-        ProGPU.WinUI.Grid.SetColumn(sidebarCard, 0);
-
-        // SHOWCASE CONTAINER
-        _showcaseContainer = new Border
+        _navigationView.SelectionChanged += (s, e) =>
         {
-            CornerRadius = 8f,
-            Background = new SolidColorBrush(0x13131AFF), // Mica background styling
-            BorderBrush = new SolidColorBrush(0xFFFFFF15), // Translucent border outline
-            BorderThickness = new Thickness(1f),
-            Margin = new Thickness(0, 10, 10, 10),
-            Padding = new Thickness(16)
+            if (_navigationView.SelectedItem != null)
+            {
+                _activeCategory = _navigationView.SelectedItem.Text;
+            }
+            _rootGrid?.Invalidate();
         };
 
-        bodyGrid.AddChild(_showcaseContainer);
-        ProGPU.WinUI.Grid.SetColumn(_showcaseContainer, 1);
+        // Select default category
+        _navigationView.SelectedItem = basicInputItem;
 
-        _rootGrid.AddChild(bodyGrid);
-        ProGPU.WinUI.Grid.SetRow(bodyGrid, 1);
+        _rootGrid.AddChild(_navigationView);
+        ProGPU.WinUI.Grid.SetRow(_navigationView, 1);
 
         // 4. BOTTOM DIAGNOSTICS STATUS BAR
         var statusBar = new Border
         {
             Background = new SolidColorBrush(0x0C0C12FF), // Deep dark status bar
-            BorderBrush = new SolidColorBrush(0xFFFFFF15), // Translucent border outline
+            BorderBrush = new SolidColorBrush(0xFFFFFF15), // Thin boundary stroke
             BorderThickness = new Thickness(0, 1f, 0, 0),
             Padding = new Thickness(16, 4, 16, 4),
             HorizontalAlignment = HorizontalAlignment.Stretch,
@@ -307,61 +274,6 @@ public static unsafe class Program
         statusBar.Child = _statsText;
         _rootGrid.AddChild(statusBar);
         ProGPU.WinUI.Grid.SetRow(statusBar, 2);
-
-        // Initial tab render
-        SwitchCategory("Basic Input");
-    }
-
-    private static Button CreateSidebarButton(string categoryName, string displayText)
-    {
-        var btn = new Button
-        {
-            Margin = new Thickness(0, 4, 0, 4),
-            Padding = new Thickness(12, 10, 12, 10),
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            CornerRadius = 6f
-        };
-        
-        var content = new RichTextBlock { Font = _font, FontSize = 12f };
-        content.Inlines.Add(new Run(displayText));
-        btn.Content = content;
-        
-        return btn;
-    }
-
-    private static void SwitchCategory(string categoryName)
-    {
-        _activeCategory = categoryName;
-
-        // Dynamic visual selection updates
-        UpdateSidebarButtonStates();
-
-        if (_showcaseContainer == null || _font == null) return;
-
-        // Instantiate selected categories
-        _showcaseContainer.Child = categoryName switch
-        {
-            "Basic Input" => CreateBasicInputView(),
-            "Layout Panels" => CreateLayoutPanelsView(),
-            "Text & Documents" => CreateTextDocumentsView(),
-            "Data Virtualization" => CreateDataVirtualizationView(),
-            "Compute FX" => CreateComputeFxView(),
-            _ => null
-        };
-
-        _rootGrid?.Invalidate();
-    }
-
-    private static void UpdateSidebarButtonStates()
-    {
-        var activeBrush = new SolidColorBrush(0x0078D4FF); // Segoe Blue active accent
-        var normalBrush = new SolidColorBrush(0xFFFFFF0D); // translucent default
-
-        if (_basicInputTabBtn != null) _basicInputTabBtn.Background = _activeCategory == "Basic Input" ? activeBrush : normalBrush;
-        if (_panelsTabBtn != null) _panelsTabBtn.Background = _activeCategory == "Layout Panels" ? activeBrush : normalBrush;
-        if (_textTabBtn != null) _textTabBtn.Background = _activeCategory == "Text & Documents" ? activeBrush : normalBrush;
-        if (_dataTabBtn != null) _dataTabBtn.Background = _activeCategory == "Data Virtualization" ? activeBrush : normalBrush;
-        if (_computeTabBtn != null) _computeTabBtn.Background = _activeCategory == "Compute FX" ? activeBrush : normalBrush;
     }
 
     // ===================================================
@@ -450,23 +362,26 @@ public static unsafe class Program
 
     private static FrameworkElement CreateLayoutPanelsView()
     {
-        var grid = new ProGPU.WinUI.Grid { Margin = new Thickness(5) };
-        grid.RowDefinitions.Add(new GridLength(60, GridUnitType.Absolute));   // Description
-        grid.RowDefinitions.Add(new GridLength(1, GridUnitType.Star));       // Main panels showcase
-        grid.RowDefinitions.Add(new GridLength(140, GridUnitType.Absolute));  // Canvas absolute layout
+        var grid = new ProGPU.WinUI.Grid { Margin = new Thickness(10) };
+        grid.RowDefinitions.Add(new GridLength(50, GridUnitType.Absolute));   // Header description
+        grid.RowDefinitions.Add(new GridLength(1, GridUnitType.Star));       // Pivot tab showcase
 
-        var descText = new RichTextBlock { Font = _font, FontSize = 12f };
-        descText.Inlines.Add(new Run("Showcasing standard WinUI panels. "));
-        descText.Inlines.Add(new Bold(new Run("Grid")));
-        descText.Inlines.Add(new Run(" divides workspace recursively using star/fixed/auto cells, "));
-        descText.Inlines.Add(new Bold(new Run("StackPanel")));
-        descText.Inlines.Add(new Run(" manages vertical/horizontal flow packs, and "));
-        descText.Inlines.Add(new Bold(new Run("Canvas")));
-        descText.Inlines.Add(new Run(" allows absolute X/Y placements."));
+        var descText = new RichTextBlock { Font = _font, FontSize = 12f, Margin = new Thickness(0, 0, 0, 10) };
+        descText.Inlines.Add(new Run("This page showcases standard WinUI layout panels enclosed inside a premium sliding "));
+        descText.Inlines.Add(new Bold(new Run("Pivot")));
+        descText.Inlines.Add(new Run(" control. Hover tabs or click to switch with smooth slide animations."));
         grid.AddChild(descText);
         ProGPU.WinUI.Grid.SetRow(descText, 0);
 
-        // 1. Grid & Stack Panel Showroom
+        // 1. Pivot Control
+        var pivot = new Pivot
+        {
+            Font = _font,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch
+        };
+
+        // Tab 1: Grid & Stack Panels
         var showroomGrid = new ProGPU.WinUI.Grid();
         showroomGrid.ColumnDefinitions.Add(new GridLength(1f, GridUnitType.Star));
         showroomGrid.ColumnDefinitions.Add(new GridLength(1f, GridUnitType.Star));
@@ -517,14 +432,16 @@ public static unsafe class Program
             BorderBrush = new SolidColorBrush(0xFFFFFF15),
             BorderThickness = new Thickness(1f),
             CornerRadius = 8f,
-            Padding = new Thickness(8)
+            Padding = new Thickness(8),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch
         };
         leftGroup.Child = innerGrid;
         showroomGrid.AddChild(leftGroup);
         ProGPU.WinUI.Grid.SetColumn(leftGroup, 0);
 
         // Column 1: StackPanel layout
-        var rightStack = new StackPanel { Orientation = Orientation.Vertical };
+        var rightStack = new StackPanel { Orientation = Orientation.Vertical, HorizontalAlignment = HorizontalAlignment.Stretch };
         var stackTitle = new RichTextBlock { Font = _font, FontSize = 12f, Margin = new Thickness(8, 0, 0, 8) };
         stackTitle.Inlines.Add(new Bold(new Run("Vertical Stack Panel")));
         rightStack.AddChild(stackTitle);
@@ -536,7 +453,8 @@ public static unsafe class Program
                 Height = 32f,
                 Margin = new Thickness(4),
                 Background = new SolidColorBrush(0xFFFFFF15),
-                CornerRadius = 4f
+                CornerRadius = 4f,
+                HorizontalAlignment = HorizontalAlignment.Stretch
             };
             var itemText = new RichTextBlock { Font = _font, FontSize = 11f, Margin = new Thickness(10, 8, 0, 0) };
             itemText.Inlines.Add(new Run($"Stack Item #{i}"));
@@ -548,7 +466,7 @@ public static unsafe class Program
         horizontalStackTitle.Inlines.Add(new Bold(new Run("Horizontal Flow Row")));
         rightStack.AddChild(horizontalStackTitle);
 
-        var horzFlow = new StackPanel { Orientation = Orientation.Horizontal };
+        var horzFlow = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Stretch };
         for (int i = 1; i <= 3; i++)
         {
             var item = new Border
@@ -573,16 +491,18 @@ public static unsafe class Program
             BorderBrush = new SolidColorBrush(0xFFFFFF15),
             BorderThickness = new Thickness(1f),
             CornerRadius = 8f,
-            Padding = new Thickness(8)
+            Padding = new Thickness(8),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch
         };
         rightGroup.Child = rightStack;
         showroomGrid.AddChild(rightGroup);
         ProGPU.WinUI.Grid.SetColumn(rightGroup, 1);
 
-        grid.AddChild(showroomGrid);
-        ProGPU.WinUI.Grid.SetRow(showroomGrid, 1);
+        var pivotItem1 = new PivotItem("Recursive Grids & Stacks", showroomGrid);
+        pivot.Items.Add(pivotItem1);
 
-        // 2. Canvas Absolute Layout (Row 2)
+        // Tab 2: Canvas Absolute Layout
         var canvasPanel = new Canvas { HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch };
         var canvasDesc = new RichTextBlock { Font = _font, FontSize = 11f, Margin = new Thickness(8, 4, 0, 0) };
         canvasDesc.Inlines.Add(new Bold(new Run("Absolute Canvas Coordinates:")));
@@ -596,18 +516,18 @@ public static unsafe class Program
         {
             var overlappingCard = new Border
             {
-                Width = 140f,
-                Height = 45f,
+                Width = 160f,
+                Height = 60f,
                 Background = new SolidColorBrush(cardColors[i]),
                 CornerRadius = 6f
             };
-            var overlappingText = new RichTextBlock { Font = _font, FontSize = 10f, Margin = new Thickness(12, 14, 0, 0) };
+            var overlappingText = new RichTextBlock { Font = _font, FontSize = 11f, Margin = new Thickness(12, 20, 0, 0) };
             overlappingText.Inlines.Add(new Bold(new Run($"Absolute Panel #{i + 1}")));
             overlappingCard.Child = overlappingText;
             
             canvasPanel.AddChild(overlappingCard);
-            Canvas.SetLeft(overlappingCard, 30f + i * 90f);
-            Canvas.SetTop(overlappingCard, 35f + i * 20f);
+            Canvas.SetLeft(overlappingCard, 50f + i * 110f);
+            Canvas.SetTop(overlappingCard, 45f + i * 25f);
         }
 
         var canvasGroup = new Border
@@ -616,11 +536,17 @@ public static unsafe class Program
             Background = new SolidColorBrush(0xFFFFFF08),
             BorderBrush = new SolidColorBrush(0xFFFFFF15),
             BorderThickness = new Thickness(1f),
-            CornerRadius = 8f
+            CornerRadius = 8f,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch
         };
         canvasGroup.Child = canvasPanel;
-        grid.AddChild(canvasGroup);
-        ProGPU.WinUI.Grid.SetRow(canvasGroup, 2);
+
+        var pivotItem2 = new PivotItem("Absolute Canvas Positions", canvasGroup);
+        pivot.Items.Add(pivotItem2);
+
+        grid.AddChild(pivot);
+        ProGPU.WinUI.Grid.SetRow(pivot, 1);
 
         return grid;
     }
@@ -665,9 +591,16 @@ public static unsafe class Program
         var richEntry = new RichEditBox 
         { 
             Font = _font, 
-            Width = 300f, 
-            Height = 150f 
+            Width = 320f, 
+            Height = 180f 
         };
+        richEntry.Inlines.Add(new Run("Drag mouse to select text range!\nUse "));
+        richEntry.Inlines.Add(new Bold(new Run("Ctrl+B (Bold)")));
+        richEntry.Inlines.Add(new Run(", "));
+        richEntry.Inlines.Add(new Italic(new Run("Ctrl+I (Italic)")));
+        richEntry.Inlines.Add(new Run(", or "));
+        richEntry.Inlines.Add(new Underline(new Run("Ctrl+U (Underline)")));
+        richEntry.Inlines.Add(new Run(" to toggle style, or type over selection."));
         leftStack.AddChild(richEntry);
 
         grid.AddChild(leftStack);
@@ -733,7 +666,9 @@ public static unsafe class Program
         var listDesc = new RichTextBlock { Font = _font, FontSize = 11f, Margin = new Thickness(0, 2, 0, 0) };
         listDesc.Inlines.Add(new Run("Ultra-fast vertical scroll recycling displays massive datasets at locked 60 FPS. Click on any header column to "));
         listDesc.Inlines.Add(new Bold(new Run("sort alphanumerically")));
-        listDesc.Inlines.Add(new Run(", and click rows to change selected indices."));
+        listDesc.Inlines.Add(new Run(", and click rows to change selected indices. Double-click any cell (or press Enter on selection) to "));
+        listDesc.Inlines.Add(new Bold(new Run("edit inline")) { Foreground = new SolidColorBrush(0x0078D4FF) });
+        listDesc.Inlines.Add(new Run(". Press Enter to commit or Escape to cancel."));
         descStack.AddChild(listDesc);
 
         grid.AddChild(descStack);
@@ -753,7 +688,7 @@ public static unsafe class Program
         dataGrid.Columns.Add(new DataGridColumn("ID", 70f, "Id"));
         dataGrid.Columns.Add(new DataGridColumn("Activity Name", 230f, "Name"));
         dataGrid.Columns.Add(new DataGridColumn("Status", 110f, "Status"));
-        dataGrid.Columns.Add(new DataGridColumn("Latency", 100f, "Latency"));
+        dataGrid.Columns.Add(new DataGridColumn("Latency (ms)", 120f, "Latency"));
 
         // Setup direct, reflection-free binding for maximum speed
         dataGrid.CellValueBinding = (item, prop) =>
@@ -765,7 +700,7 @@ public static unsafe class Program
                     "Id" => log.Id.ToString(),
                     "Name" => log.Name,
                     "Status" => log.Status,
-                    "Latency" => $"{log.Latency:F1} ms",
+                    "Latency" => $"{log.Latency:F1}",
                     _ => string.Empty
                 };
             }

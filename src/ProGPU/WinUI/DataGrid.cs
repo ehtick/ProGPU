@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
+using Silk.NET.Input;
 using ProGPU.Layout;
 using ProGPU.Vector;
 using ProGPU.Scene;
@@ -42,6 +43,13 @@ public class DataGrid : Control
 
     private DataGridColumn? _sortingColumn;
     private readonly List<object> _itemsSource = new();
+
+    private int _editingRow = -1;
+    private int _editingCol = -1;
+    private TextBox? _cellEditor;
+    private DateTime _lastClickTime = DateTime.MinValue;
+    private int _lastClickRow = -1;
+    private int _lastClickCol = -1;
 
     public List<DataGridColumn> Columns { get; } = new();
 
@@ -95,6 +103,10 @@ public class DataGrid : Control
             if (_scrollOffset != clamped)
             {
                 _scrollOffset = clamped;
+                if (_editingRow != -1)
+                {
+                    UpdateCellEditorLayout();
+                }
                 Invalidate();
             }
         }
@@ -123,6 +135,7 @@ public class DataGrid : Control
 
     public void ClearItems()
     {
+        CancelEdit();
         _itemsSource.Clear();
         _selectedIndex = -1;
         _scrollOffset = 0f;
@@ -218,6 +231,34 @@ public class DataGrid : Control
                 if (r >= 0 && r < _itemsSource.Count)
                 {
                     SelectedIndex = r;
+
+                    float runningX = Padding.Left;
+                    int colIndex = -1;
+                    foreach (var col in Columns)
+                    {
+                        if (e.Position.X >= runningX && e.Position.X <= runningX + col.Width)
+                        {
+                            colIndex = Columns.IndexOf(col);
+                            break;
+                        }
+                        runningX += col.Width;
+                    }
+
+                    if (colIndex != -1)
+                    {
+                        DateTime now = DateTime.UtcNow;
+                        if ((now - _lastClickTime).TotalMilliseconds < 300 && r == _lastClickRow && colIndex == _lastClickCol)
+                        {
+                            BeginEdit(r, colIndex);
+                        }
+                        else
+                        {
+                            _lastClickTime = now;
+                            _lastClickRow = r;
+                            _lastClickCol = colIndex;
+                        }
+                    }
+
                     e.Handled = true;
                     return;
                 }
@@ -295,6 +336,10 @@ public class DataGrid : Control
 
     protected override Vector2 MeasureOverride(Vector2 availableSize)
     {
+        if (_cellEditor != null)
+        {
+            _cellEditor.Measure(availableSize);
+        }
         float w = WidthConstraint ?? availableSize.X;
         float h = HeightConstraint ?? availableSize.Y;
         if (float.IsInfinity(w)) w = 500f;
@@ -305,6 +350,7 @@ public class DataGrid : Control
     protected override void ArrangeOverride(Rect arrangeRect)
     {
         Size = new Vector2(arrangeRect.Width, arrangeRect.Height);
+        UpdateCellEditorLayout();
     }
 
     public override void OnRender(DrawingContext context)
@@ -392,13 +438,22 @@ public class DataGrid : Control
 
             // Draw cell text grid columns
             float colX = Padding.Left;
-            foreach (var col in Columns)
+            for (int c = 0; c < Columns.Count; c++)
             {
-                string val = GetCellValue(item, col.PropertyName);
-                float cellTextY = rowY + (_rowHeight - FontSize) / 2f;
-                
-                context.DrawText(val, Font, FontSize, new SolidColorBrush(0xE0E0E0FF), new Vector2(colX + 8f, cellTextY));
-                colX += col.Width;
+                var col = Columns[c];
+                float colWidth = col.Width;
+
+                if (r == _editingRow && c == _editingCol)
+                {
+                    // Do not draw text under editor
+                }
+                else
+                {
+                    string val = GetCellValue(item, col.PropertyName);
+                    float cellTextY = rowY + (_rowHeight - FontSize) / 2f;
+                    context.DrawText(val, Font, FontSize, new SolidColorBrush(0xE0E0E0FF), new Vector2(colX + 8f, cellTextY));
+                }
+                colX += colWidth;
             }
 
             // Draw thin grid lines
@@ -450,5 +505,216 @@ public class DataGrid : Control
         fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X, rect.Y), new Vector2(rect.X + r, rect.Y)));
         geo.Figures.Add(fig);
         return geo;
+    }
+
+    public override void OnKeyDown(KeyRoutedEventArgs e)
+    {
+        if (IsEnabled)
+        {
+            if (e.Key == Key.Enter)
+            {
+                if (SelectedIndex >= 0 && SelectedIndex < _itemsSource.Count && _editingRow == -1)
+                {
+                    BeginEdit(SelectedIndex, 0);
+                    e.Handled = true;
+                    return;
+                }
+            }
+        }
+        base.OnKeyDown(e);
+    }
+
+    public void BeginEdit(int row, int col)
+    {
+        if (row < 0 || row >= _itemsSource.Count || col < 0 || col >= Columns.Count)
+            return;
+
+        _editingRow = row;
+        _editingCol = col;
+
+        var item = _itemsSource[row];
+        var column = Columns[col];
+        string val = GetCellValue(item, column.PropertyName);
+
+        if (_cellEditor == null)
+        {
+            _cellEditor = new CellEditorTextBox(this);
+            AddChild(_cellEditor);
+        }
+
+        _cellEditor.Text = val;
+        _cellEditor.Font = Font;
+        _cellEditor.FontSize = FontSize;
+        _cellEditor.Padding = new Thickness(8f, 0f, 8f, 0f);
+        _cellEditor.CornerRadius = 0f;
+
+        UpdateCellEditorLayout();
+        Invalidate();
+
+        InputSystem.SetFocus(_cellEditor);
+        _cellEditor.CaretIndex = val.Length;
+    }
+
+    public void CommitEdit()
+    {
+        if (_editingRow != -1 && _cellEditor != null)
+        {
+            int row = _editingRow;
+            int col = _editingCol;
+            var item = _itemsSource[row];
+            var column = Columns[col];
+            string newValueText = _cellEditor.Text;
+
+            _editingRow = -1;
+            _editingCol = -1;
+
+            _cellEditor.WidthConstraint = 0f;
+            _cellEditor.HeightConstraint = 0f;
+            _cellEditor.Measure(new Vector2(0, 0));
+            _cellEditor.Arrange(new Rect(0, 0, 0, 0));
+
+            if (InputSystem.FocusedElement == _cellEditor)
+            {
+                InputSystem.SetFocus(this);
+            }
+
+            try
+            {
+                System.Reflection.PropertyInfo? prop = item.GetType().GetProperty(column.PropertyName);
+                if (prop != null && prop.CanWrite)
+                {
+                    System.Type propType = prop.PropertyType;
+                    if (propType == typeof(string))
+                    {
+                        prop.SetValue(item, newValueText);
+                    }
+                    else if (propType == typeof(double))
+                    {
+                        if (double.TryParse(newValueText, out double dVal))
+                        {
+                            prop.SetValue(item, dVal);
+                        }
+                    }
+                    else if (propType == typeof(int))
+                    {
+                        if (int.TryParse(newValueText, out int iVal))
+                        {
+                            prop.SetValue(item, iVal);
+                        }
+                    }
+                    else if (propType == typeof(float))
+                    {
+                        if (float.TryParse(newValueText, out float fVal))
+                        {
+                            prop.SetValue(item, fVal);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error committing edit: {ex.Message}");
+            }
+
+            Invalidate();
+        }
+    }
+
+    public void CancelEdit()
+    {
+        if (_editingRow != -1)
+        {
+            _editingRow = -1;
+            _editingCol = -1;
+
+            if (_cellEditor != null)
+            {
+                _cellEditor.WidthConstraint = 0f;
+                _cellEditor.HeightConstraint = 0f;
+                _cellEditor.Measure(new Vector2(0, 0));
+                _cellEditor.Arrange(new Rect(0, 0, 0, 0));
+
+                if (InputSystem.FocusedElement == _cellEditor)
+                {
+                    InputSystem.SetFocus(this);
+                }
+            }
+
+            Invalidate();
+        }
+    }
+
+    private void UpdateCellEditorLayout()
+    {
+        if (_cellEditor == null) return;
+
+        if (_editingRow != -1)
+        {
+            float rowY = _headerHeight + _editingRow * _rowHeight - _scrollOffset;
+            float colX = Padding.Left;
+            for (int i = 0; i < _editingCol; i++)
+            {
+                colX += Columns[i].Width;
+            }
+            float colWidth = Columns[_editingCol].Width;
+
+            if (rowY + _rowHeight <= _headerHeight || rowY >= Size.Y)
+            {
+                _cellEditor.WidthConstraint = 0f;
+                _cellEditor.HeightConstraint = 0f;
+                _cellEditor.Measure(new Vector2(0, 0));
+                _cellEditor.Arrange(new Rect(0, 0, 0, 0));
+            }
+            else
+            {
+                _cellEditor.WidthConstraint = colWidth;
+                _cellEditor.HeightConstraint = _rowHeight;
+                _cellEditor.Measure(new Vector2(colWidth, _rowHeight));
+                _cellEditor.Arrange(new Rect(colX, rowY, colWidth, _rowHeight));
+            }
+        }
+        else
+        {
+            _cellEditor.WidthConstraint = 0f;
+            _cellEditor.HeightConstraint = 0f;
+            _cellEditor.Measure(new Vector2(0, 0));
+            _cellEditor.Arrange(new Rect(0, 0, 0, 0));
+        }
+    }
+
+    private class CellEditorTextBox : TextBox
+    {
+        private readonly DataGrid _owner;
+
+        public CellEditorTextBox(DataGrid owner)
+        {
+            _owner = owner;
+        }
+
+        public override void OnKeyDown(KeyRoutedEventArgs e)
+        {
+            if (e.Key == Key.Enter)
+            {
+                _owner.CommitEdit();
+                e.Handled = true;
+                return;
+            }
+            else if (e.Key == Key.Escape)
+            {
+                _owner.CancelEdit();
+                e.Handled = true;
+                return;
+            }
+            base.OnKeyDown(e);
+        }
+
+        public override void OnVisualStateChanged()
+        {
+            base.OnVisualStateChanged();
+            if (!IsFocused && _owner._editingRow != -1)
+            {
+                _owner.CancelEdit();
+            }
+        }
     }
 }
