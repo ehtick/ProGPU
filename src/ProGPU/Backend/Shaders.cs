@@ -21,6 +21,10 @@ struct Brush {
 
 struct Uniforms {
     projection: mat4x4<f32>,
+    time: f32,
+    _pad1: f32,
+    _pad2: f32,
+    _pad3: f32,
     brushes: array<Brush, 64>,
 };
 
@@ -35,6 +39,7 @@ struct VertexInput {
     @location(5) cornerRadius: f32,
     @location(6) strokeThickness: f32,
     @location(7) shapeType: f32,
+    @location(8) gridIndex: f32,
 };
 
 struct VertexOutput {
@@ -46,6 +51,7 @@ struct VertexOutput {
     @location(4) cornerRadius: f32,
     @location(5) strokeThickness: f32,
     @location(6) shapeType: f32,
+    @location(7) gridIndex: f32,
 };
 
 @vertex
@@ -55,37 +61,69 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     var worldPos = input.position;
 
     if (sType == 3u) {
-        // GPU Stroke Expansion
+        // GPU Stroke Expansion + GPU Coordinate Wobbling
         var miterN = vec2<f32>(0.0, 0.0);
         var miterScale: f32 = 1.0;
-        let len1 = length(input.position - input.texCoord);
-        let len2 = length(input.shapeSize - input.position);
+        
+        var p0 = input.texCoord;
+        var p1 = input.shapeSize;
+        
+        if (input.gridIndex > 0.0) {
+            let gIdx = input.gridIndex - 1.0;
+            let phase = uniforms.time * 2.5 + gIdx * 0.04;
+            let offsetStart = vec2<f32>(sin(phase) * 12.0, cos(phase * 0.7) * 12.0);
+            let offsetEnd = vec2<f32>(sin(phase * 1.3) * 12.0, cos(phase * 0.9) * 12.0);
+            p0 = p0 + offsetStart;
+            p1 = p1 + offsetEnd;
+        }
+
+        let isStart = length(input.position - input.texCoord) < 0.001;
+        worldPos = select(p1, p0, isStart);
+
+        let len1 = length(worldPos - p0);
+        let len2 = length(p1 - worldPos);
 
         if (len1 < 0.001) {
             if (len2 > 0.001) {
-                let dir = normalize(input.shapeSize - input.position);
+                let dir = normalize(p1 - p0);
                 miterN = vec2<f32>(-dir.y, dir.x);
             }
         } else if (len2 < 0.001) {
-            let dir = normalize(input.position - input.texCoord);
+            let dir = normalize(worldPos - p0);
             miterN = vec2<f32>(-dir.y, dir.x);
         } else {
-            let dir1 = normalize(input.position - input.texCoord);
-            let dir2 = normalize(input.shapeSize - input.position);
+            let dir1 = normalize(worldPos - p0);
+            let dir2 = normalize(p1 - worldPos);
             let n1 = vec2<f32>(-dir1.y, dir1.x);
             let n2 = vec2<f32>(-dir2.y, dir2.x);
             miterN = normalize(n1 + n2);
             miterScale = clamp(1.0 / max(dot(miterN, n1), 0.0001), 0.5, 4.0);
         }
         let offset = miterN * (input.strokeThickness * 0.5) * miterScale * input.cornerRadius;
-        worldPos = input.position + offset;
+        worldPos = worldPos + offset;
     } else if (sType == 5u) {
-        // GPU Quadratic Bezier Curve Evaluation
+        // GPU Quadratic Bezier Curve Evaluation + GPU Coordinate Wobbling
+        var p0 = input.position;
+        var p1 = input.texCoord;
+        var p2 = input.shapeSize;
+        
+        if (input.gridIndex > 0.0) {
+            let gIdx = input.gridIndex - 1.0;
+            let phase = uniforms.time * 2.5 + gIdx * 0.04;
+            let offsetStart = vec2<f32>(sin(phase) * 12.0, cos(phase * 0.7) * 12.0);
+            let offsetEnd = vec2<f32>(sin(phase * 1.3) * 12.0, cos(phase * 0.9) * 12.0);
+            let ctrlOffset = vec2<f32>(sin(phase * 0.6) * 15.0, cos(phase * 0.8) * 15.0);
+            
+            p0 = p0 + offsetStart;
+            p1 = p1 + ctrlOffset;
+            p2 = p2 + offsetEnd;
+        }
+
         let t = input.color.b;
         let signVal = input.color.a;
         let oneMinusT = 1.0 - t;
-        let pos = oneMinusT * oneMinusT * input.position + 2.0 * oneMinusT * t * input.texCoord + t * t * input.shapeSize;
-        let tangent = 2.0 * oneMinusT * (input.texCoord - input.position) + 2.0 * t * (input.shapeSize - input.texCoord);
+        let pos = oneMinusT * oneMinusT * p0 + 2.0 * oneMinusT * t * p1 + t * t * p2;
+        let tangent = 2.0 * oneMinusT * (p1 - p0) + 2.0 * t * (p2 - p1);
         let len = length(tangent);
         var normal = vec2<f32>(0.0, 0.0);
         if (len > 0.0001) {
@@ -94,20 +132,38 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         let offset = normal * (input.strokeThickness * 0.5) * signVal;
         worldPos = pos + offset;
     } else if (sType == 6u) {
-        // GPU Cubic Bezier Curve Evaluation
+        // GPU Cubic Bezier Curve Evaluation + GPU Coordinate Wobbling
+        var p0 = input.position;
+        var p1 = input.texCoord;
+        var p2 = input.shapeSize;
+        var p3 = input.color.rg;
+        
+        if (input.gridIndex > 0.0) {
+            let gIdx = input.gridIndex - 1.0;
+            let phase = uniforms.time * 2.5 + gIdx * 0.04;
+            let offsetStart = vec2<f32>(sin(phase) * 12.0, cos(phase * 0.7) * 12.0);
+            let offsetEnd = vec2<f32>(sin(phase * 1.3) * 12.0, cos(phase * 0.9) * 12.0);
+            let ctrlOffset1 = vec2<f32>(sin(phase * 0.5) * 15.0, cos(phase * 0.7) * 15.0);
+            let ctrlOffset2 = vec2<f32>(cos(phase * 0.6) * 15.0, sin(phase * 0.8) * 15.0);
+            
+            p0 = p0 + offsetStart;
+            p1 = p1 + ctrlOffset1;
+            p2 = p2 + ctrlOffset2;
+            p3 = p3 + offsetEnd;
+        }
+
         let t = input.color.b;
         let signVal = input.color.a;
-        let p3 = input.color.rg;
         let oneMinusT = 1.0 - t;
         
-        let pos = oneMinusT * oneMinusT * oneMinusT * input.position 
-                + 3.0 * oneMinusT * oneMinusT * t * input.texCoord 
-                + 3.0 * oneMinusT * t * t * input.shapeSize 
+        let pos = oneMinusT * oneMinusT * oneMinusT * p0 
+                + 3.0 * oneMinusT * oneMinusT * t * p1 
+                + 3.0 * oneMinusT * t * t * p2 
                 + t * t * t * p3;
                 
-        let tangent = 3.0 * oneMinusT * oneMinusT * (input.texCoord - input.position) 
-                    + 6.0 * oneMinusT * t * (input.shapeSize - input.texCoord) 
-                    + 3.0 * t * t * (p3 - input.shapeSize);
+        let tangent = 3.0 * oneMinusT * oneMinusT * (p1 - p0) 
+                    + 6.0 * oneMinusT * t * (p2 - p1) 
+                    + 3.0 * t * t * (p3 - p2);
                     
         let len = length(tangent);
         var normal = vec2<f32>(0.0, 0.0);
@@ -126,6 +182,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     output.cornerRadius = input.cornerRadius;
     output.strokeThickness = input.strokeThickness;
     output.shapeType = input.shapeType;
+    output.gridIndex = input.gridIndex;
     return output;
 }
 

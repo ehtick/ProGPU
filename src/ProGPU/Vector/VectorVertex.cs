@@ -16,6 +16,7 @@ public struct VectorVertex
     public float CornerRadius;
     public float StrokeThickness;
     public float ShapeType; // 0 = Rect, 1 = Ellipse, 2 = RoundedRect, 3 = Line, 4 = Complex Path
+    public float GridIndex; // Add GridIndex!
 
     public VectorVertex(
         Vector2 position, 
@@ -25,7 +26,8 @@ public struct VectorVertex
         Vector2 shapeSize = default,
         float cornerRadius = 0f,
         float strokeThickness = 0f,
-        float shapeType = 0f)
+        float shapeType = 0f,
+        float gridIndex = 0f)
     {
         Position = position;
         Color = color;
@@ -35,5 +37,6 @@ public struct VectorVertex
         CornerRadius = cornerRadius;
         StrokeThickness = strokeThickness;
         ShapeType = shapeType;
+        GridIndex = gridIndex;
     }
 }

@@ -81,6 +81,7 @@ public struct RenderCommand
     public Vector2 Position4;
     public float RadiusX;
     public float RadiusY;
+    public float CornerRadius;
 }
 
 public class DrawingContext
@@ -162,14 +163,15 @@ public class DrawingContext
         Commands.Add(new RenderCommand { Type = RenderCommandType.PopOpacity });
     }
 
-    public void DrawLine(Pen pen, Vector2 p1, Vector2 p2)
+    public void DrawLine(Pen pen, Vector2 p1, Vector2 p2, float gridIndex = 0f)
     {
         Commands.Add(new RenderCommand
         {
             Type = RenderCommandType.DrawLine,
             Pen = pen,
             Position = p1,
-            Position2 = p2
+            Position2 = p2,
+            CornerRadius = gridIndex
         });
     }
 
@@ -225,7 +227,7 @@ public class DrawingContext
         DrawRoundedRectangle(brush, null, rect, radius);
     }
 
-    public void DrawQuadraticBezier(Pen pen, Vector2 p0, Vector2 p1, Vector2 p2)
+    public void DrawQuadraticBezier(Pen pen, Vector2 p0, Vector2 p1, Vector2 p2, float gridIndex = 0f)
     {
         Commands.Add(new RenderCommand
         {
@@ -233,11 +235,12 @@ public class DrawingContext
             Pen = pen,
             Position = p0,
             Position2 = p1,
-            Position3 = p2
+            Position3 = p2,
+            CornerRadius = gridIndex
         });
     }
 
-    public void DrawCubicBezier(Pen pen, Vector2 p0, Vector2 p1, Vector2 p2, Vector2 p3)
+    public void DrawCubicBezier(Pen pen, Vector2 p0, Vector2 p1, Vector2 p2, Vector2 p3, float gridIndex = 0f)
     {
         Commands.Add(new RenderCommand
         {
@@ -246,7 +249,8 @@ public class DrawingContext
             Position = p0,
             Position2 = p1,
             Position3 = p2,
-            Position4 = p3
+            Position4 = p3,
+            CornerRadius = gridIndex
         });
     }
 
