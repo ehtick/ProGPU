@@ -116,6 +116,7 @@ public unsafe class Compositor : IDisposable
     private readonly List<CompositorDrawCall> _drawCalls = new();
     private readonly Dictionary<nint, nint> _textureBindGroups = new();
     private readonly List<GpuBrush> _activeBrushes = new();
+    private readonly Dictionary<(string Text, TtfFont Font, float Size, TextAlignment Align), TextLayout> _layoutCache = new();
 
     private bool _isDisposed;
 
@@ -352,6 +353,11 @@ public unsafe class Compositor : IDisposable
         _textureVerticesList.Clear();
         _textureIndicesList.Clear();
         _drawCalls.Clear();
+
+        if (_layoutCache.Count > 1000)
+        {
+            _layoutCache.Clear();
+        }
 
         _clipStack.Clear();
         _activeClipRect = null;
@@ -1450,7 +1456,12 @@ public unsafe class Compositor : IDisposable
         }
         else
         {
-            layout = new TextLayout(cmd.Text, font, cmd.FontSize, 10000f, TextAlignment.Left, _atlas);
+            var key = (cmd.Text, font, cmd.FontSize, TextAlignment.Left);
+            if (!_layoutCache.TryGetValue(key, out layout))
+            {
+                layout = new TextLayout(cmd.Text, font, cmd.FontSize, 10000f, TextAlignment.Left, null);
+                _layoutCache[key] = layout;
+            }
         }
 
         if (layout == null) return;
@@ -1516,7 +1527,7 @@ public unsafe class Compositor : IDisposable
                 continue;
             }
 
-            var info = runGlyph.Glyph;
+            var info = _atlas.GetOrCreateGlyph(font, runGlyph.CodePoint, cmd.FontSize);
             if (info.Width == 0 || info.Height == 0) continue;
 
             int passCount = cmd.IsBold ? 2 : 1;
@@ -1525,8 +1536,13 @@ public unsafe class Compositor : IDisposable
             for (int pass = 0; pass < passCount; pass++)
             {
                 float xOffset = pass * boldOffset;
-                float x0 = runGlyph.Position.X + cmd.Position.X + xOffset;
-                float y0 = runGlyph.Position.Y + cmd.Position.Y;
+                
+                // Retrieve baseline coordinate from layout position by subtracting dummy Bear offset
+                float baseCursorX = runGlyph.Position.X - runGlyph.Glyph.BearX;
+                float baseCursorY = runGlyph.Position.Y - runGlyph.Glyph.BearY;
+
+                float x0 = baseCursorX + info.BearX + cmd.Position.X + xOffset;
+                float y0 = baseCursorY + info.BearY + cmd.Position.Y;
                 float x1 = x0 + info.Width;
                 float y1 = y0 + info.Height;
 

@@ -45,7 +45,7 @@ public class TextLayout
 
     public void GenerateLayout(GlyphAtlas? atlas)
     {
-        HasTextures = atlas != null;
+        HasTextures = true;
         Glyphs.Clear();
         if (string.IsNullOrEmpty(Text))
         {
@@ -93,28 +93,20 @@ public class TextLayout
                 continue;
             }
 
-            GlyphInfo glyph;
-            if (atlas != null)
+            ushort glyphIdx = Font.GetGlyphIndex(codePoint);
+            float advance = Font.GetAdvanceWidth(glyphIdx, FontSize);
+            GlyphInfo glyph = new GlyphInfo
             {
-                glyph = atlas.GetOrCreateGlyph(Font, codePoint, FontSize);
-            }
-            else
-            {
-                ushort glyphIdx = Font.GetGlyphIndex(codePoint);
-                float advance = Font.GetAdvanceWidth(glyphIdx, FontSize);
-                glyph = new GlyphInfo
-                {
-                    X = 0,
-                    Y = 0,
-                    Width = (uint)advance,
-                    Height = (uint)lineSpacing,
-                    BearX = 0,
-                    BearY = 0,
-                    Advance = advance,
-                    TexCoordMin = Vector2.Zero,
-                    TexCoordMax = Vector2.Zero
-                };
-            }
+                X = 0,
+                Y = 0,
+                Width = (uint)advance,
+                Height = (uint)lineSpacing,
+                BearX = 0,
+                BearY = 0,
+                Advance = advance,
+                TexCoordMin = Vector2.Zero,
+                TexCoordMax = Vector2.Zero
+            };
             
             // Add kerning offset
             if (prevCodePoint != 0)

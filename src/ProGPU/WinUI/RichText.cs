@@ -178,29 +178,78 @@ public class RichTextBlock : FrameworkElement
     public int SelectionStart { get; set; } = -1;
     public int SelectionLength { get; set; } = 0;
 
+    private float _lastLayoutWidth = -1f;
+    private TtfFont? _lastLayoutFont;
+    private float _lastLayoutFontSize = -1f;
+    private TextAlignment _lastLayoutAlignment = TextAlignment.Left;
+    private bool _isLayoutDirty = true;
+
+    public void InvalidateLayout()
+    {
+        _isLayoutDirty = true;
+    }
+
+    public new void Invalidate()
+    {
+        _isLayoutDirty = true;
+        base.Invalidate();
+    }
+
     public TtfFont? Font
     {
         get => _font;
-        set { if (_font != value) { _font = value; Invalidate(); } }
+        set
+        {
+            if (_font != value)
+            {
+                _font = value;
+                _isLayoutDirty = true;
+                Invalidate();
+            }
+        }
     }
 
     public float FontSize
     {
         get => _fontSize;
-        set { if (_fontSize != value) { _fontSize = value; Invalidate(); } }
+        set
+        {
+            if (_fontSize != value)
+            {
+                _fontSize = value;
+                _isLayoutDirty = true;
+                Invalidate();
+            }
+        }
     }
 
     private Brush? _foreground;
     public Brush? Foreground
     {
         get => _foreground;
-        set { if (_foreground != value) { _foreground = value; Invalidate(); } }
+        set
+        {
+            if (_foreground != value)
+            {
+                _foreground = value;
+                _isLayoutDirty = true;
+                Invalidate();
+            }
+        }
     }
 
     public TextAlignment TextAlignment
     {
         get => _textAlignment;
-        set { if (_textAlignment != value) { _textAlignment = value; Invalidate(); } }
+        set
+        {
+            if (_textAlignment != value)
+            {
+                _textAlignment = value;
+                _isLayoutDirty = true;
+                Invalidate();
+            }
+        }
     }
 
     public List<PositionedRichChar> PositionedChars => _positionedChars;
@@ -293,8 +342,28 @@ public class RichTextBlock : FrameworkElement
         }
     }
 
-    public void PerformRichLayout(float maxWidth)
+    public void PerformRichLayout(float maxWidth, bool force = false)
     {
+        if (force)
+        {
+            _isLayoutDirty = true;
+        }
+
+        if (!_isLayoutDirty &&
+            Math.Abs(maxWidth - _lastLayoutWidth) < 0.01f &&
+            Font == _lastLayoutFont &&
+            Math.Abs(FontSize - _lastLayoutFontSize) < 0.01f &&
+            TextAlignment == _lastLayoutAlignment)
+        {
+            return;
+        }
+
+        _lastLayoutWidth = maxWidth;
+        _lastLayoutFont = Font;
+        _lastLayoutFontSize = FontSize;
+        _lastLayoutAlignment = TextAlignment;
+        _isLayoutDirty = false;
+
         _positionedChars.Clear();
         _tableDecorations.Clear();
         if (Font == null) return;

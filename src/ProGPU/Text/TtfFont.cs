@@ -2,9 +2,46 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using ProGPU.Vector;
 
 namespace ProGPU.Text;
+
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
+public struct GpuSegment
+{
+    public Vector2 P0;
+    public Vector2 P1;
+    public Vector2 P2;
+    public uint SegmentType;
+    public uint Pad;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
+public struct GpuGlyphRecord
+{
+    public uint StartSegment;
+    public uint SegmentCount;
+    public float MinX;
+    public float MinY;
+    public float MaxX;
+    public float MaxY;
+    public uint Pad0;
+    public uint Pad1;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
+public struct GlyphUniforms
+{
+    public float XStart;
+    public float YStart;
+    public float Scale;
+    public uint GlyphIndex;
+    public uint AtlasX;
+    public uint AtlasY;
+    public uint Width;
+    public uint Height;
+}
 
 public class TtfFont
 {
@@ -746,6 +783,162 @@ public class TtfFont
             }
         }
         return null;
+    }
+
+    public (GpuGlyphRecord[] Records, GpuSegment[] Segments) CompileGpuOutlineData()
+    {
+        var records = new GpuGlyphRecord[NumGlyphs];
+        var segments = new List<GpuSegment>();
+
+        for (ushort glyphId = 0; glyphId < NumGlyphs; glyphId++)
+        {
+            var outline = GetGlyphOutline(glyphId);
+
+            uint startSegment = (uint)segments.Count;
+            float minX = float.MaxValue;
+            float minY = float.MaxValue;
+            float maxX = float.MinValue;
+            float maxY = float.MinValue;
+
+            if (outline != null)
+            {
+                foreach (var figure in outline.Figures)
+                {
+                    if (figure.Segments.Count == 0) continue;
+
+                    Vector2 currentPoint = figure.StartPoint;
+
+                    foreach (var segment in figure.Segments)
+                    {
+                        if (segment is LineSegment line)
+                        {
+                            var seg = new GpuSegment
+                            {
+                                P0 = currentPoint,
+                                P1 = line.Point,
+                                P2 = Vector2.Zero,
+                                SegmentType = 0,
+                                Pad = 0
+                            };
+                            segments.Add(seg);
+
+                            UpdateBoundingBoxWithLine(seg.P0, seg.P1, ref minX, ref minY, ref maxX, ref maxY);
+                            currentPoint = line.Point;
+                        }
+                        else if (segment is QuadraticBezierSegment quad)
+                        {
+                            var seg = new GpuSegment
+                            {
+                                P0 = currentPoint,
+                                P1 = quad.ControlPoint,
+                                P2 = quad.Point,
+                                SegmentType = 1,
+                                Pad = 0
+                            };
+                            segments.Add(seg);
+
+                            UpdateBoundingBoxWithQuad(seg.P0, seg.P1, seg.P2, ref minX, ref minY, ref maxX, ref maxY);
+                            currentPoint = quad.Point;
+                        }
+                    }
+
+                    if (figure.IsClosed && currentPoint != figure.StartPoint)
+                    {
+                        var seg = new GpuSegment
+                        {
+                            P0 = currentPoint,
+                            P1 = figure.StartPoint,
+                            P2 = Vector2.Zero,
+                            SegmentType = 0,
+                            Pad = 0
+                        };
+                        segments.Add(seg);
+
+                        UpdateBoundingBoxWithLine(seg.P0, seg.P1, ref minX, ref minY, ref maxX, ref maxY);
+                        currentPoint = figure.StartPoint;
+                    }
+                }
+            }
+
+            uint segmentCount = (uint)segments.Count - startSegment;
+
+            if (segmentCount > 0)
+            {
+                records[glyphId] = new GpuGlyphRecord
+                {
+                    StartSegment = startSegment,
+                    SegmentCount = segmentCount,
+                    MinX = minX,
+                    MinY = minY,
+                    MaxX = maxX,
+                    MaxY = maxY,
+                    Pad0 = 0,
+                    Pad1 = 0
+                };
+            }
+            else
+            {
+                records[glyphId] = new GpuGlyphRecord
+                {
+                    StartSegment = 0,
+                    SegmentCount = 0,
+                    MinX = 0,
+                    MinY = 0,
+                    MaxX = 0,
+                    MaxY = 0,
+                    Pad0 = 0,
+                    Pad1 = 0
+                };
+            }
+        }
+
+        return (records, segments.ToArray());
+    }
+
+    private static void UpdateBoundingBoxWithLine(Vector2 p0, Vector2 p1, ref float minX, ref float minY, ref float maxX, ref float maxY)
+    {
+        UpdateMinMax(p0, ref minX, ref minY, ref maxX, ref maxY);
+        UpdateMinMax(p1, ref minX, ref minY, ref maxX, ref maxY);
+    }
+
+    private static void UpdateBoundingBoxWithQuad(Vector2 p0, Vector2 p1, Vector2 p2, ref float minX, ref float minY, ref float maxX, ref float maxY)
+    {
+        UpdateMinMax(p0, ref minX, ref minY, ref maxX, ref maxY);
+        UpdateMinMax(p2, ref minX, ref minY, ref maxX, ref maxY);
+
+        // X extremum
+        float denomX = p0.X - 2 * p1.X + p2.X;
+        if (Math.Abs(denomX) > 1e-6f)
+        {
+            float t = (p0.X - p1.X) / denomX;
+            if (t > 0 && t < 1)
+            {
+                float x = (1 - t) * (1 - t) * p0.X + 2 * (1 - t) * t * p1.X + t * t * p2.X;
+                minX = Math.Min(minX, x);
+                maxX = Math.Max(maxX, x);
+            }
+        }
+
+        // Y extremum
+        float denomY = p0.Y - 2 * p1.Y + p2.Y;
+        if (Math.Abs(denomY) > 1e-6f)
+        {
+            float t = (p0.Y - p1.Y) / denomY;
+            if (t > 0 && t < 1)
+            {
+                float y = (1 - t) * (1 - t) * p0.Y + 2 * (1 - t) * t * p1.Y + t * t * p2.Y;
+                minY = Math.Min(minY, y);
+                maxY = Math.Max(maxY, y);
+            }
+        }
+    }
+
+    private static void UpdateMinMax(Vector2 p, ref float minX, ref float minY, ref float maxX, ref float maxY)
+    {
+        if (p.X < minX) minX = p.X;
+        if (p.X > maxX) maxX = p.X;
+        if (p.Y < minY) minY = p.Y;
+        if (p.Y > maxY) maxY = p.Y;
     }
 }
 
