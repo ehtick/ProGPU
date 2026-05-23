@@ -36,6 +36,30 @@ public class TtfFont
     private ushort[] _idRangeOffsets = null!;
     private uint _idRangeOffsetsTableOffset;
 
+    // Cmap format 12 variables
+    private uint _cmap12Offset;
+    private uint _numGroups12;
+    private uint[] _startCharCodes12 = null!;
+    private uint[] _endCharCodes12 = null!;
+    private uint[] _startGlyphIds12 = null!;
+
+    // COLR & CPAL color tables variables
+    private uint _colrOffset;
+    private uint _cpalOffset;
+
+    // CPAL state
+    private ushort _numPaletteEntries;
+    private ushort _numPalettes;
+    private ushort _numColorRecords;
+    private uint _colorRecordsOffset;
+    private Vector4[] _colorPalette = null!;
+
+    // COLR state
+    private ushort _numBaseGlyphRecords;
+    private uint _baseGlyphRecordsOffset;
+    private uint _layerRecordsOffset;
+    private ushort _numLayerRecords;
+
     public TtfFont(byte[] fontData)
     {
         _data = fontData;
@@ -44,6 +68,8 @@ public class TtfFont
         ParseHheaTable();
         ParseMaxpTable();
         ParseCmapTable();
+        ParseColrTable();
+        ParseCpalTable();
     }
 
     public TtfFont(string filePath) : this(File.ReadAllBytes(filePath))
@@ -134,8 +160,9 @@ public class TtfFont
         ushort version = ReadUShort(cmapTableOffset);
         ushort numTables = ReadUShort(cmapTableOffset + 2);
 
-        // Find standard Unicode BMP mapping (Platform 3, Encoding 1)
-        uint subtableOffset = 0;
+        uint subtable4Offset = 0;
+        uint subtable12Offset = 0;
+
         for (int i = 0; i < numTables; i++)
         {
             uint recordOffset = cmapTableOffset + 4 + (uint)(i * 8);
@@ -143,22 +170,53 @@ public class TtfFont
             ushort encodingId = ReadUShort(recordOffset + 2);
             uint offset = ReadUInt(recordOffset + 4);
 
-            if ((platformId == 3 && encodingId == 1) || (platformId == 0))
+            // Format 12 is Platform 3 Encoding 10 (Unicode Full) or Platform 0 Encoding 4 (Unicode Full)
+            if ((platformId == 3 && encodingId == 10) || (platformId == 0 && encodingId == 4))
             {
-                subtableOffset = cmapTableOffset + offset;
-                break;
+                subtable12Offset = cmapTableOffset + offset;
+            }
+            // Format 4 is Platform 3 Encoding 1 (Unicode BMP) or Platform 0
+            else if ((platformId == 3 && encodingId == 1) || (platformId == 0))
+            {
+                if (subtable4Offset == 0) subtable4Offset = cmapTableOffset + offset;
             }
         }
 
+        // If we found a format 12 subtable, parse it
+        if (subtable12Offset != 0)
+        {
+            ushort format = ReadUShort(subtable12Offset);
+            if (format == 12)
+            {
+                _cmap12Offset = subtable12Offset;
+                _numGroups12 = ReadUInt(_cmap12Offset + 12);
+                _startCharCodes12 = new uint[_numGroups12];
+                _endCharCodes12 = new uint[_numGroups12];
+                _startGlyphIds12 = new uint[_numGroups12];
+
+                uint groupOffset = _cmap12Offset + 16;
+                for (uint i = 0; i < _numGroups12; i++)
+                {
+                    _startCharCodes12[i] = ReadUInt(groupOffset + i * 12);
+                    _endCharCodes12[i] = ReadUInt(groupOffset + i * 12 + 4);
+                    _startGlyphIds12[i] = ReadUInt(groupOffset + i * 12 + 8);
+                }
+            }
+        }
+
+        // We MUST always have a fallback format 4 table for compatibility and core characters
+        uint subtableOffset = subtable4Offset;
         if (subtableOffset == 0)
         {
+            if (subtable12Offset != 0) return; // format 12 is active
             throw new NotSupportedException("Could not find a supported Unicode cmap subtable in TTF font.");
         }
 
-        ushort format = ReadUShort(subtableOffset);
-        if (format != 4)
+        ushort format4 = ReadUShort(subtableOffset);
+        if (format4 != 4)
         {
-            throw new NotSupportedException($"Only TTF Cmap Format 4 is supported. Found format {format}.");
+            if (subtable12Offset != 0) return; // format 12 is active
+            throw new NotSupportedException($"Only TTF Cmap Format 4 or 12 is supported. Found format {format4}.");
         }
 
         _cmapOffset = subtableOffset;
@@ -186,39 +244,73 @@ public class TtfFont
 
     public ushort GetGlyphIndex(char c)
     {
-        ushort code = c;
-        int segment = -1;
+        return GetGlyphIndex((uint)c);
+    }
 
-        for (int i = 0; i < _segCount; i++)
+    public ushort GetGlyphIndex(uint codePoint)
+    {
+        // 1. Try to search Format 12 subtable first
+        if (_numGroups12 > 0)
         {
-            if (_endCodes[i] >= code)
+            int low = 0;
+            int high = (int)_numGroups12 - 1;
+            while (low <= high)
             {
-                segment = i;
-                break;
+                int mid = (low + high) / 2;
+                uint start = _startCharCodes12[mid];
+                uint end = _endCharCodes12[mid];
+                if (codePoint >= start && codePoint <= end)
+                {
+                    return (ushort)(_startGlyphIds12[mid] + (codePoint - start));
+                }
+                else if (codePoint < start)
+                {
+                    high = mid - 1;
+                }
+                else
+                {
+                    low = mid + 1;
+                }
             }
         }
 
-        if (segment == -1 || _startCodes[segment] > code)
+        // 2. Fall back to Format 4 subtable
+        if (_segCount > 0 && codePoint <= 0xFFFF)
         {
-            return 0; // Missing glyph (usually rectangle index 0)
+            ushort code = (ushort)codePoint;
+            int segment = -1;
+
+            for (int i = 0; i < _segCount; i++)
+            {
+                if (_endCodes[i] >= code)
+                {
+                    segment = i;
+                    break;
+                }
+            }
+
+            if (segment == -1 || _startCodes[segment] > code)
+            {
+                return 0; // Missing glyph (usually rectangle index 0)
+            }
+
+            ushort rangeOffset = _idRangeOffsets[segment];
+            if (rangeOffset == 0)
+            {
+                return (ushort)((code + _idDeltas[segment]) & 0xFFFF);
+            }
+
+            // Complex range offset lookup in TTF format 4
+            uint rangeOffsetAddress = _idRangeOffsetsTableOffset + (uint)(segment * 2);
+            uint glyphIndexAddress = rangeOffsetAddress + rangeOffset + (uint)((code - _startCodes[segment]) * 2);
+            
+            ushort rawIndex = ReadUShort(glyphIndexAddress);
+            if (rawIndex != 0)
+            {
+                return (ushort)((rawIndex + _idDeltas[segment]) & 0xFFFF);
+            }
         }
 
-        ushort rangeOffset = _idRangeOffsets[segment];
-        if (rangeOffset == 0)
-        {
-            return (ushort)((code + _idDeltas[segment]) & 0xFFFF);
-        }
-
-        // Complex range offset lookup in TTF format 4
-        uint rangeOffsetAddress = _idRangeOffsetsTableOffset + (uint)(segment * 2);
-        uint glyphIndexAddress = rangeOffsetAddress + rangeOffset + (uint)((code - _startCodes[segment]) * 2);
-        
-        ushort rawIndex = ReadUShort(glyphIndexAddress);
-        if (rawIndex != 0)
-        {
-            return (ushort)((rawIndex + _idDeltas[segment]) & 0xFFFF);
-        }
-        
         return 0;
     }
 
@@ -242,6 +334,11 @@ public class TtfFont
     }
 
     public float GetKerning(char left, char right, float emSize)
+    {
+        return GetKerning((uint)left, (uint)right, emSize);
+    }
+
+    public float GetKerning(uint left, uint right, float emSize)
     {
         if (!_tables.TryGetValue("kern", out var kern)) return 0;
         
@@ -529,4 +626,131 @@ public class TtfFont
         figure.IsFilled = true;
         return figure;
     }
+
+    private void ParseColrTable()
+    {
+        if (!_tables.TryGetValue("COLR", out var colr)) return;
+        _colrOffset = colr.offset;
+        
+        ushort version = ReadUShort(_colrOffset);
+        if (version == 0)
+        {
+            _numBaseGlyphRecords = ReadUShort(_colrOffset + 2);
+            _baseGlyphRecordsOffset = _colrOffset + ReadUInt(_colrOffset + 4);
+            _layerRecordsOffset = _colrOffset + ReadUInt(_colrOffset + 8);
+            _numLayerRecords = ReadUShort(_colrOffset + 12);
+        }
+    }
+
+    private void ParseCpalTable()
+    {
+        if (!_tables.TryGetValue("CPAL", out var cpal)) return;
+        _cpalOffset = cpal.offset;
+
+        ushort version = ReadUShort(_cpalOffset);
+        if (version == 0)
+        {
+            _numPaletteEntries = ReadUShort(_cpalOffset + 2);
+            _numPalettes = ReadUShort(_cpalOffset + 4);
+            _numColorRecords = ReadUShort(_cpalOffset + 6);
+            _colorRecordsOffset = _cpalOffset + ReadUInt(_cpalOffset + 8);
+
+            // Parse default palette (palette 0)
+            _colorPalette = new Vector4[_numPaletteEntries];
+            
+            // Check first palette record index
+            ushort firstPaletteRecordIndex = ReadUShort(_cpalOffset + 12);
+
+            for (int i = 0; i < _numPaletteEntries; i++)
+            {
+                uint recordOffset = _colorRecordsOffset + (uint)((firstPaletteRecordIndex + i) * 4);
+                byte b = _data[recordOffset];
+                byte g = _data[recordOffset + 1];
+                byte r = _data[recordOffset + 2];
+                byte a = _data[recordOffset + 3];
+
+                _colorPalette[i] = new Vector4(r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f);
+            }
+        }
+    }
+
+    public bool HasColorLayers(ushort glyphId)
+    {
+        if (_numBaseGlyphRecords == 0) return false;
+        
+        int low = 0;
+        int high = _numBaseGlyphRecords - 1;
+        while (low <= high)
+        {
+            int mid = (low + high) / 2;
+            uint recordOffset = _baseGlyphRecordsOffset + (uint)(mid * 6);
+            ushort gid = ReadUShort(recordOffset);
+
+            if (gid == glyphId)
+            {
+                return true;
+            }
+            else if (gid < glyphId)
+            {
+                low = mid + 1;
+            }
+            else
+            {
+                high = mid - 1;
+            }
+        }
+        return false;
+    }
+
+    public List<FontColorLayer>? GetColorLayers(ushort glyphId)
+    {
+        if (_numBaseGlyphRecords == 0) return null;
+
+        int low = 0;
+        int high = _numBaseGlyphRecords - 1;
+        while (low <= high)
+        {
+            int mid = (low + high) / 2;
+            uint recordOffset = _baseGlyphRecordsOffset + (uint)(mid * 6);
+            ushort gid = ReadUShort(recordOffset);
+
+            if (gid == glyphId)
+            {
+                ushort firstLayerIndex = ReadUShort(recordOffset + 2);
+                ushort numLayers = ReadUShort(recordOffset + 4);
+
+                var layers = new List<FontColorLayer>(numLayers);
+                for (int i = 0; i < numLayers; i++)
+                {
+                    uint layerOffset = _layerRecordsOffset + (uint)((firstLayerIndex + i) * 4);
+                    ushort layerGid = ReadUShort(layerOffset);
+                    ushort paletteIndex = ReadUShort(layerOffset + 2);
+
+                    Vector4 color = Vector4.One; // Default color
+                    if (paletteIndex < _numPaletteEntries && _colorPalette != null)
+                    {
+                        color = _colorPalette[paletteIndex];
+                    }
+
+                    layers.Add(new FontColorLayer { GlyphId = layerGid, Color = color });
+                }
+                return layers;
+            }
+            else if (gid < glyphId)
+            {
+                low = mid + 1;
+            }
+            else
+            {
+                high = mid - 1;
+            }
+        }
+        return null;
+    }
+}
+
+public struct FontColorLayer
+{
+    public ushort GlyphId;
+    public Vector4 Color;
 }

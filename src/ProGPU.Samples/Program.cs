@@ -922,6 +922,27 @@ public static unsafe class Program
             new Run("Text flows between columns automatically, managing margins, alignment bounds, and paragraphs dynamically.")
         ));
 
+        flowDoc.Blocks.Add(new Paragraph(
+            new Bold(new Run("Real Font-Driven Unicode Vector Symbols:\n")),
+            new Run("ProGPU decodes full 32-bit Unicode characters from standard font files and renders their outlines natively on the GPU: "),
+            new Bold(new Run("★ ")),
+            new Run("Star, "),
+            new Bold(new Run("♠ ")),
+            new Run("Spade, "),
+            new Bold(new Run("♦ ")),
+            new Run("Diamond, "),
+            new Bold(new Run("♣ ")),
+            new Run("Club, "),
+            new Bold(new Run("♥ ")),
+            new Run("Heart, "),
+            new Bold(new Run("✔ ")),
+            new Run("Check, "),
+            new Bold(new Run("▲ ")),
+            new Run("Up, and "),
+            new Bold(new Run("▼ ")),
+            new Run("Down render with zero performance loss as crisp, premium vector paths!")
+        ));
+
         // Add a beautiful structured vector table
         var table = new Table
         {

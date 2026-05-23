@@ -15,6 +15,7 @@ public enum TextAlignment
 public struct TextRunGlyph
 {
     public char Character;
+    public uint CodePoint;
     public Vector2 Position; // Top-Left screen coordinates of the glyph box
     public GlyphInfo Glyph;
 }
@@ -62,7 +63,7 @@ public class TextLayout
 
         float cursorX = 0f;
         float cursorY = 0f;
-        char prevChar = '\0';
+        uint prevCodePoint = 0;
 
         // Keep track of words to enable word wrapping
         int lastWordStartIdxInLine = -1;
@@ -71,15 +72,23 @@ public class TextLayout
         for (int i = 0; i < Text.Length; i++)
         {
             char c = Text[i];
+            uint codePoint = c;
 
-            if (c == '\n')
+            // Handle surrogate pairs to decode to full 32-bit UTF-32 code point
+            if (char.IsHighSurrogate(c) && i + 1 < Text.Length && char.IsLowSurrogate(Text[i + 1]))
+            {
+                codePoint = (uint)char.ConvertToUtf32(c, Text[i + 1]);
+                i++; // skip low surrogate
+            }
+
+            if (codePoint == '\n')
             {
                 // Explicit line break
                 lines.Add(currentLine);
                 currentLine = new List<TextRunGlyph>();
                 cursorX = 0f;
                 cursorY += lineSpacing;
-                prevChar = '\0';
+                prevCodePoint = 0;
                 lastWordStartIdxInLine = -1;
                 continue;
             }
@@ -87,11 +96,11 @@ public class TextLayout
             GlyphInfo glyph;
             if (atlas != null)
             {
-                glyph = atlas.GetOrCreateGlyph(Font, c, FontSize);
+                glyph = atlas.GetOrCreateGlyph(Font, codePoint, FontSize);
             }
             else
             {
-                ushort glyphIdx = Font.GetGlyphIndex(c);
+                ushort glyphIdx = Font.GetGlyphIndex(codePoint);
                 float advance = Font.GetAdvanceWidth(glyphIdx, FontSize);
                 glyph = new GlyphInfo
                 {
@@ -108,13 +117,13 @@ public class TextLayout
             }
             
             // Add kerning offset
-            if (prevChar != '\0')
+            if (prevCodePoint != 0)
             {
-                cursorX += Font.GetKerning(prevChar, c, FontSize);
+                cursorX += Font.GetKerning(prevCodePoint, codePoint, FontSize);
             }
 
             // Word boundary tracking
-            if (c == ' ' || c == '\t')
+            if (codePoint == ' ' || codePoint == '\t')
             {
                 lastWordStartIdxInLine = -1;
             }
@@ -139,7 +148,7 @@ public class TextLayout
                     
                     cursorX = 0f;
                     cursorY += lineSpacing;
-                    prevChar = '\0';
+                    prevCodePoint = 0;
 
                     // Re-position the wrapped glyphs on the new line
                     foreach (var wg in wrappedGlyphs)
@@ -149,18 +158,18 @@ public class TextLayout
                         remapped.Position = new Vector2(shift, cursorY + fontAscent + remapped.Glyph.BearY);
                         currentLine.Add(remapped);
                         cursorX = shift + remapped.Glyph.Advance;
-                        prevChar = remapped.Character;
+                        prevCodePoint = remapped.CodePoint;
                     }
                     
                     // Add the current character
-                    if (prevChar != '\0')
+                    if (prevCodePoint != 0)
                     {
-                        cursorX += Font.GetKerning(prevChar, c, FontSize);
+                        cursorX += Font.GetKerning(prevCodePoint, codePoint, FontSize);
                     }
                     var glyphPos = new Vector2(cursorX + glyph.BearX, cursorY + fontAscent + glyph.BearY);
-                    currentLine.Add(new TextRunGlyph { Character = c, Position = glyphPos, Glyph = glyph });
+                    currentLine.Add(new TextRunGlyph { Character = c, CodePoint = codePoint, Position = glyphPos, Glyph = glyph });
                     cursorX += glyph.Advance;
-                    prevChar = c;
+                    prevCodePoint = codePoint;
                     lastWordStartIdxInLine = 0;
                     lastWordStartCursorX = 0f;
                     continue;
@@ -172,15 +181,15 @@ public class TextLayout
                     currentLine = new List<TextRunGlyph>();
                     cursorX = 0f;
                     cursorY += lineSpacing;
-                    prevChar = '\0';
+                    prevCodePoint = 0;
                 }
             }
 
             // Position calculation (Y is offset by the ascender height so baseline aligns perfectly)
             var pos = new Vector2(cursorX + glyph.BearX, cursorY + fontAscent + glyph.BearY);
-            currentLine.Add(new TextRunGlyph { Character = c, Position = pos, Glyph = glyph });
+            currentLine.Add(new TextRunGlyph { Character = c, CodePoint = codePoint, Position = pos, Glyph = glyph });
             cursorX += glyph.Advance;
-            prevChar = c;
+            prevCodePoint = codePoint;
         }
 
         if (currentLine.Count > 0)

@@ -1461,6 +1461,61 @@ public unsafe class Compositor : IDisposable
 
         foreach (var runGlyph in layout.Glyphs)
         {
+            ushort glyphIdx = font.GetGlyphIndex(runGlyph.CodePoint);
+            var colorLayers = font.GetColorLayers(glyphIdx);
+
+            if (colorLayers != null && colorLayers.Count > 0)
+            {
+                foreach (var layer in colorLayers)
+                {
+                    var layerOutline = font.GetGlyphOutline(layer.GlyphId);
+                    if (layerOutline == null) continue;
+
+                    float emScale = cmd.FontSize / font.UnitsPerEm;
+                    var transformedOutline = new PathGeometry();
+                    float x0 = runGlyph.Position.X + cmd.Position.X;
+                    float y0 = runGlyph.Position.Y + cmd.Position.Y;
+
+                    foreach (var fig in layerOutline.Figures)
+                    {
+                        Vector2 startPt = new Vector2(x0 + fig.StartPoint.X * emScale, y0 - fig.StartPoint.Y * emScale);
+                        var newFig = new PathFigure(startPt) { IsClosed = fig.IsClosed, IsFilled = fig.IsFilled };
+                        foreach (var seg in fig.Segments)
+                        {
+                            if (seg is LineSegment ls)
+                            {
+                                newFig.Segments.Add(new LineSegment(new Vector2(x0 + ls.Point.X * emScale, y0 - ls.Point.Y * emScale)));
+                            }
+                            else if (seg is QuadraticBezierSegment qbs)
+                            {
+                                newFig.Segments.Add(new QuadraticBezierSegment(
+                                    new Vector2(x0 + qbs.ControlPoint.X * emScale, y0 - qbs.ControlPoint.Y * emScale),
+                                    new Vector2(x0 + qbs.Point.X * emScale, y0 - qbs.Point.Y * emScale)
+                                ));
+                            }
+                            else if (seg is CubicBezierSegment cbs)
+                            {
+                                newFig.Segments.Add(new CubicBezierSegment(
+                                    new Vector2(x0 + cbs.ControlPoint1.X * emScale, y0 - cbs.ControlPoint1.Y * emScale),
+                                    new Vector2(x0 + cbs.ControlPoint2.X * emScale, y0 - cbs.ControlPoint2.Y * emScale),
+                                    new Vector2(x0 + cbs.Point.X * emScale, y0 - cbs.Point.Y * emScale)
+                                ));
+                            }
+                        }
+                        transformedOutline.Figures.Add(newFig);
+                    }
+
+                    var pathCmd = new RenderCommand
+                    {
+                        Type = RenderCommandType.DrawPath,
+                        Path = transformedOutline,
+                        Brush = new SolidColorBrush(layer.Color)
+                    };
+                    CompilePathCommand(pathCmd, transform);
+                }
+                continue;
+            }
+
             var info = runGlyph.Glyph;
             if (info.Width == 0 || info.Height == 0) continue;
 
