@@ -322,15 +322,7 @@ public class ComboBox : Control
         }
 
         // Draw header background shape
-        if (CornerRadius <= 0f)
-        {
-            context.DrawRectangle(bg, borderPen, headerRect);
-        }
-        else
-        {
-            var roundedPath = CreateRoundedRectPath(headerRect, CornerRadius);
-            context.DrawPath(bg, borderPen, roundedPath);
-        }
+        context.DrawRoundedRectangle(bg, borderPen, headerRect, CornerRadius);
 
         // 2. Draw active Selected Text or Placeholder Text
         var activeFont = GetActiveFont();
@@ -349,21 +341,5 @@ public class ComboBox : Control
         }
 
         base.OnRender(context);
-    }
-
-    private static PathGeometry CreateRoundedRectPath(Rect rect, float r)
-    {
-        var geo = new PathGeometry();
-        var fig = new PathFigure(new Vector2(rect.X + r, rect.Y), isClosed: true);
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + rect.Width - r, rect.Y)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X + rect.Width, rect.Y), new Vector2(rect.X + rect.Width, rect.Y + r)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + rect.Width, rect.Y + rect.Height - r)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X + rect.Width, rect.Y + rect.Height), new Vector2(rect.X + rect.Width - r, rect.Y + rect.Height)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + r, rect.Y + rect.Height)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X, rect.Y + rect.Height), new Vector2(rect.X, rect.Y + rect.Height - r)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X, rect.Y + r)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X, rect.Y), new Vector2(rect.X + r, rect.Y)));
-        geo.Figures.Add(fig);
-        return geo;
     }
 }

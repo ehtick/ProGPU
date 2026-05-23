@@ -559,25 +559,8 @@ public class DataGrid : Control
                 ? ThemeManager.GetBrush("ScrollbarThumbHover")
                 : ThemeManager.GetBrush("ScrollbarThumb");
             
-            var roundedThumb = CreateRoundedRectPath(thumbRect, scrollbarWidth / 2f);
-            context.DrawPath(thumbBg, null, roundedThumb);
+            context.DrawRoundedRectangle(thumbBg, null, thumbRect, scrollbarWidth / 2f);
         }
-    }
-
-    private static PathGeometry CreateRoundedRectPath(Rect rect, float r)
-    {
-        var geo = new PathGeometry();
-        var fig = new PathFigure(new Vector2(rect.X + r, rect.Y), isClosed: true);
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + rect.Width - r, rect.Y)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X + rect.Width, rect.Y), new Vector2(rect.X + rect.Width, rect.Y + r)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + rect.Width, rect.Y + rect.Height - r)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X + rect.Width, rect.Y + rect.Height), new Vector2(rect.X + rect.Width - r, rect.Y + rect.Height)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + r, rect.Y + rect.Height)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X, rect.Y + rect.Height), new Vector2(rect.X, rect.Y + rect.Height - r)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X, rect.Y + r)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X, rect.Y), new Vector2(rect.X + r, rect.Y)));
-        geo.Figures.Add(fig);
-        return geo;
     }
 
     public override void OnKeyDown(KeyRoutedEventArgs e)

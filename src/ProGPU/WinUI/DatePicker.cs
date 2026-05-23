@@ -105,13 +105,12 @@ public class DatePicker : Control
 
         // 1. Draw input box background and border outline
         var rect = new Rect(Vector2.Zero, Size);
-        var path = CreateRoundedRect(rect.X, rect.Y, rect.Width, rect.Height, CornerRadius);
         
         var borderPen = _isHovered 
             ? new Pen(new SolidColorBrush(0xFFFFFF30), BorderThickness.Left) 
             : new Pen(BorderBrush ?? new SolidColorBrush(0xFFFFFF15), BorderThickness.Left);
             
-        context.DrawPath(Background, borderPen, path);
+        context.DrawRoundedRectangle(Background, borderPen, rect, CornerRadius);
 
         // 2. Render selected date label or placeholder text
         string dateText = SelectedDate.HasValue 
@@ -131,10 +130,5 @@ public class DatePicker : Control
         context.DrawText("📅", font, 11f, new SolidColorBrush(0xFFFFFFB0), new Vector2(iconX, iconY));
 
         base.OnRender(context);
-    }
-
-    private static PathGeometry CreateRoundedRect(float x, float y, float w, float h, float r)
-    {
-        return PathGeometry.Parse(System.FormattableString.Invariant($"M {x+r} {y} H {x+w-r} Q {x+w} {y} {x+w} {y+r} V {y+h-r} Q {x+w} {y+h} {x+w-r} {y+h} H {x+r} Q {x} {y+h} {x} {y+h-r} V {y+r} Q {x} {y} {x+r} {y} Z"));
     }
 }

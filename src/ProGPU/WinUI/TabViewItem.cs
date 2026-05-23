@@ -193,8 +193,7 @@ public class TabViewItem : Control
                     // Draw highlight backdrop circle behind the 'x'
                     var closeBackdrop = ThemeManager.GetBrush("ControlBackgroundHover");
                     var backdropRect = new Rect(closeX - 3f, closeY - 3f, closeSize + 6f, closeSize + 6f);
-                    var backdropPath = CreateRoundedRectPath(backdropRect, 4f);
-                    context.DrawPath(closeBackdrop, null, backdropPath);
+                    context.DrawRoundedRectangle(closeBackdrop, null, backdropRect, 4f);
                 }
 
                 context.DrawText("×", activeFont, 14f, closeBrush, new Vector2(closeX - 1f, closeY - 2f));
@@ -202,22 +201,6 @@ public class TabViewItem : Control
         }
 
         base.OnRender(context);
-    }
-
-    private static PathGeometry CreateRoundedRectPath(Rect rect, float r)
-    {
-        var geo = new PathGeometry();
-        var fig = new PathFigure(new Vector2(rect.X + r, rect.Y), isClosed: true);
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + rect.Width - r, rect.Y)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X + rect.Width, rect.Y), new Vector2(rect.X + rect.Width, rect.Y + r)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + rect.Width, rect.Y + rect.Height - r)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X + rect.Width, rect.Y + rect.Height), new Vector2(rect.X + rect.Width - r, rect.Y + rect.Height)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + r, rect.Y + rect.Height)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X, rect.Y + rect.Height), new Vector2(rect.X, rect.Y + rect.Height - r)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X, rect.Y + r)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X, rect.Y), new Vector2(rect.X + r, rect.Y)));
-        geo.Figures.Add(fig);
-        return geo;
     }
 
     private static PathGeometry CreateTabShapePath(Rect rect, float r)

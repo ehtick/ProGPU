@@ -176,33 +176,9 @@ public class ComboBoxItem : Control
 
         if (bg != null)
         {
-            if (CornerRadius <= 0f)
-            {
-                context.DrawRectangle(bg, pen, new Rect(Vector2.Zero, Size));
-            }
-            else
-            {
-                var roundedPath = CreateRoundedRectPath(new Rect(Vector2.Zero, Size), CornerRadius);
-                context.DrawPath(bg, pen, roundedPath);
-            }
+            context.DrawRoundedRectangle(bg, pen, new Rect(Vector2.Zero, Size), CornerRadius);
         }
 
         base.OnRender(context);
-    }
-
-    private static PathGeometry CreateRoundedRectPath(Rect rect, float r)
-    {
-        var geo = new PathGeometry();
-        var fig = new PathFigure(new Vector2(rect.X + r, rect.Y), isClosed: true);
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + rect.Width - r, rect.Y)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X + rect.Width, rect.Y), new Vector2(rect.X + rect.Width, rect.Y + r)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + rect.Width, rect.Y + rect.Height - r)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X + rect.Width, rect.Y + rect.Height), new Vector2(rect.X + rect.Width - r, rect.Y + rect.Height)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + r, rect.Y + rect.Height)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X, rect.Y + rect.Height), new Vector2(rect.X, rect.Y + rect.Height - r)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X, rect.Y + r)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X, rect.Y), new Vector2(rect.X + r, rect.Y)));
-        geo.Figures.Add(fig);
-        return geo;
     }
 }

@@ -178,34 +178,16 @@ public class Slider : Control
         }
 
         // Standard Circle rendering using rounded rect path (radius = drawThumbRadius)
-        var circlePath = CreateRoundedRectPath(thumbRect, drawThumbRadius);
-        context.DrawPath(thumbBg, thumbBorder, circlePath);
+        context.DrawRoundedRectangle(thumbBg, thumbBorder, thumbRect, drawThumbRadius);
 
         // Draw active focus ring indicator around thumb
         if (IsEnabled && IsFocused)
         {
             var focusPen = new Pen(ThemeManager.GetBrush("SystemAccentColor"), 1.5f);
             Rect focusRect = new Rect(thumbRect.X - 2.5f, thumbRect.Y - 2.5f, thumbRect.Width + 5f, thumbRect.Height + 5f);
-            var focusPath = CreateRoundedRectPath(focusRect, drawThumbRadius + 2.5f);
-            context.DrawPath(null, focusPen, focusPath);
+            context.DrawRoundedRectangle(null, focusPen, focusRect, drawThumbRadius + 2.5f);
         }
 
         base.OnRender(context);
-    }
-
-    private static PathGeometry CreateRoundedRectPath(Rect rect, float r)
-    {
-        var geo = new PathGeometry();
-        var fig = new PathFigure(new Vector2(rect.X + r, rect.Y), isClosed: true);
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + rect.Width - r, rect.Y)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X + rect.Width, rect.Y), new Vector2(rect.X + rect.Width, rect.Y + r)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + rect.Width, rect.Y + rect.Height - r)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X + rect.Width, rect.Y + rect.Height), new Vector2(rect.X + rect.Width - r, rect.Y + rect.Height)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + r, rect.Y + rect.Height)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X, rect.Y + rect.Height), new Vector2(rect.X, rect.Y + rect.Height - r)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X, rect.Y + r)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X, rect.Y), new Vector2(rect.X + r, rect.Y)));
-        geo.Figures.Add(fig);
-        return geo;
     }
 }

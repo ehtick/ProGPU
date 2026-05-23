@@ -156,15 +156,7 @@ public class CheckBox : Control
         }
 
         // Draw check box frame
-        if (CornerRadius <= 0f)
-        {
-            context.DrawRectangle(boxBg, boxBorder, boxRect);
-        }
-        else
-        {
-            var roundedPath = CreateRoundedRectPath(boxRect, CornerRadius);
-            context.DrawPath(boxBg, boxBorder, roundedPath);
-        }
+        context.DrawRoundedRectangle(boxBg, boxBorder, boxRect, CornerRadius);
 
         // Draw checkmark vector if checked
         if (IsChecked)
@@ -188,33 +180,9 @@ public class CheckBox : Control
         {
             var focusPen = new Pen(ThemeManager.GetBrush("SystemAccentColor"), 2f); // Segoe Blue active focus ring
             Rect focusRect = new Rect(boxRect.X - 2f, boxRect.Y - 2f, boxRect.Width + 4f, boxRect.Height + 4f);
-            if (CornerRadius <= 0f)
-            {
-                context.DrawRectangle(null, focusPen, focusRect);
-            }
-            else
-            {
-                var focusPath = CreateRoundedRectPath(focusRect, CornerRadius + 2f);
-                context.DrawPath(null, focusPen, focusPath);
-            }
+            context.DrawRoundedRectangle(null, focusPen, focusRect, CornerRadius + 2f);
         }
 
         base.OnRender(context);
-    }
-
-    private static PathGeometry CreateRoundedRectPath(Rect rect, float r)
-    {
-        var geo = new PathGeometry();
-        var fig = new PathFigure(new Vector2(rect.X + r, rect.Y), isClosed: true);
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + rect.Width - r, rect.Y)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X + rect.Width, rect.Y), new Vector2(rect.X + rect.Width, rect.Y + r)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + rect.Width, rect.Y + rect.Height - r)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X + rect.Width, rect.Y + rect.Height), new Vector2(rect.X + rect.Width - r, rect.Y + rect.Height)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + r, rect.Y + rect.Height)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X, rect.Y + rect.Height), new Vector2(rect.X, rect.Y + rect.Height - r)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X, rect.Y + r)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X, rect.Y), new Vector2(rect.X + r, rect.Y)));
-        geo.Figures.Add(fig);
-        return geo;
     }
 }

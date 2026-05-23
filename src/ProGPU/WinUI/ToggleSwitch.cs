@@ -143,8 +143,7 @@ public class ToggleSwitch : Control
         }
 
         // Draw capsule track
-        var roundedPath = CreateRoundedRectPath(trackRect, CornerRadius);
-        context.DrawPath(trackBg, trackBorder, roundedPath);
+        context.DrawRoundedRectangle(trackBg, trackBorder, trackRect, CornerRadius);
 
         // Draw thumb
         // Thumb size inside track. Track height is 20f, so thumb height/width can be 12f (radius = 6f).
@@ -182,34 +181,16 @@ public class ToggleSwitch : Control
             thumbBorder = new Pen(BorderBrush ?? ThemeManager.GetBrush("ControlBorder"), 1f);
         }
 
-        var thumbPath = CreateRoundedRectPath(thumbRect, thumbRadius);
-        context.DrawPath(thumbBg, thumbBorder, thumbPath);
+        context.DrawRoundedRectangle(thumbBg, thumbBorder, thumbRect, thumbRadius);
 
         // Draw focus ring around track
         if (IsEnabled && IsFocused)
         {
             var focusPen = new Pen(ThemeManager.GetBrush("SystemAccentColor"), 2f);
             Rect focusRect = new Rect(trackRect.X - 2f, trackRect.Y - 2f, trackRect.Width + 4f, trackRect.Height + 4f);
-            var focusPath = CreateRoundedRectPath(focusRect, CornerRadius + 2f);
-            context.DrawPath(null, focusPen, focusPath);
+            context.DrawRoundedRectangle(null, focusPen, focusRect, CornerRadius + 2f);
         }
 
         base.OnRender(context);
-    }
-
-    private static PathGeometry CreateRoundedRectPath(Rect rect, float r)
-    {
-        var geo = new PathGeometry();
-        var fig = new PathFigure(new Vector2(rect.X + r, rect.Y), isClosed: true);
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + rect.Width - r, rect.Y)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X + rect.Width, rect.Y), new Vector2(rect.X + rect.Width, rect.Y + r)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + rect.Width, rect.Y + rect.Height - r)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X + rect.Width, rect.Y + rect.Height), new Vector2(rect.X + rect.Width - r, rect.Y + rect.Height)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + r, rect.Y + rect.Height)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X, rect.Y + rect.Height), new Vector2(rect.X, rect.Y + rect.Height - r)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X, rect.Y + r)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X, rect.Y), new Vector2(rect.X + r, rect.Y)));
-        geo.Figures.Add(fig);
-        return geo;
     }
 }

@@ -861,38 +861,56 @@ public unsafe class Compositor : IDisposable
 
         if (cmd.Pen != null)
         {
-            int penStartIndex = _vectorVerticesList.Count;
             float penBrushIdx = RegisterBrush(cmd.Pen.Brush);
             var penSolidColor = (cmd.Pen.Brush is SolidColorBrush solid) ? solid.Color : new Vector4(1f, 1f, 1f, 1f);
+            float thickness = cmd.Pen.Thickness;
 
             foreach (var figure in cmd.Path.Figures)
             {
                 var contour = figure.Flatten(0.2f);
-                var transContour = new List<Vector2>(contour.Count);
-                foreach (var pt in contour)
+                int M = contour.Count;
+                if (M < 2) continue;
+
+                ushort idxStart = (ushort)_vectorVerticesList.Count;
+
+                for (int j = 0; j < M; j++)
                 {
-                    transContour.Add(Vector2.Transform(pt, transform));
+                    var p = contour[j];
+                    Vector2 prev, next;
+
+                    if (figure.IsClosed)
+                    {
+                        prev = (j == 0) ? contour[M - 2] : contour[j - 1];
+                        next = (j == M - 1) ? contour[1] : contour[j + 1];
+                    }
+                    else
+                    {
+                        prev = (j == 0) ? p : contour[j - 1];
+                        next = (j == M - 1) ? p : contour[j + 1];
+                    }
+
+                    var p_trans = Vector2.Transform(p, transform);
+                    var prev_trans = Vector2.Transform(prev, transform);
+                    var next_trans = Vector2.Transform(next, transform);
+
+                    _vectorVerticesList.Add(new VectorVertex(p_trans, penSolidColor, prev_trans, penBrushIdx, next_trans, 1f, thickness, 3f));
+                    _vectorVerticesList.Add(new VectorVertex(p_trans, penSolidColor, prev_trans, penBrushIdx, next_trans, -1f, thickness, 3f));
                 }
 
-                StrokeTessellator.TessellateStroke(
-                    transContour,
-                    cmd.Pen.Thickness,
-                    penSolidColor,
-                    figure.IsClosed,
-                    _vectorVerticesList,
-                    _vectorIndicesList
-                );
-            }
-
-            if (Matrix4x4.Invert(transform, out var invTransform))
-            {
-                for (int i = penStartIndex; i < _vectorVerticesList.Count; i++)
+                for (int j = 0; j < M - 1; j++)
                 {
-                    var v = _vectorVerticesList[i];
-                    v.TexCoord = Vector2.Transform(v.Position, invTransform);
-                    v.BrushIndex = penBrushIdx;
-                    v.ShapeType = 4f;
-                    _vectorVerticesList[i] = v;
+                    ushort currentLeft = (ushort)(idxStart + 2 * j);
+                    ushort currentRight = (ushort)(idxStart + 2 * j + 1);
+                    ushort nextLeft = (ushort)(idxStart + 2 * j + 2);
+                    ushort nextRight = (ushort)(idxStart + 2 * j + 3);
+
+                    _vectorIndicesList.Add(currentLeft);
+                    _vectorIndicesList.Add(currentRight);
+                    _vectorIndicesList.Add(nextLeft);
+
+                    _vectorIndicesList.Add(currentRight);
+                    _vectorIndicesList.Add(nextRight);
+                    _vectorIndicesList.Add(nextLeft);
                 }
             }
         }

@@ -231,39 +231,15 @@ public class TextBox : Control
             // Ambient shadow (offset Y=2, very soft, low opacity)
             var ambientRect = new Rect(0, 2, Size.X, Size.Y);
             var ambientBrush = new SolidColorBrush(0x0000000A);
-            if (shadowR <= 0f)
-            {
-                context.DrawRectangle(ambientBrush, null, ambientRect);
-            }
-            else
-            {
-                var ambientPath = CreateRoundedRectPath(ambientRect, shadowR);
-                context.DrawPath(ambientBrush, null, ambientPath);
-            }
+            context.DrawRoundedRectangle(ambientBrush, null, ambientRect, shadowR);
 
             // Penumbra shadow (offset Y=1, tighter, slightly higher opacity)
             var penumbraRect = new Rect(0, 1, Size.X, Size.Y);
             var penumbraBrush = new SolidColorBrush(0x00000014);
-            if (shadowR <= 0f)
-            {
-                context.DrawRectangle(penumbraBrush, null, penumbraRect);
-            }
-            else
-            {
-                var penumbraPath = CreateRoundedRectPath(penumbraRect, shadowR);
-                context.DrawPath(penumbraBrush, null, penumbraPath);
-            }
+            context.DrawRoundedRectangle(penumbraBrush, null, penumbraRect, shadowR);
         }
 
-        if (CornerRadius <= 0f)
-        {
-            context.DrawRectangle(bg, borderPen, new Rect(Vector2.Zero, Size));
-        }
-        else
-        {
-            var roundedPath = CreateRoundedRectPath(new Rect(Vector2.Zero, Size), CornerRadius);
-            context.DrawPath(bg, borderPen, roundedPath);
-        }
+        context.DrawRoundedRectangle(bg, borderPen, new Rect(Vector2.Zero, Size), CornerRadius);
 
         // 2. Draw text
         float textY = (Size.Y - FontSize) / 2f;
@@ -294,21 +270,5 @@ public class TextBox : Control
         }
 
         base.OnRender(context);
-    }
-
-    private static PathGeometry CreateRoundedRectPath(Rect rect, float r)
-    {
-        var geo = new PathGeometry();
-        var fig = new PathFigure(new Vector2(rect.X + r, rect.Y), isClosed: true);
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + rect.Width - r, rect.Y)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X + rect.Width, rect.Y), new Vector2(rect.X + rect.Width, rect.Y + r)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + rect.Width, rect.Y + rect.Height - r)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X + rect.Width, rect.Y + rect.Height), new Vector2(rect.X + rect.Width - r, rect.Y + rect.Height)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + r, rect.Y + rect.Height)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X, rect.Y + rect.Height), new Vector2(rect.X, rect.Y + rect.Height - r)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X, rect.Y + r)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X, rect.Y), new Vector2(rect.X + r, rect.Y)));
-        geo.Figures.Add(fig);
-        return geo;
     }
 }

@@ -4,6 +4,7 @@ using System.Numerics;
 
 namespace ProGPU.Vector;
 
+[System.Obsolete("Deprecated in favor of high-performance GPU-bound stroke expansion vs_main shader math (shapeType == 3f).")]
 public static class StrokeTessellator
 {
     private static Vector2 NormalizeSafe(Vector2 v)

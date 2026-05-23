@@ -325,8 +325,7 @@ public class Pivot : FrameworkElement
             if (i == _hoveredHeaderIndex)
             {
                 var hoverBrush = new SolidColorBrush(0xFFFFFF0F);
-                var hoverPath = CreateRoundedRectPath(new Rect(rect.X, rect.Y, rect.Width, rect.Height - 2f), 4f);
-                context.DrawPath(hoverBrush, null, hoverPath);
+                context.DrawRoundedRectangle(hoverBrush, null, new Rect(rect.X, rect.Y, rect.Width, rect.Height - 2f), 4f);
             }
 
             // Draw header text
@@ -370,21 +369,5 @@ public class Pivot : FrameworkElement
         }
 
         base.OnRender(context);
-    }
-
-    private static PathGeometry CreateRoundedRectPath(Rect rect, float r)
-    {
-        var geo = new PathGeometry();
-        var fig = new PathFigure(new Vector2(rect.X + r, rect.Y), isClosed: true);
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + rect.Width - r, rect.Y)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X + rect.Width, rect.Y), new Vector2(rect.X + rect.Width, rect.Y + r)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + rect.Width, rect.Y + rect.Height - r)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X + rect.Width, rect.Y + rect.Height), new Vector2(rect.X + rect.Width - r, rect.Y + rect.Height)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + r, rect.Y + rect.Height)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X, rect.Y + rect.Height), new Vector2(rect.X, rect.Y + rect.Height - r)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X, rect.Y + r)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X, rect.Y), new Vector2(rect.X + r, rect.Y)));
-        geo.Figures.Add(fig);
-        return geo;
     }
 }

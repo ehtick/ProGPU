@@ -178,10 +178,11 @@ public class CalendarView : Control
 
         // 1. Render main container card backdrop and border outline
         var rect = new Rect(Vector2.Zero, Size);
-        context.DrawPath(
+        context.DrawRoundedRectangle(
             Background, 
             new Pen(BorderBrush ?? new SolidColorBrush(0xFFFFFF12), BorderThickness.Left), 
-            CreateRoundedRect(rect.X, rect.Y, rect.Width, rect.Height, CornerRadius)
+            rect, 
+            CornerRadius
         );
 
         // 2. Render month navigation header bar
@@ -195,12 +196,12 @@ public class CalendarView : Control
 
         // Prev month button (◀)
         var prevBrush = _isPrevHovered ? new SolidColorBrush(0xFFFFFF30) : new SolidColorBrush(0xFFFFFF10);
-        context.DrawPath(prevBrush, null, CreateRoundedRect(_prevBtnRect.X, _prevBtnRect.Y, 24f, 24f, 4f));
+        context.DrawRoundedRectangle(prevBrush, null, _prevBtnRect, 4f);
         context.DrawText("◀", font, 10f, new SolidColorBrush(0xFFFFFFFF), new Vector2(_prevBtnRect.X + 7f, _prevBtnRect.Y + 6f));
 
         // Next month button (▶)
         var nextBrush = _isNextHovered ? new SolidColorBrush(0xFFFFFF30) : new SolidColorBrush(0xFFFFFF10);
-        context.DrawPath(nextBrush, null, CreateRoundedRect(_nextBtnRect.X, _nextBtnRect.Y, 24f, 24f, 4f));
+        context.DrawRoundedRectangle(nextBrush, null, _nextBtnRect, 4f);
         context.DrawText("▶", font, 10f, new SolidColorBrush(0xFFFFFFFF), new Vector2(_nextBtnRect.X + 7f, _nextBtnRect.Y + 6f));
 
         // 3. Render day-of-week header column names
@@ -232,24 +233,25 @@ public class CalendarView : Control
             bool isHovered = _hoveredDayIndex == i;
 
             // Highlight backgrounds
+            var cellHighlightRect = new Rect(cellRect.X + 2f, cellRect.Y + 2f, cellRect.Width - 4f, cellRect.Height - 4f);
             if (isSelected)
             {
                 // Active blue solid background
                 var fill = new SolidColorBrush(0x0078D4FF);
-                context.DrawPath(fill, null, CreateRoundedRect(cellRect.X + 2f, cellRect.Y + 2f, cellRect.Width - 4f, cellRect.Height - 4f, 4f));
+                context.DrawRoundedRectangle(fill, null, cellHighlightRect, 4f);
             }
             else if (isHovered)
             {
                 // Subtle glowing glass card border on hover
                 var fill = new SolidColorBrush(0xFFFFFF15);
                 var pen = new Pen(new SolidColorBrush(0xFFFFFF30), 1f);
-                context.DrawPath(fill, pen, CreateRoundedRect(cellRect.X + 2f, cellRect.Y + 2f, cellRect.Width - 4f, cellRect.Height - 4f, 4f));
+                context.DrawRoundedRectangle(fill, pen, cellHighlightRect, 4f);
             }
             else if (isToday)
             {
                 // White accent border for today
                 var pen = new Pen(new SolidColorBrush(0xFFFFFFFF), 1f);
-                context.DrawPath(null, pen, CreateRoundedRect(cellRect.X + 2f, cellRect.Y + 2f, cellRect.Width - 4f, cellRect.Height - 4f, 4f));
+                context.DrawRoundedRectangle(null, pen, cellHighlightRect, 4f);
             }
 
             // Foreground text color
@@ -278,10 +280,5 @@ public class CalendarView : Control
         }
 
         base.OnRender(context);
-    }
-
-    private static PathGeometry CreateRoundedRect(float x, float y, float w, float h, float r)
-    {
-        return PathGeometry.Parse(System.FormattableString.Invariant($"M {x+r} {y} H {x+w-r} Q {x+w} {y} {x+w} {y+r} V {y+h-r} Q {x+w} {y+h} {x+w-r} {y+h} H {x+r} Q {x} {y+h} {x} {y+h-r} V {y+r} Q {x} {y} {x+r} {y} Z"));
     }
 }

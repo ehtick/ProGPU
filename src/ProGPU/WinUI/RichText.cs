@@ -2234,9 +2234,7 @@ public class RichEditBox : Control
             bg = new SolidColorBrush(0xFFFFFF0D);
             borderPen = new Pen(new SolidColorBrush(0xFFFFFF15), 1f);
         }
-
-        var roundedPath = CreateRoundedRectPath(new Rect(Vector2.Zero, Size), CornerRadius);
-        context.DrawPath(bg, borderPen, roundedPath);
+        context.DrawRoundedRectangle(bg, borderPen, new Rect(Vector2.Zero, Size), CornerRadius);
 
         base.OnRender(context);
 
@@ -2265,21 +2263,5 @@ public class RichEditBox : Control
             Rect caretRect = new Rect(caretPos.X, caretPos.Y, 1.5f, caretH + 2f);
             context.DrawRectangle(new SolidColorBrush(0x0078D4FF), null, caretRect);
         }
-    }
-
-    private static PathGeometry CreateRoundedRectPath(Rect rect, float r)
-    {
-        var geo = new PathGeometry();
-        var fig = new PathFigure(new Vector2(rect.X + r, rect.Y), isClosed: true);
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + rect.Width - r, rect.Y)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X + rect.Width, rect.Y), new Vector2(rect.X + rect.Width, rect.Y + r)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + rect.Width, rect.Y + rect.Height - r)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X + rect.Width, rect.Y + rect.Height), new Vector2(rect.X + rect.Width - r, rect.Y + rect.Height)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X + r, rect.Y + rect.Height)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X, rect.Y + rect.Height), new Vector2(rect.X, rect.Y + rect.Height - r)));
-        fig.Segments.Add(new LineSegment(new Vector2(rect.X, rect.Y + r)));
-        fig.Segments.Add(new QuadraticBezierSegment(new Vector2(rect.X, rect.Y), new Vector2(rect.X + r, rect.Y)));
-        geo.Figures.Add(fig);
-        return geo;
     }
 }
