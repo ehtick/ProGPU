@@ -7,7 +7,6 @@ namespace ProGPU.Vector;
 
 public abstract class PathSegment
 {
-    public abstract void Flatten(Vector2 startPoint, List<Vector2> points, ref Vector2 currentPoint, float tolerance);
 }
 
 public class LineSegment : PathSegment
@@ -17,12 +16,6 @@ public class LineSegment : PathSegment
     public LineSegment(Vector2 point)
     {
         Point = point;
-    }
-
-    public override void Flatten(Vector2 startPoint, List<Vector2> points, ref Vector2 currentPoint, float tolerance)
-    {
-        points.Add(Point);
-        currentPoint = Point;
     }
 }
 
@@ -35,34 +28,6 @@ public class QuadraticBezierSegment : PathSegment
     {
         ControlPoint = controlPoint;
         Point = point;
-    }
-
-    public override void Flatten(Vector2 startPoint, List<Vector2> points, ref Vector2 currentPoint, float tolerance)
-    {
-        FlattenQuadratic(startPoint, ControlPoint, Point, points, tolerance);
-        currentPoint = Point;
-    }
-
-    private static void FlattenQuadratic(Vector2 p0, Vector2 p1, Vector2 p2, List<Vector2> points, float tolerance)
-    {
-        // De Casteljau subdivision based on curve flatness
-        float d = Vector2.Distance(p0 - 2 * p1 + p2, Vector2.Zero);
-        if (d <= tolerance)
-        {
-            points.Add(p2);
-            return;
-        }
-
-        Vector2 l0 = p0;
-        Vector2 l1 = (p0 + p1) / 2.0f;
-        Vector2 l2 = (p0 + 2 * p1 + p2) / 4.0f;
-
-        Vector2 r0 = l2;
-        Vector2 r1 = (p1 + p2) / 2.0f;
-        Vector2 r2 = p2;
-
-        FlattenQuadratic(l0, l1, l2, points, tolerance);
-        FlattenQuadratic(r0, r1, r2, points, tolerance);
     }
 }
 
@@ -77,37 +42,6 @@ public class CubicBezierSegment : PathSegment
         ControlPoint1 = controlPoint1;
         ControlPoint2 = controlPoint2;
         Point = point;
-    }
-
-    public override void Flatten(Vector2 startPoint, List<Vector2> points, ref Vector2 currentPoint, float tolerance)
-    {
-        FlattenCubic(startPoint, ControlPoint1, ControlPoint2, Point, points, tolerance);
-        currentPoint = Point;
-    }
-
-    private static void FlattenCubic(Vector2 p0, Vector2 p1, Vector2 p2, Vector2 p3, List<Vector2> points, float tolerance)
-    {
-        // Flatness check
-        float d1 = Vector2.Distance(p0 - 2 * p1 + p2, Vector2.Zero);
-        float d2 = Vector2.Distance(p1 - 2 * p2 + p3, Vector2.Zero);
-        if (d1 + d2 <= tolerance)
-        {
-            points.Add(p3);
-            return;
-        }
-
-        Vector2 l0 = p0;
-        Vector2 l1 = (p0 + p1) / 2.0f;
-        Vector2 l2 = (p0 + 2 * p1 + p2) / 4.0f;
-        Vector2 l3 = (p0 + 3 * p1 + 3 * p2 + p3) / 8.0f;
-
-        Vector2 r0 = l3;
-        Vector2 r1 = (p1 + 2 * p2 + p3) / 4.0f;
-        Vector2 r2 = (p2 + p3) / 2.0f;
-        Vector2 r3 = p3;
-
-        FlattenCubic(l0, l1, l2, l3, points, tolerance);
-        FlattenCubic(r0, r1, r2, r3, points, tolerance);
     }
 }
 
@@ -125,39 +59,11 @@ public class PathFigure
         StartPoint = startPoint;
         IsClosed = isClosed;
     }
-
-    public List<Vector2> Flatten(float tolerance = 0.5f)
-    {
-        var points = new List<Vector2> { StartPoint };
-        var currentPoint = StartPoint;
-
-        foreach (var segment in Segments)
-        {
-            segment.Flatten(currentPoint, points, ref currentPoint, tolerance);
-        }
-
-        if (IsClosed && points.Count > 1 && points[0] != points[^1])
-        {
-            points.Add(points[0]);
-        }
-
-        return points;
-    }
 }
 
 public class PathGeometry
 {
     public List<PathFigure> Figures { get; } = new();
-
-    public List<List<Vector2>> Flatten(float tolerance = 0.5f)
-    {
-        var list = new List<List<Vector2>>();
-        foreach (var figure in Figures)
-        {
-            list.Add(figure.Flatten(tolerance));
-        }
-        return list;
-    }
 
     /// <summary>
     /// Parses SVG path data string (e.g. "M 10,10 L 20,20 C ... Z") into a PathGeometry object.

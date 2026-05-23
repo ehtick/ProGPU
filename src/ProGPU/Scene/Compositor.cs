@@ -907,59 +907,6 @@ public unsafe class Compositor : IDisposable
         }
     }
 
-    private List<List<Vector2>> EvaluatePathFills(PathGeometry path)
-    {
-        var figures = new List<List<Vector2>>();
-        foreach (var figure in path.Figures)
-        {
-            var points = new List<Vector2>();
-            var currentPoint = figure.StartPoint;
-            points.Add(currentPoint);
-
-            foreach (var segment in figure.Segments)
-            {
-                if (segment is LineSegment line)
-                {
-                    points.Add(line.Point);
-                    currentPoint = line.Point;
-                }
-                else if (segment is QuadraticBezierSegment quad)
-                {
-                    int N = 16;
-                    for (int i = 1; i <= N; i++)
-                    {
-                        float t = i / (float)N;
-                        float oneMinusT = 1.0f - t;
-                        var pt = oneMinusT * oneMinusT * currentPoint + 2.0f * oneMinusT * t * quad.ControlPoint + t * t * quad.Point;
-                        points.Add(pt);
-                    }
-                    currentPoint = quad.Point;
-                }
-                else if (segment is CubicBezierSegment cubic)
-                {
-                    int N = 16;
-                    for (int i = 1; i <= N; i++)
-                    {
-                        float t = i / (float)N;
-                        float oneMinusT = 1.0f - t;
-                        var pt = oneMinusT * oneMinusT * oneMinusT * currentPoint 
-                               + 3.0f * oneMinusT * oneMinusT * t * cubic.ControlPoint1 
-                               + 3.0f * oneMinusT * t * t * cubic.ControlPoint2 
-                               + t * t * t * cubic.Point;
-                        points.Add(pt);
-                    }
-                    currentPoint = cubic.Point;
-                }
-            }
-
-            if (figure.IsClosed && points.Count > 1 && points[0] != points[^1])
-            {
-                points.Add(points[0]);
-            }
-            figures.Add(points);
-        }
-        return figures;
-    }
 
     private void CompilePathCommand(RenderCommand cmd, Matrix4x4 transform)
     {
