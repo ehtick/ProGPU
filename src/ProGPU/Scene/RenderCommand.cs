@@ -82,8 +82,6 @@ public struct RenderCommand
     public float RadiusX;
     public float RadiusY;
     public float CornerRadius;
-    public Vector4 AnimAmp;
-    public Vector4 AnimFreqPhase;
 }
 
 public class DrawingContext
@@ -165,16 +163,14 @@ public class DrawingContext
         Commands.Add(new RenderCommand { Type = RenderCommandType.PopOpacity });
     }
 
-    public void DrawLine(Pen pen, Vector2 p1, Vector2 p2, Vector4 animAmp = default, Vector4 animFreqPhase = default)
+    public void DrawLine(Pen pen, Vector2 p1, Vector2 p2)
     {
         Commands.Add(new RenderCommand
         {
             Type = RenderCommandType.DrawLine,
             Pen = pen,
             Position = p1,
-            Position2 = p2,
-            AnimAmp = animAmp,
-            AnimFreqPhase = animFreqPhase
+            Position2 = p2
         });
     }
 
@@ -230,7 +226,7 @@ public class DrawingContext
         DrawRoundedRectangle(brush, null, rect, radius);
     }
 
-    public void DrawQuadraticBezier(Pen pen, Vector2 p0, Vector2 p1, Vector2 p2, Vector4 animAmp = default, Vector4 animFreqPhase = default)
+    public void DrawQuadraticBezier(Pen pen, Vector2 p0, Vector2 p1, Vector2 p2)
     {
         Commands.Add(new RenderCommand
         {
@@ -238,13 +234,11 @@ public class DrawingContext
             Pen = pen,
             Position = p0,
             Position2 = p1,
-            Position3 = p2,
-            AnimAmp = animAmp,
-            AnimFreqPhase = animFreqPhase
+            Position3 = p2
         });
     }
 
-    public void DrawCubicBezier(Pen pen, Vector2 p0, Vector2 p1, Vector2 p2, Vector2 p3, Vector4 animAmp = default, Vector4 animFreqPhase = default)
+    public void DrawCubicBezier(Pen pen, Vector2 p0, Vector2 p1, Vector2 p2, Vector2 p3)
     {
         Commands.Add(new RenderCommand
         {
@@ -253,9 +247,7 @@ public class DrawingContext
             Position = p0,
             Position2 = p1,
             Position3 = p2,
-            Position4 = p3,
-            AnimAmp = animAmp,
-            AnimFreqPhase = animFreqPhase
+            Position4 = p3
         });
     }
 

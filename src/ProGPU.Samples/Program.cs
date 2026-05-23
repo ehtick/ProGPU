@@ -24,8 +24,8 @@ public static unsafe class Program
 {
     private static IWindow? _window;
     private static WgpuContext? _wgpuContext;
-    public static Compositor? _screenCompositor;
-    public static Compositor? _offscreenCompositor;
+    private static Compositor? _screenCompositor;
+    private static Compositor? _offscreenCompositor;
     private static ComputeAccelerator? _compute;
 
     private static IWindow? _devToolsWindow;
@@ -52,7 +52,6 @@ public static unsafe class Program
     private static Vector2 _shadowOffset = new Vector2(4f, 4f);
     private static bool _animateGear = true;
     private static float _gearRotation = 0f;
-    private static float _programTime = 0f;
 
     // Diagnostic timing
     private static readonly Stopwatch _frameStopwatch = new();
@@ -1195,8 +1194,6 @@ public static unsafe class Program
         _rootGrid?.UpdateSampleAnimations((float)delta);
         _rootGrid?.Invalidate();
 
-        _programTime += (float)delta;
-
         if (_animateGear)
         {
             _gearRotation += (float)delta * 1.2f;
@@ -1222,10 +1219,6 @@ public static unsafe class Program
     {
         if (_rootGrid == null || _topLevelGrid == null || _wgpuContext == null || _window == null) return;
         if (_screenCompositor == null || _offscreenCompositor == null || _compute == null) return;
-
-        _screenCompositor.GlobalTime = _programTime;
-        _offscreenCompositor.GlobalTime = _programTime;
-        if (_devToolsCompositor != null) _devToolsCompositor.GlobalTime = _programTime;
 
         OnWindowUpdate(delta);
 
@@ -3559,7 +3552,6 @@ public class MotionMarkShowcaseVisual : FrameworkElement
 
     private readonly List<PathSegmentElement> _elements = new();
     private readonly Random _rand = new();
-    private float _time = 0f;
 
     // Exposed settings
     public int ElementCount = 1000;
@@ -3799,50 +3791,18 @@ public class MotionMarkShowcaseVisual : FrameworkElement
 
         if (_elements.Count == 0) return;
 
-        // 2. Dynamic Wobble Animation Tick
-        _time += 0.016f * AnimationSpeed;
-        if (Program._screenCompositor != null) Program._screenCompositor.GlobalTime = _time;
-        if (Program._offscreenCompositor != null) Program._offscreenCompositor.GlobalTime = _time;
+        // Vello MotionMark animation: randomly toggle split state (0.5% chance per frame) on CPU so it matches behavior
+        for (int i = 0; i < _elements.Count; i++)
+        {
+            if (_rand.NextDouble() > 0.995)
+            {
+                _elements[i].IsSplit ^= true;
+            }
+        }
 
         if (FillShapes)
         {
-            for (int i = 0; i < _elements.Count; i++)
-            {
-                var elem = _elements[i];
-
-                // Vello MotionMark animation: randomly toggle split state (0.5% chance per frame)
-                if (_rand.NextDouble() > 0.995)
-                {
-                    elem.IsSplit ^= true;
-                }
-                
-                float phase = _time * 2.5f + elem.GridIndex * 0.04f;
-                var offsetStart = new Vector2((float)Math.Sin(phase) * 12f, (float)Math.Cos(phase * 0.7f) * 12f);
-                var offsetEnd = new Vector2((float)Math.Sin(phase * 1.3f) * 12f, (float)Math.Cos(phase * 0.9f) * 12f);
-
-                elem.WobbledStartPoint = elem.OriginalStartPoint + offsetStart;
-
-                if (elem.OriginalSeg is LineSegment line && elem.WobbledSeg is LineSegment wLine)
-                {
-                    wLine.Point = line.Point + offsetEnd;
-                }
-                else if (elem.OriginalSeg is QuadraticBezierSegment quad && elem.WobbledSeg is QuadraticBezierSegment wQuad)
-                {
-                    var ctrlOffset = new Vector2((float)Math.Sin(phase * 0.6f) * 15f, (float)Math.Cos(phase * 0.8f) * 15f);
-                    wQuad.ControlPoint = quad.ControlPoint + ctrlOffset;
-                    wQuad.Point = quad.Point + offsetEnd;
-                }
-                else if (elem.OriginalSeg is CubicBezierSegment cubic && elem.WobbledSeg is CubicBezierSegment wCubic)
-                {
-                    var ctrlOffset1 = new Vector2((float)Math.Sin(phase * 0.5f) * 15f, (float)Math.Cos(phase * 0.7f) * 15f);
-                    var ctrlOffset2 = new Vector2((float)Math.Cos(phase * 0.6f) * 15f, (float)Math.Sin(phase * 0.8f) * 15f);
-                    wCubic.ControlPoint1 = cubic.ControlPoint1 + ctrlOffset1;
-                    wCubic.ControlPoint2 = cubic.ControlPoint2 + ctrlOffset2;
-                    wCubic.Point = cubic.Point + offsetEnd;
-                }
-            }
-
-            // 3. Batch path rendering based on splits (used for path fills)
+            // 2. Batch path rendering based on splits (used for path fills)
             var path = new PathGeometry();
             PathFigure? fig = null;
 
@@ -3852,12 +3812,12 @@ public class MotionMarkShowcaseVisual : FrameworkElement
 
                 if (fig == null)
                 {
-                    fig = new PathFigure(element.WobbledStartPoint);
+                    fig = new PathFigure(element.OriginalStartPoint);
                 }
 
-                if (element.WobbledSeg != null)
+                if (element.OriginalSeg != null)
                 {
-                    fig.Segments.Add(element.WobbledSeg);
+                    fig.Segments.Add(element.OriginalSeg);
                 }
 
                 if (element.IsSplit || i == _elements.Count - 1)
@@ -3874,37 +3834,23 @@ public class MotionMarkShowcaseVisual : FrameworkElement
         }
         else
         {
-            // Vello MotionMark animation: randomly toggle split state (0.5% chance per frame) on CPU so it matches behavior
-            for (int i = 0; i < _elements.Count; i++)
-            {
-                if (_rand.NextDouble() > 0.995)
-                {
-                    _elements[i].IsSplit ^= true;
-                }
-            }
-
-            // 3b. Ultra-fast direct primitive rendering for outline strokes (ZERO allocations!)
+            // 2b. Ultra-fast direct primitive rendering for outline strokes (ZERO allocations!)
             for (int i = 0; i < _elements.Count; i++)
             {
                 var element = _elements[i];
                 var pen = element.CachedPen ?? new Pen(element.CachedBrush ?? new SolidColorBrush(element.Color), element.Width * StrokeThicknessMultiplier);
 
-                var freqPhase = new Vector4(2.5f, 0.04f, element.GridIndex, 0f);
-
                 if (element.OriginalSeg is LineSegment line)
                 {
-                    var amp = new Vector4(12f, 12f, 12f, 12f);
-                    context.DrawLine(pen, element.OriginalStartPoint, line.Point, amp, freqPhase);
+                    context.DrawLine(pen, element.OriginalStartPoint, line.Point);
                 }
                 else if (element.OriginalSeg is QuadraticBezierSegment quad)
                 {
-                    var amp = new Vector4(12f, 12f, 15f, 15f);
-                    context.DrawQuadraticBezier(pen, element.OriginalStartPoint, quad.ControlPoint, quad.Point, amp, freqPhase);
+                    context.DrawQuadraticBezier(pen, element.OriginalStartPoint, quad.ControlPoint, quad.Point);
                 }
                 else if (element.OriginalSeg is CubicBezierSegment cubic)
                 {
-                    var amp = new Vector4(12f, 12f, 15f, 15f);
-                    context.DrawCubicBezier(pen, element.OriginalStartPoint, cubic.ControlPoint1, cubic.ControlPoint2, cubic.Point, amp, freqPhase);
+                    context.DrawCubicBezier(pen, element.OriginalStartPoint, cubic.ControlPoint1, cubic.ControlPoint2, cubic.Point);
                 }
             }
         }

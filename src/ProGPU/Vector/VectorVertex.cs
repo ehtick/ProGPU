@@ -15,9 +15,7 @@ public struct VectorVertex
     public Vector2 ShapeSize;
     public float CornerRadius;
     public float StrokeThickness;
-    public float ShapeType; // 0 = Rect, 1 = Ellipse, 2 = RoundedRect, 3 = Line, 4 = Complex Path
-    public Vector4 AnimAmp; // X/Y Start Amplitude, X/Y End/Control Amplitude
-    public Vector4 AnimFreqPhase; // X = frequency, Y = phase scale, Z = phase index/offset, W = unused/type
+    public float ShapeType; // 0 = Rect, 1 = Ellipse, 2 = RoundedRect, 3 = Line, 4 = Complex Path, 5 = Bezier, 6 = Cubic Bezier
 
     public VectorVertex(
         Vector2 position, 
@@ -27,9 +25,7 @@ public struct VectorVertex
         Vector2 shapeSize = default,
         float cornerRadius = 0f,
         float strokeThickness = 0f,
-        float shapeType = 0f,
-        Vector4 animAmp = default,
-        Vector4 animFreqPhase = default)
+        float shapeType = 0f)
     {
         Position = position;
         Color = color;
@@ -39,7 +35,5 @@ public struct VectorVertex
         CornerRadius = cornerRadius;
         StrokeThickness = strokeThickness;
         ShapeType = shapeType;
-        AnimAmp = animAmp;
-        AnimFreqPhase = animFreqPhase;
     }
 }
