@@ -57,6 +57,9 @@ public unsafe class Compositor : IDisposable
     private readonly WgpuContext _context;
     private readonly RenderPipelineCache _pipelineCache;
     private readonly GlyphAtlas _atlas;
+    private readonly PathAtlas _pathAtlas;
+    private BindGroupLayout* _pathAtlasBindGroupLayout;
+    private BindGroup* _pathAtlasBindGroup;
 
     // MSAA color target resources
     private Texture* _msaaTexture;
@@ -153,6 +156,7 @@ public unsafe class Compositor : IDisposable
         
         // 1. Initialize Glyph Atlas (1024x1024)
         _atlas = new GlyphAtlas(_context, 1024);
+        _pathAtlas = new PathAtlas(_context, 2048);
 
         // 2. Uniform Buffer allocation (Projection Matrix & 64 Brushes - 8256 bytes)
         _uniformBuffer = new GpuBuffer(
@@ -326,11 +330,30 @@ public unsafe class Compositor : IDisposable
             Entries = atlasEntries
         };
         _atlasBindGroup = _context.Wgpu.DeviceCreateBindGroup(_context.Device, &atlasDesc);
+
+        // Initialize Path Atlas bind group
+        _pathAtlasBindGroupLayout = _context.Wgpu.RenderPipelineGetBindGroupLayout(_vectorPipeline, 1);
+        var pathViewEntry = new BindGroupEntry
+        {
+            Binding = 1,
+            TextureView = _pathAtlas.AtlasTexture.ViewPtr
+        };
+        var pathAtlasEntries = stackalloc BindGroupEntry[2];
+        pathAtlasEntries[0] = samplerEntry;
+        pathAtlasEntries[1] = pathViewEntry;
+        var pathAtlasDesc = new BindGroupDescriptor
+        {
+            Layout = _pathAtlasBindGroupLayout,
+            EntryCount = 2,
+            Entries = pathAtlasEntries
+        };
+        _pathAtlasBindGroup = _context.Wgpu.DeviceCreateBindGroup(_context.Device, &pathAtlasDesc);
     }
 
     public void RenderScene(Visual root, uint width, uint height, TextureView* targetView)
     {
         if (_isDisposed) return;
+        _pathAtlas.CleanupFrame();
 
         // Automatically measure and arrange active popups with window dimensions before rendering
         ProGPU.WinUI.PopupService.MeasureAndArrangePopups(new Vector2(width, height));
@@ -565,6 +588,10 @@ public unsafe class Compositor : IDisposable
                     fixed (BindGroup** pGrp = &_vectorUniformBindGroup)
                     {
                         _context.Wgpu.RenderPassEncoderSetBindGroup(pass, 0, *pGrp, 0, null);
+                    }
+                    fixed (BindGroup** pPathAtlas = &_pathAtlasBindGroup)
+                    {
+                        _context.Wgpu.RenderPassEncoderSetBindGroup(pass, 1, *pPathAtlas, 0, null);
                     }
                     var buffer = _vectorVertexBuffer.BufferPtr;
                     _context.Wgpu.RenderPassEncoderSetVertexBuffer(pass, 0, buffer, 0, _vectorVertexBuffer.Size);
@@ -892,34 +919,93 @@ public unsafe class Compositor : IDisposable
         if (cmd.Brush != null)
         {
             float bIdx = RegisterBrush(cmd.Brush);
-            var solidColor = (cmd.Brush is SolidColorBrush solid) ? solid.Color : new Vector4(1f, 1f, 1f, 1f);
+            var brush = cmd.Brush as SolidColorBrush;
+            var color = brush?.Color ?? new Vector4(1f, 1f, 1f, 1f);
 
-            var flattened = EvaluatePathFills(cmd.Path);
-            foreach (var contour in flattened)
+            var info = _pathAtlas.GetOrCreatePath(cmd.Path);
+            if (info.Width > 0 && info.Height > 0)
             {
-                var transContour = new List<Vector2>(contour.Count);
-                foreach (var pt in contour)
+                var v0 = Vector2.Transform(new Vector2(info.MinX, info.MinY), transform);
+                var v1 = Vector2.Transform(new Vector2(info.MinX + info.Width, info.MinY), transform);
+                var v2 = Vector2.Transform(new Vector2(info.MinX + info.Width, info.MinY + info.Height), transform);
+                var v3 = Vector2.Transform(new Vector2(info.MinX, info.MinY + info.Height), transform);
+
+                var uv0 = new Vector2(info.TexCoordMin.X, info.TexCoordMin.Y);
+                var uv1 = new Vector2(info.TexCoordMax.X, info.TexCoordMin.Y);
+                var uv2 = new Vector2(info.TexCoordMax.X, info.TexCoordMax.Y);
+                var uv3 = new Vector2(info.TexCoordMin.X, info.TexCoordMax.Y);
+
+                if (_activeClipRect.HasValue)
                 {
-                    transContour.Add(Vector2.Transform(pt, transform));
+                    float rx1 = v0.X;
+                    float ry1 = v0.Y;
+                    float rx2 = v2.X;
+                    float ry2 = v2.Y;
+
+                    float cx1 = Math.Max(rx1, _activeClipRect.Value.X);
+                    float cy1 = Math.Max(ry1, _activeClipRect.Value.Y);
+                    float cx2 = Math.Min(rx2, _activeClipRect.Value.X + _activeClipRect.Value.Width);
+                    float cy2 = Math.Min(ry2, _activeClipRect.Value.Y + _activeClipRect.Value.Height);
+
+                    if (cx2 > cx1 && cy2 > cy1)
+                    {
+                        float dx = rx2 - rx1;
+                        float dy = ry2 - ry1;
+
+                        uv0 = new Vector2(
+                            info.TexCoordMin.X + (cx1 - rx1) / dx * (info.TexCoordMax.X - info.TexCoordMin.X),
+                            info.TexCoordMin.Y + (cy1 - ry1) / dy * (info.TexCoordMax.Y - info.TexCoordMin.Y)
+                        );
+                        uv1 = new Vector2(
+                            info.TexCoordMin.X + (cx2 - rx1) / dx * (info.TexCoordMax.X - info.TexCoordMin.X),
+                            info.TexCoordMin.Y + (cy1 - ry1) / dy * (info.TexCoordMax.Y - info.TexCoordMin.Y)
+                        );
+                        uv2 = new Vector2(
+                            info.TexCoordMin.X + (cx2 - rx1) / dx * (info.TexCoordMax.X - info.TexCoordMin.X),
+                            info.TexCoordMin.Y + (cy2 - ry1) / dy * (info.TexCoordMax.Y - info.TexCoordMin.Y)
+                        );
+                        uv3 = new Vector2(
+                            info.TexCoordMin.X + (cx1 - rx1) / dx * (info.TexCoordMax.X - info.TexCoordMin.X),
+                            info.TexCoordMin.Y + (cy2 - ry1) / dy * (info.TexCoordMax.Y - info.TexCoordMin.Y)
+                        );
+
+                        v0 = new Vector2(cx1, cy1);
+                        v1 = new Vector2(cx2, cy1);
+                        v2 = new Vector2(cx2, cy2);
+                        v3 = new Vector2(cx1, cy2);
+
+                        uint idxStart = (uint)_vectorVerticesList.Count;
+
+                        _vectorVerticesList.Add(new VectorVertex(v0, color, uv0, bIdx, shapeType: 4f));
+                        _vectorVerticesList.Add(new VectorVertex(v1, color, uv1, bIdx, shapeType: 4f));
+                        _vectorVerticesList.Add(new VectorVertex(v2, color, uv2, bIdx, shapeType: 4f));
+                        _vectorVerticesList.Add(new VectorVertex(v3, color, uv3, bIdx, shapeType: 4f));
+
+                        _vectorIndicesList.Add(idxStart);
+                        _vectorIndicesList.Add(idxStart + 1);
+                        _vectorIndicesList.Add(idxStart + 2);
+
+                        _vectorIndicesList.Add(idxStart);
+                        _vectorIndicesList.Add(idxStart + 2);
+                        _vectorIndicesList.Add(idxStart + 3);
+                    }
                 }
-
-                FillTessellator.TessellateFill(
-                    transContour,
-                    solidColor,
-                    _vectorVerticesList,
-                    _vectorIndicesList
-                );
-            }
-
-            if (Matrix4x4.Invert(transform, out var invTransform))
-            {
-                for (int i = startIndex; i < _vectorVerticesList.Count; i++)
+                else
                 {
-                    var v = _vectorVerticesList[i];
-                    v.TexCoord = Vector2.Transform(v.Position, invTransform);
-                    v.BrushIndex = bIdx;
-                    v.ShapeType = 4f;
-                    _vectorVerticesList[i] = v;
+                    uint idxStart = (uint)_vectorVerticesList.Count;
+
+                    _vectorVerticesList.Add(new VectorVertex(v0, color, uv0, bIdx, shapeType: 4f));
+                    _vectorVerticesList.Add(new VectorVertex(v1, color, uv1, bIdx, shapeType: 4f));
+                    _vectorVerticesList.Add(new VectorVertex(v2, color, uv2, bIdx, shapeType: 4f));
+                    _vectorVerticesList.Add(new VectorVertex(v3, color, uv3, bIdx, shapeType: 4f));
+
+                    _vectorIndicesList.Add(idxStart);
+                    _vectorIndicesList.Add(idxStart + 1);
+                    _vectorIndicesList.Add(idxStart + 2);
+
+                    _vectorIndicesList.Add(idxStart);
+                    _vectorIndicesList.Add(idxStart + 2);
+                    _vectorIndicesList.Add(idxStart + 3);
                 }
             }
         }
@@ -1719,6 +1805,9 @@ public unsafe class Compositor : IDisposable
         _textureIndexBuffer.Dispose();
         
         _atlas.Dispose();
+        _pathAtlas.Dispose();
+        if (_pathAtlasBindGroup != null) _context.Wgpu.BindGroupRelease(_pathAtlasBindGroup);
+        if (_pathAtlasBindGroupLayout != null) _context.Wgpu.BindGroupLayoutRelease(_pathAtlasBindGroupLayout);
         _pipelineCache.Dispose();
 
         if (_atlasSampler != null) _context.Wgpu.SamplerRelease(_atlasSampler);
