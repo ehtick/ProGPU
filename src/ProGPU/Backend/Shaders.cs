@@ -21,7 +21,7 @@ struct Brush {
 
 struct Uniforms {
     projection: mat4x4<f32>,
-    brushes: array<Brush, 16>,
+    brushes: array<Brush, 64>,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;

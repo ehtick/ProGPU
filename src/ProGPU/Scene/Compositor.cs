@@ -34,22 +34,22 @@ public struct GpuBrush
 public struct GpuUniforms
 {
     public Matrix4x4 Projection;
-    public GpuBrush Brush0;
-    public GpuBrush Brush1;
-    public GpuBrush Brush2;
-    public GpuBrush Brush3;
-    public GpuBrush Brush4;
-    public GpuBrush Brush5;
-    public GpuBrush Brush6;
-    public GpuBrush Brush7;
-    public GpuBrush Brush8;
-    public GpuBrush Brush9;
-    public GpuBrush Brush10;
-    public GpuBrush Brush11;
-    public GpuBrush Brush12;
-    public GpuBrush Brush13;
-    public GpuBrush Brush14;
-    public GpuBrush Brush15;
+    public GpuBrush Brush0; public GpuBrush Brush1; public GpuBrush Brush2; public GpuBrush Brush3;
+    public GpuBrush Brush4; public GpuBrush Brush5; public GpuBrush Brush6; public GpuBrush Brush7;
+    public GpuBrush Brush8; public GpuBrush Brush9; public GpuBrush Brush10; public GpuBrush Brush11;
+    public GpuBrush Brush12; public GpuBrush Brush13; public GpuBrush Brush14; public GpuBrush Brush15;
+    public GpuBrush Brush16; public GpuBrush Brush17; public GpuBrush Brush18; public GpuBrush Brush19;
+    public GpuBrush Brush20; public GpuBrush Brush21; public GpuBrush Brush22; public GpuBrush Brush23;
+    public GpuBrush Brush24; public GpuBrush Brush25; public GpuBrush Brush26; public GpuBrush Brush27;
+    public GpuBrush Brush28; public GpuBrush Brush29; public GpuBrush Brush30; public GpuBrush Brush31;
+    public GpuBrush Brush32; public GpuBrush Brush33; public GpuBrush Brush34; public GpuBrush Brush35;
+    public GpuBrush Brush36; public GpuBrush Brush37; public GpuBrush Brush38; public GpuBrush Brush39;
+    public GpuBrush Brush40; public GpuBrush Brush41; public GpuBrush Brush42; public GpuBrush Brush43;
+    public GpuBrush Brush44; public GpuBrush Brush45; public GpuBrush Brush46; public GpuBrush Brush47;
+    public GpuBrush Brush48; public GpuBrush Brush49; public GpuBrush Brush50; public GpuBrush Brush51;
+    public GpuBrush Brush52; public GpuBrush Brush53; public GpuBrush Brush54; public GpuBrush Brush55;
+    public GpuBrush Brush56; public GpuBrush Brush57; public GpuBrush Brush58; public GpuBrush Brush59;
+    public GpuBrush Brush60; public GpuBrush Brush61; public GpuBrush Brush62; public GpuBrush Brush63;
 }
 
 public unsafe class Compositor : IDisposable
@@ -153,10 +153,10 @@ public unsafe class Compositor : IDisposable
         // 1. Initialize Glyph Atlas (1024x1024)
         _atlas = new GlyphAtlas(_context, 1024);
 
-        // 2. Uniform Buffer allocation (Projection Matrix & 16 Brushes - 2112 bytes)
+        // 2. Uniform Buffer allocation (Projection Matrix & 64 Brushes - 8256 bytes)
         _uniformBuffer = new GpuBuffer(
             _context, 
-            2112, 
+            8256, 
             BufferUsage.Uniform | BufferUsage.CopyDst, 
             "Compositor Uniform Projection & Brushes Buffer"
         );
@@ -269,7 +269,7 @@ public unsafe class Compositor : IDisposable
             Binding = 0,
             Buffer = _uniformBuffer.BufferPtr,
             Offset = 0,
-            Size = 2112
+            Size = 8256
         };
 
         var uDescVector = new BindGroupDescriptor
@@ -505,22 +505,11 @@ public unsafe class Compositor : IDisposable
         // Upload unified projection matrix and compiled brushes to GpuUniforms
         var uniforms = new GpuUniforms();
         uniforms.Projection = projection;
-        if (_activeBrushes.Count > 0) uniforms.Brush0 = _activeBrushes[0];
-        if (_activeBrushes.Count > 1) uniforms.Brush1 = _activeBrushes[1];
-        if (_activeBrushes.Count > 2) uniforms.Brush2 = _activeBrushes[2];
-        if (_activeBrushes.Count > 3) uniforms.Brush3 = _activeBrushes[3];
-        if (_activeBrushes.Count > 4) uniforms.Brush4 = _activeBrushes[4];
-        if (_activeBrushes.Count > 5) uniforms.Brush5 = _activeBrushes[5];
-        if (_activeBrushes.Count > 6) uniforms.Brush6 = _activeBrushes[6];
-        if (_activeBrushes.Count > 7) uniforms.Brush7 = _activeBrushes[7];
-        if (_activeBrushes.Count > 8) uniforms.Brush8 = _activeBrushes[8];
-        if (_activeBrushes.Count > 9) uniforms.Brush9 = _activeBrushes[9];
-        if (_activeBrushes.Count > 10) uniforms.Brush10 = _activeBrushes[10];
-        if (_activeBrushes.Count > 11) uniforms.Brush11 = _activeBrushes[11];
-        if (_activeBrushes.Count > 12) uniforms.Brush12 = _activeBrushes[12];
-        if (_activeBrushes.Count > 13) uniforms.Brush13 = _activeBrushes[13];
-        if (_activeBrushes.Count > 14) uniforms.Brush14 = _activeBrushes[14];
-        if (_activeBrushes.Count > 15) uniforms.Brush15 = _activeBrushes[15];
+        GpuBrush* pBrushes = &uniforms.Brush0;
+        for (int i = 0; i < Math.Min(64, _activeBrushes.Count); i++)
+        {
+            pBrushes[i] = _activeBrushes[i];
+        }
         _uniformBuffer.WriteSingle(uniforms);
 
         // Recreate MSAA resources if needed (handles initialization and window resizing)
@@ -1222,7 +1211,7 @@ public unsafe class Compositor : IDisposable
             }
         }
 
-        if (_activeBrushes.Count < 16)
+        if (_activeBrushes.Count < 64)
         {
             _activeBrushes.Add(gpuBrush);
             return (float)(_activeBrushes.Count - 1);
