@@ -443,7 +443,7 @@ public static unsafe class MainWindowController
 
                 if (AppState._blurRadius > 0)
                 {
-                    AppState._compute.ApplyGaussianBlur(AppState._canvasSourceTexture, AppState._canvasTempTexture, AppState._canvasBlurTexture);
+                    AppState._compute.ApplyGaussianBlur(AppState._canvasSourceTexture, AppState._canvasTempTexture, AppState._canvasBlurTexture, AppState._blurRadius);
                 }
             }
         }
