@@ -310,3 +310,84 @@ The rasterizer counts curve intersections analytically using a horizontal ray ca
   ```
   Pixels outside the shape boundaries immediately bypass local coordinate transforms, 4-sample subpixel loops, and expensive winding calculations. This discards ~95% of active operations per pixel, resulting in a **15x** rendering speedup.
 - **4x SSAA Quality Correctness**: Replaced screen coordinates with transformed local coordinates in the Sample 2 containment checks of the `PathRasterizerShader`. This ensures that under high multisampling/supersampling, anti-aliased edge pixels align perfectly, delivering sharp, hardware-accurate vector strokes and fills.
+
+---
+
+## Module & Project Architecture Breakdown
+
+The ProGPU solution is partitioned into modular, highly specialized C# projects. Each project governs a specific layer of the UI, vector, or graphics compilation loops:
+
+| Project | Assembly Name | Core Architectural Responsibility | Key Components & Classes |
+| :--- | :--- | :--- | :--- |
+| **`ProGPU.Backend`** | `ProGPU.Backend.dll` | Low-level hardware infrastructure and WebGPU swapchain orchestration. | `WgpuContext`, `Window`, `Shaders`, `RenderPipelineCache` |
+| **`ProGPU.Compute`** | `ProGPU.Compute.dll` | Orchestration of WebGPU GPGPU compute pipelines and parallel filter dispatches. | `ComputeAccelerator`, `ComputeShaders` |
+| **`ProGPU.Vector`** | `ProGPU.Vector.dll` | Mathematical primitives, Bezier models, path segment parsing, and atlas mapping. | `PathGeometry`, `PathFigure`, `GpuPathSegment`, `PathAtlas` |
+| **`ProGPU.Text`** | `ProGPU.Text.dll` | TrueType Font (TTF) parsing, glyph extraction, word-wrapping, and line layout engines. | `TtfFont`, `GlyphAtlas`, `TextLayout` |
+| **`ProGPU.Scene`** | `ProGPU.Scene.dll` | Retained scene-graph visual tree, decoupled layout boundaries, and compositor compiler. | `Compositor`, `ContainerVisual`, `DrawingVisual`, `ILayoutNode` |
+| **`ProGPU.Layout`** | `ProGPU.Layout.dll` | XAML-compatible sizing negotiation lifecycle (`Measure` / `Arrange`) and layout panels. | `LayoutNode`, `StackPanel`, `GridPanel`, `CanvasPanel` |
+| **`ProGPU.WinUI`** | `ProGPU.WinUI.dll` | High-level interactive UI control suite layered on top of layout nodes. | `Border`, `Grid`, `Pivot`, `RichTextBlock`, `ScrollViewer`, `SplitView` |
+| **`ProGPU.Virtualization`** | `ProGPU.Virtualization.dll` | Dynamic scrolling viewport orchestration and UI virtualization controllers. | `VirtualizingPanel`, `ViewportInfo` |
+| **`ProGPU.Samples`** | `ProGPU.Samples.dll` | Showcase bootstrap, keyframe and physics animation drivers, diagnostics, and stress-test suites. | `Program`, `AppState`, `MainWindowController`, `MotionMarkShowcaseVisual` |
+
+---
+
+## WebGPU WGSL Shader Specifications & Implementations
+
+ProGPU routes all graphics and compute tasks directly to the GPU using specialized WGSL (WebGPU Shading Language) shaders. The following sections detail their purpose, execution pipelines, and exact implementations.
+
+### 1. VectorShader (Rasterization Graphics Pipeline)
+- **Role**: Primary graphics pipeline shader for standard UI rendering. Responsible for rasterizing vector shapes (rectangles, ellipses, rounded rectangles) and evaluating Bezier curves on the GPU.
+- **Why It is Used**: Avoids uploading dense pre-tessellated mesh structures. Instead, it utilizes cheap mathematical Signed Distance Fields (SDFs) and GPU vertex expansion to draw vector primitives with zero CPU overhead.
+- **Implementation Mechanics**:
+  - **GPU Stroke Expansion (`sType == 3u`)**: Expands lines dynamically in the vertex shader. Computes normal vectors ($miterN$) at segment junctions, scales them by $1/\cos(\theta)$ ($miterScale$), and offsets vertices to form precise, variable-thickness miter joints.
+  - **Dynamic Bezier Evaluation (`sType == 5u & 6u`)**: Replaces CPU Bezier flattening. For Quadratics and Cubics, the vertex shader interpolates coordinates directly based on the thread's `vertexIndex` and parametric factor $t \in [0, 1]$, calculating curve positions and tangents to offset vertices outward along normal vectors on the fly.
+  - **Analytical SDF Fragment Evaluation (`sType < 3u`)**: Computes Signed Distance Fields for Rectangles, Ellipses, and Rounded Rectangles. Anti-aliases boundaries dynamically using screen-space partial derivatives:
+    $$\text{fw} = \max(\text{fwidth}(d), 0.0001)$$
+    $$\text{alpha} = 1.0 - \text{smoothstep}(-0.5\text{fw}, 0.5\text{fw}, d)$$
+  - **Gradient Interpolation**: Evaluates Linear (`brushType == 1u`) and Radial (`brushType == 2u`) gradients dynamically for up to 4 stop colors by calculating projection coordinates and interpolating between bounds using stop offsets.
+
+### 2. TextShader (SDF Glyph Render Pipeline)
+- **Role**: Specialized graphics shader for high-speed, sharp text display.
+- **Why It is Used**: Traditional text rasterization blurs heavily under scaling. The TextShader samples high-precision SDF textures and applies dilation offsets and power-based sharpness filters to ensure text remains crisp at any display size or zoom level.
+- **Implementation Mechanics**:
+  - Samples the single-channel glyph atlas: `let alpha = textureSample(atlasTexture, atlasSampler, input.texCoord).r;`
+  - Applies a dilation scale based on the requested stroke thickness: `let dilated = clamp(alpha * input.strokeThickness, 0.0, 1.0);`
+  - Filters sharpness using a power curve driven by the corner radius: `let finalAlpha = pow(dilated, input.cornerRadius);`
+
+### 3. GlyphRasterizerShader (GPGPU Analytical Glyph Rasterizer)
+- **Role**: WebGPU compute shader tasked with pre-rasterizing vector glyph outlines into the glyph atlas texture.
+- **Why It is Used**: Bypasses slow CPU-based glyph rasterizers entirely, using parallel GPU threads to rasterize outlines directly on the GPU.
+- **Implementation Mechanics**:
+  - Operates on a $16 \times 16$ thread group.
+  - Calculates intersections using a 16x supersampled (SSAA) analytical winding-number raycaster.
+  - Solves quadratic equations directly inside the WGSL shader (`solve_quadratic`) to evaluate Bezier curve boundaries, updating winding directions according to the curve's vertical tangent derivative.
+  - Writes the calculated coverage mask directly to the storage texture: `textureStore(atlasTexture, writeCoord, vec4<f32>(coverage, 0.0, 0.0, 0.0));`
+
+### 4. PathRasterizerShader (GPGPU Analytical Vector Path Rasterizer)
+- **Role**: Advanced WebGPU compute shader that computes analytical non-zero winding fills for arbitrary paths.
+- **Why It is Used**: Bypasses CPU segment flattening and triangulation completely, allowing the GPU to raycast complex Bezier geometry directly.
+- **Implementation Mechanics**:
+  - Computes intersections of horizontal rays with Line, Quadratic Bezier, and Cubic Bezier segments.
+  - Features an analytical Cardano's formula solver (`solve_cubic` inside WGSL) to evaluate cubic Bezier roots:
+    $$p = b - \frac{a^2}{3}, \quad q = c - \frac{ab}{3} + \frac{2a^3}{27}, \quad D = \frac{q^2}{4} + \frac{p^3}{27}$$
+    If $D \leq 0$, it extracts up to 3 real roots using trigonometric cosine angles, updating the winding number according to the tangent derivative $P'_y(t) = 3 a t^2 + 2 b t + c$.
+  - Executes 4-point supersampling (SSAA) using subpixel sampling coordinate offsets (`+0.25`, `+0.75`) in local space (`fp2`), achieving hardware-accurate anti-aliased edge coverage.
+
+### 5. GaussianBlur (Horizontal & Vertical Compute Filters)
+- **Role**: Parallel compute shaders for high-performance backdrop and glass blurs.
+- **Why It is Used**: Bypasses slow pixel shader convolution passes by executing parallel thread blocks directly on texture buffers.
+- **Implementation Mechanics**:
+  - Operates in two consecutive passes (Horizontal, then Vertical) to split rendering complexity from $O(K^2)$ to $O(K)$ instructions per pixel.
+  - Executes an unrolled 5-tap Gaussian kernel using hardcoded weights to avoid memory fetch latency:
+    $$\text{color} = 0.0625 \cdot T[-2] + 0.25 \cdot T[-1] + 0.375 \cdot T[0] + 0.25 \cdot T[1] + 0.0625 \cdot T[2]$$
+  - Clamps texture coordinate bounds inside `textureLoad` to eliminate edge bleed artifacts.
+
+### 6. DropShadow (Ambient Shadow & Neon Glow Compute Filter)
+- **Role**: WebGPU compute shader calculating soft drop shadows and glowing neon halos for layout elements.
+- **Why It is Used**: Evaluates dynamic blurring and translation offsets over element boundaries in a single dispatch pass.
+- **Implementation Mechanics**:
+  - Operates on a $16 \times 16$ thread block.
+  - Takes a `Params` uniform block specifying translating `offset`, shadow `color`, and `blurRadius`.
+  - Loops over a sliding window of size `[-blurRadius, blurRadius]`.
+  - Extracts the source offscreen texture's alpha channel, averages the coverage, and outputs the shifted, blurred, and color-multiplied mask back to the destination buffer:
+    $$\text{shadowColor} = \vec{C}_{\text{params}} \cdot (A_{\text{sum}} / \text{count})$$
