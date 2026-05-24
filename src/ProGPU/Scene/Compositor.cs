@@ -127,6 +127,7 @@ public unsafe class Compositor : IDisposable
 
     private readonly ComputeAccelerator _compute;
     private readonly Dictionary<FrameworkElement, (GpuTexture Source, GpuTexture Temp, GpuTexture Destination)> _effectTextures = new();
+    private readonly HashSet<FrameworkElement> _elementsRenderingEffects = new();
 
     private bool _isDisposed;
 
@@ -762,7 +763,7 @@ public unsafe class Compositor : IDisposable
 
     private void CompileVisualTree(Visual node, Matrix4x4 parentTransform)
     {
-        if (node is FrameworkElement fe && fe.Effect != null)
+        if (node is FrameworkElement fe && fe.Effect != null && !_elementsRenderingEffects.Contains(fe))
         {
             ApplyAndDrawEffect(fe, parentTransform);
             return;
@@ -1926,8 +1927,16 @@ public unsafe class Compositor : IDisposable
             textures.Destination.Resize(w, h);
         }
 
-        // 1. Render the subtree of fe offscreen into textures.Source
-        RenderOffscreen(fe, w, h, textures.Source);
+        _elementsRenderingEffects.Add(fe);
+        try
+        {
+            // 1. Render the subtree of fe offscreen into textures.Source
+            RenderOffscreen(fe, w, h, textures.Source);
+        }
+        finally
+        {
+            _elementsRenderingEffects.Remove(fe);
+        }
 
         // 2. Apply compute shader accelerator filter
         if (fe.Effect is BlurEffect blur)
