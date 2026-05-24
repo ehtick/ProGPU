@@ -280,7 +280,7 @@ public static class SamplePagePresenter
         description.Inlines.Add(new Run("This page implements a native high-performance GPU vector graphics benchmark based on the MotionMark suite. Renders thousands of dynamic shapes (lines, circles, and direct GPU Beziers) with zero CPU triangulation or flattening, achieving ultimate frame rates."));
         stack.AddChild(description);
 
-        var grid = new ProGPU.WinUI.Grid { HeightConstraint = 520f };
+        var grid = new ProGPU.WinUI.Grid { HeightConstraint = 620f };
         grid.ColumnDefinitions.Add(new GridLength(300, GridUnitType.Absolute)); // Column 0: Settings Panel
         grid.ColumnDefinitions.Add(new GridLength(1, GridUnitType.Star));      // Column 1: Visual Canvas Card
 
@@ -292,7 +292,7 @@ public static class SamplePagePresenter
             BorderThickness = new Thickness(1f),
             BorderBrush = ThemeManager.GetBrush("ControlBorder"),
             Background = ThemeManager.GetBrush("ControlBackground"),
-            Padding = new Thickness(16f),
+            Padding = new Thickness(12f),
             Margin = new Thickness(0, 0, 16, 0)
         };
         var settingsStack = new StackPanel { Orientation = Orientation.Vertical };
@@ -307,7 +307,7 @@ public static class SamplePagePresenter
         countSlider.Maximum = 100000f;
         countSlider.Minimum = 1000f;
         countSlider.Value = 1000f;
-        countSlider.Margin = new Thickness(0, 0, 0, 16);
+        countSlider.Margin = new Thickness(0, 0, 0, 8);
         countSlider.ValueChanged += (s, e) => {
             int val = (int)(Math.Round(countSlider.Value / 1000f) * 1000f);
             if (val < 1000) val = 1000;
@@ -328,7 +328,7 @@ public static class SamplePagePresenter
         strokeLabel.Inlines.Add(new Bold(new Run("Stroke Scale: 1.0x")));
         settingsStack.AddChild(strokeLabel);
         
-        var strokeSlider = new ProGPU.WinUI.Slider { Minimum = 0.1f, Maximum = 5.0f, Value = 1.0f, Margin = new Thickness(0, 0, 0, 16) };
+        var strokeSlider = new ProGPU.WinUI.Slider { Minimum = 0.1f, Maximum = 5.0f, Value = 1.0f, Margin = new Thickness(0, 0, 0, 8) };
         strokeSlider.ValueChanged += (s, e) => {
             visual.StrokeThicknessMultiplier = strokeSlider.Value;
             visual.UpdateCachedPens();
@@ -338,26 +338,12 @@ public static class SamplePagePresenter
         };
         settingsStack.AddChild(strokeSlider);
 
-        // Animation Speed
-        var animLabel = new RichTextBlock { Font = AppState.GetFont(), FontSize = 12f, Margin = new Thickness(0, 0, 0, 4) };
-        animLabel.Inlines.Add(new Bold(new Run("Wobble Animation Speed: 1.0x")));
-        settingsStack.AddChild(animLabel);
-        
-        var animSlider = new ProGPU.WinUI.Slider { Minimum = 0.0f, Maximum = 5.0f, Value = 1.0f, Margin = new Thickness(0, 0, 0, 16) };
-        animSlider.ValueChanged += (s, e) => {
-            visual.AnimationSpeed = animSlider.Value;
-            animLabel.Inlines.Clear();
-            animLabel.Inlines.Add(new Bold(new Run($"Wobble Animation Speed: {animSlider.Value:F1}x")));
-            animLabel.Invalidate();
-        };
-        settingsStack.AddChild(animSlider);
-
         // Split Chance
         var splitLabel = new RichTextBlock { Font = AppState.GetFont(), FontSize = 12f, Margin = new Thickness(0, 0, 0, 4) };
         splitLabel.Inlines.Add(new Bold(new Run("Segment Split Chance: 50%")));
         settingsStack.AddChild(splitLabel);
         
-        var splitSlider = new ProGPU.WinUI.Slider { Minimum = 0.0f, Maximum = 1.0f, Value = 0.5f, Margin = new Thickness(0, 0, 0, 16) };
+        var splitSlider = new ProGPU.WinUI.Slider { Minimum = 0.0f, Maximum = 1.0f, Value = 0.5f, Margin = new Thickness(0, 0, 0, 8) };
         splitSlider.ValueChanged += (s, e) => {
             visual.SplitProbability = splitSlider.Value;
             splitLabel.Inlines.Clear();
@@ -371,7 +357,7 @@ public static class SamplePagePresenter
         colorLabel.Inlines.Add(new Bold(new Run("Color Palette:")));
         settingsStack.AddChild(colorLabel);
         
-        var colorCombo = new ComboBox { Font = AppState.GetFont(), WidthConstraint = 260f, Margin = new Thickness(0, 0, 0, 16) };
+        var colorCombo = new ComboBox { Font = AppState.GetFont(), WidthConstraint = 260f, Margin = new Thickness(0, 0, 0, 8) };
         colorCombo.Items.Add(new ComboBoxItem("Standard Classical"));
         colorCombo.Items.Add(new ComboBoxItem("Fluent Vibrant"));
         colorCombo.Items.Add(new ComboBoxItem("Rainbow / Hue Wave"));
@@ -391,13 +377,13 @@ public static class SamplePagePresenter
         settingsStack.AddChild(colorCombo);
 
         // Segment Mix Checkboxes
-        var typeLabel = new RichTextBlock { Font = AppState.GetFont(), FontSize = 12f, Margin = new Thickness(0, 0, 0, 8) };
+        var typeLabel = new RichTextBlock { Font = AppState.GetFont(), FontSize = 12f, Margin = new Thickness(0, 0, 0, 4) };
         typeLabel.Inlines.Add(new Bold(new Run("Segment Types Mix:")));
         settingsStack.AddChild(typeLabel);
 
         var lineCheckText = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11.5f };
         lineCheckText.Inlines.Add(new Run("Lines"));
-        var lineCheck = new CheckBox { Content = lineCheckText, IsChecked = true, Margin = new Thickness(0, 0, 0, 8) };
+        var lineCheck = new CheckBox { Content = lineCheckText, IsChecked = true, Margin = new Thickness(0, 0, 0, 4) };
         lineCheck.CheckedChanged += (s, e) => {
             visual.EnableLines = lineCheck.IsChecked;
             visual.RegenerateSegments();
@@ -406,7 +392,7 @@ public static class SamplePagePresenter
 
         var quadCheckText = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11.5f };
         quadCheckText.Inlines.Add(new Run("Quadratic Curves"));
-        var quadCheck = new CheckBox { Content = quadCheckText, IsChecked = true, Margin = new Thickness(0, 0, 0, 8) };
+        var quadCheck = new CheckBox { Content = quadCheckText, IsChecked = true, Margin = new Thickness(0, 0, 0, 4) };
         quadCheck.CheckedChanged += (s, e) => {
             visual.EnableQuadBeziers = quadCheck.IsChecked;
             visual.RegenerateSegments();
@@ -415,7 +401,7 @@ public static class SamplePagePresenter
 
         var cubicCheckText = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11.5f };
         cubicCheckText.Inlines.Add(new Run("Cubic Curves"));
-        var cubicCheck = new CheckBox { Content = cubicCheckText, IsChecked = true, Margin = new Thickness(0, 0, 0, 16) };
+        var cubicCheck = new CheckBox { Content = cubicCheckText, IsChecked = true, Margin = new Thickness(0, 0, 0, 8) };
         cubicCheck.CheckedChanged += (s, e) => {
             visual.EnableCubicBeziers = cubicCheck.IsChecked;
             visual.RegenerateSegments();
@@ -423,7 +409,7 @@ public static class SamplePagePresenter
         settingsStack.AddChild(cubicCheck);
 
         // Fills vs Strokes
-        var fillToggleLabel = new RichTextBlock { Font = AppState.GetFont(), FontSize = 12f, Margin = new Thickness(0, 0, 0, 4) };
+        var fillToggleLabel = new RichTextBlock { Font = AppState.GetFont(), FontSize = 12f, Margin = new Thickness(0, 0, 0, 2) };
         fillToggleLabel.Inlines.Add(new Bold(new Run("Render Path Fills instead of Strokes:")));
         settingsStack.AddChild(fillToggleLabel);
         
@@ -433,6 +419,18 @@ public static class SamplePagePresenter
             visual.Invalidate();
         };
         settingsStack.AddChild(fillToggle);
+
+        // Direct GPU Mode vs Path Geometry Mode
+        var gpuToggleLabel = new RichTextBlock { Font = AppState.GetFont(), FontSize = 12f, Margin = new Thickness(0, 0, 0, 2) };
+        gpuToggleLabel.Inlines.Add(new Bold(new Run("Direct GPU Pipeline (Ultra Perf):")));
+        settingsStack.AddChild(gpuToggleLabel);
+        
+        var gpuToggle = new ToggleSwitch { IsOn = true, Margin = new Thickness(0, 0, 0, 0) };
+        gpuToggle.Toggled += (s, e) => {
+            visual.DirectGpuMode = gpuToggle.IsOn;
+            visual.Invalidate();
+        };
+        settingsStack.AddChild(gpuToggle);
 
         grid.AddChild(settingsCard);
         ProGPU.WinUI.Grid.SetColumn(settingsCard, 0);
