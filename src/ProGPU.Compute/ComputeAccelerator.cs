@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Silk.NET.Core.Native;
@@ -67,7 +68,35 @@ public unsafe class ComputeAccelerator : IDisposable
         _shadowPipeline = _cache.GetOrCreateComputePipeline("Shadow", shShadow);
     }
 
-    public void ApplyGaussianBlur(GpuTexture source, GpuTexture temp, GpuTexture destination)
+    private void RunBlurPass(CommandEncoder* encoder, ComputePipeline* pipeline, BindGroupLayout* layout, GpuTexture input, GpuTexture output, uint width, uint height, List<nint> bindGroupsToRelease)
+    {
+        var entries = stackalloc BindGroupEntry[2];
+        entries[0] = new BindGroupEntry { Binding = 0, TextureView = input.ViewPtr };
+        entries[1] = new BindGroupEntry { Binding = 1, TextureView = output.ViewPtr };
+
+        var bgDesc = new BindGroupDescriptor
+        {
+            Layout = layout,
+            EntryCount = 2,
+            Entries = entries
+        };
+        var bg = _context.Wgpu.DeviceCreateBindGroup(_context.Device, &bgDesc);
+        bindGroupsToRelease.Add((nint)bg);
+
+        var passDesc = new ComputePassDescriptor();
+        var pass = _context.Wgpu.CommandEncoderBeginComputePass(encoder, &passDesc);
+        _context.Wgpu.ComputePassEncoderSetPipeline(pass, pipeline);
+        _context.Wgpu.ComputePassEncoderSetBindGroup(pass, 0, bg, 0, null);
+
+        uint workgroupX = (width + 15) / 16;
+        uint workgroupY = (height + 15) / 16;
+        _context.Wgpu.ComputePassEncoderDispatchWorkgroups(pass, workgroupX, workgroupY, 1);
+
+        _context.Wgpu.ComputePassEncoderEnd(pass);
+        _context.Wgpu.ComputePassEncoderRelease(pass);
+    }
+
+    public void ApplyGaussianBlur(GpuTexture source, GpuTexture temp, GpuTexture destination, float radius)
     {
         if (_isDisposed) throw new ObjectDisposedException(nameof(ComputeAccelerator));
 
@@ -78,64 +107,24 @@ public unsafe class ComputeAccelerator : IDisposable
         temp.Resize(width, height);
         destination.Resize(width, height);
 
-        // 1. Create horizontal pass command encoder and bind group
+        // Clamp iterations based on blur radius to yield high quality result
+        int iterations = Math.Clamp((int)Math.Round(radius / 2.5f), 1, 8);
+
         var encoderDesc = new CommandEncoderDescriptor { Label = (byte*)SilkMarshal.StringToPtr("Compute Blur Encoder") };
         var encoder = _context.Wgpu.DeviceCreateCommandEncoder(_context.Device, &encoderDesc);
         SilkMarshal.Free((nint)encoderDesc.Label);
 
-        // Get bind group layout from pipeline
         var blurHLayout = _context.Wgpu.ComputePipelineGetBindGroupLayout(_blurHorizPipeline, 0);
-
-        var entriesH = stackalloc BindGroupEntry[2];
-        entriesH[0] = new BindGroupEntry { Binding = 0, TextureView = source.ViewPtr };
-        entriesH[1] = new BindGroupEntry { Binding = 1, TextureView = temp.ViewPtr };
-
-        var bgDescH = new BindGroupDescriptor
-        {
-            Layout = blurHLayout,
-            EntryCount = 2,
-            Entries = entriesH
-        };
-        var bgH = _context.Wgpu.DeviceCreateBindGroup(_context.Device, &bgDescH);
-
-        // Begin compute pass
-        var passDesc = new ComputePassDescriptor();
-        var pass = _context.Wgpu.CommandEncoderBeginComputePass(encoder, &passDesc);
-
-        // Record horizontal pass
-        _context.Wgpu.ComputePassEncoderSetPipeline(pass, _blurHorizPipeline);
-        _context.Wgpu.ComputePassEncoderSetBindGroup(pass, 0, bgH, 0, null);
-
-        // Workgroups calculation (ceil division by 16)
-        uint workgroupX = (width + 15) / 16;
-        uint workgroupY = (height + 15) / 16;
-        _context.Wgpu.ComputePassEncoderDispatchWorkgroups(pass, workgroupX, workgroupY, 1);
-
-        _context.Wgpu.ComputePassEncoderEnd(pass);
-        _context.Wgpu.ComputePassEncoderRelease(pass);
-
-        // 2. Create vertical pass bind group
         var blurVLayout = _context.Wgpu.ComputePipelineGetBindGroupLayout(_blurVertPipeline, 0);
 
-        var entriesV = stackalloc BindGroupEntry[2];
-        entriesV[0] = new BindGroupEntry { Binding = 0, TextureView = temp.ViewPtr };
-        entriesV[1] = new BindGroupEntry { Binding = 1, TextureView = destination.ViewPtr };
+        var bindGroupsToRelease = new List<nint>();
 
-        var bgDescV = new BindGroupDescriptor
+        for (int i = 0; i < iterations; i++)
         {
-            Layout = blurVLayout,
-            EntryCount = 2,
-            Entries = entriesV
-        };
-        var bgV = _context.Wgpu.DeviceCreateBindGroup(_context.Device, &bgDescV);
-
-        var pass2 = _context.Wgpu.CommandEncoderBeginComputePass(encoder, &passDesc);
-        _context.Wgpu.ComputePassEncoderSetPipeline(pass2, _blurVertPipeline);
-        _context.Wgpu.ComputePassEncoderSetBindGroup(pass2, 0, bgV, 0, null);
-        _context.Wgpu.ComputePassEncoderDispatchWorkgroups(pass2, workgroupX, workgroupY, 1);
-
-        _context.Wgpu.ComputePassEncoderEnd(pass2);
-        _context.Wgpu.ComputePassEncoderRelease(pass2);
+            var hInput = (i == 0) ? source : destination;
+            RunBlurPass(encoder, _blurHorizPipeline, blurHLayout, hInput, temp, width, height, bindGroupsToRelease);
+            RunBlurPass(encoder, _blurVertPipeline, blurVLayout, temp, destination, width, height, bindGroupsToRelease);
+        }
 
         // Submit commands to queue
         var cmdDesc = new CommandBufferDescriptor { Label = (byte*)SilkMarshal.StringToPtr("Compute Blur Buffer") };
@@ -147,8 +136,12 @@ public unsafe class ComputeAccelerator : IDisposable
         // Release resources
         _context.Wgpu.CommandBufferRelease(cmdBuffer);
         _context.Wgpu.CommandEncoderRelease(encoder);
-        _context.Wgpu.BindGroupRelease(bgH);
-        _context.Wgpu.BindGroupRelease(bgV);
+
+        foreach (var bgPtr in bindGroupsToRelease)
+        {
+            _context.Wgpu.BindGroupRelease((BindGroup*)bgPtr);
+        }
+
         _context.Wgpu.BindGroupLayoutRelease(blurHLayout);
         _context.Wgpu.BindGroupLayoutRelease(blurVLayout);
     }
