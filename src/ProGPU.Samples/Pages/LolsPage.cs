@@ -276,6 +276,12 @@ public static class LolsPage
 
         while (_isRunning)
         {
+            if (UIThread.PendingCount > 100)
+            {
+                Thread.Sleep(1);
+                continue;
+            }
+
             float width = _canvas != null ? _canvas.Size.X : 800f;
             float height = _canvas != null ? _canvas.Size.Y : 600f;
 
@@ -318,8 +324,6 @@ public static class LolsPage
                 _canvas.AddChild(textControl);
                 _count++;
             });
-
-            Thread.Sleep(1);
         }
     }
 }

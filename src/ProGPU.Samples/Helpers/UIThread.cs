@@ -15,6 +15,17 @@ public static class UIThread
         }
     }
 
+    public static int PendingCount
+    {
+        get
+        {
+            lock (_queue)
+            {
+                return _queue.Count;
+            }
+        }
+    }
+
     public static void RunPending()
     {
         List<Action>? local = null;
