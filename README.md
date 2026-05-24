@@ -172,3 +172,54 @@ The LOL/s benchmark stresses the visual framework by constantly removing and add
   ```
   - **Backpressure Active (>100)**: The background thread sleeps for exactly `1ms`. This releases the queue monitor lock completely and relinquishes the CPU slice, allowing the main UI thread to drain the event queue with zero lock contention. The application remains 100% responsive and immune to livelocks.
   - **Backpressure Inactive (<=100)**: The background thread runs with zero sleep, dispatching new visual mutations to the UI thread continuously to maximize throughput.
+
+---
+
+### 5. Compositor Mesh Compilation via Span-Based Direct Writes
+
+In real-time GPU-based vector rendering, compiling high-level primitives (such as Rectangles, Ellipses, Rounded Rectangles, Paths, Lines, and Bezier curves) into dynamic vertex and index buffers is a major CPU bottleneck. Standard implementation using sequential `.Add(...)` calls on `List<T>` invokes continuous bounds checks, potential array resizing/reallocations, and element copying overhead.
+
+To maximize throughput, the `Compositor` is optimized using high-performance `Span<T>` memory writes:
+- **Pre-Allocation Throttling**: Instead of building meshes incrementally, the compositor determines the exact number of vertices and indices required for a primitive beforehand.
+- **Backing Buffer SetCount**: The internal list count is directly resized using `CollectionsMarshal.SetCount(list, newCount)` to avoid iterative dynamic reallocation/growth logic inside .NET's `List<T>`.
+- **Direct Memory Access**: The internal backing array is extracted as a type-safe memory slice via `CollectionsMarshal.AsSpan(list).Slice(offset, count)`.
+- **Fast Assembly Assignment**: Vertices and indices are written directly to indices in the returned `Span<T>` or pre-filled using `Span.Fill(defaultValue)` for uniform values.
+- **Bulk Memory Clipping**: Clamping vector coordinates to active clipping boundaries is performed in a single linear pass over the direct `Span<VectorVertex>` reference, bypassing indexed list getters.
+
+```csharp
+int originalVertexCount = _vectorVerticesList.Count;
+int vertexToAdd = 2 * (N + 1);
+CollectionsMarshal.SetCount(_vectorVerticesList, originalVertexCount + vertexToAdd);
+var vertexSpan = CollectionsMarshal.AsSpan(_vectorVerticesList).Slice(originalVertexCount, vertexToAdd);
+vertexSpan.Fill(baseVertex);
+```
+
+This ensures that the mesh compiler achieves zero-allocation dynamic buffer construction, minimal instruction-level overhead, and runs at near-native C-speed.
+
+---
+
+### 6. Lightweight Struct-Based Benchmarks & Path Batching
+
+In traditional UI and vector engines, every active visual element in an animation loop is modeled as a heap-allocated class object. During high-count stress tests (such as the MotionMark benchmark rendering thousands of dynamically moving curves), these allocations put immense pressure on the .NET Garbage Collector (GC), leading to periodic micro-stutters and frame drops.
+
+ProGPU eliminates this overhead using lightweight structs and batched pipeline groupings:
+- **Stack-Allocated Elements**: Animated shapes are modeled using compact, stack-allocated `Element` and `GridPoint` value-type structs instead of class objects:
+  ```csharp
+  public struct Element
+  {
+      public SegmentKind Kind;
+      public GridPoint Start;
+      public GridPoint Control1;
+      public GridPoint Control2;
+      public GridPoint End;
+      public Vector4 Color;
+      public float Width;
+      public bool Split;
+      public SolidColorBrush CachedBrush;
+      public Pen CachedPen;
+  }
+  ```
+- **Zero-Allocation Layout Mapping**: Grid points (e.g. 80x40 logical coordinate system) are converted to physical display boundaries in a single algebraic transform pass during rendering, avoiding intermediate object creations.
+- **Cohesive Path Batching**: Rendering runs in two optimized modes:
+  - **Direct GPU Shader Pipeline**: Iterates through elements, identifying contiguous segments sharing visual style traits (pens/brushes). It batches drawing commands directly to the GPU using direct primitive rendering APIs, reducing draw call state swaps.
+  - **Path Compute-Rasterizer Mode**: Batches continuous curves into a single, combined `PathGeometry` figure until a logical "Split" flag is encountered. This group is drawn in one composite rasterization pass, optimizing path cache locality in the underlying compute pipelines.
