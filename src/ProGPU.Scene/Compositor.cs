@@ -855,18 +855,25 @@ public unsafe class Compositor : IDisposable
 
             uint idxStart = (uint)_vectorVerticesList.Count;
 
-            _vectorVerticesList.Add(new VectorVertex(v0_pos, solidColor, new Vector2(-wHalf, -hHalf), bIdx, shapeSize, 0f, 0f, 0f));
-            _vectorVerticesList.Add(new VectorVertex(v1_pos, solidColor, new Vector2(wHalf, -hHalf), bIdx, shapeSize, 0f, 0f, 0f));
-            _vectorVerticesList.Add(new VectorVertex(v2_pos, solidColor, new Vector2(wHalf, hHalf), bIdx, shapeSize, 0f, 0f, 0f));
-            _vectorVerticesList.Add(new VectorVertex(v3_pos, solidColor, new Vector2(-wHalf, hHalf), bIdx, shapeSize, 0f, 0f, 0f));
+            int originalVertexCount = _vectorVerticesList.Count;
+            CollectionsMarshal.SetCount(_vectorVerticesList, originalVertexCount + 4);
+            var vertexSpan = CollectionsMarshal.AsSpan(_vectorVerticesList).Slice(originalVertexCount, 4);
 
-            _vectorIndicesList.Add(idxStart);
-            _vectorIndicesList.Add((uint)(idxStart + 1));
-            _vectorIndicesList.Add((uint)(idxStart + 2));
+            vertexSpan[0] = new VectorVertex(v0_pos, solidColor, new Vector2(-wHalf, -hHalf), bIdx, shapeSize, 0f, 0f, 0f);
+            vertexSpan[1] = new VectorVertex(v1_pos, solidColor, new Vector2(wHalf, -hHalf), bIdx, shapeSize, 0f, 0f, 0f);
+            vertexSpan[2] = new VectorVertex(v2_pos, solidColor, new Vector2(wHalf, hHalf), bIdx, shapeSize, 0f, 0f, 0f);
+            vertexSpan[3] = new VectorVertex(v3_pos, solidColor, new Vector2(-wHalf, hHalf), bIdx, shapeSize, 0f, 0f, 0f);
 
-            _vectorIndicesList.Add(idxStart);
-            _vectorIndicesList.Add((uint)(idxStart + 2));
-            _vectorIndicesList.Add((uint)(idxStart + 3));
+            int originalIndexCount = _vectorIndicesList.Count;
+            CollectionsMarshal.SetCount(_vectorIndicesList, originalIndexCount + 6);
+            var indexSpan = CollectionsMarshal.AsSpan(_vectorIndicesList).Slice(originalIndexCount, 6);
+
+            indexSpan[0] = idxStart;
+            indexSpan[1] = idxStart + 1;
+            indexSpan[2] = idxStart + 2;
+            indexSpan[3] = idxStart;
+            indexSpan[4] = idxStart + 2;
+            indexSpan[5] = idxStart + 3;
         }
 
         if (cmd.Pen != null)
@@ -876,27 +883,35 @@ public unsafe class Compositor : IDisposable
 
             uint idxStart = (uint)_vectorVerticesList.Count;
 
-            _vectorVerticesList.Add(new VectorVertex(v0_pos, penSolidColor, new Vector2(-wHalf, -hHalf), penBrushIdx, shapeSize, 0f, cmd.Pen.Thickness, 0f));
-            _vectorVerticesList.Add(new VectorVertex(v1_pos, penSolidColor, new Vector2(wHalf, -hHalf), penBrushIdx, shapeSize, 0f, cmd.Pen.Thickness, 0f));
-            _vectorVerticesList.Add(new VectorVertex(v2_pos, penSolidColor, new Vector2(wHalf, hHalf), penBrushIdx, shapeSize, 0f, cmd.Pen.Thickness, 0f));
-            _vectorVerticesList.Add(new VectorVertex(v3_pos, penSolidColor, new Vector2(-wHalf, hHalf), penBrushIdx, shapeSize, 0f, cmd.Pen.Thickness, 0f));
+            int originalVertexCount = _vectorVerticesList.Count;
+            CollectionsMarshal.SetCount(_vectorVerticesList, originalVertexCount + 4);
+            var vertexSpan = CollectionsMarshal.AsSpan(_vectorVerticesList).Slice(originalVertexCount, 4);
 
-            _vectorIndicesList.Add(idxStart);
-            _vectorIndicesList.Add((uint)(idxStart + 1));
-            _vectorIndicesList.Add((uint)(idxStart + 2));
+            vertexSpan[0] = new VectorVertex(v0_pos, penSolidColor, new Vector2(-wHalf, -hHalf), penBrushIdx, shapeSize, 0f, cmd.Pen.Thickness, 0f);
+            vertexSpan[1] = new VectorVertex(v1_pos, penSolidColor, new Vector2(wHalf, -hHalf), penBrushIdx, shapeSize, 0f, cmd.Pen.Thickness, 0f);
+            vertexSpan[2] = new VectorVertex(v2_pos, penSolidColor, new Vector2(wHalf, hHalf), penBrushIdx, shapeSize, 0f, cmd.Pen.Thickness, 0f);
+            vertexSpan[3] = new VectorVertex(v3_pos, penSolidColor, new Vector2(-wHalf, hHalf), penBrushIdx, shapeSize, 0f, cmd.Pen.Thickness, 0f);
 
-            _vectorIndicesList.Add(idxStart);
-            _vectorIndicesList.Add((uint)(idxStart + 2));
-            _vectorIndicesList.Add((uint)(idxStart + 3));
+            int originalIndexCount = _vectorIndicesList.Count;
+            CollectionsMarshal.SetCount(_vectorIndicesList, originalIndexCount + 6);
+            var indexSpan = CollectionsMarshal.AsSpan(_vectorIndicesList).Slice(originalIndexCount, 6);
+
+            indexSpan[0] = idxStart;
+            indexSpan[1] = idxStart + 1;
+            indexSpan[2] = idxStart + 2;
+            indexSpan[3] = idxStart;
+            indexSpan[4] = idxStart + 2;
+            indexSpan[5] = idxStart + 3;
         }
 
         if (_activeClipRect.HasValue)
         {
-            for (int i = startIndex; i < _vectorVerticesList.Count; i++)
+            var vertices = CollectionsMarshal.AsSpan(_vectorVerticesList);
+            for (int i = startIndex; i < vertices.Length; i++)
             {
-                var v = _vectorVerticesList[i];
+                var v = vertices[i];
                 v.Position = ClampToClip(v.Position);
-                _vectorVerticesList[i] = v;
+                vertices[i] = v;
             }
         }
     }
@@ -967,36 +982,50 @@ public unsafe class Compositor : IDisposable
 
                         uint idxStart = (uint)_vectorVerticesList.Count;
 
-                        _vectorVerticesList.Add(new VectorVertex(v0, color, uv0, bIdx, shapeType: 4f));
-                        _vectorVerticesList.Add(new VectorVertex(v1, color, uv1, bIdx, shapeType: 4f));
-                        _vectorVerticesList.Add(new VectorVertex(v2, color, uv2, bIdx, shapeType: 4f));
-                        _vectorVerticesList.Add(new VectorVertex(v3, color, uv3, bIdx, shapeType: 4f));
+                        int originalVertexCount = _vectorVerticesList.Count;
+                        CollectionsMarshal.SetCount(_vectorVerticesList, originalVertexCount + 4);
+                        var vertexSpan = CollectionsMarshal.AsSpan(_vectorVerticesList).Slice(originalVertexCount, 4);
 
-                        _vectorIndicesList.Add(idxStart);
-                        _vectorIndicesList.Add(idxStart + 1);
-                        _vectorIndicesList.Add(idxStart + 2);
+                        vertexSpan[0] = new VectorVertex(v0, color, uv0, bIdx, shapeType: 4f);
+                        vertexSpan[1] = new VectorVertex(v1, color, uv1, bIdx, shapeType: 4f);
+                        vertexSpan[2] = new VectorVertex(v2, color, uv2, bIdx, shapeType: 4f);
+                        vertexSpan[3] = new VectorVertex(v3, color, uv3, bIdx, shapeType: 4f);
 
-                        _vectorIndicesList.Add(idxStart);
-                        _vectorIndicesList.Add(idxStart + 2);
-                        _vectorIndicesList.Add(idxStart + 3);
+                        int originalIndexCount = _vectorIndicesList.Count;
+                        CollectionsMarshal.SetCount(_vectorIndicesList, originalIndexCount + 6);
+                        var indexSpan = CollectionsMarshal.AsSpan(_vectorIndicesList).Slice(originalIndexCount, 6);
+
+                        indexSpan[0] = idxStart;
+                        indexSpan[1] = idxStart + 1;
+                        indexSpan[2] = idxStart + 2;
+                        indexSpan[3] = idxStart;
+                        indexSpan[4] = idxStart + 2;
+                        indexSpan[5] = idxStart + 3;
                     }
                 }
                 else
                 {
                     uint idxStart = (uint)_vectorVerticesList.Count;
 
-                    _vectorVerticesList.Add(new VectorVertex(v0, color, uv0, bIdx, shapeType: 4f));
-                    _vectorVerticesList.Add(new VectorVertex(v1, color, uv1, bIdx, shapeType: 4f));
-                    _vectorVerticesList.Add(new VectorVertex(v2, color, uv2, bIdx, shapeType: 4f));
-                    _vectorVerticesList.Add(new VectorVertex(v3, color, uv3, bIdx, shapeType: 4f));
+                    int originalVertexCount = _vectorVerticesList.Count;
+                    CollectionsMarshal.SetCount(_vectorVerticesList, originalVertexCount + 4);
+                    var vertexSpan = CollectionsMarshal.AsSpan(_vectorVerticesList).Slice(originalVertexCount, 4);
 
-                    _vectorIndicesList.Add(idxStart);
-                    _vectorIndicesList.Add(idxStart + 1);
-                    _vectorIndicesList.Add(idxStart + 2);
+                    vertexSpan[0] = new VectorVertex(v0, color, uv0, bIdx, shapeType: 4f);
+                    vertexSpan[1] = new VectorVertex(v1, color, uv1, bIdx, shapeType: 4f);
+                    vertexSpan[2] = new VectorVertex(v2, color, uv2, bIdx, shapeType: 4f);
+                    vertexSpan[3] = new VectorVertex(v3, color, uv3, bIdx, shapeType: 4f);
 
-                    _vectorIndicesList.Add(idxStart);
-                    _vectorIndicesList.Add(idxStart + 2);
-                    _vectorIndicesList.Add(idxStart + 3);
+                    int originalIndexCount = _vectorIndicesList.Count;
+                    CollectionsMarshal.SetCount(_vectorIndicesList, originalIndexCount + 6);
+                    var indexSpan = CollectionsMarshal.AsSpan(_vectorIndicesList).Slice(originalIndexCount, 6);
+
+                    indexSpan[0] = idxStart;
+                    indexSpan[1] = idxStart + 1;
+                    indexSpan[2] = idxStart + 2;
+                    indexSpan[3] = idxStart;
+                    indexSpan[4] = idxStart + 2;
+                    indexSpan[5] = idxStart + 3;
                 }
             }
         }
@@ -1006,6 +1035,49 @@ public unsafe class Compositor : IDisposable
             float penBrushIdx = RegisterBrush(cmd.Pen.Brush);
             var penSolidColor = (cmd.Pen.Brush is SolidColorBrush solid) ? solid.Color : new Vector4(1f, 1f, 1f, 1f);
             float thickness = cmd.Pen.Thickness;
+
+            int maxVertices = 0;
+            int maxIndices = 0;
+            foreach (var figure in cmd.Path.Figures)
+            {
+                foreach (var segment in figure.Segments)
+                {
+                    if (segment is LineSegment)
+                    {
+                        maxVertices += 4;
+                        maxIndices += 6;
+                    }
+                    else if (segment is QuadraticBezierSegment)
+                    {
+                        int N = Math.Clamp((int)(thickness * 1.5f) + 8, 8, 24);
+                        maxVertices += 2 * (N + 1);
+                        maxIndices += 6 * N;
+                    }
+                    else if (segment is CubicBezierSegment)
+                    {
+                        int N = Math.Clamp((int)(thickness * 1.5f) + 8, 8, 24);
+                        maxVertices += 2 * (N + 1);
+                        maxIndices += 6 * N;
+                    }
+                }
+                if (figure.IsClosed)
+                {
+                    maxVertices += 4;
+                    maxIndices += 6;
+                }
+            }
+
+            int vertexStart = _vectorVerticesList.Count;
+            int indexStart = _vectorIndicesList.Count;
+
+            CollectionsMarshal.SetCount(_vectorVerticesList, vertexStart + maxVertices);
+            CollectionsMarshal.SetCount(_vectorIndicesList, indexStart + maxIndices);
+
+            var verticesSpan = CollectionsMarshal.AsSpan(_vectorVerticesList);
+            var indicesSpan = CollectionsMarshal.AsSpan(_vectorIndicesList);
+
+            int currentVertexCount = vertexStart;
+            int currentIndexCount = indexStart;
 
             foreach (var figure in cmd.Path.Figures)
             {
@@ -1018,20 +1090,20 @@ public unsafe class Compositor : IDisposable
                         var p0_trans = Vector2.Transform(currentPoint, transform);
                         var p1_trans = Vector2.Transform(line.Point, transform);
 
-                        uint idxStart = (uint)_vectorVerticesList.Count;
+                        uint idxStart = (uint)currentVertexCount;
 
-                        _vectorVerticesList.Add(new VectorVertex(p0_trans, penSolidColor, p0_trans, penBrushIdx, p1_trans, 1f, thickness, 3f));
-                        _vectorVerticesList.Add(new VectorVertex(p0_trans, penSolidColor, p0_trans, penBrushIdx, p1_trans, -1f, thickness, 3f));
-                        _vectorVerticesList.Add(new VectorVertex(p1_trans, penSolidColor, p0_trans, penBrushIdx, p1_trans, 1f, thickness, 3f));
-                        _vectorVerticesList.Add(new VectorVertex(p1_trans, penSolidColor, p0_trans, penBrushIdx, p1_trans, -1f, thickness, 3f));
+                        verticesSpan[currentVertexCount++] = new VectorVertex(p0_trans, penSolidColor, p0_trans, penBrushIdx, p1_trans, 1f, thickness, 3f);
+                        verticesSpan[currentVertexCount++] = new VectorVertex(p0_trans, penSolidColor, p0_trans, penBrushIdx, p1_trans, -1f, thickness, 3f);
+                        verticesSpan[currentVertexCount++] = new VectorVertex(p1_trans, penSolidColor, p0_trans, penBrushIdx, p1_trans, 1f, thickness, 3f);
+                        verticesSpan[currentVertexCount++] = new VectorVertex(p1_trans, penSolidColor, p0_trans, penBrushIdx, p1_trans, -1f, thickness, 3f);
 
-                        _vectorIndicesList.Add(idxStart);
-                        _vectorIndicesList.Add((uint)(idxStart + 1));
-                        _vectorIndicesList.Add((uint)(idxStart + 2));
+                        indicesSpan[currentIndexCount++] = idxStart;
+                        indicesSpan[currentIndexCount++] = idxStart + 1;
+                        indicesSpan[currentIndexCount++] = idxStart + 2;
 
-                        _vectorIndicesList.Add((uint)(idxStart + 1));
-                        _vectorIndicesList.Add((uint)(idxStart + 3));
-                        _vectorIndicesList.Add((uint)(idxStart + 2));
+                        indicesSpan[currentIndexCount++] = idxStart + 1;
+                        indicesSpan[currentIndexCount++] = idxStart + 3;
+                        indicesSpan[currentIndexCount++] = idxStart + 2;
 
                         currentPoint = line.Point;
                     }
@@ -1042,13 +1114,12 @@ public unsafe class Compositor : IDisposable
                         var p2_trans = Vector2.Transform(quad.Point, transform);
 
                         int N = Math.Clamp((int)(thickness * 1.5f) + 8, 8, 24);
-                        uint idxStart = (uint)_vectorVerticesList.Count;
+                        uint idxStart = (uint)currentVertexCount;
 
                         var baseVertex = new VectorVertex(p0_trans, Vector4.Zero, p1_trans, penBrushIdx, p2_trans, idxStart, thickness, 5f);
-                        for (int i = 0; i < 2 * (N + 1); i++)
-                        {
-                            _vectorVerticesList.Add(baseVertex);
-                        }
+                        int vertexToAdd = 2 * (N + 1);
+                        verticesSpan.Slice(currentVertexCount, vertexToAdd).Fill(baseVertex);
+                        currentVertexCount += vertexToAdd;
 
                         for (int i = 0; i < N; i++)
                         {
@@ -1057,13 +1128,13 @@ public unsafe class Compositor : IDisposable
                             uint nextLeft = (uint)(idxStart + 2 * i + 2);
                             uint nextRight = (uint)(idxStart + 2 * i + 3);
 
-                            _vectorIndicesList.Add(currentLeft);
-                            _vectorIndicesList.Add(currentRight);
-                            _vectorIndicesList.Add(nextLeft);
+                            indicesSpan[currentIndexCount++] = currentLeft;
+                            indicesSpan[currentIndexCount++] = currentRight;
+                            indicesSpan[currentIndexCount++] = nextLeft;
 
-                            _vectorIndicesList.Add(currentRight);
-                            _vectorIndicesList.Add(nextRight);
-                            _vectorIndicesList.Add(nextLeft);
+                            indicesSpan[currentIndexCount++] = currentRight;
+                            indicesSpan[currentIndexCount++] = nextRight;
+                            indicesSpan[currentIndexCount++] = nextLeft;
                         }
 
                         currentPoint = quad.Point;
@@ -1076,13 +1147,12 @@ public unsafe class Compositor : IDisposable
                         var p3_trans = Vector2.Transform(cubic.Point, transform);
 
                         int N = Math.Clamp((int)(thickness * 1.5f) + 8, 8, 24);
-                        uint idxStart = (uint)_vectorVerticesList.Count;
+                        uint idxStart = (uint)currentVertexCount;
 
                         var baseVertex = new VectorVertex(p0_trans, new Vector4(p3_trans.X, p3_trans.Y, 0f, 0f), p1_trans, penBrushIdx, p2_trans, idxStart, thickness, 6f);
-                        for (int i = 0; i < 2 * (N + 1); i++)
-                        {
-                            _vectorVerticesList.Add(baseVertex);
-                        }
+                        int vertexToAdd = 2 * (N + 1);
+                        verticesSpan.Slice(currentVertexCount, vertexToAdd).Fill(baseVertex);
+                        currentVertexCount += vertexToAdd;
 
                         for (int i = 0; i < N; i++)
                         {
@@ -1091,13 +1161,13 @@ public unsafe class Compositor : IDisposable
                             uint nextLeft = (uint)(idxStart + 2 * i + 2);
                             uint nextRight = (uint)(idxStart + 2 * i + 3);
 
-                            _vectorIndicesList.Add(currentLeft);
-                            _vectorIndicesList.Add(currentRight);
-                            _vectorIndicesList.Add(nextLeft);
+                            indicesSpan[currentIndexCount++] = currentLeft;
+                            indicesSpan[currentIndexCount++] = currentRight;
+                            indicesSpan[currentIndexCount++] = nextLeft;
 
-                            _vectorIndicesList.Add(currentRight);
-                            _vectorIndicesList.Add(nextRight);
-                            _vectorIndicesList.Add(nextLeft);
+                            indicesSpan[currentIndexCount++] = currentRight;
+                            indicesSpan[currentIndexCount++] = nextRight;
+                            indicesSpan[currentIndexCount++] = nextLeft;
                         }
 
                         currentPoint = cubic.Point;
@@ -1109,31 +1179,35 @@ public unsafe class Compositor : IDisposable
                     var p0_trans = Vector2.Transform(currentPoint, transform);
                     var p1_trans = Vector2.Transform(figure.StartPoint, transform);
 
-                    uint idxStart = (uint)_vectorVerticesList.Count;
+                    uint idxStart = (uint)currentVertexCount;
 
-                    _vectorVerticesList.Add(new VectorVertex(p0_trans, penSolidColor, p0_trans, penBrushIdx, p1_trans, 1f, thickness, 3f));
-                    _vectorVerticesList.Add(new VectorVertex(p0_trans, penSolidColor, p0_trans, penBrushIdx, p1_trans, -1f, thickness, 3f));
-                    _vectorVerticesList.Add(new VectorVertex(p1_trans, penSolidColor, p0_trans, penBrushIdx, p1_trans, 1f, thickness, 3f));
-                    _vectorVerticesList.Add(new VectorVertex(p1_trans, penSolidColor, p0_trans, penBrushIdx, p1_trans, -1f, thickness, 3f));
+                    verticesSpan[currentVertexCount++] = new VectorVertex(p0_trans, penSolidColor, p0_trans, penBrushIdx, p1_trans, 1f, thickness, 3f);
+                    verticesSpan[currentVertexCount++] = new VectorVertex(p0_trans, penSolidColor, p0_trans, penBrushIdx, p1_trans, -1f, thickness, 3f);
+                    verticesSpan[currentVertexCount++] = new VectorVertex(p1_trans, penSolidColor, p0_trans, penBrushIdx, p1_trans, 1f, thickness, 3f);
+                    verticesSpan[currentVertexCount++] = new VectorVertex(p1_trans, penSolidColor, p0_trans, penBrushIdx, p1_trans, -1f, thickness, 3f);
 
-                    _vectorIndicesList.Add(idxStart);
-                    _vectorIndicesList.Add((uint)(idxStart + 1));
-                    _vectorIndicesList.Add((uint)(idxStart + 2));
+                    indicesSpan[currentIndexCount++] = idxStart;
+                    indicesSpan[currentIndexCount++] = idxStart + 1;
+                    indicesSpan[currentIndexCount++] = idxStart + 2;
 
-                    _vectorIndicesList.Add((uint)(idxStart + 1));
-                    _vectorIndicesList.Add((uint)(idxStart + 3));
-                    _vectorIndicesList.Add((uint)(idxStart + 2));
+                    indicesSpan[currentIndexCount++] = idxStart + 1;
+                    indicesSpan[currentIndexCount++] = idxStart + 3;
+                    indicesSpan[currentIndexCount++] = idxStart + 2;
                 }
             }
+
+            CollectionsMarshal.SetCount(_vectorVerticesList, currentVertexCount);
+            CollectionsMarshal.SetCount(_vectorIndicesList, currentIndexCount);
         }
 
         if (_activeClipRect.HasValue)
         {
-            for (int i = startIndex; i < _vectorVerticesList.Count; i++)
+            var vertices = CollectionsMarshal.AsSpan(_vectorVerticesList);
+            for (int i = startIndex; i < vertices.Length; i++)
             {
-                var v = _vectorVerticesList[i];
+                var v = vertices[i];
                 v.Position = ClampToClip(v.Position);
-                _vectorVerticesList[i] = v;
+                vertices[i] = v;
             }
         }
     }
@@ -1316,18 +1390,25 @@ public unsafe class Compositor : IDisposable
 
             uint idxStart = (uint)_vectorVerticesList.Count;
 
-            _vectorVerticesList.Add(new VectorVertex(v0_pos, solidColor, new Vector2(-rx, -ry), bIdx, shapeSize, 0f, 0f, 1f));
-            _vectorVerticesList.Add(new VectorVertex(v1_pos, solidColor, new Vector2(rx, -ry), bIdx, shapeSize, 0f, 0f, 1f));
-            _vectorVerticesList.Add(new VectorVertex(v2_pos, solidColor, new Vector2(rx, ry), bIdx, shapeSize, 0f, 0f, 1f));
-            _vectorVerticesList.Add(new VectorVertex(v3_pos, solidColor, new Vector2(-rx, ry), bIdx, shapeSize, 0f, 0f, 1f));
+            int originalVertexCount = _vectorVerticesList.Count;
+            CollectionsMarshal.SetCount(_vectorVerticesList, originalVertexCount + 4);
+            var vertexSpan = CollectionsMarshal.AsSpan(_vectorVerticesList).Slice(originalVertexCount, 4);
 
-            _vectorIndicesList.Add(idxStart);
-            _vectorIndicesList.Add((uint)(idxStart + 1));
-            _vectorIndicesList.Add((uint)(idxStart + 2));
+            vertexSpan[0] = new VectorVertex(v0_pos, solidColor, new Vector2(-rx, -ry), bIdx, shapeSize, 0f, 0f, 1f);
+            vertexSpan[1] = new VectorVertex(v1_pos, solidColor, new Vector2(rx, -ry), bIdx, shapeSize, 0f, 0f, 1f);
+            vertexSpan[2] = new VectorVertex(v2_pos, solidColor, new Vector2(rx, ry), bIdx, shapeSize, 0f, 0f, 1f);
+            vertexSpan[3] = new VectorVertex(v3_pos, solidColor, new Vector2(-rx, ry), bIdx, shapeSize, 0f, 0f, 1f);
 
-            _vectorIndicesList.Add(idxStart);
-            _vectorIndicesList.Add((uint)(idxStart + 2));
-            _vectorIndicesList.Add((uint)(idxStart + 3));
+            int originalIndexCount = _vectorIndicesList.Count;
+            CollectionsMarshal.SetCount(_vectorIndicesList, originalIndexCount + 6);
+            var indexSpan = CollectionsMarshal.AsSpan(_vectorIndicesList).Slice(originalIndexCount, 6);
+
+            indexSpan[0] = idxStart;
+            indexSpan[1] = idxStart + 1;
+            indexSpan[2] = idxStart + 2;
+            indexSpan[3] = idxStart;
+            indexSpan[4] = idxStart + 2;
+            indexSpan[5] = idxStart + 3;
         }
 
         if (cmd.Pen != null)
@@ -1337,27 +1418,35 @@ public unsafe class Compositor : IDisposable
 
             uint idxStart = (uint)_vectorVerticesList.Count;
 
-            _vectorVerticesList.Add(new VectorVertex(v0_pos, penSolidColor, new Vector2(-rx, -ry), penBrushIdx, shapeSize, 0f, cmd.Pen.Thickness, 1f));
-            _vectorVerticesList.Add(new VectorVertex(v1_pos, penSolidColor, new Vector2(rx, -ry), penBrushIdx, shapeSize, 0f, cmd.Pen.Thickness, 1f));
-            _vectorVerticesList.Add(new VectorVertex(v2_pos, penSolidColor, new Vector2(rx, ry), penBrushIdx, shapeSize, 0f, cmd.Pen.Thickness, 1f));
-            _vectorVerticesList.Add(new VectorVertex(v3_pos, penSolidColor, new Vector2(-rx, ry), penBrushIdx, shapeSize, 0f, cmd.Pen.Thickness, 1f));
+            int originalVertexCount = _vectorVerticesList.Count;
+            CollectionsMarshal.SetCount(_vectorVerticesList, originalVertexCount + 4);
+            var vertexSpan = CollectionsMarshal.AsSpan(_vectorVerticesList).Slice(originalVertexCount, 4);
 
-            _vectorIndicesList.Add(idxStart);
-            _vectorIndicesList.Add((uint)(idxStart + 1));
-            _vectorIndicesList.Add((uint)(idxStart + 2));
+            vertexSpan[0] = new VectorVertex(v0_pos, penSolidColor, new Vector2(-rx, -ry), penBrushIdx, shapeSize, 0f, cmd.Pen.Thickness, 1f);
+            vertexSpan[1] = new VectorVertex(v1_pos, penSolidColor, new Vector2(rx, -ry), penBrushIdx, shapeSize, 0f, cmd.Pen.Thickness, 1f);
+            vertexSpan[2] = new VectorVertex(v2_pos, penSolidColor, new Vector2(rx, ry), penBrushIdx, shapeSize, 0f, cmd.Pen.Thickness, 1f);
+            vertexSpan[3] = new VectorVertex(v3_pos, penSolidColor, new Vector2(-rx, ry), penBrushIdx, shapeSize, 0f, cmd.Pen.Thickness, 1f);
 
-            _vectorIndicesList.Add(idxStart);
-            _vectorIndicesList.Add((uint)(idxStart + 2));
-            _vectorIndicesList.Add((uint)(idxStart + 3));
+            int originalIndexCount = _vectorIndicesList.Count;
+            CollectionsMarshal.SetCount(_vectorIndicesList, originalIndexCount + 6);
+            var indexSpan = CollectionsMarshal.AsSpan(_vectorIndicesList).Slice(originalIndexCount, 6);
+
+            indexSpan[0] = idxStart;
+            indexSpan[1] = idxStart + 1;
+            indexSpan[2] = idxStart + 2;
+            indexSpan[3] = idxStart;
+            indexSpan[4] = idxStart + 2;
+            indexSpan[5] = idxStart + 3;
         }
 
         if (_activeClipRect.HasValue)
         {
-            for (int i = startIndex; i < _vectorVerticesList.Count; i++)
+            var vertices = CollectionsMarshal.AsSpan(_vectorVerticesList);
+            for (int i = startIndex; i < vertices.Length; i++)
             {
-                var v = _vectorVerticesList[i];
+                var v = vertices[i];
                 v.Position = ClampToClip(v.Position);
-                _vectorVerticesList[i] = v;
+                vertices[i] = v;
             }
         }
     }
@@ -1396,18 +1485,25 @@ public unsafe class Compositor : IDisposable
 
             uint idxStart = (uint)_vectorVerticesList.Count;
 
-            _vectorVerticesList.Add(new VectorVertex(v0_pos, solidColor, new Vector2(-wHalf, -hHalf), bIdx, shapeSize, radius, 0f, 2f));
-            _vectorVerticesList.Add(new VectorVertex(v1_pos, solidColor, new Vector2(wHalf, -hHalf), bIdx, shapeSize, radius, 0f, 2f));
-            _vectorVerticesList.Add(new VectorVertex(v2_pos, solidColor, new Vector2(wHalf, hHalf), bIdx, shapeSize, radius, 0f, 2f));
-            _vectorVerticesList.Add(new VectorVertex(v3_pos, solidColor, new Vector2(-wHalf, hHalf), bIdx, shapeSize, radius, 0f, 2f));
+            int originalVertexCount = _vectorVerticesList.Count;
+            CollectionsMarshal.SetCount(_vectorVerticesList, originalVertexCount + 4);
+            var vertexSpan = CollectionsMarshal.AsSpan(_vectorVerticesList).Slice(originalVertexCount, 4);
 
-            _vectorIndicesList.Add(idxStart);
-            _vectorIndicesList.Add((uint)(idxStart + 1));
-            _vectorIndicesList.Add((uint)(idxStart + 2));
+            vertexSpan[0] = new VectorVertex(v0_pos, solidColor, new Vector2(-wHalf, -hHalf), bIdx, shapeSize, radius, 0f, 2f);
+            vertexSpan[1] = new VectorVertex(v1_pos, solidColor, new Vector2(wHalf, -hHalf), bIdx, shapeSize, radius, 0f, 2f);
+            vertexSpan[2] = new VectorVertex(v2_pos, solidColor, new Vector2(wHalf, hHalf), bIdx, shapeSize, radius, 0f, 2f);
+            vertexSpan[3] = new VectorVertex(v3_pos, solidColor, new Vector2(-wHalf, hHalf), bIdx, shapeSize, radius, 0f, 2f);
 
-            _vectorIndicesList.Add(idxStart);
-            _vectorIndicesList.Add((uint)(idxStart + 2));
-            _vectorIndicesList.Add((uint)(idxStart + 3));
+            int originalIndexCount = _vectorIndicesList.Count;
+            CollectionsMarshal.SetCount(_vectorIndicesList, originalIndexCount + 6);
+            var indexSpan = CollectionsMarshal.AsSpan(_vectorIndicesList).Slice(originalIndexCount, 6);
+
+            indexSpan[0] = idxStart;
+            indexSpan[1] = idxStart + 1;
+            indexSpan[2] = idxStart + 2;
+            indexSpan[3] = idxStart;
+            indexSpan[4] = idxStart + 2;
+            indexSpan[5] = idxStart + 3;
         }
 
         if (cmd.Pen != null)
@@ -1417,27 +1513,35 @@ public unsafe class Compositor : IDisposable
 
             uint idxStart = (uint)_vectorVerticesList.Count;
 
-            _vectorVerticesList.Add(new VectorVertex(v0_pos, penSolidColor, new Vector2(-wHalf, -hHalf), penBrushIdx, shapeSize, radius, cmd.Pen.Thickness, 2f));
-            _vectorVerticesList.Add(new VectorVertex(v1_pos, penSolidColor, new Vector2(wHalf, -hHalf), penBrushIdx, shapeSize, radius, cmd.Pen.Thickness, 2f));
-            _vectorVerticesList.Add(new VectorVertex(v2_pos, penSolidColor, new Vector2(wHalf, hHalf), penBrushIdx, shapeSize, radius, cmd.Pen.Thickness, 2f));
-            _vectorVerticesList.Add(new VectorVertex(v3_pos, penSolidColor, new Vector2(-wHalf, hHalf), penBrushIdx, shapeSize, radius, cmd.Pen.Thickness, 2f));
+            int originalVertexCount = _vectorVerticesList.Count;
+            CollectionsMarshal.SetCount(_vectorVerticesList, originalVertexCount + 4);
+            var vertexSpan = CollectionsMarshal.AsSpan(_vectorVerticesList).Slice(originalVertexCount, 4);
 
-            _vectorIndicesList.Add(idxStart);
-            _vectorIndicesList.Add((uint)(idxStart + 1));
-            _vectorIndicesList.Add((uint)(idxStart + 2));
+            vertexSpan[0] = new VectorVertex(v0_pos, penSolidColor, new Vector2(-wHalf, -hHalf), penBrushIdx, shapeSize, radius, cmd.Pen.Thickness, 2f);
+            vertexSpan[1] = new VectorVertex(v1_pos, penSolidColor, new Vector2(wHalf, -hHalf), penBrushIdx, shapeSize, radius, cmd.Pen.Thickness, 2f);
+            vertexSpan[2] = new VectorVertex(v2_pos, penSolidColor, new Vector2(wHalf, hHalf), penBrushIdx, shapeSize, radius, cmd.Pen.Thickness, 2f);
+            vertexSpan[3] = new VectorVertex(v3_pos, penSolidColor, new Vector2(-wHalf, hHalf), penBrushIdx, shapeSize, radius, cmd.Pen.Thickness, 2f);
 
-            _vectorIndicesList.Add(idxStart);
-            _vectorIndicesList.Add((uint)(idxStart + 2));
-            _vectorIndicesList.Add((uint)(idxStart + 3));
+            int originalIndexCount = _vectorIndicesList.Count;
+            CollectionsMarshal.SetCount(_vectorIndicesList, originalIndexCount + 6);
+            var indexSpan = CollectionsMarshal.AsSpan(_vectorIndicesList).Slice(originalIndexCount, 6);
+
+            indexSpan[0] = idxStart;
+            indexSpan[1] = idxStart + 1;
+            indexSpan[2] = idxStart + 2;
+            indexSpan[3] = idxStart;
+            indexSpan[4] = idxStart + 2;
+            indexSpan[5] = idxStart + 3;
         }
 
         if (_activeClipRect.HasValue)
         {
-            for (int i = startIndex; i < _vectorVerticesList.Count; i++)
+            var vertices = CollectionsMarshal.AsSpan(_vectorVerticesList);
+            for (int i = startIndex; i < vertices.Length; i++)
             {
-                var v = _vectorVerticesList[i];
+                var v = vertices[i];
                 v.Position = ClampToClip(v.Position);
-                _vectorVerticesList[i] = v;
+                vertices[i] = v;
             }
         }
     }
@@ -1554,6 +1658,23 @@ public unsafe class Compositor : IDisposable
         var brush = cmd.Brush as SolidColorBrush;
         var color = brush?.Color ?? new Vector4(1f, 1f, 1f, 1f);
 
+        int maxGlyphs = layout.Glyphs.Count;
+        int maxPassCount = cmd.IsBold ? 2 : 1;
+        int maxVertices = maxGlyphs * maxPassCount * 4;
+        int maxIndices = maxGlyphs * maxPassCount * 6;
+
+        int vertexStart = _textVerticesList.Count;
+        int indexStart = _textIndicesList.Count;
+
+        CollectionsMarshal.SetCount(_textVerticesList, vertexStart + maxVertices);
+        CollectionsMarshal.SetCount(_textIndicesList, indexStart + maxIndices);
+
+        var textVerticesSpan = CollectionsMarshal.AsSpan(_textVerticesList);
+        var textIndicesSpan = CollectionsMarshal.AsSpan(_textIndicesList);
+
+        int currentVertexCount = vertexStart;
+        int currentIndexCount = indexStart;
+
         foreach (var runGlyph in layout.Glyphs)
         {
             ushort glyphIdx = font.GetGlyphIndex(runGlyph.CodePoint);
@@ -1644,7 +1765,7 @@ public unsafe class Compositor : IDisposable
                 var v2 = Vector2.Transform(new Vector2(sx2, y1), transform);
                 var v3 = Vector2.Transform(new Vector2(sx3, y1), transform);
 
-                uint idxStart = (uint)_textVerticesList.Count;
+                uint idxStart = (uint)currentVertexCount;
 
                 // Set dynamic UV texture mappings
                 var uv0 = new Vector2(info.TexCoordMin.X, info.TexCoordMin.Y);
@@ -1692,21 +1813,24 @@ public unsafe class Compositor : IDisposable
                     v3 = new Vector2(cx1, cy2);
                 }
 
-                _textVerticesList.Add(new VectorVertex(v0, color, uv0, bIdx, cornerRadius: DefaultTextGamma, strokeThickness: DefaultTextContrast));
-                _textVerticesList.Add(new VectorVertex(v1, color, uv1, bIdx, cornerRadius: DefaultTextGamma, strokeThickness: DefaultTextContrast));
-                _textVerticesList.Add(new VectorVertex(v2, color, uv2, bIdx, cornerRadius: DefaultTextGamma, strokeThickness: DefaultTextContrast));
-                _textVerticesList.Add(new VectorVertex(v3, color, uv3, bIdx, cornerRadius: DefaultTextGamma, strokeThickness: DefaultTextContrast));
+                textVerticesSpan[currentVertexCount++] = new VectorVertex(v0, color, uv0, bIdx, cornerRadius: DefaultTextGamma, strokeThickness: DefaultTextContrast);
+                textVerticesSpan[currentVertexCount++] = new VectorVertex(v1, color, uv1, bIdx, cornerRadius: DefaultTextGamma, strokeThickness: DefaultTextContrast);
+                textVerticesSpan[currentVertexCount++] = new VectorVertex(v2, color, uv2, bIdx, cornerRadius: DefaultTextGamma, strokeThickness: DefaultTextContrast);
+                textVerticesSpan[currentVertexCount++] = new VectorVertex(v3, color, uv3, bIdx, cornerRadius: DefaultTextGamma, strokeThickness: DefaultTextContrast);
 
                 // Quads Triangle Indices
-                _textIndicesList.Add(idxStart);
-                _textIndicesList.Add((uint)(idxStart + 1));
-                _textIndicesList.Add((uint)(idxStart + 2));
+                textIndicesSpan[currentIndexCount++] = idxStart;
+                textIndicesSpan[currentIndexCount++] = idxStart + 1;
+                textIndicesSpan[currentIndexCount++] = idxStart + 2;
 
-                _textIndicesList.Add(idxStart);
-                _textIndicesList.Add((uint)(idxStart + 2));
-                _textIndicesList.Add((uint)(idxStart + 3));
+                textIndicesSpan[currentIndexCount++] = idxStart;
+                textIndicesSpan[currentIndexCount++] = idxStart + 2;
+                textIndicesSpan[currentIndexCount++] = idxStart + 3;
             }
         }
+
+        CollectionsMarshal.SetCount(_textVerticesList, currentVertexCount);
+        CollectionsMarshal.SetCount(_textIndicesList, currentIndexCount);
     }
 
     private void CompileTextureCommand(RenderCommand cmd, Matrix4x4 transform)
@@ -1755,18 +1879,25 @@ public unsafe class Compositor : IDisposable
             v3 = new Vector2(cx1, cy2);
         }
 
-        _textureVerticesList.Add(new VectorVertex(v0, color, uv0));
-        _textureVerticesList.Add(new VectorVertex(v1, color, uv1));
-        _textureVerticesList.Add(new VectorVertex(v2, color, uv2));
-        _textureVerticesList.Add(new VectorVertex(v3, color, uv3));
+        int originalVertexCount = _textureVerticesList.Count;
+        CollectionsMarshal.SetCount(_textureVerticesList, originalVertexCount + 4);
+        var vertexSpan = CollectionsMarshal.AsSpan(_textureVerticesList).Slice(originalVertexCount, 4);
 
-        _textureIndicesList.Add(idxStart);
-        _textureIndicesList.Add((uint)(idxStart + 1));
-        _textureIndicesList.Add((uint)(idxStart + 2));
+        vertexSpan[0] = new VectorVertex(v0, color, uv0);
+        vertexSpan[1] = new VectorVertex(v1, color, uv1);
+        vertexSpan[2] = new VectorVertex(v2, color, uv2);
+        vertexSpan[3] = new VectorVertex(v3, color, uv3);
 
-        _textureIndicesList.Add(idxStart);
-        _textureIndicesList.Add((uint)(idxStart + 2));
-        _textureIndicesList.Add((uint)(idxStart + 3));
+        int originalIndexCount = _textureIndicesList.Count;
+        CollectionsMarshal.SetCount(_textureIndicesList, originalIndexCount + 6);
+        var indexSpan = CollectionsMarshal.AsSpan(_textureIndicesList).Slice(originalIndexCount, 6);
+
+        indexSpan[0] = idxStart;
+        indexSpan[1] = idxStart + 1;
+        indexSpan[2] = idxStart + 2;
+        indexSpan[3] = idxStart;
+        indexSpan[4] = idxStart + 2;
+        indexSpan[5] = idxStart + 3;
 
         _drawCalls.Add(new CompositorDrawCall
         {
