@@ -48,23 +48,159 @@ public struct Thickness
         Right = right;
         Bottom = bottom;
     }
+
+    public bool Equals(Thickness other)
+    {
+        return Left == other.Left && Top == other.Top && Right == other.Right && Bottom == other.Bottom;
+    }
+
+    public override bool Equals(object? obj)
+    {
+        return obj is Thickness other && Equals(other);
+    }
+
+    public override int GetHashCode()
+    {
+        return HashCode.Combine(Left, Top, Right, Bottom);
+    }
+
+    public static bool operator ==(Thickness left, Thickness right)
+    {
+        return left.Equals(right);
+    }
+
+    public static bool operator !=(Thickness left, Thickness right)
+    {
+        return !left.Equals(right);
+    }
 }
 
-public class LayoutNode : ContainerVisual
+public class LayoutNode : ContainerVisual, ILayoutNode
 {
-    public Thickness Margin { get; set; }
-    public Thickness Padding { get; set; }
-    
-    public HorizontalAlignment HorizontalAlignment { get; set; } = HorizontalAlignment.Stretch;
-    public VerticalAlignment VerticalAlignment { get; set; } = VerticalAlignment.Stretch;
+    private Thickness _margin;
+    private Thickness _padding;
+    private HorizontalAlignment _horizontalAlignment = HorizontalAlignment.Stretch;
+    private VerticalAlignment _verticalAlignment = VerticalAlignment.Stretch;
+    private float? _widthConstraint;
+    private float? _heightConstraint;
 
-    public float? WidthConstraint { get; set; }
-    public float? HeightConstraint { get; set; }
+    private bool _isMeasureValid;
+    private bool _isArrangeValid;
+    private Vector2 _previousAvailableSize = new Vector2(-1f, -1f);
+    private Rect _previousFinalRect = new Rect(-1f, -1f, -1f, -1f);
+
+    public Thickness Margin
+    {
+        get => _margin;
+        set
+        {
+            if (!_margin.Equals(value))
+            {
+                _margin = value;
+                InvalidateMeasure();
+            }
+        }
+    }
+
+    public Thickness Padding
+    {
+        get => _padding;
+        set
+        {
+            if (!_padding.Equals(value))
+            {
+                _padding = value;
+                InvalidateMeasure();
+            }
+        }
+    }
+
+    public HorizontalAlignment HorizontalAlignment
+    {
+        get => _horizontalAlignment;
+        set
+        {
+            if (_horizontalAlignment != value)
+            {
+                _horizontalAlignment = value;
+                InvalidateArrange();
+            }
+        }
+    }
+
+    public VerticalAlignment VerticalAlignment
+    {
+        get => _verticalAlignment;
+        set
+        {
+            if (_verticalAlignment != value)
+            {
+                _verticalAlignment = value;
+                InvalidateArrange();
+            }
+        }
+    }
+
+    public float? WidthConstraint
+    {
+        get => _widthConstraint;
+        set
+        {
+            if (_widthConstraint != value)
+            {
+                _widthConstraint = value;
+                InvalidateMeasure();
+            }
+        }
+    }
+
+    public float? HeightConstraint
+    {
+        get => _heightConstraint;
+        set
+        {
+            if (_heightConstraint != value)
+            {
+                _heightConstraint = value;
+                InvalidateMeasure();
+            }
+        }
+    }
 
     public Vector2 DesiredSize { get; protected set; }
 
+    public void InvalidateMeasure()
+    {
+        if (_isMeasureValid)
+        {
+            _isMeasureValid = false;
+            _isArrangeValid = false;
+            if (Parent is LayoutNode parentNode)
+            {
+                parentNode.InvalidateMeasure();
+            }
+        }
+    }
+
+    public void InvalidateArrange()
+    {
+        if (_isArrangeValid)
+        {
+            _isArrangeValid = false;
+            if (Parent is LayoutNode parentNode)
+            {
+                parentNode.InvalidateArrange();
+            }
+        }
+    }
+
     public void Measure(Vector2 availableSize)
     {
+        if (_isMeasureValid && availableSize == _previousAvailableSize)
+        {
+            return;
+        }
+
         // 1. Account for Margin
         float marginH = Margin.Horizontal;
         float marginV = Margin.Vertical;
@@ -93,10 +229,17 @@ public class LayoutNode : ContainerVisual
         desired.Y += marginV;
 
         DesiredSize = desired;
+        _previousAvailableSize = availableSize;
+        _isMeasureValid = true;
     }
 
     public void Arrange(Rect finalRect)
     {
+        if (_isArrangeValid && _isMeasureValid && finalRect == _previousFinalRect)
+        {
+            return;
+        }
+
         // 1. Subtract Margin to get visual space
         float marginL = Margin.Left;
         float marginT = Margin.Top;
@@ -145,6 +288,9 @@ public class LayoutNode : ContainerVisual
 
         Rect arrangeRect = new Rect(Padding.Left, Padding.Top, Math.Max(0f, size.X - Padding.Horizontal), Math.Max(0f, size.Y - Padding.Vertical));
         ArrangeOverride(arrangeRect);
+        
+        _previousFinalRect = finalRect;
+        _isArrangeValid = true;
     }
 
     protected virtual Vector2 MeasureOverride(Vector2 availableSize)
