@@ -150,16 +150,37 @@ public static unsafe class MainWindowController
         };
 
         var headerGrid = new ProGPU.WinUI.Grid();
-        headerGrid.ColumnDefinitions.Add(new GridLength(1f, GridUnitType.Star));
-        headerGrid.ColumnDefinitions.Add(new GridLength(120f, GridUnitType.Absolute));
-        headerGrid.ColumnDefinitions.Add(new GridLength(300f, GridUnitType.Absolute));
+        headerGrid.ColumnDefinitions.Add(new GridLength(45f, GridUnitType.Absolute));  // Column 0: Hamburger Button
+        headerGrid.ColumnDefinitions.Add(new GridLength(1f, GridUnitType.Star));       // Column 1: Title Logo
+        headerGrid.ColumnDefinitions.Add(new GridLength(120f, GridUnitType.Absolute));  // Column 2: Theme Selector
+        headerGrid.ColumnDefinitions.Add(new GridLength(300f, GridUnitType.Absolute));  // Column 3: Subtitle text
 
-        var titleText = new RichTextBlock { Font = AppState._font, FontSize = 20f, VerticalAlignment = VerticalAlignment.Center };
+        var hamburgerBtn = new Button
+        {
+            Width = 36f,
+            Height = 36f,
+            CornerRadius = 6f,
+            Background = new SolidColorBrush(0x00000000), // Transparent background
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Left
+        };
+        hamburgerBtn.Content = new HamburgerIconVisual();
+        hamburgerBtn.Click += (s, e) =>
+        {
+            if (AppState._navigationView != null)
+            {
+                AppState._navigationView.IsPaneOpen = !AppState._navigationView.IsPaneOpen;
+            }
+        };
+        headerGrid.AddChild(hamburgerBtn);
+        ProGPU.WinUI.Grid.SetColumn(hamburgerBtn, 0);
+
+        var titleText = new RichTextBlock { Font = AppState._font, FontSize = 20f, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0) };
         var logoRun = new Run("Pro") { Foreground = ThemeManager.GetBrush("SystemAccentColor") };
         titleText.Inlines.Add(new Bold(logoRun));
         titleText.Inlines.Add(new Bold(new Run("GPU WinUI Gallery")));
         headerGrid.AddChild(titleText);
-        ProGPU.WinUI.Grid.SetColumn(titleText, 0);
+        ProGPU.WinUI.Grid.SetColumn(titleText, 1);
 
         // Sun/Moon dynamic theme selector toggle button
         var themeBtn = new Button
@@ -202,7 +223,7 @@ public static unsafe class MainWindowController
             }
         };
         headerGrid.AddChild(themeBtn);
-        ProGPU.WinUI.Grid.SetColumn(themeBtn, 1);
+        ProGPU.WinUI.Grid.SetColumn(themeBtn, 2);
 
         var subtitleText = new RichTextBlock 
         { 
@@ -213,7 +234,7 @@ public static unsafe class MainWindowController
         };
         subtitleText.Inlines.Add(new Run(".NET 10 cross-platform high-performance engine showcase"));
         headerGrid.AddChild(subtitleText);
-        ProGPU.WinUI.Grid.SetColumn(subtitleText, 2);
+        ProGPU.WinUI.Grid.SetColumn(subtitleText, 3);
 
         headerBar.Child = headerGrid;
         AppState._rootGrid.AddChild(headerBar);
@@ -536,5 +557,25 @@ public static unsafe class MainWindowController
         AppState._offscreenCompositor?.Dispose();
         AppState._screenCompositor?.Dispose();
         AppState._wgpuContext?.Dispose();
+    }
+}
+
+public class HamburgerIconVisual : FrameworkElement
+{
+    public HamburgerIconVisual()
+    {
+        WidthConstraint = 18f;
+        HeightConstraint = 12f;
+        HorizontalAlignment = HorizontalAlignment.Center;
+        VerticalAlignment = VerticalAlignment.Center;
+    }
+
+    public override void OnRender(DrawingContext context)
+    {
+        var brush = ThemeManager.GetBrush("TextPrimary");
+        context.DrawRectangle(brush, null, new Rect(0f, 0f, 18f, 2f));
+        context.DrawRectangle(brush, null, new Rect(0f, 5f, 18f, 2f));
+        context.DrawRectangle(brush, null, new Rect(0f, 10f, 18f, 2f));
+        base.OnRender(context);
     }
 }
