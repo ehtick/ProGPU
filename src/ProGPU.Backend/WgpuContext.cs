@@ -18,6 +18,25 @@ public unsafe class WgpuContext : IDisposable
     public TextureFormat SwapChainFormat { get; private set; } = TextureFormat.Bgra8Unorm;
     
     private bool _isDisposed;
+    private uint _lastWidth = 1;
+    private uint _lastHeight = 1;
+    private bool _vsync = false;
+
+    public bool VSync
+    {
+        get => _vsync;
+        set
+        {
+            if (_vsync != value)
+            {
+                _vsync = value;
+                if (Surface != null)
+                {
+                    ConfigureSwapChain(_lastWidth, _lastHeight);
+                }
+            }
+        }
+    }
 
     public static WgpuContext? Current { get; set; }
 
@@ -133,6 +152,9 @@ public unsafe class WgpuContext : IDisposable
     {
         if (Surface == null || Device == null) return;
 
+        _lastWidth = width;
+        _lastHeight = height;
+
         // 7a. Query supported formats
         var capabilities = new SurfaceCapabilities();
         Wgpu.SurfaceGetCapabilities(Surface, Adapter, &capabilities);
@@ -160,14 +182,29 @@ public unsafe class WgpuContext : IDisposable
         }
 
         PresentMode presentMode = PresentMode.Fifo;
-        if (capabilities.PresentModeCount > 0 && capabilities.PresentModes != null)
+        if (!_vsync && capabilities.PresentModeCount > 0 && capabilities.PresentModes != null)
         {
+            // Prefer Mailbox first (VSync Off, low-latency, non-tearing)
+            bool foundMode = false;
             for (uint i = 0; i < capabilities.PresentModeCount; i++)
             {
-                if (capabilities.PresentModes[i] == PresentMode.Immediate)
+                if (capabilities.PresentModes[i] == PresentMode.Mailbox)
                 {
-                    presentMode = PresentMode.Immediate;
+                    presentMode = PresentMode.Mailbox;
+                    foundMode = true;
                     break;
+                }
+            }
+            if (!foundMode)
+            {
+                // Fallback to Immediate (VSync Off, tearing)
+                for (uint i = 0; i < capabilities.PresentModeCount; i++)
+                {
+                    if (capabilities.PresentModes[i] == PresentMode.Immediate)
+                    {
+                        presentMode = PresentMode.Immediate;
+                        break;
+                    }
                 }
             }
         }
