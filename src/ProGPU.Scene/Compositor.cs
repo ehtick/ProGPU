@@ -34,22 +34,6 @@ public struct GpuBrush
 public struct GpuUniforms
 {
     public Matrix4x4 Projection;
-    public GpuBrush Brush0; public GpuBrush Brush1; public GpuBrush Brush2; public GpuBrush Brush3;
-    public GpuBrush Brush4; public GpuBrush Brush5; public GpuBrush Brush6; public GpuBrush Brush7;
-    public GpuBrush Brush8; public GpuBrush Brush9; public GpuBrush Brush10; public GpuBrush Brush11;
-    public GpuBrush Brush12; public GpuBrush Brush13; public GpuBrush Brush14; public GpuBrush Brush15;
-    public GpuBrush Brush16; public GpuBrush Brush17; public GpuBrush Brush18; public GpuBrush Brush19;
-    public GpuBrush Brush20; public GpuBrush Brush21; public GpuBrush Brush22; public GpuBrush Brush23;
-    public GpuBrush Brush24; public GpuBrush Brush25; public GpuBrush Brush26; public GpuBrush Brush27;
-    public GpuBrush Brush28; public GpuBrush Brush29; public GpuBrush Brush30; public GpuBrush Brush31;
-    public GpuBrush Brush32; public GpuBrush Brush33; public GpuBrush Brush34; public GpuBrush Brush35;
-    public GpuBrush Brush36; public GpuBrush Brush37; public GpuBrush Brush38; public GpuBrush Brush39;
-    public GpuBrush Brush40; public GpuBrush Brush41; public GpuBrush Brush42; public GpuBrush Brush43;
-    public GpuBrush Brush44; public GpuBrush Brush45; public GpuBrush Brush46; public GpuBrush Brush47;
-    public GpuBrush Brush48; public GpuBrush Brush49; public GpuBrush Brush50; public GpuBrush Brush51;
-    public GpuBrush Brush52; public GpuBrush Brush53; public GpuBrush Brush54; public GpuBrush Brush55;
-    public GpuBrush Brush56; public GpuBrush Brush57; public GpuBrush Brush58; public GpuBrush Brush59;
-    public GpuBrush Brush60; public GpuBrush Brush61; public GpuBrush Brush62; public GpuBrush Brush63;
 }
 
 public unsafe class Compositor : IDisposable
@@ -139,9 +123,41 @@ public unsafe class Compositor : IDisposable
     private readonly List<uint> _textIndicesList = new();
     private readonly List<VectorVertex> _textureVerticesList = new();
     private readonly List<uint> _textureIndicesList = new();
+    public readonly struct TextureCacheKey : IEquatable<TextureCacheKey>
+    {
+        public readonly ulong TextureId;
+        public readonly uint Generation;
+        public readonly bool IsOffscreen;
+
+        public TextureCacheKey(ulong textureId, uint generation, bool isOffscreen)
+        {
+            TextureId = textureId;
+            Generation = generation;
+            IsOffscreen = isOffscreen;
+        }
+
+        public bool Equals(TextureCacheKey other) => TextureId == other.TextureId && Generation == other.Generation && IsOffscreen == other.IsOffscreen;
+        public override bool Equals(object? obj) => obj is TextureCacheKey other && Equals(other);
+        public override int GetHashCode() => HashCode.Combine(TextureId, Generation, IsOffscreen);
+    }
+
+    public class CachedBindGroup
+    {
+        public nint BindGroupPtr { get; }
+        public ulong LastUsedFrame { get; set; }
+
+        public CachedBindGroup(nint bindGroupPtr, ulong lastUsedFrame)
+        {
+            BindGroupPtr = bindGroupPtr;
+            LastUsedFrame = lastUsedFrame;
+        }
+    }
+
     private readonly List<CompositorDrawCall> _drawCalls = new();
-    private readonly Dictionary<nint, nint> _textureBindGroups = new();
+    private readonly Dictionary<TextureCacheKey, CachedBindGroup> _persistentTextureBindGroups = new();
     private readonly List<GpuBrush> _activeBrushes = new();
+    private readonly GpuBuffer _brushesStorageBuffer;
+    private ulong _frameNumber = 0;
     private readonly Dictionary<(string Text, TtfFont Font, float Size, TextAlignment Align), TextLayout> _layoutCache = new();
 
     private readonly ComputeAccelerator _compute;
@@ -189,12 +205,20 @@ public unsafe class Compositor : IDisposable
         _atlas = new GlyphAtlas(_context, 1024);
         _pathAtlas = new PathAtlas(_context, 2048);
 
-        // 2. Uniform Buffer allocation (Projection Matrix & 64 Brushes - 8256 bytes)
+        // 2. Uniform Buffer allocation (Projection Matrix - 64 bytes)
         _uniformBuffer = new GpuBuffer(
             _context, 
-            8256, 
+            64, 
             BufferUsage.Uniform | BufferUsage.CopyDst, 
-            "Compositor Uniform Projection & Brushes Buffer"
+            "Compositor Uniform Projection Buffer"
+        );
+
+        // Allocate brushes storage buffer (8192 brushes * 128 bytes = 1,048,576 bytes)
+        _brushesStorageBuffer = new GpuBuffer(
+            _context,
+            8192 * 128,
+            BufferUsage.Storage | BufferUsage.CopyDst,
+            "Compositor Brushes Storage Buffer"
         );
 
         // 3. Dynamic mesh buffer setup (Vertex format: VectorVertex)
@@ -349,22 +373,34 @@ public unsafe class Compositor : IDisposable
             Binding = 0,
             Buffer = _uniformBuffer.BufferPtr,
             Offset = 0,
-            Size = 8256
+            Size = 64
         };
+
+        var brushesEntry = new BindGroupEntry
+        {
+            Binding = 1,
+            Buffer = _brushesStorageBuffer.BufferPtr,
+            Offset = 0,
+            Size = _brushesStorageBuffer.Size
+        };
+
+        var vectorEntries = stackalloc BindGroupEntry[2];
+        vectorEntries[0] = uBufferEntry;
+        vectorEntries[1] = brushesEntry;
 
         var uDescVector = new BindGroupDescriptor
         {
             Layout = _vectorUniformBindGroupLayout,
-            EntryCount = 1,
-            Entries = &uBufferEntry
+            EntryCount = 2,
+            Entries = vectorEntries
         };
         _vectorUniformBindGroup = _context.Wgpu.DeviceCreateBindGroup(_context.Device, &uDescVector);
 
         var uDescVectorOffscreen = new BindGroupDescriptor
         {
             Layout = _vectorUniformBindGroupLayoutOffscreen,
-            EntryCount = 1,
-            Entries = &uBufferEntry
+            EntryCount = 2,
+            Entries = vectorEntries
         };
         _vectorUniformBindGroupOffscreen = _context.Wgpu.DeviceCreateBindGroup(_context.Device, &uDescVectorOffscreen);
 
@@ -599,6 +635,8 @@ public unsafe class Compositor : IDisposable
             }
         }
 
+        // Dynamic buffer writing will happen after uploads to keep logic clear
+
         // Upload CPU batches to dynamic GPU buffers
         if (_vectorVerticesList.Count > 0)
         {
@@ -633,15 +671,17 @@ public unsafe class Compositor : IDisposable
             _textureIndexBuffer.Write(CollectionsMarshal.AsSpan(_textureIndicesList));
         }
 
-        // Upload unified projection matrix and compiled brushes to GpuUniforms
-        var uniforms = new GpuUniforms();
-        uniforms.Projection = projection;
-        GpuBrush* pBrushes = &uniforms.Brush0;
-        for (int i = 0; i < Math.Min(64, _activeBrushes.Count); i++)
+        // Upload unified projection matrix (64 bytes)
+        _uniformBuffer.WriteSingle(projection);
+
+        // Upload compiled active brushes to storage buffer
+        if (_activeBrushes.Count > 0)
         {
-            pBrushes[i] = _activeBrushes[i];
+            _brushesStorageBuffer.Write(CollectionsMarshal.AsSpan(_activeBrushes));
         }
-        _uniformBuffer.WriteSingle(uniforms);
+
+        // Rasterize all pending paths before starting the render pass
+        _pathAtlas.RasterizePendingPaths();
 
         // Recreate MSAA resources if needed (handles initialization and window resizing)
         if (_msaaTexture == null || _msaaWidth != width || _msaaHeight != height)
@@ -732,9 +772,9 @@ public unsafe class Compositor : IDisposable
                 currentType = DrawCallType.Texture;
 
                 var viewPtr = dc.Texture.ViewPtr;
-                nint viewKey = (nint)viewPtr;
+                var cacheKey = new TextureCacheKey(dc.Texture.Id, dc.Texture.Generation, isOffscreen: false);
 
-                if (!_textureBindGroups.TryGetValue(viewKey, out var bgPtrVal))
+                if (!_persistentTextureBindGroups.TryGetValue(cacheKey, out var cachedBg))
                 {
                     textureEntries[0] = new BindGroupEntry { Binding = 0, Sampler = _atlasSampler };
                     textureEntries[1] = new BindGroupEntry { Binding = 1, TextureView = viewPtr };
@@ -745,11 +785,15 @@ public unsafe class Compositor : IDisposable
                     {
                         System.Console.WriteLine($"[Compositor Error] Failed to create BindGroup for TextureView {(nint)viewPtr}");
                     }
-                    bgPtrVal = (nint)bg;
-                    _textureBindGroups[viewKey] = bgPtrVal;
+                    cachedBg = new CachedBindGroup((nint)bg, _frameNumber);
+                    _persistentTextureBindGroups[cacheKey] = cachedBg;
+                }
+                else
+                {
+                    cachedBg.LastUsedFrame = _frameNumber;
                 }
 
-                var bindGroup = (BindGroup*)bgPtrVal;
+                var bindGroup = (BindGroup*)cachedBg.BindGroupPtr;
                 _context.Wgpu.RenderPassEncoderSetBindGroup(pass, 1, bindGroup, 0, null);
                 _context.Wgpu.RenderPassEncoderDrawIndexed(pass, dc.IndexCount, 1, dc.IndexStart, 0, 0);
             }
@@ -768,15 +812,32 @@ public unsafe class Compositor : IDisposable
         _context.Wgpu.CommandBufferRelease(cmdBuffer);
         _context.Wgpu.CommandEncoderRelease(encoder);
 
-        // Release and clear dynamic texture bind groups to avoid leaking or using stale view pointers on next frame
-        foreach (var bgVal in _textureBindGroups.Values)
+        _frameNumber++;
+        EvictUnusedBindGroups();
+    }
+
+    private void EvictUnusedBindGroups()
+    {
+        List<TextureCacheKey>? keysToRemove = null;
+        foreach (var kvp in _persistentTextureBindGroups)
         {
-            if (bgVal != 0)
+            if (_frameNumber - kvp.Value.LastUsedFrame > 60)
             {
-                _context.Wgpu.BindGroupRelease((BindGroup*)bgVal);
+                if (kvp.Value.BindGroupPtr != 0)
+                {
+                    _context.Wgpu.BindGroupRelease((BindGroup*)kvp.Value.BindGroupPtr);
+                }
+                keysToRemove ??= new List<TextureCacheKey>();
+                keysToRemove.Add(kvp.Key);
             }
         }
-        _textureBindGroups.Clear();
+        if (keysToRemove != null)
+        {
+            foreach (var key in keysToRemove)
+            {
+                _persistentTextureBindGroups.Remove(key);
+            }
+        }
     }
 
     private void PushClipRect(Rect localClip, Matrix4x4 transform)
@@ -996,23 +1057,34 @@ public unsafe class Compositor : IDisposable
             var brush = cmd.Brush as SolidColorBrush;
             var color = brush?.Color ?? new Vector4(1f, 1f, 1f, 1f);
 
-            var info = _pathAtlas.GetOrCreatePath(cmd.Path);
+            // Extract scale factor from transform
+            var scaleX = new Vector2(transform.M11, transform.M12).Length();
+            var scaleY = new Vector2(transform.M21, transform.M22).Length();
+            float scale = Math.Max(scaleX, scaleY);
+            if (scale < 0.0001f) scale = 1f;
+
+            var info = _pathAtlas.GetOrCreatePath(cmd.Path, scale);
             if (info.Width > 0 && info.Height > 0)
             {
-                var v0 = Vector2.Transform(new Vector2(info.MinX, info.MinY), transform);
-                var v1 = Vector2.Transform(new Vector2(info.MinX + info.Width, info.MinY), transform);
-                var v2 = Vector2.Transform(new Vector2(info.MinX + info.Width, info.MinY + info.Height), transform);
-                var v3 = Vector2.Transform(new Vector2(info.MinX, info.MinY + info.Height), transform);
+                float unscaledMinX = info.MinX / scale;
+                float unscaledMinY = info.MinY / scale;
+                float unscaledWidth = info.Width / scale;
+                float unscaledHeight = info.Height / scale;
+
+                var v0 = Vector2.Transform(new Vector2(unscaledMinX, unscaledMinY), transform);
+                var v1 = Vector2.Transform(new Vector2(unscaledMinX + unscaledWidth, unscaledMinY), transform);
+                var v2 = Vector2.Transform(new Vector2(unscaledMinX + unscaledWidth, unscaledMinY + unscaledHeight), transform);
+                var v3 = Vector2.Transform(new Vector2(unscaledMinX, unscaledMinY + unscaledHeight), transform);
 
                 var uv0 = new Vector2(info.TexCoordMin.X, info.TexCoordMin.Y);
                 var uv1 = new Vector2(info.TexCoordMax.X, info.TexCoordMin.Y);
                 var uv2 = new Vector2(info.TexCoordMax.X, info.TexCoordMax.Y);
                 var uv3 = new Vector2(info.TexCoordMin.X, info.TexCoordMax.Y);
 
-                var cp0 = new Vector2(info.MinX, info.MinY);
-                var cp1 = new Vector2(info.MinX + info.Width, info.MinY);
-                var cp2 = new Vector2(info.MinX + info.Width, info.MinY + info.Height);
-                var cp3 = new Vector2(info.MinX, info.MinY + info.Height);
+                var cp0 = new Vector2(unscaledMinX, unscaledMinY);
+                var cp1 = new Vector2(unscaledMinX + unscaledWidth, unscaledMinY);
+                var cp2 = new Vector2(unscaledMinX + unscaledWidth, unscaledMinY + unscaledHeight);
+                var cp3 = new Vector2(unscaledMinX, unscaledMinY + unscaledHeight);
 
                 if (_activeClipRect.HasValue)
                 {
@@ -1048,10 +1120,10 @@ public unsafe class Compositor : IDisposable
                             info.TexCoordMin.Y + (cy2 - ry1) / dy * (info.TexCoordMax.Y - info.TexCoordMin.Y)
                         );
 
-                        float cp0_x = dx > 0.0001f ? info.MinX + (cx1 - rx1) / dx * info.Width : info.MinX;
-                        float cp0_y = dy > 0.0001f ? info.MinY + (cy1 - ry1) / dy * info.Height : info.MinY;
-                        float cp2_x = dx > 0.0001f ? info.MinX + (cx2 - rx1) / dx * info.Width : info.MinX + info.Width;
-                        float cp2_y = dy > 0.0001f ? info.MinY + (cy2 - ry1) / dy * info.Height : info.MinY + info.Height;
+                        float cp0_x = dx > 0.0001f ? unscaledMinX + (cx1 - rx1) / dx * unscaledWidth : unscaledMinX;
+                        float cp0_y = dy > 0.0001f ? unscaledMinY + (cy1 - ry1) / dy * unscaledHeight : unscaledMinY;
+                        float cp2_x = dx > 0.0001f ? unscaledMinX + (cx2 - rx1) / dx * unscaledWidth : unscaledMinX + unscaledWidth;
+                        float cp2_y = dy > 0.0001f ? unscaledMinY + (cy2 - ry1) / dy * unscaledHeight : unscaledMinY + unscaledHeight;
 
                         var cp0_clip = new Vector2(cp0_x, cp0_y);
                         var cp1_clip = new Vector2(cp2_x, cp0_y);
@@ -2023,6 +2095,7 @@ public unsafe class Compositor : IDisposable
         ReleaseMsaaResources();
 
         _uniformBuffer.Dispose();
+        _brushesStorageBuffer.Dispose();
         _vectorVertexBuffer.Dispose();
         _vectorIndexBuffer.Dispose();
         _textVertexBuffer.Dispose();
@@ -2071,11 +2144,11 @@ public unsafe class Compositor : IDisposable
         if (_textureBindGroupLayout != null) _context.Wgpu.BindGroupLayoutRelease(_textureBindGroupLayout);
         if (_textureBindGroupLayoutOffscreen != null) _context.Wgpu.BindGroupLayoutRelease(_textureBindGroupLayoutOffscreen);
 
-        foreach (var bgVal in _textureBindGroups.Values)
+        foreach (var cachedBg in _persistentTextureBindGroups.Values)
         {
-            if (bgVal != 0) _context.Wgpu.BindGroupRelease((BindGroup*)bgVal);
+            if (cachedBg.BindGroupPtr != 0) _context.Wgpu.BindGroupRelease((BindGroup*)cachedBg.BindGroupPtr);
         }
-        _textureBindGroups.Clear();
+        _persistentTextureBindGroups.Clear();
 
         _isDisposed = true;
         GC.SuppressFinalize(this);
@@ -2314,14 +2387,12 @@ public unsafe class Compositor : IDisposable
             _textureIndexBuffer.Write(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_textureIndicesList));
         }
 
-        var uniforms = new GpuUniforms();
-        uniforms.Projection = projection;
-        GpuBrush* pBrushes = &uniforms.Brush0;
-        for (int i = 0; i < Math.Min(64, _activeBrushes.Count); i++)
+        _uniformBuffer.WriteSingle(projection);
+        if (_activeBrushes.Count > 0)
         {
-            pBrushes[i] = _activeBrushes[i];
+            _brushesStorageBuffer.Write(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_activeBrushes));
         }
-        _uniformBuffer.WriteSingle(uniforms);
+        _pathAtlas.RasterizePendingPaths();
 
         // Render target view for offscreen GpuTexture
         var targetView = targetTexture.ViewPtr;
@@ -2408,20 +2479,24 @@ public unsafe class Compositor : IDisposable
                 currentType = DrawCallType.Texture;
 
                 var viewPtr = dc.Texture.ViewPtr;
-                nint viewKey = (nint)viewPtr;
+                var cacheKey = new TextureCacheKey(dc.Texture.Id, dc.Texture.Generation, isOffscreen: true);
 
-                if (!_textureBindGroups.TryGetValue(viewKey, out var bgPtrVal))
+                if (!_persistentTextureBindGroups.TryGetValue(cacheKey, out var cachedBg))
                 {
                     textureEntries[0] = new BindGroupEntry { Binding = 0, Sampler = _atlasSampler };
                     textureEntries[1] = new BindGroupEntry { Binding = 1, TextureView = viewPtr };
 
                     var bgDesc = new BindGroupDescriptor { Layout = _textureBindGroupLayoutOffscreen, EntryCount = 2, Entries = textureEntries };
                     var bg = _context.Wgpu.DeviceCreateBindGroup(_context.Device, &bgDesc);
-                    bgPtrVal = (nint)bg;
-                    _textureBindGroups[viewKey] = bgPtrVal;
+                    cachedBg = new CachedBindGroup((nint)bg, _frameNumber);
+                    _persistentTextureBindGroups[cacheKey] = cachedBg;
+                }
+                else
+                {
+                    cachedBg.LastUsedFrame = _frameNumber;
                 }
 
-                var bindGroup = (BindGroup*)bgPtrVal;
+                var bindGroup = (BindGroup*)cachedBg.BindGroupPtr;
                 _context.Wgpu.RenderPassEncoderSetBindGroup(pass, 1, bindGroup, 0, null);
                 _context.Wgpu.RenderPassEncoderDrawIndexed(pass, dc.IndexCount, 1, dc.IndexStart, 0, 0);
             }
@@ -2439,11 +2514,7 @@ public unsafe class Compositor : IDisposable
         _context.Wgpu.CommandBufferRelease(cmdBuffer);
         _context.Wgpu.CommandEncoderRelease(encoder);
 
-        foreach (var bgVal in _textureBindGroups.Values)
-        {
-            if (bgVal != 0) _context.Wgpu.BindGroupRelease((BindGroup*)bgVal);
-        }
-        _textureBindGroups.Clear();
+        EvictUnusedBindGroups();
 
         // Restore main lists and state
         _vectorVerticesList.Clear(); _vectorVerticesList.AddRange(savedVectorVertices);

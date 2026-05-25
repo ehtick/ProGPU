@@ -21,10 +21,10 @@ struct Brush {
 
 struct Uniforms {
     projection: mat4x4<f32>,
-    brushes: array<Brush, 64>,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@group(0) @binding(1) var<storage, read> brushes: array<Brush>;
 @group(1) @binding(0) var pathAtlasSampler: sampler;
 @group(1) @binding(1) var pathAtlasTexture: texture_2d<f32>;
 
@@ -220,7 +220,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     // Process Color Brush
     let bIdx = u32(round(input.brushIndex));
-    let brush = uniforms.brushes[bIdx];
+    let brush = brushes[bIdx];
 
     var finalColor = input.color;
     if (brush.brushType == 0u) {
