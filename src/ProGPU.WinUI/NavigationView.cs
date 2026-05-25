@@ -45,8 +45,6 @@ public class NavigationView : FrameworkElement
 
         protected override Vector2 MeasureOverride(Vector2 availableSize)
         {
-            _navigationView._hamburgerButton.Measure(new Vector2(availableSize.X, 60f));
-
             foreach (var item in _navigationView._flatVisibleItems)
             {
                 item.Measure(new Vector2(availableSize.X, 40f));
@@ -62,9 +60,7 @@ public class NavigationView : FrameworkElement
 
         protected override void ArrangeOverride(Rect arrangeRect)
         {
-            _navigationView._hamburgerButton.Arrange(new Rect(arrangeRect.X + (arrangeRect.Width - 40f) / 2f, arrangeRect.Y + 10f, 40f, 40f));
-
-            float cursorY = arrangeRect.Y + 60f;
+            float cursorY = arrangeRect.Y + 10f;
             foreach (var item in _navigationView._flatVisibleItems)
             {
                 item.Arrange(new Rect(arrangeRect.X, cursorY, arrangeRect.Width, 40f));
@@ -267,9 +263,6 @@ public class NavigationView : FrameworkElement
     private void RebuildPaneChildren()
     {
         _panePanel.ClearChildren();
-
-        // 1. Add Hamburger
-        _panePanel.AddChild(_hamburgerButton);
 
         // 2. Add currently expanded visual menu items stack
         _flatVisibleItems.Clear();
