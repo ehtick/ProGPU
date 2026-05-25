@@ -281,6 +281,11 @@ public static unsafe class MainWindowController
             AppState._rootGrid?.Invalidate();
         };
 
+        if (AppState._navigationView.SettingsItem != null)
+        {
+            AppState._navigationView.SettingsItem.Page = SettingsPage.Create();
+        }
+
         // Select default category
         AppState._navigationView.SelectedItem = basicInputItem;
 
