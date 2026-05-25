@@ -1,5 +1,6 @@
 using System;
 using System.Numerics;
+using System.Collections.Generic;
 using Silk.NET.Input;
 using ProGPU.Layout;
 using ProGPU.Vector;
@@ -16,6 +17,33 @@ public class TextBox : Control
     private float _fontSize = 14f;
     private TtfFont? _font;
 
+    // Premium selection and clipboard fields
+    private int _selectionStart = 0;
+    private int _selectionLength = 0;
+    private int _selectionAnchor = 0;
+    private bool _isDraggingSelection = false;
+    private readonly HashSet<Key> _pressedKeys = new();
+
+    // Premium multi-step undo/redo state
+    private class UndoState
+    {
+        public string Text { get; }
+        public int CaretIndex { get; }
+        public int SelectionStart { get; }
+        public int SelectionLength { get; }
+
+        public UndoState(string text, int caretIndex, int selectionStart, int selectionLength)
+        {
+            Text = text;
+            CaretIndex = caretIndex;
+            SelectionStart = selectionStart;
+            SelectionLength = selectionLength;
+        }
+    }
+
+    private readonly Stack<UndoState> _undoStack = new();
+    private readonly Stack<UndoState> _redoStack = new();
+
     public string Text
     {
         get => _text;
@@ -26,6 +54,8 @@ public class TextBox : Control
             {
                 _text = newVal;
                 CaretIndex = Math.Clamp(CaretIndex, 0, _text.Length);
+                SelectionStart = Math.Clamp(SelectionStart, 0, _text.Length);
+                SelectionLength = Math.Clamp(SelectionLength, -SelectionStart, _text.Length - SelectionStart);
                 Invalidate();
                 TextChanged?.Invoke(this, EventArgs.Empty);
             }
@@ -52,6 +82,47 @@ public class TextBox : Control
         }
     }
 
+    public int SelectionStart
+    {
+        get => _selectionStart;
+        set
+        {
+            int clamped = Math.Clamp(value, 0, Text.Length);
+            if (_selectionStart != clamped)
+            {
+                _selectionStart = clamped;
+                Invalidate();
+            }
+        }
+    }
+
+    public int SelectionLength
+    {
+        get => _selectionLength;
+        set
+        {
+            int maxLen = Text.Length - SelectionStart;
+            int minLen = -SelectionStart;
+            int clamped = Math.Clamp(value, minLen, maxLen);
+            if (_selectionLength != clamped)
+            {
+                _selectionLength = clamped;
+                Invalidate();
+            }
+        }
+    }
+
+    public string SelectedText
+    {
+        get
+        {
+            int start = Math.Min(SelectionStart, SelectionStart + SelectionLength);
+            int length = Math.Abs(SelectionLength);
+            if (length == 0 || string.IsNullOrEmpty(Text)) return string.Empty;
+            return Text.Substring(start, Math.Min(length, Text.Length - start));
+        }
+    }
+
     public float FontSize
     {
         get => _fontSize;
@@ -74,6 +145,91 @@ public class TextBox : Control
         WidthConstraint = 180f;
     }
 
+    private void SaveUndoState()
+    {
+        _undoStack.Push(new UndoState(Text, CaretIndex, SelectionStart, SelectionLength));
+        _redoStack.Clear();
+    }
+
+    public void Undo()
+    {
+        if (_undoStack.Count == 0) return;
+
+        var currentState = new UndoState(Text, CaretIndex, SelectionStart, SelectionLength);
+        _redoStack.Push(currentState);
+
+        var previousState = _undoStack.Pop();
+        ApplyUndoState(previousState);
+    }
+
+    public void Redo()
+    {
+        if (_redoStack.Count == 0) return;
+
+        var currentState = new UndoState(Text, CaretIndex, SelectionStart, SelectionLength);
+        _undoStack.Push(currentState);
+
+        var nextState = _redoStack.Pop();
+        ApplyUndoState(nextState);
+    }
+
+    private void ApplyUndoState(UndoState state)
+    {
+        _text = state.Text;
+        _caretIndex = Math.Clamp(state.CaretIndex, 0, _text.Length);
+        _selectionStart = Math.Clamp(state.SelectionStart, 0, _text.Length);
+        _selectionLength = Math.Clamp(state.SelectionLength, -_selectionStart, _text.Length - _selectionStart);
+        Invalidate();
+        TextChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void DeleteSelection()
+    {
+        if (SelectionLength == 0) return;
+
+        int start = Math.Min(SelectionStart, SelectionStart + SelectionLength);
+        int length = Math.Abs(SelectionLength);
+
+        string before = Text.Substring(0, start);
+        string after = Text.Substring(start + length);
+        Text = before + after;
+
+        SelectionStart = start;
+        SelectionLength = 0;
+        CaretIndex = start;
+    }
+
+    private void InsertText(string insert)
+    {
+        if (SelectionLength != 0)
+        {
+            DeleteSelection();
+        }
+
+        string before = Text.Substring(0, CaretIndex);
+        string after = Text.Substring(CaretIndex);
+        Text = before + insert + after;
+        CaretIndex += insert.Length;
+        SelectionStart = CaretIndex;
+        SelectionLength = 0;
+    }
+
+    public override void OnVisualStateChanged()
+    {
+        base.OnVisualStateChanged();
+        if (!IsFocused)
+        {
+            _pressedKeys.Clear();
+            _isDraggingSelection = false;
+        }
+    }
+
+    public override void OnKeyUp(KeyRoutedEventArgs e)
+    {
+        _pressedKeys.Remove(e.Key);
+        base.OnKeyUp(e);
+    }
+
     public override void OnPointerPressed(PointerRoutedEventArgs e)
     {
         if (IsEnabled)
@@ -81,6 +237,7 @@ public class TextBox : Control
             base.OnPointerPressed(e); // sets focus
 
             float clickX = e.Position.X - Padding.Left;
+            int index = 0;
             if (Font != null && !string.IsNullOrEmpty(Text))
             {
                 int bestIndex = 0;
@@ -97,11 +254,62 @@ public class TextBox : Control
                         bestIndex = i;
                     }
                 }
-                CaretIndex = bestIndex;
+                index = bestIndex;
             }
-            else
+            
+            _selectionAnchor = index;
+            SelectionStart = index;
+            SelectionLength = 0;
+            CaretIndex = index;
+            _isDraggingSelection = true;
+            InputSystem.CapturePointer(this);
+        }
+    }
+
+    public override void OnPointerReleased(PointerRoutedEventArgs e)
+    {
+        if (IsEnabled)
+        {
+            base.OnPointerReleased(e);
+            if (_isDraggingSelection)
             {
-                CaretIndex = 0;
+                InputSystem.ReleasePointerCapture();
+                _isDraggingSelection = false;
+            }
+        }
+    }
+
+    public override void OnPointerMoved(PointerRoutedEventArgs e)
+    {
+        if (IsEnabled)
+        {
+            base.OnPointerMoved(e);
+            if (_isDraggingSelection)
+            {
+                float clickX = e.Position.X - Padding.Left;
+                int currentIdx = 0;
+                if (Font != null && !string.IsNullOrEmpty(Text))
+                {
+                    int bestIndex = 0;
+                    float bestDiff = float.PositiveInfinity;
+
+                    for (int i = 0; i <= Text.Length; i++)
+                    {
+                        string sub = Text.Substring(0, i);
+                        var layout = new TextLayout(sub, Font, FontSize, float.PositiveInfinity, TextAlignment.Left, null);
+                        float diff = Math.Abs(layout.MeasuredSize.X - clickX);
+                        if (diff < bestDiff)
+                        {
+                            bestDiff = diff;
+                            bestIndex = i;
+                        }
+                    }
+                    currentIdx = bestIndex;
+                }
+
+                SelectionStart = _selectionAnchor;
+                SelectionLength = currentIdx - _selectionAnchor;
+                CaretIndex = currentIdx;
             }
         }
     }
@@ -110,11 +318,24 @@ public class TextBox : Control
     {
         if (IsEnabled && IsFocused)
         {
-            // Insert character
+            if (char.IsControl(e.Character) && e.Character != '\n' && e.Character != '\r' && e.Character != '\t')
+            {
+                return;
+            }
+
+            SaveUndoState();
+
+            if (SelectionLength != 0)
+            {
+                DeleteSelection();
+            }
+
             string before = Text.Substring(0, CaretIndex);
             string after = Text.Substring(CaretIndex);
             Text = before + e.Character + after;
             CaretIndex++;
+            SelectionStart = CaretIndex;
+            SelectionLength = 0;
             e.Handled = true;
         }
         base.OnCharacterReceived(e);
@@ -124,51 +345,196 @@ public class TextBox : Control
     {
         if (IsEnabled && IsFocused)
         {
+            _pressedKeys.Add(e.Key);
+
+            bool isCtrlOrCmd = _pressedKeys.Contains(Key.ControlLeft) || 
+                               _pressedKeys.Contains(Key.ControlRight) || 
+                               _pressedKeys.Contains(Key.SuperLeft) || 
+                               _pressedKeys.Contains(Key.SuperRight);
+
+            bool isShift = _pressedKeys.Contains(Key.ShiftLeft) || 
+                           _pressedKeys.Contains(Key.ShiftRight);
+
+            if (isCtrlOrCmd)
+            {
+                if (e.Key == Key.A)
+                {
+                    SelectionStart = 0;
+                    SelectionLength = Text.Length;
+                    CaretIndex = Text.Length;
+                    e.Handled = true;
+                    return;
+                }
+                else if (e.Key == Key.C)
+                {
+                    string copyText = SelectedText;
+                    if (string.IsNullOrEmpty(copyText))
+                    {
+                        copyText = Text;
+                    }
+                    if (!string.IsNullOrEmpty(copyText))
+                    {
+                        ClipboardHelper.SetText(copyText);
+                    }
+                    e.Handled = true;
+                    return;
+                }
+                else if (e.Key == Key.X)
+                {
+                    string cutText = SelectedText;
+                    if (!string.IsNullOrEmpty(cutText))
+                    {
+                        ClipboardHelper.SetText(cutText);
+                        SaveUndoState();
+                        DeleteSelection();
+                    }
+                    e.Handled = true;
+                    return;
+                }
+                else if (e.Key == Key.V)
+                {
+                    string pasteText = ClipboardHelper.GetText();
+                    if (!string.IsNullOrEmpty(pasteText))
+                    {
+                        SaveUndoState();
+                        InsertText(pasteText);
+                    }
+                    e.Handled = true;
+                    return;
+                }
+                else if (e.Key == Key.Z)
+                {
+                    Undo();
+                    e.Handled = true;
+                    return;
+                }
+                else if (e.Key == Key.Y)
+                {
+                    Redo();
+                    e.Handled = true;
+                    return;
+                }
+            }
+
             if (e.Key == Key.Backspace)
             {
-                if (CaretIndex > 0)
+                if (SelectionLength != 0)
                 {
+                    SaveUndoState();
+                    DeleteSelection();
+                    e.Handled = true;
+                }
+                else if (CaretIndex > 0)
+                {
+                    SaveUndoState();
                     string before = Text.Substring(0, CaretIndex - 1);
                     string after = Text.Substring(CaretIndex);
                     Text = before + after;
                     CaretIndex--;
+                    SelectionStart = CaretIndex;
+                    SelectionLength = 0;
                     e.Handled = true;
                 }
             }
             else if (e.Key == Key.Delete)
             {
-                if (CaretIndex < Text.Length)
+                if (SelectionLength != 0)
                 {
+                    SaveUndoState();
+                    DeleteSelection();
+                    e.Handled = true;
+                }
+                else if (CaretIndex < Text.Length)
+                {
+                    SaveUndoState();
                     string before = Text.Substring(0, CaretIndex);
                     string after = Text.Substring(CaretIndex + 1);
                     Text = before + after;
+                    SelectionStart = CaretIndex;
+                    SelectionLength = 0;
                     e.Handled = true;
                 }
             }
             else if (e.Key == Key.Left)
             {
-                if (CaretIndex > 0)
+                if (isShift)
                 {
-                    CaretIndex--;
+                    SelectionLength--;
+                    CaretIndex = SelectionStart + SelectionLength;
+                    e.Handled = true;
+                }
+                else
+                {
+                    if (SelectionLength != 0)
+                    {
+                        int start = Math.Min(SelectionStart, SelectionStart + SelectionLength);
+                        SelectionStart = start;
+                        SelectionLength = 0;
+                        CaretIndex = start;
+                    }
+                    else if (CaretIndex > 0)
+                    {
+                        CaretIndex--;
+                        SelectionStart = CaretIndex;
+                        SelectionLength = 0;
+                    }
                     e.Handled = true;
                 }
             }
             else if (e.Key == Key.Right)
             {
-                if (CaretIndex < Text.Length)
+                if (isShift)
                 {
-                    CaretIndex++;
+                    SelectionLength++;
+                    CaretIndex = SelectionStart + SelectionLength;
+                    e.Handled = true;
+                }
+                else
+                {
+                    if (SelectionLength != 0)
+                    {
+                        int end = Math.Max(SelectionStart, SelectionStart + SelectionLength);
+                        SelectionStart = end;
+                        SelectionLength = 0;
+                        CaretIndex = end;
+                    }
+                    else if (CaretIndex < Text.Length)
+                    {
+                        CaretIndex++;
+                        SelectionStart = CaretIndex;
+                        SelectionLength = 0;
+                    }
                     e.Handled = true;
                 }
             }
             else if (e.Key == Key.Home)
             {
-                CaretIndex = 0;
+                if (isShift)
+                {
+                    SelectionLength = -SelectionStart;
+                    CaretIndex = 0;
+                }
+                else
+                {
+                    CaretIndex = 0;
+                    SelectionStart = 0;
+                    SelectionLength = 0;
+                }
                 e.Handled = true;
             }
             else if (e.Key == Key.End)
             {
-                CaretIndex = Text.Length;
+                if (isShift)
+                {
+                    SelectionLength = Text.Length - SelectionStart;
+                    CaretIndex = Text.Length;
+                }
+                else
+                {
+                    CaretIndex = Text.Length;
+                    SelectionStart = Text.Length;
+                    SelectionLength = 0;
+                }
                 e.Handled = true;
             }
         }
@@ -192,6 +558,15 @@ public class TextBox : Control
         if (Font == null || CaretIndex <= 0 || string.IsNullOrEmpty(Text)) return Padding.Left;
         
         string substring = Text.Substring(0, Math.Min(CaretIndex, Text.Length));
+        var tempLayout = new TextLayout(substring, Font, FontSize, float.PositiveInfinity, TextAlignment.Left, null);
+        return Padding.Left + tempLayout.MeasuredSize.X;
+    }
+
+    private float GetXForIndex(int idx)
+    {
+        if (Font == null || idx <= 0 || string.IsNullOrEmpty(Text)) return Padding.Left;
+        int clampedIdx = Math.Clamp(idx, 0, Text.Length);
+        string substring = Text.Substring(0, clampedIdx);
         var tempLayout = new TextLayout(substring, Font, FontSize, float.PositiveInfinity, TextAlignment.Left, null);
         return Padding.Left + tempLayout.MeasuredSize.X;
     }
@@ -245,6 +620,17 @@ public class TextBox : Control
         float textY = (Size.Y - FontSize) / 2f;
         if (Font != null)
         {
+            // Draw selection background behind text if selection exists
+            int selStart = Math.Min(SelectionStart, SelectionStart + SelectionLength);
+            int selEnd = Math.Max(SelectionStart, SelectionStart + SelectionLength);
+            if (selEnd > selStart)
+            {
+                float x1 = GetXForIndex(selStart);
+                float x2 = GetXForIndex(selEnd);
+                Rect selRect = new Rect(x1, textY - 1f, x2 - x1, FontSize + 2f);
+                context.DrawRectangle(new SolidColorBrush(0x0078D440), null, selRect);
+            }
+
             if (string.IsNullOrEmpty(Text))
             {
                 // Draw placeholder
@@ -272,3 +658,4 @@ public class TextBox : Control
         base.OnRender(context);
     }
 }
+
