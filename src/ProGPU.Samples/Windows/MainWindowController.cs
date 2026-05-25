@@ -236,6 +236,7 @@ public static unsafe class MainWindowController
         var computeItem = new NavigationViewItem("Compute FX", "⚙", ComputeFxPage.Create());
         var motionAnimationsItem = new NavigationViewItem("Motion & Animations", "🎬", MotionAnimationsPage.Create());
         var advancedItem = new NavigationViewItem("Advanced Controls", "🛠", AdvancedControlsPage.Create());
+        var keyboardParityItem = new NavigationViewItem("Keyboard & Focus", "⌨️", KeyboardParityPage.Create());
         var compositorItem = new NavigationViewItem("Compositor API", "🎨", CompositorShowcasePage.Create());
         var splitViewItem = new NavigationViewItem("SplitView Layout", "🪟", SplitViewShowcasePage.Create());
         var imageRepeatItem = new NavigationViewItem("Image & Buttons", "🖼️", ImageRepeatShowcasePage.Create());
@@ -255,6 +256,7 @@ public static unsafe class MainWindowController
         AppState._navigationView.MenuItems.Add(computeItem);
         AppState._navigationView.MenuItems.Add(motionAnimationsItem);
         AppState._navigationView.MenuItems.Add(advancedItem);
+        AppState._navigationView.MenuItems.Add(keyboardParityItem);
         AppState._navigationView.MenuItems.Add(compositorItem);
         AppState._navigationView.MenuItems.Add(splitViewItem);
         AppState._navigationView.MenuItems.Add(imageRepeatItem);

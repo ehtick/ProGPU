@@ -2,12 +2,19 @@ using System;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.Numerics;
+using Silk.NET.Input;
 using ProGPU.Layout;
 using ProGPU.Vector;
 using ProGPU.Scene;
 using ProGPU.Text;
 
 namespace ProGPU.WinUI;
+
+public class TabAcceleratorEventArgs : EventArgs
+{
+    public string CommandName { get; set; } = string.Empty;
+    public string Message { get; set; } = string.Empty;
+}
 
 public class TabView : FrameworkElement
 {
@@ -32,6 +39,8 @@ public class TabView : FrameworkElement
     private readonly AddTabButton _addButton;
     private TabViewItem? _selectedItem;
     private TtfFont? _font;
+    private bool _isCtrlPressed;
+    private bool _isShiftPressed;
 
     public ObservableCollection<TabViewItem> TabItems { get; }
 
@@ -60,6 +69,7 @@ public class TabView : FrameworkElement
 
     public event EventHandler? SelectionChanged;
     public event EventHandler? TabAddRequested;
+    public event EventHandler<TabAcceleratorEventArgs>? TabAcceleratorTriggered;
 
     public TabView()
     {
@@ -242,5 +252,96 @@ public class TabView : FrameworkElement
         context.DrawRectangle(dividerBrush, null, new Rect(0f, headerH - 1f, Size.X, 1f));
 
         base.OnRender(context);
+    }
+
+    public void SelectNextTab()
+    {
+        if (TabItems.Count <= 1) return;
+        int idx = SelectedItem != null ? TabItems.IndexOf(SelectedItem) : -1;
+        int nextIdx = (idx + 1) % TabItems.Count;
+        SelectedItem = TabItems[nextIdx];
+        TabAcceleratorTriggered?.Invoke(this, new TabAcceleratorEventArgs { CommandName = "Ctrl+Tab", Message = "Selected next tab" });
+    }
+
+    public void SelectPreviousTab()
+    {
+        if (TabItems.Count <= 1) return;
+        int idx = SelectedItem != null ? TabItems.IndexOf(SelectedItem) : -1;
+        int prevIdx = (idx - 1 + TabItems.Count) % TabItems.Count;
+        SelectedItem = TabItems[prevIdx];
+        TabAcceleratorTriggered?.Invoke(this, new TabAcceleratorEventArgs { CommandName = "Ctrl+Shift+Tab", Message = "Selected previous tab" });
+    }
+
+    public void RequestAddTab()
+    {
+        TabAddRequested?.Invoke(this, EventArgs.Empty);
+        TabAcceleratorTriggered?.Invoke(this, new TabAcceleratorEventArgs { CommandName = "Ctrl+T", Message = "Added new tab" });
+    }
+
+    public void CloseSelectedTab()
+    {
+        if (SelectedItem != null)
+        {
+            var itemToRemove = SelectedItem;
+            TabItems.Remove(itemToRemove);
+            TabAcceleratorTriggered?.Invoke(this, new TabAcceleratorEventArgs { CommandName = "Ctrl+W", Message = $"Closed tab '{itemToRemove.HeaderText}'" });
+        }
+    }
+
+    public override void OnKeyDown(KeyRoutedEventArgs e)
+    {
+        if (e.Key == Key.ControlLeft || e.Key == Key.ControlRight || e.Key == Key.SuperLeft || e.Key == Key.SuperRight)
+        {
+            _isCtrlPressed = true;
+        }
+        else if (e.Key == Key.ShiftLeft || e.Key == Key.ShiftRight)
+        {
+            _isShiftPressed = true;
+        }
+
+        if (_isCtrlPressed)
+        {
+            if (e.Key == Key.Tab)
+            {
+                if (_isShiftPressed)
+                {
+                    SelectPreviousTab();
+                }
+                else
+                {
+                    SelectNextTab();
+                }
+                e.Handled = true;
+                return;
+            }
+            else if (e.Key == Key.T)
+            {
+                RequestAddTab();
+                e.Handled = true;
+                return;
+            }
+            else if (e.Key == Key.W)
+            {
+                CloseSelectedTab();
+                e.Handled = true;
+                return;
+            }
+        }
+
+        base.OnKeyDown(e);
+    }
+
+    public override void OnKeyUp(KeyRoutedEventArgs e)
+    {
+        if (e.Key == Key.ControlLeft || e.Key == Key.ControlRight || e.Key == Key.SuperLeft || e.Key == Key.SuperRight)
+        {
+            _isCtrlPressed = false;
+        }
+        else if (e.Key == Key.ShiftLeft || e.Key == Key.ShiftRight)
+        {
+            _isShiftPressed = false;
+        }
+
+        base.OnKeyUp(e);
     }
 }
