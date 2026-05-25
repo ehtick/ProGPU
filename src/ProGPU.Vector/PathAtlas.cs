@@ -47,6 +47,36 @@ public struct GpuPathSegment
     public uint Pad2;
 }
 
+public readonly struct PathCacheKey : IEquatable<PathCacheKey>
+{
+    public int ContentHash { get; }
+    public float Scale { get; }
+
+    public PathCacheKey(int contentHash, float scale)
+    {
+        ContentHash = contentHash;
+        Scale = scale;
+    }
+
+    public bool Equals(PathCacheKey other)
+    {
+        return ContentHash == other.ContentHash && Scale.Equals(other.Scale);
+    }
+
+    public override bool Equals(object? obj)
+    {
+        return obj is PathCacheKey other && Equals(other);
+    }
+
+    public override int GetHashCode()
+    {
+        return HashCode.Combine(ContentHash, Scale);
+    }
+
+    public static bool operator ==(PathCacheKey left, PathCacheKey right) => left.Equals(right);
+    public static bool operator !=(PathCacheKey left, PathCacheKey right) => !left.Equals(right);
+}
+
 public unsafe class PathAtlas : IDisposable
 {
     private readonly WgpuContext _context;
@@ -56,9 +86,17 @@ public unsafe class PathAtlas : IDisposable
     private uint _currentX = 2;
     private uint _currentY = 2;
     private uint _currentRowHeight = 0;
+    private uint _frameNumber = 0;
 
     public struct PathInfo
     {
+        public PathCacheKey Key;
+        public PathGeometry Geometry;
+        public float UnscaledMinX;
+        public float UnscaledMinY;
+        public float UnscaledMaxX;
+        public float UnscaledMaxY;
+
         public uint X;
         public uint Y;
         public uint Width;
@@ -67,10 +105,12 @@ public unsafe class PathAtlas : IDisposable
         public Vector2 TexCoordMax;
         public float MinX;
         public float MinY;
+        public uint LastUsedFrame;
     }
 
-    private readonly Dictionary<PathGeometry, PathInfo> _paths = new();
+    private readonly Dictionary<PathCacheKey, PathInfo> _paths = new();
     private readonly List<GpuBuffer> _tempBuffers = new();
+    private readonly List<PathInfo> _pendingPaths = new();
 
     private readonly RenderPipelineCache _pipelineCache;
     private readonly ComputePipeline* _computePipeline;
@@ -101,6 +141,48 @@ public unsafe class PathAtlas : IDisposable
     }
 
     private static uint DivRoundUp(uint value, uint divisor) => (value + divisor - 1) / divisor;
+
+    public static int ComputeHash(PathGeometry path)
+    {
+        if (path == null) return 0;
+        var hash = new HashCode();
+        foreach (var figure in path.Figures)
+        {
+            hash.Add(figure.StartPoint.X);
+            hash.Add(figure.StartPoint.Y);
+            hash.Add(figure.IsClosed);
+            hash.Add(figure.IsFilled);
+            hash.Add(figure.Segments.Count);
+            foreach (var segment in figure.Segments)
+            {
+                if (segment is LineSegment line)
+                {
+                    hash.Add(0); // Segment type: Line
+                    hash.Add(line.Point.X);
+                    hash.Add(line.Point.Y);
+                }
+                else if (segment is QuadraticBezierSegment quad)
+                {
+                    hash.Add(1); // Segment type: Quadratic
+                    hash.Add(quad.ControlPoint.X);
+                    hash.Add(quad.ControlPoint.Y);
+                    hash.Add(quad.Point.X);
+                    hash.Add(quad.Point.Y);
+                }
+                else if (segment is CubicBezierSegment cubic)
+                {
+                    hash.Add(2); // Segment type: Cubic
+                    hash.Add(cubic.ControlPoint1.X);
+                    hash.Add(cubic.ControlPoint1.Y);
+                    hash.Add(cubic.ControlPoint2.X);
+                    hash.Add(cubic.ControlPoint2.Y);
+                    hash.Add(cubic.Point.X);
+                    hash.Add(cubic.Point.Y);
+                }
+            }
+        }
+        return hash.ToHashCode();
+    }
 
     public (GpuPathRecord[] Records, GpuPathSegment[] Segments) CompilePath(PathGeometry path, out float localMinX, out float localMinY, out float localMaxX, out float localMaxY)
     {
@@ -205,25 +287,121 @@ public unsafe class PathAtlas : IDisposable
         return (records, segments.ToArray());
     }
 
-    public PathInfo GetOrCreatePath(PathGeometry path)
+    private void RepackActivePaths()
+    {
+        var activePaths = new List<PathInfo>();
+        foreach (var kvp in _paths)
+        {
+            if (kvp.Value.LastUsedFrame == _frameNumber)
+            {
+                activePaths.Add(kvp.Value);
+            }
+        }
+
+        _paths.Clear();
+        _currentX = 2;
+        _currentY = 2;
+        _currentRowHeight = 0;
+
+        byte[] clearData = new byte[_atlasSize * _atlasSize * 4];
+        _atlasTexture.WritePixels(new ReadOnlySpan<byte>(clearData));
+
+        _pendingPaths.Clear();
+
+        foreach (var info in activePaths)
+        {
+            uint gW = info.Width;
+            uint gH = info.Height;
+
+            if (_currentX + gW + 2 > _atlasSize)
+            {
+                _currentX = 2;
+                _currentY += _currentRowHeight + 2;
+                _currentRowHeight = 0;
+            }
+
+            if (_currentY + gH + 2 > _atlasSize)
+            {
+                Console.WriteLine("[PathAtlas] Warning: Even active paths in the current frame exceed the atlas size during repack!");
+                break;
+            }
+
+            uint posX = _currentX;
+            uint posY = _currentY;
+
+            _currentX += gW + 2;
+            _currentRowHeight = Math.Max(_currentRowHeight, gH);
+
+            float texelSize = 1.0f / _atlasSize;
+            var newInfo = new PathInfo
+            {
+                Key = info.Key,
+                Geometry = info.Geometry,
+                UnscaledMinX = info.UnscaledMinX,
+                UnscaledMinY = info.UnscaledMinY,
+                UnscaledMaxX = info.UnscaledMaxX,
+                UnscaledMaxY = info.UnscaledMaxY,
+                X = posX,
+                Y = posY,
+                Width = gW,
+                Height = gH,
+                TexCoordMin = new Vector2(posX * texelSize, posY * texelSize),
+                TexCoordMax = new Vector2((posX + gW) * texelSize, (posY + gH) * texelSize),
+                MinX = info.MinX,
+                MinY = info.MinY,
+                LastUsedFrame = info.LastUsedFrame
+            };
+
+            _paths[newInfo.Key] = newInfo;
+            _pendingPaths.Add(newInfo);
+        }
+    }
+
+    public PathInfo GetOrCreatePath(PathGeometry path, float scale)
     {
         if (_isDisposed) throw new ObjectDisposedException(nameof(PathAtlas));
 
-        if (_paths.TryGetValue(path, out var info))
+        int contentHash = ComputeHash(path);
+        var key = new PathCacheKey(contentHash, scale);
+
+        if (_paths.TryGetValue(key, out var info))
         {
+            info.LastUsedFrame = _frameNumber;
+            _paths[key] = info;
             return info;
         }
 
-        var (records, segments) = CompilePath(path, out float minX, out float minY, out float maxX, out float maxY);
+        var (records, segments) = CompilePath(path, out float unscaledMinX, out float unscaledMinY, out float unscaledMaxX, out float unscaledMaxY);
 
         if (records.Length == 0 || segments.Length == 0)
         {
-            info = new PathInfo { X = 0, Y = 0, Width = 0, Height = 0, TexCoordMin = Vector2.Zero, TexCoordMax = Vector2.Zero, MinX = 0f, MinY = 0f };
-            _paths[path] = info;
+            info = new PathInfo
+            {
+                Key = key,
+                Geometry = path,
+                UnscaledMinX = 0f,
+                UnscaledMinY = 0f,
+                UnscaledMaxX = 0f,
+                UnscaledMaxY = 0f,
+                X = 0,
+                Y = 0,
+                Width = 0,
+                Height = 0,
+                TexCoordMin = Vector2.Zero,
+                TexCoordMax = Vector2.Zero,
+                MinX = 0f,
+                MinY = 0f,
+                LastUsedFrame = _frameNumber
+            };
+            _paths[key] = info;
             return info;
         }
 
-        // Bounding box padding for anti-aliasing
+        float minX = unscaledMinX * scale;
+        float minY = unscaledMinY * scale;
+        float maxX = unscaledMaxX * scale;
+        float maxY = unscaledMaxY * scale;
+
         int padding = 4;
         int xStart = (int)Math.Floor(minX) - padding;
         int xEnd = (int)Math.Ceiling(maxX) + padding;
@@ -235,8 +413,25 @@ public unsafe class PathAtlas : IDisposable
 
         if (width <= 0 || height <= 0)
         {
-            info = new PathInfo { X = 0, Y = 0, Width = 0, Height = 0, TexCoordMin = Vector2.Zero, TexCoordMax = Vector2.Zero, MinX = 0f, MinY = 0f };
-            _paths[path] = info;
+            info = new PathInfo
+            {
+                Key = key,
+                Geometry = path,
+                UnscaledMinX = unscaledMinX,
+                UnscaledMinY = unscaledMinY,
+                UnscaledMaxX = unscaledMaxX,
+                UnscaledMaxY = unscaledMaxY,
+                X = 0,
+                Y = 0,
+                Width = 0,
+                Height = 0,
+                TexCoordMin = Vector2.Zero,
+                TexCoordMax = Vector2.Zero,
+                MinX = 0f,
+                MinY = 0f,
+                LastUsedFrame = _frameNumber
+            };
+            _paths[key] = info;
             return info;
         }
 
@@ -252,14 +447,40 @@ public unsafe class PathAtlas : IDisposable
 
         if (_currentY + gH + 2 > _atlasSize)
         {
-            Console.WriteLine("[PathAtlas] Warning: Texture Atlas is full! Clearing cache.");
-            _paths.Clear();
-            _currentX = 2;
-            _currentY = 2;
-            _currentRowHeight = 0;
+            Console.WriteLine("[PathAtlas] Texture Atlas is full! Repacking active paths...");
+            RepackActivePaths();
 
-            byte[] clearData = new byte[_atlasSize * _atlasSize * 4];
-            _atlasTexture.WritePixels(new ReadOnlySpan<byte>(clearData));
+            if (_currentX + gW + 2 > _atlasSize)
+            {
+                _currentX = 2;
+                _currentY += _currentRowHeight + 2;
+                _currentRowHeight = 0;
+            }
+
+            if (_currentY + gH + 2 > _atlasSize)
+            {
+                Console.WriteLine("[PathAtlas] Warning: Even active paths exceed atlas size after repack!");
+                info = new PathInfo
+                {
+                    Key = key,
+                    Geometry = path,
+                    UnscaledMinX = unscaledMinX,
+                    UnscaledMinY = unscaledMinY,
+                    UnscaledMaxX = unscaledMaxX,
+                    UnscaledMaxY = unscaledMaxY,
+                    X = 0,
+                    Y = 0,
+                    Width = 0,
+                    Height = 0,
+                    TexCoordMin = Vector2.Zero,
+                    TexCoordMax = Vector2.Zero,
+                    MinX = 0f,
+                    MinY = 0f,
+                    LastUsedFrame = _frameNumber
+                };
+                _paths[key] = info;
+                return info;
+            }
         }
 
         uint posX = _currentX;
@@ -268,94 +489,15 @@ public unsafe class PathAtlas : IDisposable
         _currentX += gW + 2;
         _currentRowHeight = Math.Max(_currentRowHeight, gH);
 
-        // Upload records and segments
-        var recordsBuffer = new GpuBuffer(
-            _context,
-            (uint)(records.Length * Marshal.SizeOf<GpuPathRecord>()),
-            BufferUsage.Storage | BufferUsage.CopyDst,
-            "Path Records Buffer"
-        );
-        recordsBuffer.Write(new ReadOnlySpan<GpuPathRecord>(records));
-        _tempBuffers.Add(recordsBuffer);
-
-        var segmentsBuffer = new GpuBuffer(
-            _context,
-            (uint)(segments.Length * Marshal.SizeOf<GpuPathSegment>()),
-            BufferUsage.Storage | BufferUsage.CopyDst,
-            "Path Segments Buffer"
-        );
-        segmentsBuffer.Write(new ReadOnlySpan<GpuPathSegment>(segments));
-        _tempBuffers.Add(segmentsBuffer);
-
-        var uniforms = new PathUniforms
-        {
-            XStart = xStart,
-            YStart = yStart,
-            Scale = 1.0f,
-            PathIndex = 0,
-            AtlasX = posX,
-            AtlasY = posY,
-            Width = gW,
-            Height = gH
-        };
-
-        var uniformsBuffer = new GpuBuffer(
-            _context,
-            (uint)Marshal.SizeOf<PathUniforms>(),
-            BufferUsage.Uniform | BufferUsage.CopyDst,
-            "Path Uniforms Buffer"
-        );
-        uniformsBuffer.WriteSingle(uniforms);
-        _tempBuffers.Add(uniformsBuffer);
-
-        // Get bind group layout and dispatch compute shader
-        var bindGroupLayout = _context.Wgpu.ComputePipelineGetBindGroupLayout(_computePipeline, 0);
-
-        var entries = stackalloc BindGroupEntry[4];
-        entries[0] = new BindGroupEntry { Binding = 0, Buffer = uniformsBuffer.BufferPtr, Offset = 0, Size = uniformsBuffer.Size };
-        entries[1] = new BindGroupEntry { Binding = 1, Buffer = recordsBuffer.BufferPtr, Offset = 0, Size = recordsBuffer.Size };
-        entries[2] = new BindGroupEntry { Binding = 2, Buffer = segmentsBuffer.BufferPtr, Offset = 0, Size = segmentsBuffer.Size };
-        entries[3] = new BindGroupEntry { Binding = 3, TextureView = _atlasTexture.ViewPtr };
-
-        var bgDesc = new BindGroupDescriptor
-        {
-            Layout = bindGroupLayout,
-            EntryCount = 4,
-            Entries = entries
-        };
-        var bg = _context.Wgpu.DeviceCreateBindGroup(_context.Device, &bgDesc);
-
-        var encoderDesc = new CommandEncoderDescriptor { Label = (byte*)SilkMarshal.StringToPtr("Path Rasterizer Encoder") };
-        var encoder = _context.Wgpu.DeviceCreateCommandEncoder(_context.Device, &encoderDesc);
-        SilkMarshal.Free((nint)encoderDesc.Label);
-
-        var passDesc = new ComputePassDescriptor();
-        var pass = _context.Wgpu.CommandEncoderBeginComputePass(encoder, &passDesc);
-
-        _context.Wgpu.ComputePassEncoderSetPipeline(pass, _computePipeline);
-        _context.Wgpu.ComputePassEncoderSetBindGroup(pass, 0, bg, 0, null);
-
-        uint workgroupsX = DivRoundUp(gW, 16);
-        uint workgroupsY = DivRoundUp(gH, 16);
-        _context.Wgpu.ComputePassEncoderDispatchWorkgroups(pass, workgroupsX, workgroupsY, 1);
-
-        _context.Wgpu.ComputePassEncoderEnd(pass);
-        _context.Wgpu.ComputePassEncoderRelease(pass);
-
-        var cmdDesc = new CommandBufferDescriptor { Label = (byte*)SilkMarshal.StringToPtr("Path Rasterizer Command Buffer") };
-        var cmdBuffer = _context.Wgpu.CommandEncoderFinish(encoder, &cmdDesc);
-        SilkMarshal.Free((nint)cmdDesc.Label);
-
-        _context.Wgpu.QueueSubmit(_context.Queue, 1, &cmdBuffer);
-
-        _context.Wgpu.CommandBufferRelease(cmdBuffer);
-        _context.Wgpu.CommandEncoderRelease(encoder);
-        _context.Wgpu.BindGroupRelease(bg);
-        _context.Wgpu.BindGroupLayoutRelease(bindGroupLayout);
-
         float texelSize = 1.0f / _atlasSize;
         info = new PathInfo
         {
+            Key = key,
+            Geometry = path,
+            UnscaledMinX = unscaledMinX,
+            UnscaledMinY = unscaledMinY,
+            UnscaledMaxX = unscaledMaxX,
+            UnscaledMaxY = unscaledMaxY,
             X = posX,
             Y = posY,
             Width = gW,
@@ -363,15 +505,140 @@ public unsafe class PathAtlas : IDisposable
             TexCoordMin = new Vector2(posX * texelSize, posY * texelSize),
             TexCoordMax = new Vector2((posX + gW) * texelSize, (posY + gH) * texelSize),
             MinX = xStart,
-            MinY = yStart
+            MinY = yStart,
+            LastUsedFrame = _frameNumber
         };
 
-        _paths[path] = info;
+        _paths[key] = info;
+        _pendingPaths.Add(info);
+
         return info;
+    }
+
+    public void RasterizePendingPaths()
+    {
+        if (_isDisposed) throw new ObjectDisposedException(nameof(PathAtlas));
+        if (_pendingPaths.Count == 0) return;
+
+        var encoderDesc = new CommandEncoderDescriptor { Label = (byte*)SilkMarshal.StringToPtr("Path Batch Rasterizer Encoder") };
+        var encoder = _context.Wgpu.DeviceCreateCommandEncoder(_context.Device, &encoderDesc);
+        SilkMarshal.Free((nint)encoderDesc.Label);
+
+        var passDesc = new ComputePassDescriptor();
+        var pass = _context.Wgpu.CommandEncoderBeginComputePass(encoder, &passDesc);
+
+        _context.Wgpu.ComputePassEncoderSetPipeline(pass, _computePipeline);
+
+        var entries = stackalloc BindGroupEntry[4];
+        var bindGroupsToRelease = new List<nint>();
+        var layoutsToRelease = new List<nint>();
+
+        foreach (var info in _pendingPaths)
+        {
+            if (info.Width == 0 || info.Height == 0) continue;
+
+            var (records, segments) = CompilePath(info.Geometry, out _, out _, out _, out _);
+            if (records.Length == 0 || segments.Length == 0) continue;
+
+            int padding = 4;
+            float scale = info.Key.Scale;
+            float minX = info.UnscaledMinX * scale;
+            float minY = info.UnscaledMinY * scale;
+
+            int xStart = (int)Math.Floor(minX) - padding;
+            int yStart = (int)Math.Floor(minY) - padding;
+
+            var recordsBuffer = new GpuBuffer(
+                _context,
+                (uint)(records.Length * Marshal.SizeOf<GpuPathRecord>()),
+                BufferUsage.Storage | BufferUsage.CopyDst,
+                "Path Records Buffer"
+            );
+            recordsBuffer.Write(new ReadOnlySpan<GpuPathRecord>(records));
+            _tempBuffers.Add(recordsBuffer);
+
+            var segmentsBuffer = new GpuBuffer(
+                _context,
+                (uint)(segments.Length * Marshal.SizeOf<GpuPathSegment>()),
+                BufferUsage.Storage | BufferUsage.CopyDst,
+                "Path Segments Buffer"
+            );
+            segmentsBuffer.Write(new ReadOnlySpan<GpuPathSegment>(segments));
+            _tempBuffers.Add(segmentsBuffer);
+
+            var uniforms = new PathUniforms
+            {
+                XStart = xStart,
+                YStart = yStart,
+                Scale = scale,
+                PathIndex = 0,
+                AtlasX = info.X,
+                AtlasY = info.Y,
+                Width = info.Width,
+                Height = info.Height
+            };
+
+            var uniformsBuffer = new GpuBuffer(
+                _context,
+                (uint)Marshal.SizeOf<PathUniforms>(),
+                BufferUsage.Uniform | BufferUsage.CopyDst,
+                "Path Uniforms Buffer"
+            );
+            uniformsBuffer.WriteSingle(uniforms);
+            _tempBuffers.Add(uniformsBuffer);
+
+            var bindGroupLayout = _context.Wgpu.ComputePipelineGetBindGroupLayout(_computePipeline, 0);
+
+            entries[0] = new BindGroupEntry { Binding = 0, Buffer = uniformsBuffer.BufferPtr, Offset = 0, Size = uniformsBuffer.Size };
+            entries[1] = new BindGroupEntry { Binding = 1, Buffer = recordsBuffer.BufferPtr, Offset = 0, Size = recordsBuffer.Size };
+            entries[2] = new BindGroupEntry { Binding = 2, Buffer = segmentsBuffer.BufferPtr, Offset = 0, Size = segmentsBuffer.Size };
+            entries[3] = new BindGroupEntry { Binding = 3, TextureView = _atlasTexture.ViewPtr };
+
+            var bgDesc = new BindGroupDescriptor
+            {
+                Layout = bindGroupLayout,
+                EntryCount = 4,
+                Entries = entries
+            };
+            var bg = _context.Wgpu.DeviceCreateBindGroup(_context.Device, &bgDesc);
+
+            _context.Wgpu.ComputePassEncoderSetBindGroup(pass, 0, bg, 0, null);
+
+            uint workgroupsX = DivRoundUp(info.Width, 16);
+            uint workgroupsY = DivRoundUp(info.Height, 16);
+            _context.Wgpu.ComputePassEncoderDispatchWorkgroups(pass, workgroupsX, workgroupsY, 1);
+
+            bindGroupsToRelease.Add((nint)bg);
+            layoutsToRelease.Add((nint)bindGroupLayout);
+        }
+
+        _context.Wgpu.ComputePassEncoderEnd(pass);
+        _context.Wgpu.ComputePassEncoderRelease(pass);
+
+        var cmdDesc = new CommandBufferDescriptor { Label = (byte*)SilkMarshal.StringToPtr("Path Batch Rasterizer Command Buffer") };
+        var cmdBuffer = _context.Wgpu.CommandEncoderFinish(encoder, &cmdDesc);
+        SilkMarshal.Free((nint)cmdDesc.Label);
+
+        _context.Wgpu.QueueSubmit(_context.Queue, 1, &cmdBuffer);
+
+        _context.Wgpu.CommandBufferRelease(cmdBuffer);
+        _context.Wgpu.CommandEncoderRelease(encoder);
+
+        foreach (var bgPtr in bindGroupsToRelease)
+        {
+            _context.Wgpu.BindGroupRelease((BindGroup*)bgPtr);
+        }
+        foreach (var layoutPtr in layoutsToRelease)
+        {
+            _context.Wgpu.BindGroupLayoutRelease((BindGroupLayout*)layoutPtr);
+        }
+
+        _pendingPaths.Clear();
     }
 
     public void CleanupFrame()
     {
+        _frameNumber++;
         foreach (var buffer in _tempBuffers)
         {
             buffer.Dispose();
@@ -387,6 +654,7 @@ public unsafe class PathAtlas : IDisposable
         _pipelineCache.Dispose();
         _atlasTexture.Dispose();
         _paths.Clear();
+        _pendingPaths.Clear();
 
         _isDisposed = true;
         GC.SuppressFinalize(this);
