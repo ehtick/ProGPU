@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Numerics;
 using Silk.NET.Input;
 using ProGPU.Layout;
@@ -32,6 +33,7 @@ public class PointerRoutedEventArgs : RoutedEventArgs
 
 public class FrameworkElement : LayoutNode
 {
+    public IList<KeyboardAccelerator> KeyboardAccelerators { get; } = new List<KeyboardAccelerator>();
     public string Name { get; set; } = string.Empty;
     public object? Tag { get; set; }
     public bool IsHitTestVisible { get; set; } = true;
@@ -198,3 +200,4 @@ public class FrameworkElement : LayoutNode
         }
     }
 }
+
