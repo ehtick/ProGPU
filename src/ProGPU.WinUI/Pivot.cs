@@ -375,4 +375,27 @@ public class Pivot : FrameworkElement
 
         base.OnRender(context);
     }
+
+    public override void OnKeyDown(KeyRoutedEventArgs e)
+    {
+        if (e.Key == Silk.NET.Input.Key.Left)
+        {
+            if (Items.Count > 0)
+            {
+                SelectedIndex = (SelectedIndex - 1 + Items.Count) % Items.Count;
+            }
+            e.Handled = true;
+            return;
+        }
+        else if (e.Key == Silk.NET.Input.Key.Right)
+        {
+            if (Items.Count > 0)
+            {
+                SelectedIndex = (SelectedIndex + 1) % Items.Count;
+            }
+            e.Handled = true;
+            return;
+        }
+        base.OnKeyDown(e);
+    }
 }

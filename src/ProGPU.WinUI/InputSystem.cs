@@ -15,6 +15,8 @@ public class WindowInputState
     public Vector2 LastMousePos;
     public FrameworkElement? CapturedElement;
     public bool IsShiftPressed;
+    public bool IsControlPressed;
+    public bool IsAltPressed;
     public bool IsKeyboardFocusActive;
     public System.Threading.CancellationTokenSource? HoverCancellation;
     public ToolTip? ActiveToolTip;
@@ -38,6 +40,8 @@ public static class InputSystem
     private static Vector2 _lastMousePos { get => Current.LastMousePos; set => Current.LastMousePos = value; }
     private static FrameworkElement? _capturedElement { get => Current.CapturedElement; set => Current.CapturedElement = value; }
     private static bool _isShiftPressed { get => Current.IsShiftPressed; set => Current.IsShiftPressed = value; }
+    private static bool _isControlPressed { get => Current.IsControlPressed; set => Current.IsControlPressed = value; }
+    private static bool _isAltPressed { get => Current.IsAltPressed; set => Current.IsAltPressed = value; }
     private static System.Threading.CancellationTokenSource? _hoverCancellation { get => Current.HoverCancellation; set => Current.HoverCancellation = value; }
     private static ToolTip? _activeToolTip { get => Current.ActiveToolTip; set => Current.ActiveToolTip = value; }
     private static FrameworkElement? _hoveredElementForTimer { get => Current.HoveredElementForTimer; set => Current.HoveredElementForTimer = value; }
@@ -126,10 +130,16 @@ public static class InputSystem
         {
             keyboard.KeyDown += (kb, key, code) => {
                 _currentState = state;
+                if (key == Key.ShiftLeft || key == Key.ShiftRight) state.IsShiftPressed = true;
+                if (key == Key.ControlLeft || key == Key.ControlRight) state.IsControlPressed = true;
+                if (key == Key.AltLeft || key == Key.AltRight) state.IsAltPressed = true;
                 OnKeyDown(key);
             };
             keyboard.KeyUp += (kb, key, code) => {
                 _currentState = state;
+                if (key == Key.ShiftLeft || key == Key.ShiftRight) state.IsShiftPressed = false;
+                if (key == Key.ControlLeft || key == Key.ControlRight) state.IsControlPressed = false;
+                if (key == Key.AltLeft || key == Key.AltRight) state.IsAltPressed = false;
                 OnKeyUp(key);
             };
             keyboard.KeyChar += (kb, c) => {
@@ -441,6 +451,47 @@ public static class InputSystem
         }
     }
 
+    public static bool TryInvokeKeyboardAccelerator(Key key, VirtualKeyModifiers modifiers)
+    {
+        var current = _focusedElement;
+        bool visitedRoot = false;
+        while (current != null)
+        {
+            if (current == _root)
+            {
+                visitedRoot = true;
+            }
+            foreach (var accelerator in current.KeyboardAccelerators)
+            {
+                if (accelerator.Key == key && accelerator.Modifiers == modifiers)
+                {
+                    if (accelerator.Invoke(current))
+                    {
+                        return true;
+                    }
+                }
+            }
+            current = current.Parent as FrameworkElement;
+        }
+
+        // fallback to root itself if we haven't checked it
+        if (!visitedRoot && _root != null)
+        {
+            foreach (var accelerator in _root.KeyboardAccelerators)
+            {
+                if (accelerator.Key == key && accelerator.Modifiers == modifiers)
+                {
+                    if (accelerator.Invoke(_root))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
     private static void OnKeyDown(Key key)
     {
         _hoverCancellation?.Cancel();
@@ -457,6 +508,26 @@ public static class InputSystem
         {
             _isShiftPressed = true;
         }
+        if (key == Key.ControlLeft || key == Key.ControlRight)
+        {
+            _isControlPressed = true;
+        }
+        if (key == Key.AltLeft || key == Key.AltRight)
+        {
+            _isAltPressed = true;
+        }
+
+        // Assemble active VirtualKeyModifiers
+        VirtualKeyModifiers modifiers = VirtualKeyModifiers.None;
+        if (_isShiftPressed) modifiers |= VirtualKeyModifiers.Shift;
+        if (_isControlPressed) modifiers |= VirtualKeyModifiers.Control;
+        if (_isAltPressed) modifiers |= VirtualKeyModifiers.Menu;
+
+        // Try keyboard accelerators
+        if (TryInvokeKeyboardAccelerator(key, modifiers))
+        {
+            return;
+        }
 
         if (key == Key.Tab)
         {
@@ -464,9 +535,32 @@ public static class InputSystem
             return;
         }
 
+        bool handled = false;
         if (_focusedElement != null)
         {
-            _focusedElement.OnKeyDown(new KeyRoutedEventArgs { Key = key });
+            var e = new KeyRoutedEventArgs { Key = key };
+            _focusedElement.OnKeyDown(e);
+            handled = e.Handled;
+        }
+
+        if (!handled)
+        {
+            if (key == Key.Up)
+            {
+                FocusManager.TryMoveFocus(FocusNavigationDirection.Up);
+            }
+            else if (key == Key.Down)
+            {
+                FocusManager.TryMoveFocus(FocusNavigationDirection.Down);
+            }
+            else if (key == Key.Left)
+            {
+                FocusManager.TryMoveFocus(FocusNavigationDirection.Left);
+            }
+            else if (key == Key.Right)
+            {
+                FocusManager.TryMoveFocus(FocusNavigationDirection.Right);
+            }
         }
     }
 
@@ -475,6 +569,14 @@ public static class InputSystem
         if (key == Key.ShiftLeft || key == Key.ShiftRight)
         {
             _isShiftPressed = false;
+        }
+        if (key == Key.ControlLeft || key == Key.ControlRight)
+        {
+            _isControlPressed = false;
+        }
+        if (key == Key.AltLeft || key == Key.AltRight)
+        {
+            _isAltPressed = false;
         }
 
         if (_focusedElement != null)
@@ -607,3 +709,4 @@ public static class InputSystem
         }
     }
 }
+

@@ -168,4 +168,15 @@ public class Button : Control
 
         base.OnRender(context);
     }
+
+    public override void OnKeyDown(KeyRoutedEventArgs e)
+    {
+        if (IsEnabled && (e.Key == Silk.NET.Input.Key.Space || e.Key == Silk.NET.Input.Key.Enter))
+        {
+            Click?.Invoke(this, EventArgs.Empty);
+            e.Handled = true;
+            return;
+        }
+        base.OnKeyDown(e);
+    }
 }
