@@ -177,6 +177,7 @@ public unsafe class Compositor : IDisposable
 
     public static float DefaultTextGamma = 1.43f;
     public static float DefaultTextContrast = 1.15f;
+    public static bool IsCacheAsLayerEnabled { get; set; } = true;
 
     public int VectorVertexCount => _vectorVerticesList.Count;
     public int VectorIndexCount => _vectorIndicesList.Count;
@@ -975,7 +976,7 @@ public unsafe class Compositor : IDisposable
             return;
         }
 
-        if (node.CacheAsLayer && !_elementsRenderingLayers.Contains(node))
+        if (node.CacheAsLayer && IsCacheAsLayerEnabled && !_elementsRenderingLayers.Contains(node))
         {
             ApplyAndDrawLayer(node, parentTransform);
             return;

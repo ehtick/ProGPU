@@ -431,5 +431,55 @@ public class SamplePagesTests
         var drawCalls = (System.Collections.IList?)drawCallsField?.GetValue(compositor);
         return drawCalls?.Count ?? 0;
     }
+
+    [Fact]
+    public void Test_Compositor_IsCacheAsLayerEnabled_Global_Setting()
+    {
+        EnsureFontsAndStateLoaded();
+
+        var nav = new NavigationView
+        {
+            Font = AppState._font,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch
+        };
+        var basicInputItem = new NavigationViewItem("Basic Input", "🖱", BasicInputPage.Create());
+        nav.MenuItems.Add(basicInputItem);
+
+        var window = HeadlessWindow.Shared;
+        window.Resize(1280, 800);
+        window.Content = nav;
+
+        var panePanelField = typeof(NavigationView).GetField("_panePanel", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var panePanel = (Visual?)panePanelField?.GetValue(nav);
+        Assert.NotNull(panePanel);
+
+        // Ensure panePanel has CacheAsLayer = true
+        panePanel.CacheAsLayer = true;
+
+        // --- Test 1: Global setting is ENABLED (default) ---
+        Compositor.IsCacheAsLayerEnabled = true;
+        panePanel.IsDirty = true;
+        window.Render();
+        panePanel.IsDirty = false;
+        window.Render();
+
+        // Cached texture draw call should be compiled (resulting in texture vertices)
+        int cachedTextureVertices = window.Compositor.TextureVertexCount;
+        Assert.True(cachedTextureVertices > 0, "Texture vertices should be greater than 0 when CacheAsLayer is globally enabled.");
+
+        // --- Test 2: Global setting is DISABLED ---
+        Compositor.IsCacheAsLayerEnabled = false;
+        panePanel.IsDirty = true;
+        window.Render();
+
+        // No texture draw calls should be compiled for the cached layer
+        int disabledTextureVertices = window.Compositor.TextureVertexCount;
+        Assert.Equal(0, disabledTextureVertices);
+
+        // Restore global setting to default
+        Compositor.IsCacheAsLayerEnabled = true;
+        window.Content = null;
+    }
 }
 
