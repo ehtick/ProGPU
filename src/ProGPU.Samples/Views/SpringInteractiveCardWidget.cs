@@ -107,6 +107,14 @@ public class SpringInteractiveCardWidget : Border, IAnimatedElement
         _springY.Update(delta);
 
         Vector2 size = _widgetCard.Size;
+        if (size.X <= 0f || size.Y <= 0f || float.IsNaN(size.X) || float.IsNaN(size.Y))
+        {
+            float w = _widgetCard.Width;
+            float h = _widgetCard.Height;
+            if (float.IsNaN(w) || w <= 0f) w = 60f;
+            if (float.IsNaN(h) || h <= 0f) h = 60f;
+            size = new Vector2(w, h);
+        }
         Vector2 center = size / 2f;
 
         float sx = _springX.CurrentValue;

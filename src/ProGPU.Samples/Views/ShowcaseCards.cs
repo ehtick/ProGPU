@@ -246,6 +246,14 @@ public class SpringWobbleShowcaseCard : Border, IAnimatedElement
         _springY.Update(delta);
 
         Vector2 size = _wobbleCard.Size;
+        if (size.X <= 0f || size.Y <= 0f || float.IsNaN(size.X) || float.IsNaN(size.Y))
+        {
+            float w = _wobbleCard.Width;
+            float h = _wobbleCard.Height;
+            if (float.IsNaN(w) || w <= 0f) w = 120f;
+            if (float.IsNaN(h) || h <= 0f) h = 80f;
+            size = new Vector2(w, h);
+        }
         Vector2 center = size / 2f;
 
         float sx = _springX.CurrentValue;
@@ -340,6 +348,14 @@ public class ExpressionTrackingShowcaseCard : Border, IAnimatedElement
         float rotation = _rotationExpression.Evaluate();
 
         Vector2 size = _trackingCard.Size;
+        if (size.X <= 0f || size.Y <= 0f || float.IsNaN(size.X) || float.IsNaN(size.Y))
+        {
+            float w = _trackingCard.Width;
+            float h = _trackingCard.Height;
+            if (float.IsNaN(w) || w <= 0f) w = 100f;
+            if (float.IsNaN(h) || h <= 0f) h = 80f;
+            size = new Vector2(w, h);
+        }
         Vector2 center = size / 2f;
 
         var transform = Matrix4x4.CreateTranslation(-center.X, -center.Y, 0)
