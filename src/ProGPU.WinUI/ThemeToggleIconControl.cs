@@ -16,15 +16,9 @@ public class ThemeToggleIconControl : Control
 {
     public ThemeToggleIconControl()
     {
-        ThemeManager.ThemeChanged += OnThemeChanged;
         WidthConstraint = 20f;
         HeightConstraint = 20f;
         Margin = new Thickness(0, 0, 0, 0);
-    }
-
-    private void OnThemeChanged()
-    {
-        Invalidate();
     }
 
     protected override Vector2 MeasureOverride(Vector2 availableSize)

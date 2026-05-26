@@ -222,6 +222,7 @@ public partial class FrameworkElement
 
     private void ApplyStyle()
     {
+        ClearStyleValues();
         if (_style == null) return;
         if (!_style.TargetType.IsAssignableFrom(GetType())) return;
 
@@ -229,32 +230,43 @@ public partial class FrameworkElement
         {
             if (string.IsNullOrEmpty(setter.Property)) continue;
 
-            var prop = GetType().GetProperty(setter.Property);
-            if (prop != null && prop.CanWrite)
+            var dp = DependencyProperty.Lookup(GetType(), setter.Property);
+            if (dp != null)
             {
-                try
+                var val = setter.Value;
+                if (val is StaticResourceRef staticRef)
                 {
-                    var convertedValue = ConvertValue(prop.PropertyType, setter.Value);
-                    prop.SetValue(this, convertedValue);
+                    val = new ThemeResource(staticRef.ResourceKey);
                 }
-                catch (Exception ex)
+
+                if (val is ThemeResource themeResource)
                 {
-                    Console.WriteLine($"Error applying style property '{setter.Property}' on {GetType().Name}: {ex.Message}");
+                    SetStyleValue(dp, themeResource);
+                }
+                else
+                {
+                    var converted = ConvertValue(dp.PropertyType, val);
+                    SetStyleValue(dp, converted);
                 }
             }
             else
             {
-                var field = GetType().GetField(setter.Property);
-                if (field != null)
+                var prop = GetType().GetProperty(setter.Property, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
+                if (prop != null && prop.CanWrite)
                 {
                     try
                     {
-                        var convertedValue = ConvertValue(field.FieldType, setter.Value);
-                        field.SetValue(this, convertedValue);
+                        var val = setter.Value;
+                        if (val is StaticResourceRef staticRef)
+                        {
+                            val = ThemeManager.GetResource(staticRef.ResourceKey);
+                        }
+                        var convertedValue = ConvertValue(prop.PropertyType, val);
+                        prop.SetValue(this, convertedValue);
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"Error applying style field '{setter.Property}' on {GetType().Name}: {ex.Message}");
+                        Console.WriteLine($"Error applying style property '{setter.Property}' on {GetType().Name}: {ex.Message}");
                     }
                 }
             }

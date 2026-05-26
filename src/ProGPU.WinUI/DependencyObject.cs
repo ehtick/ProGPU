@@ -49,48 +49,195 @@ public class DependencyPropertyChangedEventArgs
 public class DependencyProperty
 {
     private static readonly ConcurrentDictionary<(Type OwnerType, string Name), DependencyProperty> Registry = new();
+    private static readonly List<DependencyProperty> RegisteredProperties = new();
 
     public string Name { get; }
     public Type PropertyType { get; }
     public Type OwnerType { get; }
     public PropertyMetadata? Metadata { get; }
+    public int Index { get; }
 
-    private DependencyProperty(string name, Type propertyType, Type ownerType, PropertyMetadata? metadata)
+    private DependencyProperty(string name, Type propertyType, Type ownerType, PropertyMetadata? metadata, int index)
     {
         Name = name;
         PropertyType = propertyType;
         OwnerType = ownerType;
         Metadata = metadata;
+        Index = index;
     }
 
     public static DependencyProperty Register(string name, Type propertyType, Type ownerType, PropertyMetadata? typeMetadata)
     {
         var key = (ownerType, name);
-        var dp = new DependencyProperty(name, propertyType, ownerType, typeMetadata);
-        return Registry.GetOrAdd(key, dp);
+        if (Registry.TryGetValue(key, out var existing)) return existing;
+        
+        lock (RegisteredProperties)
+        {
+            if (Registry.TryGetValue(key, out existing)) return existing;
+            
+            int index = RegisteredProperties.Count;
+            var dp = new DependencyProperty(name, propertyType, ownerType, typeMetadata, index);
+            RegisteredProperties.Add(dp);
+            Registry.TryAdd(key, dp);
+            return dp;
+        }
+    }
+
+    public static DependencyProperty? Lookup(Type ownerType, string name)
+    {
+        var type = ownerType;
+        while (type != null)
+        {
+            var key = (type, name);
+            if (Registry.TryGetValue(key, out var dp)) return dp;
+            type = type.BaseType;
+        }
+        return null;
+    }
+
+    public static DependencyProperty? GetPropertyByIndex(int index)
+    {
+        lock (RegisteredProperties)
+        {
+            if (index >= 0 && index < RegisteredProperties.Count)
+            {
+                return RegisteredProperties[index];
+            }
+            return null;
+        }
     }
 }
 
 public class DependencyObject : ProGPU.Layout.LayoutNode
 {
-    private readonly Dictionary<DependencyProperty, object?> _localValues = new();
+    public const byte SourceDefault = 0;
+    public const byte SourceDefaultStyle = 1;
+    public const byte SourceStyle = 2;
+    public const byte SourceLocal = 3;
+
+    private object?[] _localValues = Array.Empty<object?>();
+    private object?[] _styleValues = Array.Empty<object?>();
+    private object?[] _defaultStyleValues = Array.Empty<object?>();
+    private object?[] _effectiveValues = Array.Empty<object?>();
+    private byte[] _valueSources = Array.Empty<byte>();
+
+    private ThemeResource?[] _localThemeResources = Array.Empty<ThemeResource?>();
+    private ThemeResource?[] _styleThemeResources = Array.Empty<ThemeResource?>();
+    private ThemeResource?[] _defaultStyleThemeResources = Array.Empty<ThemeResource?>();
+
+    private void EnsureSize(int index)
+    {
+        if (index >= _effectiveValues.Length)
+        {
+            int newSize = Math.Max(index + 1, _effectiveValues.Length * 2);
+            Array.Resize(ref _localValues, newSize);
+            Array.Resize(ref _styleValues, newSize);
+            Array.Resize(ref _defaultStyleValues, newSize);
+            Array.Resize(ref _effectiveValues, newSize);
+            
+            Array.Resize(ref _localThemeResources, newSize);
+            Array.Resize(ref _styleThemeResources, newSize);
+            Array.Resize(ref _defaultStyleThemeResources, newSize);
+            
+            int oldSize = _valueSources.Length;
+            Array.Resize(ref _valueSources, newSize);
+            for (int i = oldSize; i < newSize; i++)
+            {
+                _valueSources[i] = SourceDefault;
+            }
+        }
+    }
+
+    private bool _isThemeDirty = true;
+
+    public bool IsThemeDirty
+    {
+        get => _isThemeDirty;
+        set => _isThemeDirty = value;
+    }
+
+    public void NotifyThemeChanged()
+    {
+        _isThemeDirty = true;
+        
+        for (int i = 0; i < Children.Count; i++)
+        {
+            if (Children[i] is DependencyObject childDo)
+            {
+                childDo.NotifyThemeChanged();
+            }
+        }
+        
+        OnThemeChanged();
+    }
+
+    protected virtual void OnThemeChanged()
+    {
+        Invalidate();
+        InvalidateMeasure();
+    }
+
+    public void ReevaluateThemeResources()
+    {
+        _isThemeDirty = false;
+        
+        int len = _effectiveValues.Length;
+        for (int i = 0; i < len; i++)
+        {
+            bool hasThemeResource = false;
+            
+            if (i < _localThemeResources.Length && _localThemeResources[i] is ThemeResource localTr)
+            {
+                _localValues[i] = ThemeManager.GetResource(localTr.ResourceKey);
+                hasThemeResource = true;
+            }
+            if (i < _styleThemeResources.Length && _styleThemeResources[i] is ThemeResource styleTr)
+            {
+                _styleValues[i] = ThemeManager.GetResource(styleTr.ResourceKey);
+                hasThemeResource = true;
+            }
+            if (i < _defaultStyleThemeResources.Length && _defaultStyleThemeResources[i] is ThemeResource defaultStyleTr)
+            {
+                _defaultStyleValues[i] = ThemeManager.GetResource(defaultStyleTr.ResourceKey);
+                hasThemeResource = true;
+            }
+            
+            if (hasThemeResource)
+            {
+                var dp = DependencyProperty.GetPropertyByIndex(i);
+                if (dp != null)
+                {
+                    object? oldValue = _effectiveValues[i] ?? dp.Metadata?.DefaultValue;
+                    UpdateEffectiveValue(dp, i, oldValue);
+                }
+            }
+        }
+    }
 
     public object? GetValue(DependencyProperty dp)
     {
-        if (_localValues.TryGetValue(dp, out var localValue))
+        if (_isThemeDirty)
         {
-            return localValue;
+            ReevaluateThemeResources();
         }
 
-        // Handle value inheritance down the layout tree
+        int idx = dp.Index;
+        if (idx < _effectiveValues.Length)
+        {
+            var val = _effectiveValues[idx];
+            if (val != null) return val;
+        }
+
         if (dp.Metadata?.IsInheritable == true)
         {
             var p = Parent as DependencyObject;
             while (p != null)
             {
-                if (p._localValues.TryGetValue(dp, out var parentValue))
+                int pIdx = dp.Index;
+                if (pIdx < p._effectiveValues.Length)
                 {
-                    return parentValue;
+                    var parentVal = p._effectiveValues[pIdx];
+                    if (parentVal != null) return parentVal;
                 }
                 p = p.Parent as DependencyObject;
             }
@@ -101,24 +248,179 @@ public class DependencyObject : ProGPU.Layout.LayoutNode
 
     public void SetValue(DependencyProperty dp, object? value)
     {
+        int idx = dp.Index;
+        EnsureSize(idx);
+
         object? oldValue = GetValue(dp);
-        if (!Equals(oldValue, value))
+        
+        if (value is ThemeResource themeResource)
         {
-            _localValues[dp] = value;
-            OnPropertyChanged(dp, oldValue, value);
+            _localThemeResources[idx] = themeResource;
+            var resolved = ThemeManager.GetResource(themeResource.ResourceKey);
+            _localValues[idx] = resolved;
         }
+        else
+        {
+            _localThemeResources[idx] = null;
+            _localValues[idx] = value;
+        }
+        
+        UpdateEffectiveValue(dp, idx, oldValue);
     }
 
     public void ClearValue(DependencyProperty dp)
     {
-        if (_localValues.ContainsKey(dp))
+        int idx = dp.Index;
+        if (idx < _localValues.Length)
         {
             object? oldValue = GetValue(dp);
-            _localValues.Remove(dp);
-            object? newValue = GetValue(dp);
-            if (!Equals(oldValue, newValue))
+            _localThemeResources[idx] = null;
+            _localValues[idx] = null;
+            UpdateEffectiveValue(dp, idx, oldValue);
+        }
+    }
+
+    public void SetStyleValue(DependencyProperty dp, object? value)
+    {
+        int idx = dp.Index;
+        EnsureSize(idx);
+        object? oldValue = GetValue(dp);
+        
+        if (value is ThemeResource themeResource)
+        {
+            _styleThemeResources[idx] = themeResource;
+            var resolved = ThemeManager.GetResource(themeResource.ResourceKey);
+            _styleValues[idx] = resolved;
+        }
+        else
+        {
+            _styleThemeResources[idx] = null;
+            _styleValues[idx] = value;
+        }
+        
+        UpdateEffectiveValue(dp, idx, oldValue);
+    }
+
+    public void ClearStyleValues()
+    {
+        for (int i = 0; i < _styleValues.Length; i++)
+        {
+            if (i < _styleValues.Length && (_styleValues[i] != null || _styleThemeResources[i] != null))
             {
-                OnPropertyChanged(dp, oldValue, newValue);
+                var dp = DependencyProperty.GetPropertyByIndex(i);
+                if (dp != null)
+                {
+                    object? oldValue = GetValue(dp);
+                    _styleThemeResources[i] = null;
+                    _styleValues[i] = null;
+                    UpdateEffectiveValue(dp, i, oldValue);
+                }
+            }
+        }
+    }
+
+    public void SetDefaultStyleValue(DependencyProperty dp, object? value)
+    {
+        int idx = dp.Index;
+        EnsureSize(idx);
+        object? oldValue = GetValue(dp);
+        
+        if (value is ThemeResource themeResource)
+        {
+            _defaultStyleThemeResources[idx] = themeResource;
+            var resolved = ThemeManager.GetResource(themeResource.ResourceKey);
+            _defaultStyleValues[idx] = resolved;
+        }
+        else
+        {
+            _defaultStyleThemeResources[idx] = null;
+            _defaultStyleValues[idx] = value;
+        }
+        
+        UpdateEffectiveValue(dp, idx, oldValue);
+    }
+
+    public void ClearDefaultStyleValues()
+    {
+        for (int i = 0; i < _defaultStyleValues.Length; i++)
+        {
+            if (i < _defaultStyleValues.Length && (_defaultStyleValues[i] != null || _defaultStyleThemeResources[i] != null))
+            {
+                var dp = DependencyProperty.GetPropertyByIndex(i);
+                if (dp != null)
+                {
+                    object? oldValue = GetValue(dp);
+                    _defaultStyleThemeResources[i] = null;
+                    _defaultStyleValues[i] = null;
+                    UpdateEffectiveValue(dp, i, oldValue);
+                }
+            }
+        }
+    }
+
+    private void UpdateEffectiveValue(DependencyProperty dp, int idx, object? oldValue)
+    {
+        object? newValue;
+        byte source;
+
+        if (_localValues[idx] != null)
+        {
+            newValue = _localValues[idx];
+            source = SourceLocal;
+        }
+        else if (_styleValues[idx] != null)
+        {
+            newValue = _styleValues[idx];
+            source = SourceStyle;
+        }
+        else if (_defaultStyleValues[idx] != null)
+        {
+            newValue = _defaultStyleValues[idx];
+            source = SourceDefaultStyle;
+        }
+        else
+        {
+            newValue = null;
+            source = SourceDefault;
+        }
+
+        _effectiveValues[idx] = newValue;
+        _valueSources[idx] = source;
+
+        var finalValue = newValue ?? dp.Metadata?.DefaultValue;
+        if (!Equals(oldValue, finalValue))
+        {
+            OnPropertyChanged(dp, oldValue, finalValue);
+        }
+    }
+
+    private long _nextToken = 1;
+    private Dictionary<DependencyProperty, List<(long Token, Action<DependencyObject, DependencyPropertyChangedEventArgs> Callback)>>? _propertyChangedCallbacks;
+
+    public long RegisterPropertyChangedCallback(DependencyProperty dp, Action<DependencyObject, DependencyPropertyChangedEventArgs> callback)
+    {
+        _propertyChangedCallbacks ??= new Dictionary<DependencyProperty, List<(long, Action<DependencyObject, DependencyPropertyChangedEventArgs>)>>();
+        if (!_propertyChangedCallbacks.TryGetValue(dp, out var list))
+        {
+            list = new List<(long, Action<DependencyObject, DependencyPropertyChangedEventArgs>)>();
+            _propertyChangedCallbacks[dp] = list;
+        }
+        long token = _nextToken++;
+        list.Add((token, callback));
+        return token;
+    }
+
+    public void UnregisterPropertyChangedCallback(DependencyProperty dp, long token)
+    {
+        if (_propertyChangedCallbacks != null && _propertyChangedCallbacks.TryGetValue(dp, out var list))
+        {
+            for (int i = 0; i < list.Count; i++)
+            {
+                if (list[i].Token == token)
+                {
+                    list.RemoveAt(i);
+                    break;
+                }
             }
         }
     }
@@ -126,6 +428,16 @@ public class DependencyObject : ProGPU.Layout.LayoutNode
     protected virtual void OnPropertyChanged(DependencyProperty dp, object? oldValue, object? newValue)
     {
         dp.Metadata?.PropertyChangedCallback?.Invoke(this, new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
+
+        if (_propertyChangedCallbacks != null && _propertyChangedCallbacks.TryGetValue(dp, out var callbacks))
+        {
+            var args = new DependencyPropertyChangedEventArgs(dp, oldValue, newValue);
+            for (int i = 0; i < callbacks.Count; i++)
+            {
+                callbacks[i].Callback(this, args);
+            }
+        }
+
         RaisePropertyChanged(dp.Name);
     }
 

@@ -205,10 +205,11 @@ public class Control : FrameworkElement, ITemplatedControl
     {
         if (element is ContentPresenter presenter)
         {
-            var contentProp = this.GetType().GetProperty("Content");
-            if (contentProp != null)
+            var targetDp = DependencyProperty.Lookup(presenter.GetType(), "Content");
+            var sourceDp = DependencyProperty.Lookup(this.GetType(), "Content");
+            if (targetDp != null && sourceDp != null)
             {
-                TemplateBinding.Bind(presenter, nameof(ContentPresenter.Content), this, "Content");
+                TemplateBinding.Bind(presenter, targetDp, this, sourceDp);
             }
         }
 

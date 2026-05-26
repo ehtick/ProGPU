@@ -73,6 +73,12 @@ public class Window
 
     public Window()
     {
+        ThemeManager.ThemeChanged += OnThemeChanged;
+    }
+
+    private void OnThemeChanged()
+    {
+        _content?.NotifyThemeChanged();
     }
 
     public void Activate()
