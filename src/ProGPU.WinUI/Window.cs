@@ -79,6 +79,10 @@ public class Window
     private void OnThemeChanged()
     {
         _content?.NotifyThemeChanged();
+        foreach (var popup in Controls.PopupService.ActivePopups)
+        {
+            popup.NotifyThemeChanged();
+        }
     }
 
     public void Activate()

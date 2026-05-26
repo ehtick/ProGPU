@@ -42,7 +42,7 @@ public class ComboBoxItem : ContentControl
                     var tv = new TextVisual
                     {
                         Text = _text,
-                        Brush = Foreground ?? ThemeManager.GetBrush("TextPrimary"),
+                        Brush = Foreground ?? new ThemeResourceBrush("TextPrimary"),
                         FontSize = 14f
                     };
                     Content = tv;
@@ -61,11 +61,29 @@ public class ComboBoxItem : ContentControl
         CornerRadius = 4f;
         Padding = new Thickness(8, 6, 8, 6);
         HeightConstraint = 32f;
+
+        var defaultStyle = ThemeManager.GetDefaultStyle(GetType());
+        if (defaultStyle != null)
+        {
+            Style = defaultStyle;
+        }
     }
 
     public ComboBoxItem(string text) : this()
     {
         Text = text;
+    }
+
+    protected override void OnPropertyChanged(DependencyProperty dp, object? oldValue, object? newValue)
+    {
+        base.OnPropertyChanged(dp, oldValue, newValue);
+        if (dp == ForegroundProperty)
+        {
+            if (Content is TextVisual tv)
+            {
+                tv.Brush = Foreground ?? new ThemeResourceBrush("TextPrimary");
+            }
+        }
     }
 
     public override void OnPointerReleased(PointerRoutedEventArgs e)
@@ -170,7 +188,12 @@ public class ComboBoxItem : ContentControl
         }
         else if (IsPointerOver)
         {
-            bg = ThemeManager.GetBrush("ControlBackgroundHover");
+            bg = GetCurrentBackground() ?? ThemeManager.GetBrush("ControlBackgroundHover");
+            var borderBrush = GetCurrentBorderBrush();
+            if (borderBrush != null)
+            {
+                pen = new Pen(borderBrush, BorderThickness.Left > 0 ? BorderThickness.Left : 1f);
+            }
         }
 
         if (bg != null)

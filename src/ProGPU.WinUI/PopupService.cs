@@ -15,8 +15,10 @@ public static class PopupService
 {
     public static List<FrameworkElement> ActivePopups { get; } = new();
     public static ProGPU.Text.TtfFont? DefaultFont { get; set; }
+    
+    private static readonly Dictionary<FrameworkElement, FrameworkElement> PopupOwners = new();
 
-    public static void ShowPopup(FrameworkElement popup, Vector2 offset)
+    public static void ShowPopup(FrameworkElement popup, Vector2 offset, FrameworkElement? owner = null)
     {
         if (ActivePopups.Contains(popup)) return;
 
@@ -27,6 +29,10 @@ public static class PopupService
         popup.Arrange(new Rect(offset, popup.DesiredSize));
 
         ActivePopups.Add(popup);
+        if (owner != null)
+        {
+            PopupOwners[popup] = owner;
+        }
         
         // Request visual tree invalidation if root is available
         InputSystem.Root?.Invalidate();
@@ -36,8 +42,18 @@ public static class PopupService
     {
         if (ActivePopups.Remove(popup))
         {
+            PopupOwners.Remove(popup);
             InputSystem.Root?.Invalidate();
         }
+    }
+
+    public static FrameworkElement? GetOwner(FrameworkElement popup)
+    {
+        if (PopupOwners.TryGetValue(popup, out var owner))
+        {
+            return owner;
+        }
+        return null;
     }
 
     public static void MeasureAndArrangePopups(Vector2 windowSize)

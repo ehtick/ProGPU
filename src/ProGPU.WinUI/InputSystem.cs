@@ -441,9 +441,33 @@ public static class InputSystem
 
             if (!isInsidePopup && topmostPopup is not ContentDialog)
             {
+                var owner = PopupService.GetOwner(topmostPopup);
                 PopupService.HidePopup(topmostPopup);
                 // Re-hit-test since the popup has been closed
-                hit = HitTest(_lastMousePos);
+                var newHit = HitTest(_lastMousePos);
+                
+                if (newHit != null && owner != null)
+                {
+                    var ancestor = newHit;
+                    bool hitOwner = false;
+                    while (ancestor != null)
+                    {
+                        if (ancestor == owner)
+                        {
+                            hitOwner = true;
+                            break;
+                        }
+                        ancestor = ancestor.Parent as FrameworkElement;
+                    }
+                    
+                    if (hitOwner)
+                    {
+                        SetFocus(newHit);
+                        return;
+                    }
+                }
+                
+                hit = newHit;
             }
         }
 

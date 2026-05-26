@@ -22,6 +22,7 @@ public class ComboBox : Control
     private string _placeholderText = "Select item...";
     private float _fontSize = 14f;
     private Border? _dropDownPopup;
+    public Border? DropDownPopup => _dropDownPopup;
 
     public ObservableCollection<ComboBoxItem> Items { get; }
 
@@ -93,6 +94,12 @@ public class ComboBox : Control
         Padding = new Thickness(10, 6, 32, 6); // Extra right padding for arrow
         HeightConstraint = 32f;
         WidthConstraint = 180f;
+
+        var defaultStyle = ThemeManager.GetDefaultStyle(GetType());
+        if (defaultStyle != null)
+        {
+            Style = defaultStyle;
+        }
     }
 
     private void OnItemsChanged(object? sender, NotifyCollectionChangedEventArgs e)
@@ -152,8 +159,8 @@ public class ComboBox : Control
 
                 _dropDownPopup = new Border
                 {
-                    Background = ThemeManager.GetBrush("CardBackground"),
-                    BorderBrush = ThemeManager.GetBrush("ControlBorder"),
+                    Background = new ThemeResourceBrush("CardBackground"),
+                    BorderBrush = new ThemeResourceBrush("ControlBorder"),
                     BorderThickness = new Thickness(1f),
                     CornerRadius = 4f,
                     Child = stack
@@ -171,11 +178,10 @@ public class ComboBox : Control
 
             var absPos = GetAbsolutePosition();
             float mainH = HeightConstraint ?? 32f;
-            float w = WidthConstraint ?? Size.X;
-            _dropDownPopup.Width = w;
+            _dropDownPopup.Width = Size.X;
             _dropDownPopup.Height = Items.Count * 32f + 2f;
 
-            PopupService.ShowPopup(_dropDownPopup, new Vector2(absPos.X, absPos.Y + mainH + 2f));
+            PopupService.ShowPopup(_dropDownPopup, new Vector2(absPos.X, absPos.Y + mainH + 2f), this);
         }
         else
         {
@@ -302,26 +308,30 @@ public class ComboBox : Control
         // 1. Draw ComboBox main button card
         Brush bg;
         Pen borderPen;
+        float borderThickness = BorderThickness.Left > 0 ? BorderThickness.Left : 1f;
+
+        bool hasCustomBg = Background != null && Background is not ThemeResourceBrush;
+        bool hasCustomBorder = BorderBrush != null && BorderBrush is not ThemeResourceBrush;
 
         if (!IsEnabled)
         {
-            bg = Background ?? ThemeManager.GetBrush("ControlBackground");
-            borderPen = new Pen(BorderBrush ?? ThemeManager.GetBrush("ControlBorder"), 1f);
+            bg = hasCustomBg ? Background! : ThemeManager.GetBrush("ControlBackground");
+            borderPen = new Pen(hasCustomBorder ? BorderBrush! : ThemeManager.GetBrush("ControlBorder"), borderThickness);
         }
         else if (IsDropDownOpen || IsFocused)
         {
-            bg = Background ?? ThemeManager.GetBrush("CardBackground");
-            borderPen = new Pen(BorderBrush ?? ThemeManager.GetBrush("SystemAccentColor"), 2f); // Segoe Blue active focus ring/active state
+            bg = hasCustomBg ? Background! : ThemeManager.GetBrush("CardBackground");
+            borderPen = new Pen(ThemeManager.GetBrush("SystemAccentColor"), 2f); // Segoe Blue active focus ring/active state
         }
         else if (IsPointerOver)
         {
-            bg = Background ?? ThemeManager.GetBrush("ControlBackgroundHover");
-            borderPen = new Pen(BorderBrush ?? ThemeManager.GetBrush("ControlBorderHover"), 1f);
+            bg = hasCustomBg ? Background! : ThemeManager.GetBrush("ControlBackgroundHover");
+            borderPen = new Pen(hasCustomBorder ? BorderBrush! : ThemeManager.GetBrush("ControlBorderHover"), borderThickness);
         }
         else
         {
             bg = Background ?? ThemeManager.GetBrush("ControlBackground");
-            borderPen = new Pen(BorderBrush ?? ThemeManager.GetBrush("ControlBorder"), 1f);
+            borderPen = new Pen(BorderBrush ?? ThemeManager.GetBrush("ControlBorder"), borderThickness);
         }
 
         // Draw header background shape

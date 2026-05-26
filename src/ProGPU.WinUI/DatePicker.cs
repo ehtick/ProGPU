@@ -42,13 +42,16 @@ public class DatePicker : Control
 
     public DatePicker()
     {
-        Width = 180f;
-        Height = 32f;
-        Background = new SolidColorBrush(0x13131AFF); // Mica dark background
-        BorderBrush = new SolidColorBrush(0xFFFFFF15); // Glassy border
-        BorderThickness = new Thickness(1f);
+        WidthConstraint = 180f;
+        HeightConstraint = 32f;
         CornerRadius = 4f;
         Padding = new Thickness(12f, 0f, 12f, 0f);
+
+        var defaultStyle = ThemeManager.GetDefaultStyle(GetType());
+        if (defaultStyle != null)
+        {
+            Style = defaultStyle;
+        }
     }
 
     protected override Vector2 MeasureOverride(Vector2 availableSize)
@@ -93,7 +96,7 @@ public class DatePicker : Control
 
             var absPos = GetAbsolutePosition();
             // Position exactly underneath the DatePicker input box
-            PopupService.ShowPopup(_popupCalendar, new Vector2(absPos.X, absPos.Y + Size.Y + 4f));
+            PopupService.ShowPopup(_popupCalendar, new Vector2(absPos.X, absPos.Y + Size.Y + 4f), this);
             e.Handled = true;
         }
         base.OnPointerPressed(e);
@@ -111,11 +114,11 @@ public class DatePicker : Control
         // 1. Draw input box background and border outline
         var rect = new Rect(Vector2.Zero, Size);
         
-        var borderPen = _isHovered 
-            ? new Pen(new SolidColorBrush(0xFFFFFF30), BorderThickness.Left) 
-            : new Pen(BorderBrush ?? new SolidColorBrush(0xFFFFFF15), BorderThickness.Left);
+        var bg = GetCurrentBackground() ?? ThemeManager.GetBrush("ControlBackground");
+        var borderBrush = GetCurrentBorderBrush() ?? ThemeManager.GetBrush("ControlBorder");
+        var borderPen = new Pen(borderBrush, BorderThickness.Left > 0 ? BorderThickness.Left : 1f);
             
-        context.DrawRoundedRectangle(Background, borderPen, rect, CornerRadius);
+        context.DrawRoundedRectangle(bg, borderPen, rect, CornerRadius);
 
         // 2. Render selected date label or placeholder text
         string dateText = SelectedDate.HasValue 
@@ -123,8 +126,8 @@ public class DatePicker : Control
             : "Select a date...";
             
         var textBrush = SelectedDate.HasValue 
-            ? new SolidColorBrush(0xFFFFFFFF) 
-            : new SolidColorBrush(0xFFFFFF60); // Muted text if placeholder
+            ? (Foreground ?? ThemeManager.GetBrush("TextPrimary")) 
+            : ThemeManager.GetBrush("TextSecondary");
 
         float textY = (Size.Y - 14f) / 2f;
         context.DrawText(dateText, font, 14f, textBrush, new Vector2(Padding.Left, textY));
@@ -132,7 +135,7 @@ public class DatePicker : Control
         // 3. Render modern vector calendar icon "📅" on the right side
         float iconX = Size.X - 26f;
         float iconY = (Size.Y - 14f) / 2f;
-        context.DrawText("📅", font, 11f, new SolidColorBrush(0xFFFFFFB0), new Vector2(iconX, iconY));
+        context.DrawText("📅", font, 11f, ThemeManager.GetBrush("TextSecondary"), new Vector2(iconX, iconY));
 
         base.OnRender(context);
     }
