@@ -1175,6 +1175,11 @@ public class RichEditBox : Control
             _blockView.Font = newValue as TtfFont;
             Invalidate();
         }
+        else if (dp == ForegroundProperty)
+        {
+            _blockView.Foreground = newValue as Brush;
+            Invalidate();
+        }
     }
     private int _caretIndex;
     private readonly RichTextBlock _blockView;
@@ -1522,6 +1527,12 @@ public class RichEditBox : Control
         _blockView.Inlines.Add(new Run(" or "));
         _blockView.Inlines.Add(new Italic(new Run("Italic")));
         _blockView.Inlines.Add(new Run("..."));
+
+        var defaultStyle = ThemeManager.GetDefaultStyle(GetType());
+        if (defaultStyle != null)
+        {
+            Style = defaultStyle;
+        }
     }
 
     private int GetTotalCharacters()
@@ -2374,30 +2385,51 @@ public class RichEditBox : Control
 
     public override void OnRender(DrawingContext context)
     {
-        // Draw glassmorphic border card
+        // 1. Draw background card and border under premium Fluent specs
         Brush bg;
         Pen borderPen;
 
+        var activeTheme = this.ActualTheme;
+        bool hasLocalBg = IsPropertySetLocally(BackgroundProperty) || IsPropertySetInStyle(BackgroundProperty);
+        bool hasLocalBorder = IsPropertySetLocally(BorderBrushProperty) || IsPropertySetInStyle(BorderBrushProperty);
+
         if (!IsEnabled)
         {
-            bg = new SolidColorBrush(0x2A2A3540);
-            borderPen = new Pen(new SolidColorBrush(0xFFFFFF08), 1f);
+            bg = hasLocalBg ? (Background ?? ThemeManager.GetBrush("TextControlBackground", activeTheme)) : ThemeManager.GetBrush("TextControlBackground", activeTheme);
+            borderPen = new Pen(hasLocalBorder ? (BorderBrush ?? ThemeManager.GetBrush("TextControlBorderBrush", activeTheme)) : ThemeManager.GetBrush("TextControlBorderBrush", activeTheme), 1f);
         }
         else if (IsFocused)
         {
-            bg = new SolidColorBrush(0x13131AFF); // Mica/deep dark card
-            borderPen = new Pen(new SolidColorBrush(0x0078D4FF), 2f); // Sharp Segoe Blue active focus ring
+            bg = hasLocalBg ? (Background ?? ThemeManager.GetBrush("TextControlBackgroundFocused", activeTheme)) : ThemeManager.GetBrush("TextControlBackgroundFocused", activeTheme);
+            borderPen = new Pen(hasLocalBorder ? (BorderBrush ?? ThemeManager.GetBrush("TextControlBorderBrushFocused", activeTheme)) : ThemeManager.GetBrush("TextControlBorderBrushFocused", activeTheme), 2f);
         }
         else if (IsPointerOver)
         {
-            bg = new SolidColorBrush(0xFFFFFF15);
-            borderPen = new Pen(new SolidColorBrush(0xFFFFFF30), 1f);
+            bg = hasLocalBg ? (Background ?? ThemeManager.GetBrush("TextControlBackgroundPointerOver", activeTheme)) : ThemeManager.GetBrush("TextControlBackgroundPointerOver", activeTheme);
+            borderPen = new Pen(hasLocalBorder ? (BorderBrush ?? ThemeManager.GetBrush("TextControlBorderBrushPointerOver", activeTheme)) : ThemeManager.GetBrush("TextControlBorderBrushPointerOver", activeTheme), 1f);
         }
         else
         {
-            bg = new SolidColorBrush(0xFFFFFF0D);
-            borderPen = new Pen(new SolidColorBrush(0xFFFFFF15), 1f);
+            bg = hasLocalBg ? (Background ?? ThemeManager.GetBrush("TextControlBackground", activeTheme)) : ThemeManager.GetBrush("TextControlBackground", activeTheme);
+            borderPen = new Pen(hasLocalBorder ? (BorderBrush ?? ThemeManager.GetBrush("TextControlBorderBrush", activeTheme)) : ThemeManager.GetBrush("TextControlBorderBrush", activeTheme), 1f);
         }
+
+        // Draw soft 3D elevation shadows (ambient & penumbra layers)
+        if (IsEnabled)
+        {
+            float shadowR = CornerRadius;
+            
+            // Ambient shadow (offset Y=2, very soft, low opacity)
+            var ambientRect = new Rect(0, 2, Size.X, Size.Y);
+            var ambientBrush = new SolidColorBrush(0x0000000A);
+            context.DrawRoundedRectangle(ambientBrush, null, ambientRect, shadowR);
+
+            // Penumbra shadow (offset Y=1, tighter, slightly higher opacity)
+            var penumbraRect = new Rect(0, 1, Size.X, Size.Y);
+            var penumbraBrush = new SolidColorBrush(0x00000014);
+            context.DrawRoundedRectangle(penumbraBrush, null, penumbraRect, shadowR);
+        }
+
         context.DrawRoundedRectangle(bg, borderPen, new Rect(Vector2.Zero, Size), CornerRadius);
 
         base.OnRender(context);
@@ -2425,7 +2457,7 @@ public class RichEditBox : Control
             }
 
             Rect caretRect = new Rect(caretPos.X, caretPos.Y, 1.5f, caretH + 2f);
-            context.DrawRectangle(new SolidColorBrush(0x0078D4FF), null, caretRect);
+            context.DrawRectangle(ThemeManager.GetBrush("TextControlBorderBrushFocused", activeTheme), null, caretRect);
         }
     }
 }

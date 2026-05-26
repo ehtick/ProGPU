@@ -74,6 +74,13 @@ public class FlowDocument : FrameworkElement
         Padding = new Thickness(16);
     }
 
+    protected override void OnThemeChanged()
+    {
+        base.OnThemeChanged();
+        Invalidate();
+        InvalidateMeasure();
+    }
+
     public override void OnPointerMoved(PointerRoutedEventArgs e)
     {
         base.OnPointerMoved(e);
@@ -423,6 +430,10 @@ public class FlowDocument : FrameworkElement
     private void AccumulateInlines(Inline inline, List<RichChar> list, Brush defaultFg, float defaultSize, bool isBold, bool isItalic, bool isUnderline, Inline? parentInline, float leftIndent = 0f)
     {
         Brush fg = inline.Foreground ?? defaultFg;
+        if (fg is ProGPU.Vector.ThemeResourceBrush trBrush)
+        {
+            fg = ThemeManager.GetBrush(trBrush.ResourceKey, this.ActualTheme);
+        }
         float size = inline.FontSize ?? defaultSize;
         Inline source = parentInline ?? inline;
 
@@ -835,12 +846,23 @@ public class FlowDocument : FrameworkElement
                 float colW = colWidths[col];
                 var cellRect = new Rect(currentCellX, cursorY, colW, rowHeight);
 
+                var cellBg = cell.Background;
+                if (cellBg is ProGPU.Vector.ThemeResourceBrush trBrush)
+                {
+                    cellBg = ThemeManager.GetBrush(trBrush.ResourceKey, this.ActualTheme);
+                }
+                var tableBorderBrush = table.BorderBrush;
+                if (tableBorderBrush is ProGPU.Vector.ThemeResourceBrush borderTrBrush)
+                {
+                    tableBorderBrush = ThemeManager.GetBrush(borderTrBrush.ResourceKey, this.ActualTheme);
+                }
+
                 _tableDecorations.Add(new TableVisualDecoration
                 {
                     Rect = cellRect,
-                    Background = cell.Background,
+                    Background = cellBg,
                     BorderThickness = table.BorderThickness,
-                    BorderBrush = table.BorderBrush
+                    BorderBrush = tableBorderBrush
                 });
 
                 var pcList = rowCellChars[col];

@@ -326,7 +326,7 @@ public static class ThemeManager
             return style;
         }
 
-        if (typeof(ComboBox).IsAssignableFrom(controlType) || typeof(DatePicker).IsAssignableFrom(controlType) || typeof(TextBox).IsAssignableFrom(controlType))
+        if (typeof(ComboBox).IsAssignableFrom(controlType) || typeof(DatePicker).IsAssignableFrom(controlType) || typeof(TextBox).IsAssignableFrom(controlType) || typeof(RichEditBox).IsAssignableFrom(controlType))
         {
             AddControlChrome(style, "TextControlBackground", "TextControlForeground", "TextControlBorderBrush", new Thickness(1f), 4f, new Thickness(10f, 6f));
             return style;
@@ -356,7 +356,7 @@ public static class ThemeManager
             return style;
         }
 
-        if (typeof(ScrollViewer).IsAssignableFrom(controlType) || typeof(ThemeToggleIconControl).IsAssignableFrom(controlType) || typeof(RichEditBox).IsAssignableFrom(controlType))
+        if (typeof(ScrollViewer).IsAssignableFrom(controlType) || typeof(ThemeToggleIconControl).IsAssignableFrom(controlType))
         {
             AddControlChrome(style, "ControlBackground", "TextPrimary", "ControlBorder", new Thickness(1f), 4f, new Thickness(6f));
             return style;
