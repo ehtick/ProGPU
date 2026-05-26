@@ -859,6 +859,17 @@ public class RichTextBlock : FrameworkElement
                 pcStyle.Foreground = HoveredHyperlinkBrush;
             }
 
+            if (pc.Info.Character == ' ' || pc.Info.Character == '\t')
+            {
+                if (runBuffer.Length > 0)
+                {
+                    RenderRun(context, runBuffer, startPos, style);
+                    runBuffer = "";
+                }
+                RenderRun(context, pc.Info.Character.ToString(), pc.Position, pcStyle);
+                continue;
+            }
+
             if (runBuffer.Length == 0)
             {
                 runBuffer = pc.Info.Character.ToString();
