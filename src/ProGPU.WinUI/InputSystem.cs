@@ -576,6 +576,7 @@ public static class InputSystem
 
     private static void OnKeyDown(Key key)
     {
+        IsKeyboardFocusActive = true;
         _hoverCancellation?.Cancel();
         _hoverCancellation = null;
         DismissToolTip();
@@ -734,6 +735,19 @@ public static class InputSystem
 
         if (visual is ContainerVisual container)
         {
+            if (visual is SplitView splitView)
+            {
+                if (splitView.Pane != null)
+                {
+                    GatherFocusableElements(splitView.Pane, list);
+                }
+                if (splitView.Content != null)
+                {
+                    GatherFocusableElements(splitView.Content, list);
+                }
+                return;
+            }
+
             foreach (var child in container.Children)
             {
                 GatherFocusableElements(child, list);
