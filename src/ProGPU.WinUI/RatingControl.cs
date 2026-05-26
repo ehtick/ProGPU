@@ -28,6 +28,7 @@ public class RatingControl : Control
             typeof(RatingControl),
             new PropertyMetadata(5, (d, e) => {
                 var rating = (RatingControl)d;
+                rating._starGeometries = null;
                 rating.InvalidateMeasure();
                 rating.Invalidate();
             }));
@@ -70,9 +71,15 @@ public class RatingControl : Control
         set => SetValue(PlaceholderValueProperty, value);
     }
 
+    private static readonly SolidColorBrush LightDisabledBrush = new SolidColorBrush(new Vector4(0f, 0f, 0f, 0.2f));
+    private static readonly SolidColorBrush DarkDisabledBrush = new SolidColorBrush(new Vector4(1f, 1f, 1f, 0.2f));
+    private static readonly SolidColorBrush LightPlaceholderBrush = new SolidColorBrush(new Vector4(0f, 0f, 0f, 0.15f));
+    private static readonly SolidColorBrush DarkPlaceholderBrush = new SolidColorBrush(new Vector4(1f, 1f, 1f, 0.15f));
+
     private double _hoverValue = -1.0;
     private const float StarSize = 18f;
     private const float StarSpacing = 4f;
+    private PathGeometry[]? _starGeometries;
 
     public event EventHandler<double>? ValueChanged;
 
@@ -100,7 +107,12 @@ public class RatingControl : Control
 
     protected override void ArrangeOverride(Rect arrangeRect)
     {
-        Size = new Vector2(arrangeRect.Width, arrangeRect.Height);
+        var newSize = new Vector2(arrangeRect.Width, arrangeRect.Height);
+        if (Size != newSize)
+        {
+            Size = newSize;
+            _starGeometries = null;
+        }
     }
 
     public override void OnPointerMoved(PointerRoutedEventArgs e)
@@ -216,28 +228,32 @@ public class RatingControl : Control
         float halfStar = StarSize / 2f;
 
         var activeTheme = this.ActualTheme;
-        var borderBrush = ThemeManager.GetBrush("ControlBorder", activeTheme);
         var accentBrush = ThemeManager.GetBrush("SystemAccentColor", activeTheme);
         var accentHoverBrush = ThemeManager.GetBrush("SystemAccentColorLight1", activeTheme);
-        var textSecondary = ThemeManager.GetBrush("TextSecondary", activeTheme);
-
-        var accentPen = new Pen(accentBrush, 1f);
-        var accentHoverPen = new Pen(accentHoverBrush, 1f);
-        var borderPen = new Pen(borderBrush, 1f);
+        var accentPen = ThemeManager.GetPen("SystemAccentColor", 1f, activeTheme);
+        var accentHoverPen = ThemeManager.GetPen("SystemAccentColorLight1", 1f, activeTheme);
+        var borderPen = ThemeManager.GetPen("ControlBorder", 1f, activeTheme);
 
         // Semi-transparent brushes for placeholder or disabled
-        var disabledBrush = new SolidColorBrush(activeTheme == ElementTheme.Light ? new Vector4(0f, 0f, 0f, 0.2f) : new Vector4(1f, 1f, 1f, 0.2f));
-        var placeholderBrush = new SolidColorBrush(activeTheme == ElementTheme.Light ? new Vector4(0f, 0f, 0f, 0.15f) : new Vector4(1f, 1f, 1f, 0.15f));
+        var disabledBrush = activeTheme == ElementTheme.Light ? LightDisabledBrush : DarkDisabledBrush;
+        var placeholderBrush = activeTheme == ElementTheme.Light ? LightPlaceholderBrush : DarkPlaceholderBrush;
 
         double activeRating = (_hoverValue >= 0.0) ? _hoverValue : Value;
 
+        if (_starGeometries == null || _starGeometries.Length != MaxRating)
+        {
+            _starGeometries = new PathGeometry[MaxRating];
+            for (int i = 0; i < MaxRating; i++)
+            {
+                float cx = startX + i * (StarSize + StarSpacing) + halfStar;
+                float cy = startY + halfStar;
+                _starGeometries[i] = CreateStarGeometry(cx, cy, halfStar - 0.5f);
+            }
+        }
+
         for (int i = 0; i < MaxRating; i++)
         {
-            float cx = startX + i * (StarSize + StarSpacing) + halfStar;
-            float cy = startY + halfStar;
-
-            // Generate high-performance pixel-perfect 5-point star vector geometry
-            var starGeo = CreateStarGeometry(cx, cy, halfStar - 0.5f);
+            var starGeo = _starGeometries[i];
 
             if (!IsEnabled)
             {
@@ -296,7 +312,7 @@ public class RatingControl : Control
         // Draw dynamic high-contrast active blue focus border snug around all stars
         if (IsEnabled && IsFocused && InputSystem.IsKeyboardFocusActive)
         {
-            var focusPen = new Pen(accentBrush, 1.5f);
+            var focusPen = ThemeManager.GetPen("SystemAccentColor", 1.5f, activeTheme);
             float totalW = MaxRating * StarSize + (MaxRating - 1) * StarSpacing;
             Rect focusRect = new Rect(startX - 2f, startY - 2f, totalW + 4f, StarSize + 4f);
             context.DrawRoundedRectangle(null, focusPen, focusRect, 4f);
