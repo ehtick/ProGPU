@@ -221,6 +221,12 @@ public class RichTextBlock : FrameworkElement
         InvalidateMeasure();
     }
 
+    protected override void OnThemeChanged()
+    {
+        _isLayoutDirty = true;
+        base.OnThemeChanged();
+    }
+
     public TtfFont? GetActiveFont()
     {
         return Font ?? PopupService.DefaultFont;

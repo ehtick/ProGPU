@@ -170,6 +170,15 @@ public partial class FrameworkElement
             return value;
         }
 
+        if (targetType == typeof(ProGPU.Layout.Thickness) && value is Microsoft.UI.Xaml.Thickness tXaml)
+        {
+            return new ProGPU.Layout.Thickness(tXaml.Left, tXaml.Top, tXaml.Right, tXaml.Bottom);
+        }
+        if (targetType == typeof(Microsoft.UI.Xaml.Thickness) && value is ProGPU.Layout.Thickness tLayout)
+        {
+            return new Microsoft.UI.Xaml.Thickness(tLayout.Left, tLayout.Top, tLayout.Right, tLayout.Bottom);
+        }
+
         // 1. Enum conversion
         if (targetType.IsEnum && value is string strEnum)
         {
