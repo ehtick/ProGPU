@@ -684,11 +684,20 @@ public unsafe class Compositor : IDisposable
         // Rasterize all pending paths before starting the render pass
         _pathAtlas.RasterizePendingPaths();
 
+        // Determine physical render target size for MSAA matching the physical FramebufferSize.
+        uint renderWidth = width;
+        uint renderHeight = height;
+        if (_context.Window != null && width == (uint)_context.Window.Size.X && height == (uint)_context.Window.Size.Y)
+        {
+            renderWidth = (uint)_context.Window.FramebufferSize.X;
+            renderHeight = (uint)_context.Window.FramebufferSize.Y;
+        }
+
         // Recreate MSAA resources if needed (handles initialization and window resizing)
-        if (_msaaTexture == null || _msaaWidth != width || _msaaHeight != height)
+        if (_msaaTexture == null || _msaaWidth != renderWidth || _msaaHeight != renderHeight)
         {
             ReleaseMsaaResources();
-            CreateMsaaResources(width, height);
+            CreateMsaaResources(renderWidth, renderHeight);
         }
 
         // 5. WebGPU Command Encoder and Render Pass Execution
