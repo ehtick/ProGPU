@@ -164,6 +164,8 @@ public unsafe class Compositor : IDisposable
     private readonly ComputeAccelerator _compute;
     private readonly Dictionary<Visual, (GpuTexture Source, GpuTexture Temp, GpuTexture Destination)> _effectTextures = new();
     private readonly HashSet<Visual> _elementsRenderingEffects = new();
+    private readonly HashSet<Visual> _elementsRenderingLayers = new();
+    private readonly HashSet<GpuTexture> _allocatedLayerTextures = new();
 
     private bool _isDisposed;
 
@@ -970,6 +972,12 @@ public unsafe class Compositor : IDisposable
         if (node.Effect != null && !_elementsRenderingEffects.Contains(node))
         {
             ApplyAndDrawEffect(node, parentTransform);
+            return;
+        }
+
+        if (node.CacheAsLayer && !_elementsRenderingLayers.Contains(node))
+        {
+            ApplyAndDrawLayer(node, parentTransform);
             return;
         }
 
@@ -2348,6 +2356,12 @@ public unsafe class Compositor : IDisposable
         }
         _effectTextures.Clear();
 
+        foreach (var tex in _allocatedLayerTextures)
+        {
+            tex.Dispose();
+        }
+        _allocatedLayerTextures.Clear();
+
         if (_atlasSampler != null) _context.Wgpu.SamplerRelease(_atlasSampler);
 
         if (_vectorUniformBindGroup != null) _context.Wgpu.BindGroupRelease(_vectorUniformBindGroup);
@@ -2548,6 +2562,53 @@ public unsafe class Compositor : IDisposable
         }
 
         fe.IsDirty = false;
+    }
+
+    private void ApplyAndDrawLayer(Visual node, Matrix4x4 parentTransform)
+    {
+        if (node.Size.X <= 0f || node.Size.Y <= 0f) return;
+
+        float dpiScale = 1.0f;
+        if (_context.Window != null)
+        {
+            dpiScale = (float)_context.Window.FramebufferSize.X / _context.Window.Size.X;
+        }
+
+        uint w = (uint)MathF.Max(1f, node.Size.X * dpiScale);
+        uint h = (uint)MathF.Max(1f, node.Size.Y * dpiScale);
+
+        bool hasCached = node.LayerTexture != null;
+        bool needsUpdate = !hasCached || node.IsDirty;
+
+        if (needsUpdate)
+        {
+            if (node.LayerTexture == null)
+            {
+                node.LayerTexture = new GpuTexture(_context, w, h, RenderFormat, TextureUsage.RenderAttachment | TextureUsage.TextureBinding, "Layer Cache Texture");
+                _allocatedLayerTextures.Add(node.LayerTexture);
+            }
+            else if (node.LayerTexture.Width != w || node.LayerTexture.Height != h)
+            {
+                node.LayerTexture.Resize(w, h);
+            }
+
+            _elementsRenderingLayers.Add(node);
+            try
+            {
+                // Render the subtree of node offscreen centered with 0 padding into node.LayerTexture
+                RenderOffscreen(node, (uint)node.Size.X, (uint)node.Size.Y, node.LayerTexture, 0f);
+            }
+            finally
+            {
+                _elementsRenderingLayers.Remove(node);
+            }
+        }
+
+        // Draw the cached layer texture onto the main swapchain
+        var controlRect = new Rect(node.Offset, node.Size);
+        DrawTextureOnMain(node.LayerTexture!, controlRect, parentTransform);
+
+        node.IsDirty = false;
     }
 
     private void DrawTextureOnMain(GpuTexture texture, Rect localRect, Matrix4x4 parentTransform)
