@@ -1375,9 +1375,12 @@ public unsafe class Compositor : IDisposable
                     v.ShapeSize = ClampToClip(v.ShapeSize);
                     
                     // For cubic bezier, input.color.rg holds the fourth point p3
-                    var p3 = new Vector2(v.Color.X, v.Color.Y);
-                    var clampedP3 = ClampToClip(p3);
-                    v.Color = new Vector4(clampedP3.X, clampedP3.Y, v.Color.Z, v.Color.W);
+                    if (Math.Abs(v.ShapeType - 6f) < 0.01f)
+                    {
+                        var p3 = new Vector2(v.Color.X, v.Color.Y);
+                        var clampedP3 = ClampToClip(p3);
+                        v.Color = new Vector4(clampedP3.X, clampedP3.Y, v.Color.Z, v.Color.W);
+                    }
                     
                     vertices[i] = v;
                 }
