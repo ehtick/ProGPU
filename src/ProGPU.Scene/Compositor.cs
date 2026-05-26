@@ -830,6 +830,7 @@ public unsafe class Compositor : IDisposable
 
         _frameNumber++;
         EvictUnusedBindGroups();
+        SweepUnusedEffectTextures(root, externalLayers, activeToolTip);
     }
 
     private void EvictUnusedBindGroups()
@@ -852,6 +853,53 @@ public unsafe class Compositor : IDisposable
             foreach (var key in keysToRemove)
             {
                 _persistentTextureBindGroups.Remove(key);
+            }
+        }
+    }
+
+    private bool IsAttachedToAnyActiveRoot(Visual fe, Visual mainRoot, IReadOnlyList<Visual>? externalLayers, Visual? activeToolTip)
+    {
+        var node = fe;
+        while (node != null)
+        {
+            if (node == mainRoot) return true;
+            if (node == activeToolTip) return true;
+            if (externalLayers != null)
+            {
+                for (int i = 0; i < externalLayers.Count; i++)
+                {
+                    if (node == externalLayers[i]) return true;
+                }
+            }
+            node = node.Parent;
+        }
+        return false;
+    }
+
+    private void SweepUnusedEffectTextures(Visual mainRoot, IReadOnlyList<Visual>? externalLayers, Visual? activeToolTip)
+    {
+        if (_frameNumber % 60 == 0 && _effectTextures.Count > 0)
+        {
+            List<Visual>? detached = null;
+            foreach (var fe in _effectTextures.Keys)
+            {
+                if (!IsAttachedToAnyActiveRoot(fe, mainRoot, externalLayers, activeToolTip))
+                {
+                    detached ??= new List<Visual>();
+                    detached.Add(fe);
+                }
+            }
+            if (detached != null)
+            {
+                foreach (var fe in detached)
+                {
+                    if (_effectTextures.Remove(fe, out var textures))
+                    {
+                        textures.Source.Dispose();
+                        textures.Temp.Dispose();
+                        textures.Destination.Dispose();
+                    }
+                }
             }
         }
     }
@@ -913,6 +961,12 @@ public unsafe class Compositor : IDisposable
 
     private void CompileVisualTree(Visual node, Matrix4x4 parentTransform)
     {
+        if (node.Opacity <= 0.0001f || _activeOpacity <= 0.0001f)
+        {
+            node.IsDirty = false;
+            return;
+        }
+
         if (node.Effect != null && !_elementsRenderingEffects.Contains(node))
         {
             ApplyAndDrawEffect(node, parentTransform);
@@ -1008,6 +1062,8 @@ public unsafe class Compositor : IDisposable
         {
             PopClipRect();
         }
+
+        node.IsDirty = false;
     }
 
     private void CompileRectCommand(RenderCommand cmd, Matrix4x4 transform)
@@ -1414,17 +1470,6 @@ public unsafe class Compositor : IDisposable
                 {
                     var v = vertices[i];
                     v.Position = ClampToClip(v.Position);
-                    v.TexCoord = ClampToClip(v.TexCoord);
-                    v.ShapeSize = ClampToClip(v.ShapeSize);
-                    
-                    // For cubic bezier, input.color.rg holds the fourth point p3
-                    if (Math.Abs(v.ShapeType - 6f) < 0.01f)
-                    {
-                        var p3 = new Vector2(v.Color.X, v.Color.Y);
-                        var clampedP3 = ClampToClip(p3);
-                        v.Color = new Vector4(clampedP3.X, clampedP3.Y, v.Color.Z, v.Color.W);
-                    }
-                    
                     vertices[i] = v;
                 }
             }
@@ -1471,8 +1516,6 @@ public unsafe class Compositor : IDisposable
             {
                 var v = vertices[i];
                 v.Position = ClampToClip(v.Position);
-                v.TexCoord = ClampToClip(v.TexCoord);
-                v.ShapeSize = ClampToClip(v.ShapeSize);
                 vertices[i] = v;
             }
         }
@@ -1529,8 +1572,6 @@ public unsafe class Compositor : IDisposable
             {
                 var v = vertices[i];
                 v.Position = ClampToClip(v.Position);
-                v.TexCoord = ClampToClip(v.TexCoord);
-                v.ShapeSize = ClampToClip(v.ShapeSize);
                 vertices[i] = v;
             }
         }
@@ -1588,13 +1629,6 @@ public unsafe class Compositor : IDisposable
             {
                 var v = vertices[i];
                 v.Position = ClampToClip(v.Position);
-                v.TexCoord = ClampToClip(v.TexCoord);
-                v.ShapeSize = ClampToClip(v.ShapeSize);
-                
-                var p3 = new Vector2(v.Color.X, v.Color.Y);
-                var clampedP3 = ClampToClip(p3);
-                v.Color = new Vector4(clampedP3.X, clampedP3.Y, v.Color.Z, v.Color.W);
-                
                 vertices[i] = v;
             }
         }
@@ -2439,37 +2473,57 @@ public unsafe class Compositor : IDisposable
         uint w = (uint)(fe.Size.X + padding * 2f);
         uint h = (uint)(fe.Size.Y + padding * 2f);
 
-        if (!_effectTextures.TryGetValue(fe, out var textures))
+        bool hasCached = _effectTextures.TryGetValue(fe, out var textures);
+        bool needsUpdate = !hasCached || fe.IsDirty;
+
+        if (needsUpdate)
         {
-            var source = new GpuTexture(_context, w, h, RenderFormat, TextureUsage.RenderAttachment | TextureUsage.TextureBinding, "Effect Source");
-            var temp = new GpuTexture(_context, w, h, TextureFormat.Rgba8Unorm, TextureUsage.TextureBinding | TextureUsage.StorageBinding, "Effect Temp");
-            var destination = new GpuTexture(_context, w, h, TextureFormat.Rgba8Unorm, TextureUsage.TextureBinding | TextureUsage.StorageBinding, "Effect Destination");
-            
-            textures = (source, temp, destination);
-            _effectTextures[fe] = textures;
-        }
-        else
-        {
-            textures.Source.Resize(w, h);
-            textures.Temp.Resize(w, h);
-            textures.Destination.Resize(w, h);
+            if (!hasCached)
+            {
+                var source = new GpuTexture(_context, w, h, RenderFormat, TextureUsage.RenderAttachment | TextureUsage.TextureBinding, "Effect Source");
+                var temp = new GpuTexture(_context, w, h, TextureFormat.Rgba8Unorm, TextureUsage.TextureBinding | TextureUsage.StorageBinding, "Effect Temp");
+                var destination = new GpuTexture(_context, w, h, TextureFormat.Rgba8Unorm, TextureUsage.TextureBinding | TextureUsage.StorageBinding, "Effect Destination");
+                
+                textures = (source, temp, destination);
+                _effectTextures[fe] = textures;
+            }
+            else
+            {
+                textures.Source.Resize(w, h);
+                textures.Temp.Resize(w, h);
+                textures.Destination.Resize(w, h);
+            }
+
+            _elementsRenderingEffects.Add(fe);
+            try
+            {
+                // 1. Render the subtree of fe offscreen centered into textures.Source (offset by padding)
+                RenderOffscreen(fe, w, h, textures.Source, padding);
+            }
+            finally
+            {
+                _elementsRenderingEffects.Remove(fe);
+            }
+
+            // 2. Apply compute shader accelerator filter
+            if (fe.Effect is BlurEffect blurEffect)
+            {
+                if (blurEffect.BlurRadius > 0.01f)
+                {
+                    _compute.ApplyGaussianBlur(textures.Source, textures.Temp, textures.Destination, blurEffect.BlurRadius);
+                }
+            }
+            else if (fe.Effect is DropShadowEffect shadowEffect)
+            {
+                // We pass zero offset to the compute shader because we handle offset dynamically in DrawTextureOnMain on the CPU
+                _compute.ApplyDropShadow(textures.Source, textures.Temp, textures.Destination, Vector2.Zero, shadowEffect.Color, shadowEffect.BlurRadius);
+            }
         }
 
-        _elementsRenderingEffects.Add(fe);
-        try
+        // Draw the cached texture onto the main swapchain
+        if (fe.Effect is BlurEffect bEff)
         {
-            // 1. Render the subtree of fe offscreen centered into textures.Source (offset by padding)
-            RenderOffscreen(fe, w, h, textures.Source, padding);
-        }
-        finally
-        {
-            _elementsRenderingEffects.Remove(fe);
-        }
-
-        // 2. Apply compute shader accelerator filter
-        if (fe.Effect is BlurEffect blurEffect)
-        {
-            if (blurEffect.BlurRadius <= 0.01f)
+            if (bEff.BlurRadius <= 0.01f)
             {
                 // Draw original source directly (no blur!)
                 var controlRect = new Rect(fe.Offset - new Vector2(padding, padding), new Vector2(w, h));
@@ -2477,26 +2531,23 @@ public unsafe class Compositor : IDisposable
             }
             else
             {
-                _compute.ApplyGaussianBlur(textures.Source, textures.Temp, textures.Destination, blurEffect.BlurRadius);
-                
                 // Draw the blurred result back onto the main screen (shifted back by padding)
                 var controlRect = new Rect(fe.Offset - new Vector2(padding, padding), new Vector2(w, h));
                 DrawTextureOnMain(textures.Destination, controlRect, parentTransform);
             }
         }
-        else if (fe.Effect is DropShadowEffect shadowEffect)
+        else if (fe.Effect is DropShadowEffect sEff)
         {
-            // We pass zero offset to the compute shader because we handle offset dynamically in DrawTextureOnMain on the CPU
-            _compute.ApplyDropShadow(textures.Source, textures.Temp, textures.Destination, Vector2.Zero, shadowEffect.Color, shadowEffect.BlurRadius);
-            
             // Draw blurred shadow first (at offset, shifted back by padding)
-            var shadowRect = new Rect(fe.Offset + shadowEffect.Offset - new Vector2(padding, padding), new Vector2(w, h));
+            var shadowRect = new Rect(fe.Offset + sEff.Offset - new Vector2(padding, padding), new Vector2(w, h));
             DrawTextureOnMain(textures.Destination, shadowRect, parentTransform);
             
             // Draw original source on top (shifted back by padding)
             var controlRect = new Rect(fe.Offset - new Vector2(padding, padding), new Vector2(w, h));
             DrawTextureOnMain(textures.Source, controlRect, parentTransform);
         }
+
+        fe.IsDirty = false;
     }
 
     private void DrawTextureOnMain(GpuTexture texture, Rect localRect, Matrix4x4 parentTransform)
@@ -2531,6 +2582,8 @@ public unsafe class Compositor : IDisposable
         var savedActiveBrushes = _activeBrushes.ToArray();
         var savedClipStack = _clipStack.ToArray();
         var savedActiveClipRect = _activeClipRect;
+        var savedOpacityStack = _opacityStack.ToArray();
+        var savedActiveOpacity = _activeOpacity;
 
         _vectorVerticesList.Clear();
         _vectorIndicesList.Clear();
@@ -2542,6 +2595,8 @@ public unsafe class Compositor : IDisposable
         _activeBrushes.Clear();
         _clipStack.Clear();
         _activeClipRect = null;
+        _opacityStack.Clear();
+        _activeOpacity = 1.0f;
 
         // Save offset and temporarily set to padding to render centered in the inflated offscreen texture
         var oldOffset = node.Offset;
@@ -2740,5 +2795,11 @@ public unsafe class Compositor : IDisposable
         _clipStack.Clear();
         foreach (var clip in savedClipStack) _clipStack.Push(clip);
         _activeClipRect = savedActiveClipRect;
+        _opacityStack.Clear();
+        for (int i = savedOpacityStack.Length - 1; i >= 0; i--)
+        {
+            _opacityStack.Push(savedOpacityStack[i]);
+        }
+        _activeOpacity = savedActiveOpacity;
     }
 }
