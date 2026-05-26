@@ -275,7 +275,9 @@ public static unsafe class MainWindowController
         var scriptsItem = new NavigationViewItem("Typography & Scripts", "🔤", SamplePagePresenter.CreateTypographyScriptsView());
         var textInputItem = new NavigationViewItem("Interactive Input", "⌨️", SamplePagePresenter.CreateInteractiveInputView());
         var lolsItem = new NavigationViewItem("LOL/s Benchmark", "💥", LolsPage.Create());
-        var newControlsItem = new NavigationViewItem("New Controls Showcase", "🛠", NewControlsShowcasePage.Create());
+        var radioButtonItem = new NavigationViewItem("Radio Button", "🔘", RadioButtonPage.Create());
+        var ratingControlItem = new NavigationViewItem("Rating Control", "⭐", RatingControlPage.Create());
+        var passwordBoxItem = new NavigationViewItem("Password Box", "🔒", PasswordBoxPage.Create());
 
         AppState._navigationView.MenuItems.Add(basicInputItem);
         AppState._navigationView.MenuItems.Add(panelsItem);
@@ -297,7 +299,9 @@ public static unsafe class MainWindowController
         AppState._navigationView.MenuItems.Add(scriptsItem);
         AppState._navigationView.MenuItems.Add(textInputItem);
         AppState._navigationView.MenuItems.Add(lolsItem);
-        AppState._navigationView.MenuItems.Add(newControlsItem);
+        AppState._navigationView.MenuItems.Add(radioButtonItem);
+        AppState._navigationView.MenuItems.Add(ratingControlItem);
+        AppState._navigationView.MenuItems.Add(passwordBoxItem);
 
         AppState._navigationView.SelectionChanged += (s, e) =>
         {
