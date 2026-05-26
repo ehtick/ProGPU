@@ -177,6 +177,15 @@ public class DependencyObject : ProGPU.Layout.LayoutNode
         InvalidateMeasure();
     }
 
+    protected override void OnParentChanged(ProGPU.Scene.ContainerVisual? oldParent, ProGPU.Scene.ContainerVisual? newParent)
+    {
+        base.OnParentChanged(oldParent, newParent);
+        if (newParent != null)
+        {
+            NotifyThemeChanged();
+        }
+    }
+
     public void ReevaluateThemeResources()
     {
         _isThemeDirty = false;

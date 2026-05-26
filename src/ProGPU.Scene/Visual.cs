@@ -34,7 +34,24 @@ public class Visual
         }
     }
 
-    public ContainerVisual? Parent { get; internal set; }
+    private ContainerVisual? _parent;
+    public ContainerVisual? Parent
+    {
+        get => _parent;
+        internal set
+        {
+            if (_parent != value)
+            {
+                var oldParent = _parent;
+                _parent = value;
+                OnParentChanged(oldParent, _parent);
+            }
+        }
+    }
+
+    protected virtual void OnParentChanged(ContainerVisual? oldParent, ContainerVisual? newParent)
+    {
+    }
 
     public Vector2 Offset
     {

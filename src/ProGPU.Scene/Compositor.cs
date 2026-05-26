@@ -1915,9 +1915,6 @@ public unsafe class Compositor : IDisposable
             float baseCursorX = runGlyph.Position.X - runGlyph.Glyph.BearX;
             float baseCursorY = runGlyph.Position.Y - runGlyph.Glyph.BearY;
 
-            // Compute subpixel positioning and snap vertices to integer pixels to avoid bilinear blur.
-            Vector2 transPos = Vector2.Transform(new Vector2(baseCursorX + cmd.Position.X, baseCursorY + cmd.Position.Y), transform);
-
             // Compute high-DPI scaling factor dynamically from the window context
             float dpiScale = 1.0f;
             if (_context.Window != null)
@@ -1925,27 +1922,39 @@ public unsafe class Compositor : IDisposable
                 dpiScale = (float)_context.Window.FramebufferSize.X / _context.Window.Size.X;
             }
 
+            float physicalFontSize = cmd.FontSize * dpiScale;
+            bool isRotated = MathF.Abs(transform.M12) > 0.0001f || MathF.Abs(transform.M21) > 0.0001f;
+
+            // Compute subpixel positioning and snap vertices to integer pixels to avoid bilinear blur.
+            Vector2 transPos = Vector2.Transform(new Vector2(baseCursorX + cmd.Position.X, baseCursorY + cmd.Position.Y), transform);
             Vector2 transPosPhysical = transPos * dpiScale;
 
             float scaleX = new Vector2(transform.M11, transform.M12).Length();
             float scaleY = new Vector2(transform.M21, transform.M22).Length();
 
-            float screenX = transPosPhysical.X;
-            float screenY = transPosPhysical.Y;
+            byte subpixelX = 0;
+            float ipartX = 0f;
+            float snappedY = 0f;
 
-            float ipartX = MathF.Floor(screenX);
-            float fpartX = screenX - ipartX;
-            int subIdx = (int)MathF.Round(fpartX * 4f);
-            if (subIdx == 4)
+            if (!isRotated)
             {
-                subIdx = 0;
-                ipartX += 1.0f;
+                float screenX = transPosPhysical.X;
+                float screenY = transPosPhysical.Y;
+
+                float ipartX_temp = MathF.Floor(screenX);
+                float fpartX = screenX - ipartX_temp;
+                int subIdx = (int)MathF.Round(fpartX * 4f);
+                if (subIdx == 4)
+                {
+                    subIdx = 0;
+                    ipartX_temp += 1.0f;
+                }
+                subpixelX = (byte)subIdx;
+                ipartX = ipartX_temp;
+                snappedY = MathF.Round(screenY);
             }
-            byte subpixelX = (byte)subIdx;
-            float snappedY = MathF.Round(screenY);
 
             // Cache and rasterize the glyph in the atlas at its actual physical pixel font size
-            float physicalFontSize = cmd.FontSize * dpiScale;
             var info = _atlas.GetOrCreateGlyph(font, runGlyph.CodePoint, physicalFontSize, subpixelX);
             if (info.Width == 0 || info.Height == 0) continue;
 
@@ -1955,26 +1964,56 @@ public unsafe class Compositor : IDisposable
             for (int pass = 0; pass < passCount; pass++)
             {
                 float xOffset = pass * boldOffset;
+                Vector2 v0, v1, v2, v3;
 
-                // Position the quad in physical screen pixels
-                float rx0 = ipartX + info.BearX * scaleX + xOffset * scaleX * dpiScale;
-                float ry0 = snappedY + info.BearY * scaleY;
-                float rx1 = rx0 + info.Width * scaleX;
-                float ry1 = ry0 + info.Height * scaleY;
+                if (!isRotated)
+                {
+                    // Position the quad in physical screen pixels
+                    float rx0 = ipartX + info.BearX * scaleX + xOffset * scaleX * dpiScale;
+                    float ry0 = snappedY + info.BearY * scaleY;
+                    float rx1 = rx0 + info.Width * scaleX;
+                    float ry1 = ry0 + info.Height * scaleY;
 
-                float skewFactor = cmd.IsItalic ? 0.22f : 0f;
-                float yBase = snappedY; // Baseline is snappedY
+                    float skewFactor = cmd.IsItalic ? 0.22f : 0f;
+                    float yBase = snappedY; // Baseline is snappedY
 
-                float sx0 = rx0 - (ry0 - yBase) * skewFactor;
-                float sx1 = rx1 - (ry0 - yBase) * skewFactor;
-                float sx2 = rx1 - (ry1 - yBase) * skewFactor;
-                float sx3 = rx0 - (ry1 - yBase) * skewFactor;
+                    float sx0 = rx0 - (ry0 - yBase) * skewFactor;
+                    float sx1 = rx1 - (ry0 - yBase) * skewFactor;
+                    float sx2 = rx1 - (ry1 - yBase) * skewFactor;
+                    float sx3 = rx0 - (ry1 - yBase) * skewFactor;
 
-                // Divide by dpiScale to map the physical coordinates back to logical compositor projection space
-                var v0 = new Vector2(sx0, ry0) / dpiScale;
-                var v1 = new Vector2(sx1, ry0) / dpiScale;
-                var v2 = new Vector2(sx2, ry1) / dpiScale;
-                var v3 = new Vector2(sx3, ry1) / dpiScale;
+                    // Divide by dpiScale to map the physical coordinates back to logical compositor projection space
+                    v0 = new Vector2(sx0, ry0) / dpiScale;
+                    v1 = new Vector2(sx1, ry0) / dpiScale;
+                    v2 = new Vector2(sx2, ry1) / dpiScale;
+                    v3 = new Vector2(sx3, ry1) / dpiScale;
+                }
+                else
+                {
+                    // Rotated text: transform each vertex individually on the CPU to follow the rotation angle
+                    float lx0 = info.BearX / dpiScale + xOffset;
+                    float ly0 = info.BearY / dpiScale;
+                    float lx1 = lx0 + info.Width / dpiScale;
+                    float ly1 = ly0 + info.Height / dpiScale;
+
+                    float skewFactor = cmd.IsItalic ? 0.22f : 0f;
+                    float yBase = 0f;
+
+                    float lsx0 = lx0 - (ly0 - yBase) * skewFactor;
+                    float lsx1 = lx1 - (ly0 - yBase) * skewFactor;
+                    float lsx2 = lx1 - (ly1 - yBase) * skewFactor;
+                    float lsx3 = lx0 - (ly1 - yBase) * skewFactor;
+
+                    Vector2 localP0 = new Vector2(baseCursorX + cmd.Position.X + lsx0, baseCursorY + cmd.Position.Y + ly0);
+                    Vector2 localP1 = new Vector2(baseCursorX + cmd.Position.X + lsx1, baseCursorY + cmd.Position.Y + ly0);
+                    Vector2 localP2 = new Vector2(baseCursorX + cmd.Position.X + lsx2, baseCursorY + cmd.Position.Y + ly1);
+                    Vector2 localP3 = new Vector2(baseCursorX + cmd.Position.X + lsx3, baseCursorY + cmd.Position.Y + ly1);
+
+                    v0 = Vector2.Transform(localP0, transform);
+                    v1 = Vector2.Transform(localP1, transform);
+                    v2 = Vector2.Transform(localP2, transform);
+                    v3 = Vector2.Transform(localP3, transform);
+                }
 
                 uint idxStart = (uint)currentVertexCount;
 
