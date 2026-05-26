@@ -50,17 +50,22 @@ public class NavigationView : FrameworkElement
 
         protected override Vector2 MeasureOverride(Vector2 availableSize)
         {
+            float w = availableSize.X;
+            float h = 10f; // top margin
+            
             foreach (var item in _navigationView._flatVisibleItems)
             {
-                item.Measure(new Vector2(availableSize.X, 40f));
+                item.Measure(new Vector2(w, 40f));
+                h += 40f;
             }
 
             if (_navigationView.SettingsItem != null)
             {
-                _navigationView.SettingsItem.Measure(new Vector2(availableSize.X, 40f));
+                _navigationView.SettingsItem.Measure(new Vector2(w, 40f));
+                h += 60f; // spacing + height
             }
 
-            return availableSize;
+            return new Vector2(w, h);
         }
 
         protected override void ArrangeOverride(Rect arrangeRect)
@@ -74,7 +79,7 @@ public class NavigationView : FrameworkElement
 
             if (_navigationView.SettingsItem != null)
             {
-                float settingsY = arrangeRect.Y + arrangeRect.Height - 50f;
+                float settingsY = cursorY + 20f;
                 _navigationView.SettingsItem.Arrange(new Rect(arrangeRect.X, settingsY, arrangeRect.Width, 40f));
             }
         }
@@ -201,12 +206,18 @@ public class NavigationView : FrameworkElement
         _settingsItem = new NavigationViewItem("Settings", "⚙");
 
         _panePanel = new NavigationViewPane(this);
+        var paneScrollViewer = new ScrollViewer
+        {
+            Content = _panePanel,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch
+        };
         _splitView = new SplitView
         {
             DisplayMode = SplitViewDisplayMode.CompactInline,
             PaneWidth = 240f,
             CompactPaneLength = 60f,
-            Pane = _panePanel,
+            Pane = paneScrollViewer,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch
         };
