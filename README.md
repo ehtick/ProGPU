@@ -333,6 +333,54 @@ To achieve state-of-the-art vector quality with zero performance degradation, we
 
 ---
 
+### 10. High-Performance Theming, Styling & Templating Engine
+
+ProGPU implements a lightweight, high-performance, and memory-safe theming, styling, and templating engine designed to emulate the logical capabilities of WinUI 3 but operating with minimal CPU and memory overhead.
+
+```mermaid
+flowchart TD
+    Reg[DependencyProperty.Register] -->|Sequential Indexing| DP[Index-Based Property Mapped Arrays]
+    DP -->|Precedence Resolution| GetVal[O1 GetValue Precedence Sweep]
+    Theme[ThemeManager.ThemeChanged] -->|Lazy Invalidation| Dirty[Set IsThemeDirty = true]
+    Dirty -->|On-Demand Query| GetVal
+    
+    subgraph Storage ["O(1) Parallel Contiguous Value & Theme Arrays"]
+        Local[_localValues]
+        Style[_styleValues]
+        DStyle[_defaultStyleValues]
+        LocalTheme[_localThemeResources]
+        StyleTheme[_styleThemeResources]
+        DStyleTheme[_defaultStyleThemeResources]
+    end
+```
+
+#### $O(1)$ Sequential Flat-Array Property Storage
+Traditional XAML frameworks store DependencyObject property values in heavy dictionaries (`Dictionary<DependencyProperty, object>`), which trigger expensive hash calculation, collisions, and lookup overhead inside tight render or layout loops.
+ProGPU bypasses dictionaries entirely by introducing sequential indexing:
+* **Sequential Indexing**: Every registered `DependencyProperty` is assigned a unique, sequential, zero-based `Index` from a thread-safe static list during bootstrap.
+* **Direct Array Access**: `DependencyObject` stores properties in a set of parallel contiguous flat arrays (`_localValues`, `_styleValues`, `_defaultStyleValues`, `_effectiveValues`, and `_valueSources`) matching the index sizes.
+* **Precedence Resolution**: Property value resolution (`GetValue(dp)`) is simplified to direct index checks on these arrays in $O(1)$ time, resolving values via native priority precedence:
+  $$\text{Local} \succ \text{Style} \succ \text{Default Style} \succ \text{Inherited} \succ \text{Default}$$
+
+#### Lazy, Invalidation-Tracked Dynamic Theming
+Eagerly traversing and updating dynamic brushes across the entire visual tree on every theme change triggers substantial CPU frame stutters. ProGPU bypasses this via a lazy evaluation pipeline:
+* **Visual Tree Invalidation**: When a theme toggle is triggered, `ThemeManager.ThemeChanged` fires. The system recursively propagates a cheap `IsThemeDirty = true` flag down the scene graph (`NotifyThemeChanged`), avoiding immediate value updates.
+* **Parallel Flat Theme Mappings**: Dynamic references are stored in parallel arrays (`_localThemeResources`, `_styleThemeResources`, and `_defaultStyleThemeResources`). During subsequent property reads (`GetValue(dp)`), if the dirty flag is set, the system sweeps these parallel arrays, re-evaluates active key lookups against the theme palette, and rebuilds only the affected elements' effective values in a single sequential linear pass.
+
+#### Reflection-Free, Weak Callback Template Bindings
+To support lightweight control customization without the heavy reflection, expression compilation, or string-matching of traditional bindings:
+* **Index-Based Callbacks**: `DependencyObject` maintains an index-sequential list of callbacks registered via `RegisterPropertyChangedCallback(dp, callback)`. 
+* **WinUI-Compliant Tokens**: Registration returns a unique `long` token, allowing surgical unregistration via `UnregisterPropertyChangedCallback(dp, token)`.
+* **Weak, Self-Cleaning Template Binding**: `TemplateBinding` coordinates bindings between controls and template roots using weak references (`WeakReference<DependencyObject>`). On every callback trigger, if it detects that the target control has been garbage-collected, the binding automatically unregisters itself from the source object, completely preventing memory leaks.
+
+#### Decoupled Multi-Window & Popup Inspector
+To support robust diagnostic capabilities:
+* **Multi-Window Visual Inspector**: Refactored the `DevTools` visual tree population (`RefreshVisualTree`) to dynamically traverse all active windows registered in `WindowManager.ActiveWindows` (filtering out the inspector itself), and automatically falling back to the thread-static `InputSystem.Root` for raw Silk.NET window bindings.
+* **Popup & Dialog Hierarchies**: Merges active floating popups and dialogs from `PopupService.ActivePopups` as a dedicated branch in the visual tree, making overlay dialogs fully inspectable.
+* **Global Invalidation Hub**: Replaced thread-local repaints with a public `InvalidateAllMainWindows()` hub in `DevToolsService`, ensuring hover overlays, inspection borders, and property changes instantly refresh across all active window compositors.
+
+---
+
 ## Module & Project Architecture Breakdown
 
 The ProGPU solution is partitioned into modular, highly specialized C# projects. Each project governs a specific layer of the UI, vector, or graphics compilation loops:
