@@ -1637,8 +1637,6 @@ public unsafe class Compositor : IDisposable
             {
                 var v = vertices[i];
                 v.Position = ClampToClip(v.Position);
-                v.TexCoord = ClampToClip(v.TexCoord);
-                v.ShapeSize = ClampToClip(v.ShapeSize);
                 vertices[i] = v;
             }
         }
@@ -1741,8 +1739,6 @@ public unsafe class Compositor : IDisposable
             {
                 var v = vertices[i];
                 v.Position = ClampToClip(v.Position);
-                v.TexCoord = ClampToClip(v.TexCoord);
-                v.ShapeSize = ClampToClip(v.ShapeSize);
                 vertices[i] = v;
             }
         }
