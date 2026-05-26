@@ -55,7 +55,7 @@ public class ToolTip : Control
             if (font != null)
             {
                 // Measure text size dynamically using TextLayout.MeasuredSize
-                var textLayout = new TextLayout(text, font, 12f);
+                var textLayout = new TextLayout(text, font, 14f);
                 size = textLayout.MeasuredSize;
             }
             else
@@ -103,7 +103,7 @@ public class ToolTip : Control
                     context.DrawText(
                         text,
                         font,
-                        12f,
+                        14f,
                         new SolidColorBrush(0xFFFFFFE0), // Soft white
                         new Vector2(Padding.Left, Padding.Top)
                     );

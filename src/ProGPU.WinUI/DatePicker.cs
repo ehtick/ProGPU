@@ -127,7 +127,7 @@ public class DatePicker : Control
             : new SolidColorBrush(0xFFFFFF60); // Muted text if placeholder
 
         float textY = (Size.Y - 14f) / 2f;
-        context.DrawText(dateText, font, 12f, textBrush, new Vector2(Padding.Left, textY));
+        context.DrawText(dateText, font, 14f, textBrush, new Vector2(Padding.Left, textY));
 
         // 3. Render modern vector calendar icon "📅" on the right side
         float iconX = Size.X - 26f;

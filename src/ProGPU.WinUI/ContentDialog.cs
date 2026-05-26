@@ -136,7 +136,7 @@ public class ContentDialog : Control
 
         if (!string.IsNullOrEmpty(PrimaryButtonText))
         {
-            var btnText = new RichTextBlock { Font = PopupService.DefaultFont, FontSize = 12f, Foreground = new SolidColorBrush(0xFFFFFFFF) };
+            var btnText = new RichTextBlock { Font = PopupService.DefaultFont, FontSize = 14f, Foreground = new SolidColorBrush(0xFFFFFFFF) };
             btnText.Inlines.Add(new Run { Text = PrimaryButtonText });
 
             _btnPrimary = new Button
@@ -154,7 +154,7 @@ public class ContentDialog : Control
 
         if (!string.IsNullOrEmpty(SecondaryButtonText))
         {
-            var btnText = new RichTextBlock { Font = PopupService.DefaultFont, FontSize = 12f, Foreground = new SolidColorBrush(0xFFFFFFFF) };
+            var btnText = new RichTextBlock { Font = PopupService.DefaultFont, FontSize = 14f, Foreground = new SolidColorBrush(0xFFFFFFFF) };
             btnText.Inlines.Add(new Run { Text = SecondaryButtonText });
 
             _btnSecondary = new Button
@@ -172,7 +172,7 @@ public class ContentDialog : Control
 
         if (!string.IsNullOrEmpty(CloseButtonText))
         {
-            var btnText = new RichTextBlock { Font = PopupService.DefaultFont, FontSize = 12f, Foreground = new SolidColorBrush(0xFFFFFFFF) };
+            var btnText = new RichTextBlock { Font = PopupService.DefaultFont, FontSize = 14f, Foreground = new SolidColorBrush(0xFFFFFFFF) };
             btnText.Inlines.Add(new Run { Text = CloseButtonText });
 
             _btnClose = new Button

@@ -471,8 +471,9 @@ fn is_point_inside(p: vec2<f32>, record: GlyphRecord) -> bool {
             solve_quadratic(a, b, c, &roots, &root_count);
             
             for (var r: u32 = 0u; r < root_count; r = r + 1u) {
-                let t = roots[r];
-                if (t >= 0.0 && t <= 1.0) {
+                var t = roots[r];
+                if (t >= -0.0001 && t <= 1.0001) {
+                    t = clamp(t, 0.0, 1.0);
                     let one_minus_t = 1.0 - t;
                     let deriv_y = 2.0 * one_minus_t * (B.y - A.y) + 2.0 * t * (C.y - B.y);
                     
@@ -688,8 +689,9 @@ fn is_point_inside(p: vec2<f32>, record: PathRecord) -> bool {
             solve_quadratic(a, b, c, &roots, &root_count);
             
             for (var r: u32 = 0u; r < root_count; r = r + 1u) {
-                let t = roots[r];
-                if (t >= 0.0 && t <= 1.0) {
+                var t = roots[r];
+                if (t >= -0.0001 && t <= 1.0001) {
+                    t = clamp(t, 0.0, 1.0);
                     let one_minus_t = 1.0 - t;
                     let deriv_y = 2.0 * one_minus_t * (B.y - A.y) + 2.0 * t * (C.y - B.y);
                     
@@ -728,8 +730,9 @@ fn is_point_inside(p: vec2<f32>, record: PathRecord) -> bool {
             solve_cubic(a, b, c, d, &roots, &root_count);
             
             for (var r: u32 = 0u; r < root_count; r = r + 1u) {
-                let t = roots[r];
-                if (t >= 0.0 && t <= 1.0) {
+                var t = roots[r];
+                if (t >= -0.0001 && t <= 1.0001) {
+                    t = clamp(t, 0.0, 1.0);
                     let deriv_y = 3.0 * a * t * t + 2.0 * b * t + c;
                     
                     var is_valid = false;

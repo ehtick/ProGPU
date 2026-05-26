@@ -17,7 +17,7 @@ namespace Microsoft.UI.Xaml.Controls;
 public class TextVisual : FrameworkElement, ITextLayoutProvider
 {
     private string _text = string.Empty;
-    private float _fontSize = 12f;
+    private float _fontSize = 14f;
     private TextAlignment _alignment = TextAlignment.Left;
     private TextLayout? _layout;
 
