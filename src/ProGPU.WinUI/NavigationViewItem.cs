@@ -128,18 +128,19 @@ public class NavigationViewItem : Control
         var nav = FindParentNavigationView();
         bool isPaneOpen = nav?.IsPaneOpen ?? false;
         
-        var textPrimary = ThemeManager.GetBrush("TextPrimary");
-        var textSecondary = ThemeManager.GetBrush("TextSecondary");
-        var accentBrush = ThemeManager.GetBrush("SystemAccentColor");
+        var activeTheme = this.ActualTheme;
+        var textPrimary = ThemeManager.GetBrush("TextPrimary", activeTheme);
+        var textSecondary = ThemeManager.GetBrush("TextSecondary", activeTheme);
+        var accentBrush = ThemeManager.GetBrush("SystemAccentColor", activeTheme);
 
-        var bgSelect = new SolidColorBrush(ThemeManager.CurrentTheme == ElementTheme.Light ? new Vector4(0f, 0f, 0f, 0.08f) : new Vector4(1f, 1f, 1f, 0.07f));
-        var bgHover = new SolidColorBrush(ThemeManager.CurrentTheme == ElementTheme.Light ? new Vector4(0f, 0f, 0f, 0.05f) : new Vector4(1f, 1f, 1f, 0.05f));
+        var bgSelect = new SolidColorBrush(activeTheme == ElementTheme.Light ? new Vector4(0f, 0f, 0f, 0.08f) : new Vector4(1f, 1f, 1f, 0.07f));
+        var bgHover = new SolidColorBrush(activeTheme == ElementTheme.Light ? new Vector4(0f, 0f, 0f, 0.05f) : new Vector4(1f, 1f, 1f, 0.05f));
 
         var primaryPen = new Pen(textPrimary, 1f);
         var secondaryPen = new Pen(textSecondary, 1f);
-        var translucentPen = new Pen(new SolidColorBrush(ThemeManager.CurrentTheme == ElementTheme.Light ? new Vector4(0f, 0f, 0f, 0.4f) : new Vector4(1f, 1f, 1f, 0.4f)), 1f);
-        var translucentBrush = new SolidColorBrush(ThemeManager.CurrentTheme == ElementTheme.Light ? new Vector4(0f, 0f, 0f, 0.15f) : new Vector4(1f, 1f, 1f, 0.15f));
-        var translucentHeavyBrush = new SolidColorBrush(ThemeManager.CurrentTheme == ElementTheme.Light ? new Vector4(0f, 0f, 0f, 0.5f) : new Vector4(1f, 1f, 1f, 0.5f));
+        var translucentPen = new Pen(new SolidColorBrush(activeTheme == ElementTheme.Light ? new Vector4(0f, 0f, 0f, 0.4f) : new Vector4(1f, 1f, 1f, 0.4f)), 1f);
+        var translucentBrush = new SolidColorBrush(activeTheme == ElementTheme.Light ? new Vector4(0f, 0f, 0f, 0.15f) : new Vector4(1f, 1f, 1f, 0.15f));
+        var translucentHeavyBrush = new SolidColorBrush(activeTheme == ElementTheme.Light ? new Vector4(0f, 0f, 0f, 0.5f) : new Vector4(1f, 1f, 1f, 0.5f));
 
         // 1. Draw modern backgrounds depending on active selection or hover
         if (IsSelected)

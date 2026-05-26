@@ -54,6 +54,7 @@ public static unsafe class MainWindowController
         AppState._wgpuContext.Initialize(AppState._window);
 
         AppState._screenCompositor = new Compositor(AppState._wgpuContext, AppState._wgpuContext.SwapChainFormat);
+        AppState._screenCompositor.ClearColor = ThemeManager.GetColor("PageBackground");
         
         // Decoupled Screen Compositor Hooks Configuration
         AppState._screenCompositor.PreRender += (w, h) => Microsoft.UI.Xaml.Controls.PopupService.MeasureAndArrangePopups(new Vector2(w, h));
@@ -146,8 +147,8 @@ public static unsafe class MainWindowController
         // 2. HEADER
         var headerBar = new Border
         {
-            Background = ThemeManager.GetBrush("HeaderBackground"), // Dynamic theme Mica backdrop
-            BorderBrush = ThemeManager.GetBrush("ControlBorder"), // Thin dynamic border outline
+            Background = new ProGPU.Vector.ThemeResourceBrush("HeaderBackground"), // Dynamic theme Mica backdrop
+            BorderBrush = new ProGPU.Vector.ThemeResourceBrush("ControlBorder"), // Thin dynamic border outline
             BorderThickness = new Thickness(0, 0, 0, 1f),
             Padding = new Thickness(20, 10, 20, 10),
             HorizontalAlignment = HorizontalAlignment.Stretch,
@@ -181,7 +182,7 @@ public static unsafe class MainWindowController
         Microsoft.UI.Xaml.Controls.Grid.SetColumn(hamburgerBtn, 0);
 
         var titleText = new RichTextBlock { Font = AppState._font, FontSize = 20f, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0) };
-        var logoRun = new Run("Pro") { Foreground = ThemeManager.GetBrush("SystemAccentColor") };
+        var logoRun = new Run("Pro") { Foreground = new ProGPU.Vector.ThemeResourceBrush("SystemAccentColor") };
         titleText.Inlines.Add(new Bold(logoRun));
         titleText.Inlines.Add(new Bold(new Run("GPU WinUI Gallery")));
         headerGrid.AddChild(titleText);
@@ -323,8 +324,8 @@ public static unsafe class MainWindowController
         // 4. BOTTOM DIAGNOSTICS STATUS BAR
         var statusBar = new Border
         {
-            Background = ThemeManager.GetBrush("HeaderBackground"), // Deep status bar
-            BorderBrush = ThemeManager.GetBrush("ControlBorder"), // Thin boundary stroke
+            Background = new ProGPU.Vector.ThemeResourceBrush("HeaderBackground"), // Deep status bar
+            BorderBrush = new ProGPU.Vector.ThemeResourceBrush("ControlBorder"), // Thin boundary stroke
             BorderThickness = new Thickness(0, 1f, 0, 0),
             Padding = new Thickness(16, 4, 16, 4),
             HorizontalAlignment = HorizontalAlignment.Stretch,
@@ -334,7 +335,7 @@ public static unsafe class MainWindowController
         AppState._statsText = new RichTextBlock
         {
             FontSize = 11f,
-            Foreground = ThemeManager.GetBrush("TextSecondary"),
+            Foreground = new ProGPU.Vector.ThemeResourceBrush("TextSecondary"),
             Font = AppState._font,
             VerticalAlignment = VerticalAlignment.Center
         };
@@ -346,13 +347,11 @@ public static unsafe class MainWindowController
         // Track global ThemeManager theme change event
         ThemeManager.ThemeChanged += () =>
         {
-            statusBar.Background = ThemeManager.GetBrush("HeaderBackground");
-            statusBar.BorderBrush = ThemeManager.GetBrush("ControlBorder");
-            AppState._statsText.Foreground = ThemeManager.GetBrush("TextSecondary");
-            headerBar.Background = ThemeManager.GetBrush("HeaderBackground");
-            headerBar.BorderBrush = ThemeManager.GetBrush("ControlBorder");
-            logoRun.Foreground = ThemeManager.GetBrush("SystemAccentColor");
-            AppState._rootGrid.Invalidate();
+            if (AppState._screenCompositor != null)
+            {
+                AppState._screenCompositor.ClearColor = ThemeManager.GetColor("PageBackground");
+            }
+            AppState._topLevelGrid?.NotifyThemeChanged();
         };
 
         // 5. TOP LEVEL CONTAINER GRID (App container)

@@ -40,7 +40,46 @@ public class PointerRoutedEventArgs : RoutedEventArgs
 
 public partial class FrameworkElement
 {
-    
+    public static readonly Microsoft.UI.Xaml.DependencyProperty RequestedThemeProperty =
+        Microsoft.UI.Xaml.DependencyProperty.Register(
+            "RequestedTheme",
+            typeof(ElementTheme),
+            typeof(FrameworkElement),
+            new Microsoft.UI.Xaml.PropertyMetadata(ElementTheme.Default, (d, e) => {
+                ((FrameworkElement)d).NotifyThemeChanged();
+            }));
+
+    public ElementTheme RequestedTheme
+    {
+        get => (ElementTheme)(GetValue(RequestedThemeProperty) ?? ElementTheme.Default);
+        set => SetValue(RequestedThemeProperty, value);
+    }
+
+    public ElementTheme ActualTheme
+    {
+        get
+        {
+            var theme = RequestedTheme;
+            if (theme != ElementTheme.Default)
+            {
+                return theme;
+            }
+
+            var p = Parent as FrameworkElement;
+            while (p != null)
+            {
+                var pTheme = p.RequestedTheme;
+                if (pTheme != ElementTheme.Default)
+                {
+                    return pTheme;
+                }
+                p = p.Parent as FrameworkElement;
+            }
+
+            return ThemeManager.CurrentTheme;
+        }
+    }
+
 
     public static readonly Microsoft.UI.Xaml.DependencyProperty FontProperty =
         Microsoft.UI.Xaml.DependencyProperty.Register(
@@ -259,7 +298,11 @@ public partial class FrameworkElement
                         var val = setter.Value;
                         if (val is StaticResourceRef staticRef)
                         {
-                            val = ThemeManager.GetResource(staticRef.ResourceKey);
+                            val = ThemeManager.GetResource(staticRef.ResourceKey, this.ActualTheme);
+                        }
+                        else if (val is ThemeResource themeResource)
+                        {
+                            val = ThemeManager.GetResource(themeResource.ResourceKey, this.ActualTheme);
                         }
                         var convertedValue = ConvertValue(prop.PropertyType, val);
                         prop.SetValue(this, convertedValue);

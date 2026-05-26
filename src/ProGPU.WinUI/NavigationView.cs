@@ -30,8 +30,8 @@ public class NavigationView : FrameworkElement
         {
             base.OnRender(context);
             
-            // Draw custom three-bar Fluent hamburger lines in white
-            var brush = new SolidColorBrush(0xFFFFFFFF);
+            // Draw custom three-bar Fluent hamburger lines in theme-aware TextPrimary
+            var brush = ThemeManager.GetBrush("TextPrimary", this.ActualTheme);
             // Centered nicely inside 40x40 area
             context.DrawRectangle(brush, null, new Rect(11f, 14f, 18f, 2f));
             context.DrawRectangle(brush, null, new Rect(11f, 19f, 18f, 2f));
@@ -81,10 +81,11 @@ public class NavigationView : FrameworkElement
 
         public override void OnRender(DrawingContext context)
         {
-            var paneBg = new SolidColorBrush(0x1F1F1FFF);
+            var activeTheme = _navigationView.ActualTheme;
+            var paneBg = ThemeManager.GetBrush("HeaderBackground", activeTheme);
             context.DrawRectangle(paneBg, null, new Rect(0f, 0f, Size.X, Size.Y));
             
-            var sepBrush = new SolidColorBrush(0xFFFFFF15);
+            var sepBrush = ThemeManager.GetBrush("ControlBorder", activeTheme);
             context.DrawRectangle(sepBrush, null, new Rect(Size.X - 1f, 0f, 1f, Size.Y));
 
             base.OnRender(context);

@@ -391,7 +391,7 @@ public class RichTextBlock : FrameworkElement
         if (activeFont == null) return;
 
         var charList = new List<RichChar>();
-        var defaultFg = Foreground ?? new SolidColorBrush(0xFFFFFFFF);
+        var defaultFg = Foreground ?? ThemeManager.GetBrush("TextPrimary", this.ActualTheme);
 
         var currentChildren = new List<Visual>(Children);
         var encounteredChildren = new HashSet<Visual>();
@@ -665,6 +665,10 @@ public class RichTextBlock : FrameworkElement
     public void AccumulateInlines(Inline inline, List<RichChar> list, Brush defaultFg, float defaultSize, bool isBold, bool isItalic, bool isUnderline, Inline? parentInline = null, float leftIndent = 0f)
     {
         Brush fg = inline.Foreground ?? defaultFg;
+        if (fg is ProGPU.Vector.ThemeResourceBrush trBrush)
+        {
+            fg = ThemeManager.GetBrush(trBrush.ResourceKey, this.ActualTheme);
+        }
         float size = inline.FontSize ?? defaultSize;
         Inline source = parentInline ?? inline;
 
@@ -902,7 +906,7 @@ public class RichTextBlock : FrameworkElement
         if (activeFont == null) return positionedChars;
 
         var charList = new List<RichChar>();
-        var defaultFg = Foreground ?? new SolidColorBrush(0xFFFFFFFF);
+        var defaultFg = Foreground ?? ThemeManager.GetBrush("TextPrimary", this.ActualTheme);
         foreach (var inline in cell.Inlines)
         {
             AccumulateInlines(inline, charList, defaultFg, FontSize, false, false, false, null, 0f);
@@ -1115,12 +1119,23 @@ public class RichTextBlock : FrameworkElement
                 float colW = colWidths[col];
                 var cellRect = new Rect(currentCellX, cursorY, colW, rowHeight);
 
+                var cellBg = cell.Background;
+                if (cellBg is ProGPU.Vector.ThemeResourceBrush trBrush)
+                {
+                    cellBg = ThemeManager.GetBrush(trBrush.ResourceKey, this.ActualTheme);
+                }
+                var tableBorderBrush = table.BorderBrush;
+                if (tableBorderBrush is ProGPU.Vector.ThemeResourceBrush borderTrBrush)
+                {
+                    tableBorderBrush = ThemeManager.GetBrush(borderTrBrush.ResourceKey, this.ActualTheme);
+                }
+
                 _tableDecorations.Add(new TableVisualDecoration
                 {
                     Rect = cellRect,
-                    Background = cell.Background,
+                    Background = cellBg,
                     BorderThickness = table.BorderThickness,
-                    BorderBrush = table.BorderBrush
+                    BorderBrush = tableBorderBrush
                 });
 
                 var pcList = rowCellChars[col];
@@ -1258,7 +1273,7 @@ public class RichEditBox : Control
         RichChar style = new RichChar
         {
             Character = ' ',
-            Foreground = _blockView.Foreground ?? new SolidColorBrush(0xFFFFFFFF),
+            Foreground = _blockView.Foreground ?? ThemeManager.GetBrush("TextPrimary", _blockView.ActualTheme),
             FontSize = FontSize,
             IsBold = false,
             IsItalic = false,
@@ -1649,7 +1664,7 @@ public class RichEditBox : Control
         RichChar style = new RichChar
         {
             Character = ' ',
-            Foreground = _blockView.Foreground ?? new SolidColorBrush(0xFFFFFFFF),
+            Foreground = _blockView.Foreground ?? ThemeManager.GetBrush("TextPrimary", _blockView.ActualTheme),
             FontSize = FontSize,
             IsBold = false,
             IsItalic = false,
@@ -2148,7 +2163,7 @@ public class RichEditBox : Control
     private List<RichChar> GetFlatChars()
     {
         var list = new List<RichChar>();
-        var defaultFg = _blockView.Foreground ?? new SolidColorBrush(0xFFFFFFFF);
+        var defaultFg = _blockView.Foreground ?? ThemeManager.GetBrush("TextPrimary", _blockView.ActualTheme);
         foreach (var inline in Inlines)
         {
             _blockView.AccumulateInlines(inline, list, defaultFg, FontSize, false, false, false);
@@ -2251,7 +2266,7 @@ public class RichEditBox : Control
                 RichChar baseStyle = new RichChar
                 {
                     Character = ' ',
-                    Foreground = _blockView.Foreground ?? new SolidColorBrush(0xFFFFFFFF),
+                    Foreground = _blockView.Foreground ?? ThemeManager.GetBrush("TextPrimary", _blockView.ActualTheme),
                     FontSize = FontSize,
                     IsBold = false,
                     IsItalic = false,

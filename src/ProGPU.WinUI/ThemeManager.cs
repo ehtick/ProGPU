@@ -175,7 +175,9 @@ public static class ThemeManager
         return value;
     }
 
-    public static object? GetResource(string key)
+    public static object? GetResource(string key) => GetResource(key, CurrentTheme);
+
+    public static object? GetResource(string key, ElementTheme theme)
     {
         if (string.IsNullOrEmpty(key)) return null;
 
@@ -191,7 +193,8 @@ public static class ThemeManager
             key = alias;
         }
 
-        var dict = (CurrentTheme == ElementTheme.Light) ? LightPalette : DarkPalette;
+        var actualTheme = theme == ElementTheme.Default ? CurrentTheme : theme;
+        var dict = (actualTheme == ElementTheme.Light) ? LightPalette : DarkPalette;
         if (dict.TryGetValue(key, out var colorVal))
         {
             return new SolidColorBrush(colorVal);
@@ -200,20 +203,25 @@ public static class ThemeManager
         return null;
     }
 
-    public static Brush GetBrush(string key)
+    public static Brush GetBrush(string key) => GetBrush(key, CurrentTheme);
+
+    public static Brush GetBrush(string key, ElementTheme theme)
     {
-        var colorFallback = GetColor(key);
+        var colorFallback = GetColor(key, theme);
         return new SolidColorBrush(colorFallback);
     }
 
-    public static Vector4 GetColor(string key)
+    public static Vector4 GetColor(string key) => GetColor(key, CurrentTheme);
+
+    public static Vector4 GetColor(string key, ElementTheme theme)
     {
         if (ResourceAliases.TryGetValue(key, out var alias))
         {
             key = alias;
         }
 
-        var dict = (CurrentTheme == ElementTheme.Light) ? LightPalette : DarkPalette;
+        var actualTheme = theme == ElementTheme.Default ? CurrentTheme : theme;
+        var dict = (actualTheme == ElementTheme.Light) ? LightPalette : DarkPalette;
         if (dict.TryGetValue(key, out var valHex))
         {
             return valHex;
@@ -264,7 +272,7 @@ public static class ThemeManager
         if (typeof(HyperlinkButton).IsAssignableFrom(controlType))
         {
             style.Setters.Add(new Setter(nameof(Control.Background), TransparentBrush()));
-            style.Setters.Add(new Setter(nameof(Control.Foreground), GetBrush("SystemAccentColor")));
+            style.Setters.Add(new Setter(nameof(Control.Foreground), new ThemeResource("SystemAccentColor")));
             style.Setters.Add(new Setter(nameof(Control.BorderBrush), TransparentBrush()));
             style.Setters.Add(new Setter(nameof(Control.BorderThickness), new Thickness(0f)));
             style.Setters.Add(new Setter(nameof(Control.Padding), new Thickness(4f, 2f)));
@@ -297,8 +305,8 @@ public static class ThemeManager
 
         if (typeof(ProgressBar).IsAssignableFrom(controlType))
         {
-            style.Setters.Add(new Setter(nameof(Control.Background), GetBrush("ProgressBarBackground")));
-            style.Setters.Add(new Setter(nameof(Control.BorderBrush), GetBrush("ProgressBarForeground")));
+            style.Setters.Add(new Setter(nameof(Control.Background), new ThemeResource("ProgressBarBackground")));
+            style.Setters.Add(new Setter(nameof(Control.BorderBrush), new ThemeResource("ProgressBarForeground")));
             style.Setters.Add(new Setter(nameof(Control.BorderThickness), new Thickness(0f)));
             style.Setters.Add(new Setter(nameof(Control.CornerRadius), 2f));
             return style;
@@ -306,8 +314,8 @@ public static class ThemeManager
 
         if (typeof(ProgressRing).IsAssignableFrom(controlType))
         {
-            style.Setters.Add(new Setter(nameof(Control.Foreground), GetBrush("ProgressRingForeground")));
-            style.Setters.Add(new Setter(nameof(Control.BorderBrush), GetBrush("ProgressRingForeground")));
+            style.Setters.Add(new Setter(nameof(Control.Foreground), new ThemeResource("ProgressRingForeground")));
+            style.Setters.Add(new Setter(nameof(Control.BorderBrush), new ThemeResource("ProgressRingForeground")));
             style.Setters.Add(new Setter(nameof(Control.BorderThickness), new Thickness(0f)));
             return style;
         }
@@ -341,9 +349,9 @@ public static class ThemeManager
 
     private static void AddControlChrome(Style style, string backgroundKey, string foregroundKey, string borderKey, Thickness borderThickness, float cornerRadius, Thickness padding)
     {
-        style.Setters.Add(new Setter(nameof(Control.Background), GetBrush(backgroundKey)));
-        style.Setters.Add(new Setter(nameof(Control.Foreground), GetBrush(foregroundKey)));
-        style.Setters.Add(new Setter(nameof(Control.BorderBrush), GetBrush(borderKey)));
+        style.Setters.Add(new Setter(nameof(Control.Background), new ThemeResource(backgroundKey)));
+        style.Setters.Add(new Setter(nameof(Control.Foreground), new ThemeResource(foregroundKey)));
+        style.Setters.Add(new Setter(nameof(Control.BorderBrush), new ThemeResource(borderKey)));
         style.Setters.Add(new Setter(nameof(Control.BorderThickness), borderThickness));
         style.Setters.Add(new Setter(nameof(Control.CornerRadius), cornerRadius));
         style.Setters.Add(new Setter(nameof(Control.Padding), padding));
