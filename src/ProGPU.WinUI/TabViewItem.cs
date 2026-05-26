@@ -71,6 +71,13 @@ public class TabViewItem : ContentControl
         HeaderText = headerText;
     }
 
+    protected override void OnContentChanged(object? oldValue, object? newValue)
+    {
+        // Do not add the Content page as a child of the TabViewItem.
+        // This prevents the page from rendering or hit-testing inside the tab header.
+        // The parent TabView manually manages and adds the selected content page.
+    }
+
     public override void OnPointerMoved(PointerRoutedEventArgs e)
     {
         // Detect hover over the close button zone
