@@ -1060,6 +1060,15 @@ public class DxfInsertRenderer : IDxfEntityRenderer
 
 public class DxfViewportRenderer : IDxfEntityRenderer
 {
+    private Vector2 ProjectToScreenBypassingGpu(Vector2 worldPoint, DxfRenderContext context)
+    {
+        float localX = worldPoint.X - context.Center.X;
+        float localY = worldPoint.Y - context.Center.Y;
+        float screenX = localX * context.Zoom + context.ScreenCenter.X + context.Pan.X;
+        float screenY = -localY * context.Zoom + context.ScreenCenter.Y + context.Pan.Y;
+        return new Vector2(screenX, screenY);
+    }
+
     public void Render(EntityObject entity, DxfRenderContext context, Matrix4x4 transform)
     {
         if (entity is not netDxf.Entities.Viewport vp) return;
@@ -1075,8 +1084,8 @@ public class DxfViewportRenderer : IDxfEntityRenderer
         var pMinPaper = new Vector2((float)(vp.Center.X - halfW), (float)(vp.Center.Y - halfH));
         var pMaxPaper = new Vector2((float)(vp.Center.X + halfW), (float)(vp.Center.Y + halfH));
 
-        var screenMin = context.TransformToScreen(pMinPaper);
-        var screenMax = context.TransformToScreen(pMaxPaper);
+        var screenMin = ProjectToScreenBypassingGpu(pMinPaper, context);
+        var screenMax = ProjectToScreenBypassingGpu(pMaxPaper, context);
 
         float clipX = Math.Min(screenMin.X, screenMax.X);
         float clipY = Math.Min(screenMin.Y, screenMax.Y);
