@@ -721,5 +721,64 @@ public class SamplePagesTests
         buffer.Dispose();
         window.Content = null;
     }
+
+    [Fact]
+    public void Test_DxfCanvasControl_Invalidates_OnSizeChange()
+    {
+        EnsureFontsAndStateLoaded();
+
+        bool savedEnableStatic = AppState.EnableStaticGpuBuffers;
+        var savedCompositor = AppState._screenCompositor;
+
+        try
+        {
+            AppState.EnableStaticGpuBuffers = true;
+            var window = HeadlessWindow.Shared;
+            AppState._screenCompositor = window.Compositor;
+
+            var ctrl = new DxfCanvasControl();
+            var doc = SampleDxfGenerator.GenerateSample();
+            ctrl.LoadDocument(doc);
+
+            window.Resize(800, 600);
+            window.Content = ctrl;
+
+            // Force initial render to build static buffer and cache commands
+            window.Render();
+
+            // Access internal private fields via reflection to verify they are set
+            var lastSizeField = typeof(DxfCanvasControl).GetField("_lastSize", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            Assert.NotNull(lastSizeField);
+            var initialLastSize = (Vector2?)lastSizeField.GetValue(ctrl);
+            Assert.NotNull(initialLastSize);
+            Assert.Equal(800f, initialLastSize.Value.X);
+            Assert.Equal(600f, initialLastSize.Value.Y);
+
+            // Get the compiled static buffer
+            var staticBufferField = typeof(DxfCanvasControl).GetField("_staticBuffer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            Assert.NotNull(staticBufferField);
+            var initialBuffer = staticBufferField.GetValue(ctrl);
+            Assert.NotNull(initialBuffer);
+
+            // Now resize the window!
+            window.Resize(1024, 768);
+            
+            // Force render again, which should invalidate and rebuild because size changed!
+            window.Render();
+
+            var newLastSize = (Vector2?)lastSizeField.GetValue(ctrl);
+            Assert.NotNull(newLastSize);
+            Assert.Equal(1024f, newLastSize.Value.X);
+            Assert.Equal(768f, newLastSize.Value.Y);
+
+            // Clean up
+            window.Content = null;
+        }
+        finally
+        {
+            AppState.EnableStaticGpuBuffers = savedEnableStatic;
+            AppState._screenCompositor = savedCompositor;
+        }
+    }
 }
 
