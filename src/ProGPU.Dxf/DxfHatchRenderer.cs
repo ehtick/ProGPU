@@ -85,8 +85,9 @@ public class DxfHatchRenderer : IDxfEntityRenderer
         // 3. Render Solid / Shader-based GPU Fill (with stable screen-space PathGeometry cache)
         if (isSolid || useGpuShader)
         {
-            bool isZoomPanUnchanged = Math.Abs(entry.CachedZoom - context.Zoom) < 1e-5f &&
-                                       Vector2.Distance(entry.CachedPan, context.Pan) < 1e-4f;
+            bool isZoomPanUnchanged = context.EnableGpuTransforms ||
+                                      (Math.Abs(entry.CachedZoom - context.Zoom) < 1e-5f &&
+                                       Vector2.Distance(entry.CachedPan, context.Pan) < 1e-4f);
 
             PathGeometry pathGeometry;
             if (isZoomPanUnchanged && entry.CachedPathGeometry != null)

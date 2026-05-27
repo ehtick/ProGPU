@@ -81,12 +81,17 @@ public class DxfArcCircleRenderer : IDxfEntityRenderer
             var screenCenter = context.Transform(new Vector2(cx, cy), combined);
             var screenPoint = context.Transform(new Vector2(cx + r, cy), combined);
             float screenR = Vector2.Distance(screenCenter, screenPoint);
-            if (context.EnableGpuTransforms) screenR *= context.Zoom;
+
+            float physicalR = screenR;
+            if (context.EnableGpuTransforms)
+            {
+                physicalR *= context.Zoom;
+            }
 
             // Viewport culling using circle bounding box
             if (context.IsOffScreen(screenCenter - new Vector2(screenR), screenCenter + new Vector2(screenR))) return;
 
-            if (screenR < 1f) return; // Too small to render
+            if (physicalR < 1f) return; // Too small to render
 
             // Detect uniform scaling in the transformation matrix to use native DrawCircle
             var col1 = new Vector3(combined.M11, combined.M12, combined.M13);
@@ -106,10 +111,10 @@ public class DxfArcCircleRenderer : IDxfEntityRenderer
                 int numSegments = 64;
                 if (context.EnableLod)
                 {
-                    if (screenR < 5f) numSegments = 8;
-                    else if (screenR < 15f) numSegments = 12;
-                    else if (screenR < 50f) numSegments = 24;
-                    else if (screenR < 150f) numSegments = 36;
+                    if (physicalR < 5f) numSegments = 8;
+                    else if (physicalR < 15f) numSegments = 12;
+                    else if (physicalR < 50f) numSegments = 24;
+                    else if (physicalR < 150f) numSegments = 36;
                     else numSegments = 64;
                 }
 
@@ -138,21 +143,26 @@ public class DxfArcCircleRenderer : IDxfEntityRenderer
             var screenCenter = context.Transform(new Vector2(cx, cy), combined);
             var screenPoint = context.Transform(new Vector2(cx + r, cy), combined);
             float screenR = Vector2.Distance(screenCenter, screenPoint);
-            if (context.EnableGpuTransforms) screenR *= context.Zoom;
+
+            float physicalR = screenR;
+            if (context.EnableGpuTransforms)
+            {
+                physicalR *= context.Zoom;
+            }
 
             // Viewport culling
             if (context.IsOffScreen(screenCenter - new Vector2(screenR), screenCenter + new Vector2(screenR))) return;
 
-            if (screenR < 1f) return; // Too small to render
+            if (physicalR < 1f) return; // Too small to render
 
             // Dynamic LOD for Arc segment count
             int numSegments = 64;
             if (context.EnableLod)
             {
-                if (screenR < 5f) numSegments = 6;
-                else if (screenR < 15f) numSegments = 12;
-                else if (screenR < 50f) numSegments = 18;
-                else if (screenR < 150f) numSegments = 24;
+                if (physicalR < 5f) numSegments = 6;
+                else if (physicalR < 15f) numSegments = 12;
+                else if (physicalR < 50f) numSegments = 18;
+                else if (physicalR < 150f) numSegments = 24;
                 else numSegments = 32;
             }
 
@@ -196,21 +206,23 @@ public class DxfEllipseRenderer : IDxfEntityRenderer
         float screenRx = Vector2.Distance(screenCenter, screenPointX);
         float screenRy = Vector2.Distance(screenCenter, screenPointY);
         float maxScreenR = Math.Max(screenRx, screenRy);
-        if (context.EnableGpuTransforms) maxScreenR *= context.Zoom;
+
+        float physicalMaxR = maxScreenR;
+        if (context.EnableGpuTransforms) physicalMaxR *= context.Zoom;
 
         // Viewport culling using maximum screen radius bounding box
         if (context.IsOffScreen(screenCenter - new Vector2(maxScreenR), screenCenter + new Vector2(maxScreenR))) return;
 
-        if (maxScreenR < 1f) return; // Too small to see
+        if (physicalMaxR < 1f) return; // Too small to see
 
         // Dynamic LOD for ellipse segment count
         int numSegments = 64;
         if (context.EnableLod)
         {
-            if (maxScreenR < 5f) numSegments = 8;
-            else if (maxScreenR < 15f) numSegments = 16;
-            else if (maxScreenR < 50f) numSegments = 24;
-            else if (maxScreenR < 150f) numSegments = 36;
+            if (physicalMaxR < 5f) numSegments = 8;
+            else if (physicalMaxR < 15f) numSegments = 16;
+            else if (physicalMaxR < 50f) numSegments = 24;
+            else if (physicalMaxR < 150f) numSegments = 36;
             else numSegments = 64;
         }
 
@@ -544,8 +556,9 @@ public class DxfTextRenderer : IDxfEntityRenderer
         var v = new Vector2(-u.Y, u.X);
 
         float screenFontSize = (float)attr.Height * screenScale;
-        if (context.EnableGpuTransforms) screenFontSize *= context.Zoom;
-        if (!context.IsCompilingStatic && (context.EnableLod ? (screenFontSize < 4f) : (screenFontSize < 0.1f))) return;
+        float physicalFontSize = screenFontSize;
+        if (context.EnableGpuTransforms) physicalFontSize *= context.Zoom;
+        if (!context.IsCompilingStatic && (context.EnableLod ? (physicalFontSize < 4f) : (physicalFontSize < 0.1f))) return;
 
         float horizontalShiftMultiplier = 0f;
         float verticalShiftMultiplier = 0f;
@@ -656,8 +669,9 @@ public class DxfTextRenderer : IDxfEntityRenderer
             var v = new Vector2(-u.Y, u.X);
 
             float screenFontSize = (float)text.Height * screenScale;
-            if (context.EnableGpuTransforms) screenFontSize *= context.Zoom;
-            if (!context.IsCompilingStatic && (context.EnableLod ? (screenFontSize < 4f) : (screenFontSize < 0.1f))) return;
+            float physicalFontSize = screenFontSize;
+            if (context.EnableGpuTransforms) physicalFontSize *= context.Zoom;
+            if (!context.IsCompilingStatic && (context.EnableLod ? (physicalFontSize < 4f) : (physicalFontSize < 0.1f))) return;
 
             float horizontalShiftMultiplier = 0f;
             float verticalShiftMultiplier = 0f;
@@ -745,8 +759,9 @@ public class DxfTextRenderer : IDxfEntityRenderer
             var v = new Vector2(-u.Y, u.X);
 
             float screenFontSize = (float)mtext.Height * screenScale;
-            if (context.EnableGpuTransforms) screenFontSize *= context.Zoom;
-            if (!context.IsCompilingStatic && (context.EnableLod ? (screenFontSize < 4f) : (screenFontSize < 0.1f))) return;
+            float physicalFontSize = screenFontSize;
+            if (context.EnableGpuTransforms) physicalFontSize *= context.Zoom;
+            if (!context.IsCompilingStatic && (context.EnableLod ? (physicalFontSize < 4f) : (physicalFontSize < 0.1f))) return;
 
             float screenLineOffset = screenFontSize * 1.25f;
             float totalHeight = lines.Length * screenLineOffset;
@@ -887,8 +902,9 @@ public class DxfTextRenderer : IDxfEntityRenderer
         var v = new Vector2(-u.Y, u.X);
 
         float screenFontSize = (float)attdef.Height * screenScale;
-        if (context.EnableGpuTransforms) screenFontSize *= context.Zoom;
-        if (!context.IsCompilingStatic && (context.EnableLod ? (screenFontSize < 4f) : (screenFontSize < 0.1f))) return;
+        float physicalFontSize = screenFontSize;
+        if (context.EnableGpuTransforms) physicalFontSize *= context.Zoom;
+        if (!context.IsCompilingStatic && (context.EnableLod ? (physicalFontSize < 4f) : (physicalFontSize < 0.1f))) return;
 
         float horizontalShiftMultiplier = 0f;
         float verticalShiftMultiplier = 0f;
