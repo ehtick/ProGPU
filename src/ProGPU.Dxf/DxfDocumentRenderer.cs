@@ -160,8 +160,8 @@ public static class DxfDocumentRenderer
             }
         }
 
-        // Render MULTILEADER entities if cached in context
-        if (context.CachedMLeaders.Count > 0)
+        // Render MULTILEADER entities if cached in context (Model space only)
+        if (context.CachedMLeaders.Count > 0 && (string.IsNullOrEmpty(doc.ActiveLayout) || string.Equals(doc.ActiveLayout, "Model", StringComparison.OrdinalIgnoreCase)))
         {
             foreach (var mleader in context.CachedMLeaders)
             {
@@ -223,7 +223,7 @@ public static class DxfDocumentRenderer
         }
     }
 
-    private static void DrawArrowhead(DxfRenderContext context, Vector2 v0, Vector2 v1, ProGPU.Vector.Brush brush, ProGPU.Vector.Pen pen, float textHeight)
+    internal static void DrawArrowhead(DxfRenderContext context, Vector2 v0, Vector2 v1, ProGPU.Vector.Brush brush, ProGPU.Vector.Pen pen, float textHeight)
     {
         var diff = v0 - v1;
         float len = diff.Length();
@@ -392,7 +392,7 @@ public static class DxfDocumentRenderer
             AccumulateFlatCollectionsBounds(doc, ref min, ref max, ref hasData, activeLayers);
         }
 
-        if (context != null)
+        if (context != null && (string.IsNullOrEmpty(doc.ActiveLayout) || string.Equals(doc.ActiveLayout, "Model", StringComparison.OrdinalIgnoreCase)))
         {
             // Accumulate bounds from Cached3dSolids in WCS space (using context.CurrentTransform)
             foreach (var solid in context.Cached3dSolids)
