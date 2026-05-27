@@ -505,6 +505,22 @@ public class DesignerCanvas : Panel
         return snapVal;
     }
 
+    public override void OnDrop(Microsoft.UI.Xaml.DragEventArgs e)
+    {
+        base.OnDrop(e);
+        
+        // Translate local pointer coordinates to logical design coordinate
+        Vector2 logicalPos = (e.Position - PanOffset) / ZoomScale;
+        
+        var args = new ProGPU.Designer.DragEventArgs(e.Data, logicalPos);
+        OnDrop(args);
+        
+        if (args.Handled)
+        {
+            e.Handled = true;
+        }
+    }
+
     public void OnDrop(DragEventArgs args)
     {
         if (!AllowDrop) return;

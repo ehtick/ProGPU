@@ -169,8 +169,8 @@ public static class DragDropManager
         DragVisual.Measure(new Vector2(screenWidth, screenHeight));
         DragVisual.Arrange(new Rect(mousePos, DragVisual.DesiredSize));
 
-        // Recursively render and compile commands offset at target mouse visual coordinates
-        RenderElementRecursively(context, DragVisual, mousePos, screenWidth, screenHeight);
+        // Recursively render and compile commands offset starting from Vector2.Zero because DragVisual's own Offset is already mousePos!
+        RenderElementRecursively(context, DragVisual, Vector2.Zero, screenWidth, screenHeight);
     }
 
     private static void RenderElementRecursively(DrawingContext context, FrameworkElement element, Vector2 offset, float screenWidth, float screenHeight)

@@ -84,28 +84,86 @@ public class ToolboxItem : Border
             var dp = new DataPackage();
             dp.SetData(StandardDataFormats.Tool, _controlName);
             
-            var dragVisual = new Border
-            {
-                Width = 140f,
-                Height = 36f,
-                Background = new ThemeResourceBrush("SystemAccentColor"),
-                BorderBrush = new ThemeResourceBrush("ControlBorder"),
-                BorderThickness = new Thickness(1f),
-                CornerRadius = 6f,
-                Opacity = 0.75f,
-                Padding = new Thickness(10, 8, 10, 8)
-            };
+            FrameworkElement? dragVisual = null;
             
-            var visualText = new RichTextBlock
+            // Try to instantiate actual control for visual preview
+            try
             {
-                Font = _font,
-                FontSize = 12f,
-                Foreground = new ThemeResourceBrush("TextPrimary"),
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            visualText.Inlines.Add(new Run(_controlName));
-            dragVisual.Child = visualText;
+                Type? controlType = null;
+                string[] searchNamespaces = {
+                    "Microsoft.UI.Xaml.Controls",
+                    "Microsoft.UI.Xaml",
+                    "ProGPU.Designer"
+                };
+
+                foreach (var ns in searchNamespaces)
+                {
+                    var typeName = $"{ns}.{_controlName}";
+                    foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+                    {
+                        controlType = assembly.GetType(typeName);
+                        if (controlType != null) break;
+                    }
+                    if (controlType != null) break;
+                }
+
+                if (controlType != null && typeof(FrameworkElement).IsAssignableFrom(controlType))
+                {
+                    dragVisual = Activator.CreateInstance(controlType) as FrameworkElement;
+                }
+            }
+            catch {}
+
+            if (dragVisual != null)
+            {
+                dragVisual.Width = 120f;
+                dragVisual.Height = 36f;
+                dragVisual.Opacity = 0.7f;
+                dragVisual.IsHitTestVisible = false;
+
+                if (dragVisual is Button button)
+                {
+                    var richText = new RichTextBlock { Font = _font ?? PopupService.DefaultFont };
+                    richText.Inlines.Add(new Run(_controlName));
+                    button.Content = richText;
+                }
+                else if (dragVisual is TextBlock textBlock)
+                {
+                    textBlock.Text = _controlName;
+                }
+                else if (dragVisual is CheckBox checkBox)
+                {
+                    var richText = new RichTextBlock { Font = _font ?? PopupService.DefaultFont };
+                    richText.Inlines.Add(new Run(_controlName));
+                    checkBox.Content = richText;
+                }
+            }
+            else
+            {
+                // Fallback to standard sleek Border visual
+                dragVisual = new Border
+                {
+                    Width = 140f,
+                    Height = 36f,
+                    Background = new ThemeResourceBrush("SystemAccentColor"),
+                    BorderBrush = new ThemeResourceBrush("ControlBorder"),
+                    BorderThickness = new Thickness(1f),
+                    CornerRadius = 6f,
+                    Opacity = 0.75f,
+                    Padding = new Thickness(10, 8, 10, 8)
+                };
+                
+                var visualText = new RichTextBlock
+                {
+                    Font = _font,
+                    FontSize = 12f,
+                    Foreground = new ThemeResourceBrush("TextPrimary"),
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                visualText.Inlines.Add(new Run(_controlName));
+                ((Border)dragVisual).Child = visualText;
+            }
 
             DragDropManager.StartDrag(this, dp, DragDropEffects.Copy, dragVisual);
             e.Handled = true;
