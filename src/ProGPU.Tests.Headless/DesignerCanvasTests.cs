@@ -5,6 +5,9 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using ProGPU.Designer;
+using DataPackage = ProGPU.Designer.DataPackage;
+using DragEventArgs = ProGPU.Designer.DragEventArgs;
+using StandardDataFormats = ProGPU.Designer.StandardDataFormats;
 using ProGPU.Vector;
 using ProGPU.Layout;
 

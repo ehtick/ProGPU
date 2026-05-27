@@ -396,7 +396,7 @@ public static class InputSystem
         _hoverCancellation = null;
         DismissToolTip();
 
-        if (button != MouseButton.Left) return;
+        if (button != MouseButton.Left && button != MouseButton.Middle && button != MouseButton.Right) return;
 
         var hit = HitTest(_lastMousePos);
 
@@ -483,7 +483,9 @@ public static class InputSystem
             {
                 Position = GetLocalPosition(hit, _lastMousePos),
                 ScreenPosition = _lastMousePos,
-                IsLeftButtonPressed = true
+                IsLeftButtonPressed = (button == MouseButton.Left),
+                IsMiddleButtonPressed = (button == MouseButton.Middle),
+                IsRightButtonPressed = (button == MouseButton.Right)
             });
         }
         else
@@ -495,9 +497,9 @@ public static class InputSystem
 
     private static void OnMouseUp(MouseButton button)
     {
-        if (button != MouseButton.Left) return;
+        if (button != MouseButton.Left && button != MouseButton.Middle && button != MouseButton.Right) return;
 
-        if (DragDropManager.IsDragging)
+        if (DragDropManager.IsDragging && button == MouseButton.Left)
         {
             DragDropManager.CompleteDrop(_lastMousePos);
             return;
@@ -509,7 +511,9 @@ public static class InputSystem
             {
                 Position = GetLocalPosition(_capturedElement, _lastMousePos),
                 ScreenPosition = _lastMousePos,
-                IsLeftButtonPressed = false
+                IsLeftButtonPressed = (button == MouseButton.Left),
+                IsMiddleButtonPressed = (button == MouseButton.Middle),
+                IsRightButtonPressed = (button == MouseButton.Right)
             });
             ReleasePointerCapture();
             return;
@@ -522,7 +526,9 @@ public static class InputSystem
             {
                 Position = GetLocalPosition(hit, _lastMousePos),
                 ScreenPosition = _lastMousePos,
-                IsLeftButtonPressed = false
+                IsLeftButtonPressed = (button == MouseButton.Left),
+                IsMiddleButtonPressed = (button == MouseButton.Middle),
+                IsRightButtonPressed = (button == MouseButton.Right)
             });
         }
     }

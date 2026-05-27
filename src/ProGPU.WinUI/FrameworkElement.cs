@@ -35,6 +35,8 @@ public class PointerRoutedEventArgs : RoutedEventArgs
     public Vector2 Position { get; set; }       // Position relative to the element
     public Vector2 ScreenPosition { get; set; } // Position relative to the screen
     public bool IsLeftButtonPressed { get; set; }
+    public bool IsMiddleButtonPressed { get; set; }
+    public bool IsRightButtonPressed { get; set; }
     public float WheelDelta { get; set; }
 }
 

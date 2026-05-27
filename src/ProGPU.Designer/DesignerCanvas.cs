@@ -25,18 +25,6 @@ public class DragEventArgs : RoutedEventArgs
     }
 }
 
-public class DataPackage
-{
-    private readonly Dictionary<string, object> _properties = new();
-
-    public void SetText(string text) => _properties["Text"] = text;
-    public string GetText() => _properties.TryGetValue("Text", out var val) ? (string)val : string.Empty;
-
-    public void SetData(string formatId, object value) => _properties[formatId] = value;
-    public object GetData(string formatId) => _properties.TryGetValue(formatId, out var val) ? val : null;
-    public bool Contains(string formatId) => _properties.ContainsKey(formatId);
-}
-
 public static class StandardDataFormats
 {
     public const string Tool = "Tool";
@@ -48,38 +36,80 @@ public class DesignerCanvas : Panel
     public Canvas DesignSurface { get; }
     public Canvas AdornerSurface { get; }
 
-    public FrameworkElement? SelectedElement { get; private set; }
+    private FrameworkElement? _selectedElement;
+    public FrameworkElement? SelectedElement
+    {
+        get => _selectedElement;
+        set => SelectElement(value);
+    }
     private SelectionAdorner? _selectionAdorner;
 
     public bool AllowDrop { get; set; } = true;
 
     public event EventHandler<DragEventArgs>? DragOver;
-    public event EventHandler<DragEventArgs>? Drop;
+    public new event EventHandler<DragEventArgs>? Drop;
 
     public float? ActiveVerticalSnapX { get; set; }
     public float? ActiveHorizontalSnapY { get; set; }
 
+    // Zoom and Pan Properties
+    public float ZoomScale { get; set; } = 1.0f;
+    public Vector2 PanOffset { get; set; } = Vector2.Zero;
+
+    public bool ShowGridLines { get; set; } = true;
+    public bool GridSnappingEnabled { get; set; } = true;
+    public float GridSize { get; set; } = 10f;
+    public Func<float>? GetDpiScale { get; set; }
+
+    public event Action? SelectionChanged;
+    public event Action? CanvasModified;
+
     // Pointer movement state
     private bool _isDraggingElement;
-    private Vector2 _dragStartOffset;
+    private Vector2 _dragStartOffset; // Logical offset
     private float _elementStartLeft;
     private float _elementStartTop;
+
+    // Panning state
+    private bool _isPanning;
+    private Vector2 _panStartMouse;
+    private Vector2 _panStartOffset;
+
+    public new PanelChildrenCollection Children => DesignSurface.Children;
 
     public DesignerCanvas()
     {
         DesignSurface = new Canvas();
         AdornerSurface = new Canvas();
 
-        Children.Add(DesignSurface);
-        Children.Add(AdornerSurface);
+        base.AddChild(DesignSurface);
+        base.AddChild(AdornerSurface);
 
         // Bind background dynamically using ThemeResourceBrush to comply with guidelines
         Background = new ThemeResourceBrush("PageBackground");
+
+        ApplyTransforms();
+    }
+
+    public new void AddChild(Visual child)
+    {
+        DesignSurface.Children.Add(child);
+        CanvasModified?.Invoke();
+    }
+
+    public void ApplyTransforms()
+    {
+        Matrix4x4 scale = Matrix4x4.CreateScale(ZoomScale, ZoomScale, 1.0f);
+        Matrix4x4 translation = Matrix4x4.CreateTranslation(PanOffset.X, PanOffset.Y, 0.0f);
+        Matrix4x4 transform = scale * translation;
+
+        DesignSurface.Transform = transform;
+        AdornerSurface.Transform = transform;
     }
 
     public void SelectElement(FrameworkElement? element)
     {
-        if (SelectedElement == element) return;
+        if (_selectedElement == element) return;
 
         if (_selectionAdorner != null)
         {
@@ -87,14 +117,16 @@ public class DesignerCanvas : Panel
             _selectionAdorner = null;
         }
 
-        SelectedElement = element;
+        _selectedElement = element;
 
-        if (SelectedElement != null)
+        if (_selectedElement != null)
         {
-            _selectionAdorner = new SelectionAdorner(SelectedElement, this);
+            _selectionAdorner = new SelectionAdorner(_selectedElement, this);
             AdornerSurface.Children.Add(_selectionAdorner);
             _selectionAdorner.UpdatePositionAndSize();
         }
+
+        SelectionChanged?.Invoke();
 
         InvalidateArrange();
         Invalidate();
@@ -122,31 +154,68 @@ public class DesignerCanvas : Panel
 
     public override void OnPointerPressed(PointerRoutedEventArgs e)
     {
-        var clicked = e.OriginalSource as FrameworkElement;
-        FrameworkElement? childOfDesignSurface = null;
-        while (clicked != null && clicked != DesignSurface)
+        // 1. Middle-mouse panning check
+        if (e.IsMiddleButtonPressed)
         {
-            if (clicked.Parent == DesignSurface)
-            {
-                childOfDesignSurface = clicked;
-                break;
-            }
-            clicked = clicked.Parent as FrameworkElement;
+            _isPanning = true;
+            _panStartMouse = e.Position;
+            _panStartOffset = PanOffset;
+            InputSystem.CapturePointer(this);
+            e.Handled = true;
+            base.OnPointerPressed(e);
+            return;
         }
 
-        if (childOfDesignSurface != null)
+        // 2. Check if a resize thumb in SelectionAdorner was hit
+        var original = e.OriginalSource as FrameworkElement;
+        bool hitThumb = false;
+        var curr = original;
+        while (curr != null)
         {
-            SelectElement(childOfDesignSurface);
+            if (curr is Thumb)
+            {
+                hitThumb = true;
+                break;
+            }
+            curr = curr.Parent as FrameworkElement;
+        }
+
+        if (hitThumb)
+        {
+            base.OnPointerPressed(e);
+            return;
+        }
+
+        // 3. Manual geometric hit test in logical coordinates
+        Vector2 logicalPos = (e.Position - PanOffset) / ZoomScale;
+        FrameworkElement? hitChild = null;
+
+        for (int i = DesignSurface.Children.Count - 1; i >= 0; i--)
+        {
+            if (DesignSurface.Children[i] is FrameworkElement child)
+            {
+                Rect bounds = GetElementRect(child);
+                if (bounds.Contains(logicalPos))
+                {
+                    hitChild = child;
+                    break;
+                }
+            }
+        }
+
+        if (hitChild != null)
+        {
+            SelectElement(hitChild);
             
-            // Start dragging
+            // Start dragging in logical space
             _isDraggingElement = true;
-            _dragStartOffset = e.Position;
-            _elementStartLeft = Canvas.GetLeft(childOfDesignSurface);
-            _elementStartTop = Canvas.GetTop(childOfDesignSurface);
+            _dragStartOffset = logicalPos;
+            _elementStartLeft = Canvas.GetLeft(hitChild);
+            _elementStartTop = Canvas.GetTop(hitChild);
             InputSystem.CapturePointer(this);
             e.Handled = true;
         }
-        else if (e.OriginalSource == this || e.OriginalSource == DesignSurface)
+        else
         {
             SelectElement(null);
         }
@@ -156,13 +225,27 @@ public class DesignerCanvas : Panel
 
     public override void OnPointerMoved(PointerRoutedEventArgs e)
     {
+        // 1. Panning update
+        if (_isPanning)
+        {
+            Vector2 delta = e.Position - _panStartMouse;
+            PanOffset = _panStartOffset + delta;
+            ApplyTransforms();
+            Invalidate();
+            e.Handled = true;
+            base.OnPointerMoved(e);
+            return;
+        }
+
+        // 2. Dragging element update in logical space
         if (_isDraggingElement && SelectedElement != null)
         {
-            Vector2 delta = e.Position - _dragStartOffset;
+            Vector2 logicalPos = (e.Position - PanOffset) / ZoomScale;
+            Vector2 delta = logicalPos - _dragStartOffset;
             float candidateLeft = _elementStartLeft + delta.X;
             float candidateTop = _elementStartTop + delta.Y;
 
-            // Snaps coordinates if close (within 8 pixels)
+            // Snaps coordinates if close
             Vector2 snapped = SnapPosition(SelectedElement, new Vector2(candidateLeft, candidateTop));
 
             Canvas.SetLeft(SelectedElement, snapped.X);
@@ -174,6 +257,7 @@ public class DesignerCanvas : Panel
             SelectedElement.InvalidateArrange();
             SelectedElement.Invalidate();
 
+            CanvasModified?.Invoke();
             InvalidateArrange();
             Invalidate();
             e.Handled = true;
@@ -184,6 +268,17 @@ public class DesignerCanvas : Panel
 
     public override void OnPointerReleased(PointerRoutedEventArgs e)
     {
+        // 1. Release panning
+        if (_isPanning)
+        {
+            _isPanning = false;
+            InputSystem.ReleasePointerCapture();
+            e.Handled = true;
+            base.OnPointerReleased(e);
+            return;
+        }
+
+        // 2. Release dragging element
         if (_isDraggingElement)
         {
             InputSystem.ReleasePointerCapture();
@@ -193,11 +288,37 @@ public class DesignerCanvas : Panel
             ActiveVerticalSnapX = null;
             ActiveHorizontalSnapY = null;
             
+            CanvasModified?.Invoke();
             Invalidate();
             e.Handled = true;
         }
         
         base.OnPointerReleased(e);
+    }
+
+    public override void OnPointerWheelChanged(PointerRoutedEventArgs e)
+    {
+        if (InputSystem.Current.IsControlPressed)
+        {
+            float oldZoom = ZoomScale;
+            float zoomFactor = e.WheelDelta > 0 ? 1.1f : 0.9f;
+            float newZoom = Math.Clamp(oldZoom * zoomFactor, 0.15f, 4.0f);
+            
+            if (newZoom != oldZoom)
+            {
+                Vector2 mousePos = e.Position;
+                Vector2 logicalPos = (mousePos - PanOffset) / oldZoom;
+                ZoomScale = newZoom;
+                PanOffset = mousePos - logicalPos * newZoom;
+                
+                ApplyTransforms();
+                Invalidate();
+            }
+            e.Handled = true;
+            return;
+        }
+        
+        base.OnPointerWheelChanged(e);
     }
 
     public float SnapToGrid(float val, float gridSpacing = 10f)
@@ -233,10 +354,11 @@ public class DesignerCanvas : Panel
         float y = newPos.Y;
 
         // Grid snap default
-        float gridSnappedX = SnapToGrid(x, 10f);
-        float gridSnappedY = SnapToGrid(y, 10f);
+        float spacing = GridSize;
+        float gridSnappedX = GridSnappingEnabled ? SnapToGrid(x, spacing) : x;
+        float gridSnappedY = GridSnappingEnabled ? SnapToGrid(y, spacing) : y;
 
-        float snapThreshold = 8f;
+        float snapThreshold = 8f / ZoomScale;
         float? snapX = null;
         float? snapY = null;
         
@@ -308,8 +430,9 @@ public class DesignerCanvas : Panel
         return new Vector2(snappedLeft, snappedTop);
     }
 
-    public float? GetSnapX(FrameworkElement element, float targetX, float snapThreshold = 8f)
+    public float? GetSnapX(FrameworkElement element, float targetX)
     {
+        float snapThreshold = 8f / ZoomScale;
         float? snapVal = null;
         foreach (var child in DesignSurface.Children)
         {
@@ -338,8 +461,9 @@ public class DesignerCanvas : Panel
         return snapVal;
     }
 
-    public float? GetSnapY(FrameworkElement element, float targetY, float snapThreshold = 8f)
+    public float? GetSnapY(FrameworkElement element, float targetY)
     {
+        float snapThreshold = 8f / ZoomScale;
         float? snapVal = null;
         foreach (var child in DesignSurface.Children)
         {
@@ -424,7 +548,7 @@ public class DesignerCanvas : Panel
                     var newInstance = Activator.CreateInstance(controlType) as FrameworkElement;
                     if (newInstance != null)
                     {
-                        Vector2 snappedPos = SnapPositionToGrid(args.Position, 10f);
+                        Vector2 snappedPos = SnapPositionToGrid(args.Position, GridSize);
 
                         Canvas.SetLeft(newInstance, snappedPos.X);
                         Canvas.SetTop(newInstance, snappedPos.Y);
@@ -445,6 +569,8 @@ public class DesignerCanvas : Panel
 
                         DesignSurface.Children.Add(newInstance);
                         SelectElement(newInstance);
+
+                        CanvasModified?.Invoke();
 
                         InvalidateMeasure();
                         InvalidateArrange();
@@ -480,47 +606,73 @@ public class DesignerCanvas : Panel
 
         base.OnRender(context);
 
-        // 1. Grid Background
-        float gridSpacing = 10f;
-        var gridBrush = ActualTheme == ElementTheme.Dark
-            ? new SolidColorBrush(new Vector4(1f, 1f, 1f, 0.08f))
-            : new SolidColorBrush(new Vector4(0f, 0f, 0f, 0.06f));
-
-        float dpiScale = 1.0f;
-        var activeWindow = WindowManager.ActiveWindows.Count > 0 ? WindowManager.ActiveWindows[0] : null;
-        if (activeWindow != null && activeWindow.SilkWindow != null)
+        float dpiScale = GetDpiScale?.Invoke() ?? 1.0f;
+        if (dpiScale == 1.0f)
         {
-            dpiScale = (float)activeWindow.SilkWindow.FramebufferSize.X / activeWindow.SilkWindow.Size.X;
-        }
-
-        for (float x = gridSpacing; x < Size.X; x += gridSpacing)
-        {
-            for (float y = gridSpacing; y < Size.Y; y += gridSpacing)
+            var activeWindow = WindowManager.ActiveWindows.Count > 0 ? WindowManager.ActiveWindows[0] : null;
+            if (activeWindow != null && activeWindow.SilkWindow != null)
             {
-                // DPI-Aware Snapping: snaps in physical coordinates snapped to 1/4th of a physical pixel, then snap-backed
-                float physX = MathF.Round(x * dpiScale * 4f) / 4f;
-                float physY = MathF.Round(y * dpiScale * 4f) / 4f;
-
-                Vector2 snapBackPos = new Vector2(physX, physY) / dpiScale;
-                
-                context.FillCircle(gridBrush, snapBackPos, 0.75f);
+                dpiScale = (float)activeWindow.SilkWindow.FramebufferSize.X / activeWindow.SilkWindow.Size.X;
             }
         }
 
-        // 2. High-Contrast Dashed Neon Guidelines
+        // 1. Grid Background (Scaled & Panned)
+        if (ShowGridLines && GridSize > 1f)
+        {
+            float gridSpacing = GridSize;
+            var gridBrush = ActualTheme == ElementTheme.Dark
+                ? new SolidColorBrush(new Vector4(1f, 1f, 1f, 0.08f))
+                : new SolidColorBrush(new Vector4(0f, 0f, 0f, 0.06f));
+
+            // Calculate visible logical bounds
+            Vector2 minLogical = (Vector2.Zero - PanOffset) / ZoomScale;
+            Vector2 maxLogical = (Size - PanOffset) / ZoomScale;
+
+            float minX = MathF.Floor(minLogical.X / gridSpacing) * gridSpacing;
+            float maxX = MathF.Ceiling(maxLogical.X / gridSpacing) * gridSpacing;
+            float minY = MathF.Floor(minLogical.Y / gridSpacing) * gridSpacing;
+            float maxY = MathF.Ceiling(maxLogical.Y / gridSpacing) * gridSpacing;
+
+            for (float x = minX; x <= maxX; x += gridSpacing)
+            {
+                for (float y = minY; y <= maxY; y += gridSpacing)
+                {
+                    // Calculate screen position
+                    Vector2 screenPos = new Vector2(x, y) * ZoomScale + PanOffset;
+
+                    // Skip if outside screen bounds
+                    if (screenPos.X < 0 || screenPos.X > Size.X || screenPos.Y < 0 || screenPos.Y > Size.Y)
+                        continue;
+
+                    // DPI-Aware Snapping: snaps in physical coordinates snapped to 1/4th of a physical pixel, then snap-backed
+                    float physX = MathF.Round(screenPos.X * dpiScale * 4f) / 4f;
+                    float physY = MathF.Round(screenPos.Y * dpiScale * 4f) / 4f;
+
+                    Vector2 snapBackPos = new Vector2(physX, physY) / dpiScale;
+                    
+                    context.FillCircle(gridBrush, snapBackPos, 0.75f);
+                }
+            }
+        }
+
+        // 2. High-Contrast Dashed Neon Guidelines (Scaled & Snapped)
         var neonBrush = new SolidColorBrush(new Vector4(1f, 0.078f, 0.576f, 1f)); // Neon Pink!
         var neonPen = new Pen(neonBrush, 1.5f);
 
         if (ActiveVerticalSnapX != null)
         {
             float snapX = ActiveVerticalSnapX.Value;
-            DrawDashedVerticalLine(context, neonPen, snapX, 0f, Size.Y);
+            float screenSnapX = snapX * ZoomScale + PanOffset.X;
+            screenSnapX = MathF.Round(screenSnapX * dpiScale * 4f) / 4f / dpiScale;
+            DrawDashedVerticalLine(context, neonPen, screenSnapX, 0f, Size.Y);
         }
 
         if (ActiveHorizontalSnapY != null)
         {
             float snapY = ActiveHorizontalSnapY.Value;
-            DrawDashedHorizontalLine(context, neonPen, snapY, 0f, Size.X);
+            float screenSnapY = snapY * ZoomScale + PanOffset.Y;
+            screenSnapY = MathF.Round(screenSnapY * dpiScale * 4f) / 4f / dpiScale;
+            DrawDashedHorizontalLine(context, neonPen, screenSnapY, 0f, Size.X);
         }
     }
 
