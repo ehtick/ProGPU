@@ -70,8 +70,8 @@ public class DxfCanvasControl : FrameworkElement
     {
         if (Document == null || Size.X <= 0 || Size.Y <= 0) return;
 
-        // Calculate drawing min/max bounds
-        var (min, max) = DxfDocumentRenderer.CalculateBounds(Document);
+        // Calculate drawing min/max bounds based on active visible layers only
+        var (min, max) = DxfDocumentRenderer.CalculateBounds(Document, Context.ActiveLayers);
 
         float dxfWidth = max.X - min.X;
         float dxfHeight = max.Y - min.Y;
@@ -248,6 +248,28 @@ public static class DxfViewerPage
         fitBtnText.Inlines.Add(new Bold(new Run("📐 Zoom to Fit Bounds")));
         fitBtn.Content = fitBtnText;
         sidebarStack.AddChild(fitBtn);
+
+        // LOD Optimization CheckBox
+        var lodStack = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 16f) };
+        var lodText = new RichTextBlock { Font = AppState.GetFont(), FontSize = 12f };
+        lodText.Inlines.Add(new Run("Enable LOD Optimization"));
+        var lodChk = new CheckBox
+        {
+            Content = lodText,
+            IsChecked = false, // disabled by default!
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        lodChk.CheckedChanged += (s, e) =>
+        {
+            if (_canvas != null)
+            {
+                _canvas.Context.EnableLod = lodChk.IsChecked;
+                _canvas.Invalidate();
+                UpdateStatus($"LOD Optimization: {(lodChk.IsChecked ? "Enabled" : "Disabled")}");
+            }
+        };
+        lodStack.AddChild(lodChk);
+        sidebarStack.AddChild(lodStack);
 
         // Layout Space Selection section header
         var layoutsHeader = new RichTextBlock { Font = AppState.GetFont(), FontSize = 13f, Margin = new Thickness(0, 8, 0, 8) };

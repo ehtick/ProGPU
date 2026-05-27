@@ -524,7 +524,7 @@ ProGPU routes all graphics and compute tasks directly to the GPU using specializ
 
 ## Development & Diagnostic Tools
 
-To support high-quality rendering diagnostics and verify glyph outlines, ProGPU includes a dedicated diagnostic utility:
+To support high-quality rendering diagnostics and verify vector structures, ProGPU includes two dedicated diagnostic utilities:
 
 ### 1. TrueType Font Outline Diagnostic Tool (`TtfDiag`)
 Located in `tools/TtfDiag/`, this is a generic console tool designed to inspect outline structures, endpoint coordinates, and control points of TrueType fonts. It is especially useful for diagnosing text rendering quality, drop-out artifacts, or glyph parsing inconsistencies.
@@ -538,3 +538,16 @@ Located in `tools/TtfDiag/`, this is a generic console tool designed to inspect 
   dotnet run --project tools/TtfDiag -- /System/Library/Fonts/Supplemental/Georgia.ttf ABC
   ```
 * **Output**: Dumps the exact TrueType outline geometry, closed/filled figure status, segment types (Lines/Quadratic Beziers), and precise coordinates using standard invariant decimal formatting.
+
+### 2. DXF Vector CAD Diagnostic Tool (`DxfDiag`)
+Located in `tools/DxfDiag/`, this is a standalone command-line utility to inspect DXF vector files. It lists all available layouts and layers, prints active layout geometric bounds, recursive block hierarchies, nested insert attributes (tags/values), and detects coordinate outliers exceeding absolute limits ($> 1,000,000$). The complete diagnostic trace is saved to `outliers.txt` in the local directory.
+
+* **Usage**:
+  ```bash
+  # Run on a target DXF drawing file to inspect the default active space layout
+  dotnet run --project tools/DxfDiag -- <path-to-dxf-file>
+
+  # Run on a target DXF drawing file and explicitly target a specific layout space (e.g. 'A0')
+  dotnet run --project tools/DxfDiag -- <path-to-dxf-file> --layout A0
+  ```
+* **Output**: Generates a detailed audit of entity counts, viewport settings, block trees, and coordinates, saving the report to `outliers.txt` and logging a summary to the console.
