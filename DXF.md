@@ -700,32 +700,105 @@ Standard spline engines evaluate curve segments in 2D or 3D Cartesian coordinate
    $$P(u) = \begin{bmatrix} X_h / W_h \\ Y_h / W_h \end{bmatrix}$$
 This mathematically guarantees CAD-perfect NURBS curves with variable weights and knot vectors.
 
-### D. B-Rep 3D SAT Wireframe Projections
-3D Solid components (`3DSOLID`, `REGION`, `BODY`) in modern DXF files contain boundary representation (B-Rep) databases stored in ACIS SAT (Standard ACIS Text) formatting. The engine introduces an integrated high-performance parsing and projection pipeline:
+### D. B-Rep 3D SAT and SAB (Standard ACIS Binary) Projections
+3D Solid components (`3DSOLID`, `REGION`, `BODY`) in modern DXF files contain boundary representation (B-Rep) databases stored in either ACIS SAT (textual) or ACIS SAB (Standard ACIS Binary) formatting. To support SAB, the engine implements a binary stream token-based decoder:
+
+#### 1. Binary SAB Token-Based Stream Scanning
+`AcisSabParser` scans the raw binary byte stream sequentially, decoding tokens based on two-way parsing strategies:
+* **Standard Tagged Parsing (SAB Native):** Evaluates binary tags:
+  * `0x01` (Integer Tag): Decodes 4-byte 2's complement integers.
+  * `0x02` (Double Tag): Decodes 8-byte IEEE 754 floating-point coordinates.
+  * `0x0C` (Pointer Tag): Decodes 4-byte reference pointer indices.
+  * `0x03` & `0x04` (String Tags): Decodes length-prefixed entity type names (e.g., `edge`, `vertex`, `point`).
+* **Tag-less Sequential Fallback:** If stream tags are absent, the parser reads raw binary primitives sequentially according to fixed B-Rep entity structures (e.g., `body`, `lump`, `shell`, `face`, `loop`, `coedge` have 4 pointer fields; `edge` has 5 pointers; `vertex` has 2 pointers; `point` has 1 pointer + 3 doubles; `straight`/`ellipse`/`intcurve` have 1 pointer).
+
+#### 2. Entity Relation Reconstruction
+The parser reconstructs the B-Rep relationships to isolate `edge` records, tracing vertices to points to extract 3D Cartesian start/end coordinates:
+$$V_{\text{start}} = (x_s, y_s, z_s), \quad V_{\text{end}} = (x_e, y_e, z_e)$$
 
 ```mermaid
 graph TD
-    subgraph ACIS SAT B-Rep Entity Graph
-        Body["body"] --> Lump["lump"]
-        Lump --> Shell["shell"]
-        Shell --> Face["face"]
-        Face --> Loop["loop"]
-        Loop --> Coedge["coedge"]
-        Coedge --> Edge["edge"]
-        Edge --> Vertex1["vertex 1"]
-        Edge --> Vertex2["vertex 2"]
-        Edge --> Curve["curve geometry (straight / ellipse)"]
-        Vertex1 --> Point1["point (X, Y, Z)"]
-        Vertex2 --> Point2["point (X, Y, Z)"]
+    subgraph ACIS SAB Binary Decoder
+        SAB["Raw SAB Bytes"] --> tagCheck{"Has Tags (0x01, 0x02, 0x0C)?"}
+        tagCheck -- "Yes" --> parseTagged["Standard Tagged Stream Parsing"]
+        tagCheck -- "No" --> parseSequential["Tagless Sequential Primitive Schema parsing"]
+        
+        parseTagged --> reconstruct["Trace Entity Indices & Pointers"]
+        parseSequential --> reconstruct
+        
+        reconstruct --> extractEdges["Isolate 'edge' records"]
+        extractEdges --> traceVertices["Trace vertices -> points"]
+        traceVertices --> output3D["Output List of Acis3dEdge (Start, End)"]
     end
 ```
 
-The rendering pipeline extracts and draws these solids as follows:
-1. **Raw DXF Scanning**: The engine parses the raw DXF stream sequentially to extract SAT textual blocks embedded under proxy objects in the `OBJECTS` stream.
-2. **Entity Relation Reconstruction**: `AcisSatParser` parses entity records, builds pointer maps using implicit entity indexes, and isolates all `edge` entities.
-3. **Vertex Point Resolution**: For each edge, the start and end `vertex` indices are resolved to their referenced `point` records, extracting 3D Cartesian coordinates:
-   $$V_{\text{start}} = (x_s, y_s, z_s), \quad V_{\text{end}} = (x_e, y_e, z_e)$$
-4. **2D Perspective/Orthographic Projection**: 3D coordinates are transformed by the active scene transformation matrix $M_{\text{combined}}$:
-   $$\mathbf{v}' = \begin{bmatrix} x & y & z & 1 \end{bmatrix} \cdot M_{\text{combined}}$$
-   $$P_{\text{screen}} = \text{TransformToScreen}\left( \frac{\mathbf{v}'_x}{\mathbf{v}'_w}, \ \frac{\mathbf{v}'_y}{\mathbf{v}'_w} \right)$$
-5. **Zero-Overhead Edge Batching**: The projected 2D wireframe edges are drawn as fast line vectors.
+### E. Zero-Overhead GPU-Side 3D Line Projections ($ShapeType = 8u$)
+To offload 3D wireframe projections from the CPU, 3D line edges are projected directly on the GPU using specialized vertex shaders:
+1. **Vertex Buffer Packing:** 3D coordinates $(x, y, z)$ are packed directly into the standard `VectorVertex` layout:
+   * `Position` stores $(x, y)$ coordinates.
+   * `TexCoord.X` stores the $z$ coordinate.
+   * `ShapeType` is flagged as `8.0f`.
+2. **GPU Projection:** In the WGSL vertex shader `vs_main`, when `sType == 8u`, the 3D position is reconstructed and transformed by the combined model-view-projection matrix:
+   $$\mathbf{v}_{\text{local3D}} = \begin{bmatrix} x & y & z & 1 \end{bmatrix}^T$$
+   $$\mathbf{v}_{\text{projected}} = \mathbf{M}_{\text{mvp}} \cdot \mathbf{v}_{\text{local3D}}$$
+   $$\mathbf{v}_{\text{clip}} = \begin{bmatrix} x_p / w_p & y_p / w_p & 0 & 1 \end{bmatrix}^T$$
+
+```mermaid
+flowchart LR
+    subgraph GPU 3D Projection Pipeline
+        pack["CPU Packs VectorVertex: xy=Pos, z=TexCoord.X, sType=8.0f"] --> submit["Submit DrawLine3D to WebGPU Render Pipeline"]
+        submit --> vs["WGSL vs_main: sType == 8u"]
+        vs --> reconstruct3D["Reconstruct vec3(pos.xy, texCoord.x)"]
+        reconstruct3D --> projectGPU["Project via uniforms.mvp"]
+        projectGPU --> raster["Hardware Rasterization & Depth-Ordering"]
+    end
+```
+
+### F. Procedural GPU Cross-Hatching Brushes ($BrushType = 4u$)
+To render cross-hatching and grid layouts without geometric division or vertex bloat, the engine implements procedural fragment shaders:
+1. The cross-hatch parameters (rotation angle $\theta$, line spacing $s$, line thickness $t$, and color) are packed into uniform buffers.
+2. In the WGSL fragment shader `fs_main`, two perpendicular line families are evaluated and unioned:
+   $$M_1 = \left| \text{fract}\left(\frac{\vec{x}_{\text{local}} \cdot \vec{d}}{s}\right) \cdot s - \frac{s}{2} \right|$$
+   $$M_2 = \left| \text{fract}\left(\frac{\vec{x}_{\text{local}} \cdot \vec{d}_{\text{perp}}}{s}\right) \cdot s - \frac{s}{2} \right|$$
+   where $\vec{d} = (\cos\theta, \sin\theta)$ and $\vec{d}_{\text{perp}} = (-\sin\theta, \cos\theta)$.
+3. The fragment is colored if:
+   $$M_1 < \frac{t}{2} \quad \text{or} \quad M_2 < \frac{t}{2}$$
+
+```mermaid
+flowchart TD
+    subgraph Procedural Grid/Cross-Hatch Fragment Evaluation
+        coord["Local Model-Space Fragment Coordinate: x_local"] --> rotVec["Compute Direction Vectors d = (cos theta, sin theta), d_perp = (-sin theta, cos theta)"]
+        rotVec --> projection["Project Coordinate: D1 = x_local . d, D2 = x_local . d_perp"]
+        projection --> fractLines["Compute Distance to Lines: M1 = fract(D1/s)*s - s/2, M2 = fract(D2/s)*s - s/2"]
+        fractLines --> envelopeCheck{"Is abs(M1) < t/2 OR abs(M2) < t/2?"}
+        envelopeCheck -- "Yes" --> colorFrag["Color fragment (Brush Color)"]
+        envelopeCheck -- "No" --> discardFrag["Discard Fragment (Transparent)"]
+    end
+```
+
+### G. Raw MULTILEADER Ingestion & Projective Rendering
+The `MULTILEADER` entity is parsed directly from the raw DXF byte stream to support annotations:
+1. **Raw Scanners:**
+   * `CONTEXT_DATA{`: Extracts text insertion point $P_{\text{insert}}$, text height $H_{\text{text}}$, and the formatted MText value `304`.
+   * `LEADER{` $\to$ `LEADER_LINE{`: Parses all sequential segment vertices $V_0, V_1, \dots$ of the leader line.
+2. **CAD-Standard Arrowhead Generation:**
+   An arrowhead tip is drawn at the start vertex $V_0$ pointing away from $V_1$. The arrowhead vertices are constructed:
+   $$\vec{d} = \text{Normalize}(V_0 - V_1), \quad \vec{n} = (-d_y, d_x)$$
+   $$L_{\text{arrow}} = \text{Clamp}(H_{\text{text}} \cdot \text{Zoom} \cdot 0.8, \ 6, \ 30), \quad W_{\text{arrow}} = L_{\text{arrow}} \cdot 0.35$$
+   $$P_{\text{back}} = V_0 - \vec{d} \cdot L_{\text{arrow}}$$
+   $$P_{\text{corner1}} = P_{\text{back}} + \vec{n} \cdot W_{\text{arrow}}, \quad P_{\text{corner2}} = P_{\text{back}} - \vec{n} \cdot W_{\text{arrow}}$$
+   The resulting triangle polygon $(V_0, P_{\text{corner1}}, P_{\text{corner2}})$ is drawn using a solid-filled path.
+
+```mermaid
+flowchart TD
+    subgraph MULTILEADER Ingestion & Render Loop
+        dxf["Scan raw DXF for MULTILEADER"] --> contextData["Extract CONTEXT_DATA: insertion point, height, MText"]
+        contextData --> leaderLines["Extract LEADER_LINE vertices V_0, V_1, ..."]
+        
+        leaderLines --> transformPoints["Project coordinates to Screen Space"]
+        transformPoints --> drawSegments["Draw Leader Polyline Segments"]
+        transformPoints --> drawArrow["Compute and Draw Solid-Filled CAD Arrowhead at V_0 pointing from V_1"]
+        transformPoints --> cleanLabel["Sanitize text via CleanMText()"]
+        cleanLabel --> drawLabel["Render label text using snap-aligned default font"]
+    end
+```
