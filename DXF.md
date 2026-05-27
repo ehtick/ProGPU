@@ -626,3 +626,106 @@ flowchart TD
 ```
 
 Refer to [DxfEntityRenderers.cs](file:///Users/wieslawsoltes/GitHub/ProGPU/src/ProGPU.Dxf/DxfEntityRenderers.cs#L1206) for the complete Wipeout masking code.
+
+## 13. Direct GPU Triangulation, Procedural Hatch Shaders, NURBS Evaluation, and ACIS SAT 3D Projections
+
+### A. Direct Hardware Solid Fills ($ShapeType = 7u$)
+Standard 2D graphics systems draw solid-filled entities (`SOLID`, `3DFACE`, `WIPEOUT`) by compiling curves and borders to complex offscreen coverage maps or computing slow Signed Distance Field (SDF) values at runtime. To bypass this computational bottleneck and achieve zero-overhead rendering, the engine introduces a hardware-native solid fill path ($ShapeType = 7u$) integrated into the main batching pipeline.
+
+The vertex structure directly submits screen-space projected vertices to the GPU:
+1. Vertices are packed as `VectorVertex` structures where the `ShapeType` field is assigned the hardware flag `7.0f`.
+2. The fragment shader intercepts this shape type and outputs static brush colors directly, skipping any SDF evaluations:
+   $$\text{Coverage}_{\text{fragment}} = 1.0$$
+3. Closed boundary polygon loops (e.g. in `WIPEOUT` masks) are decomposed on the CPU into lightweight **triangle fans** at zero allocation overhead:
+   Given a closed loop of $N$ points $p_0, p_1, \dots, p_{N-1}$, the CPU generates $N-2$ triangles:
+   $$T_i = \left(p_0, \ p_{i}, \ p_{i+1}\right) \quad \forall i \in \{1, \dots, N-2\}$$
+   These are batched directly into the shared GPU vertex and index buffers in a single operation.
+
+### B. Procedural GPU Hatch Patterns ($BrushType = 3u$) & CPU Fallbacks
+Hatch pattern rendering requires high-performance visual alignment that locked patterns to model-space coordinates. To achieve this, the engine adopts a dual-layer hatch rendering architecture:
+
+#### 1. Infinite Procedural GPU Hatch Brush ($BrushType = 3u$)
+For simple parallel lines (e.g. ANSI31 hatch definitions with no dashes), the pattern is procedurally evaluated on the GPU inside the fragment shader. 
+1. The hatch parameters are packed into `GpuBrush`:
+   - Rotation angle $\theta$ (in radians) stored in `gradientRadius`.
+   - Line family perpendicular spacing $s$ and line pixel thickness $t$ packed into `gradientCenter.xy`.
+2. In the fragment shader, the local model-space coordinate $\vec{x}_{\text{local}}$ is projected onto the family line direction vector $\vec{d} = (\cos\theta, \sin\theta)$:
+   $$D = \vec{x}_{\text{local}} \cdot \vec{d}$$
+3. The fractional distance to the nearest repeating pattern line is computed:
+   $$M = \left| \text{fract}\left(\frac{D}{s}\right) \cdot s - \frac{s}{2} \right|$$
+4. The fragment is discarded if it falls outside the line thickness envelope:
+   $$\text{Alpha} = \begin{cases} \text{opacity} & \text{if } M < \frac{t}{2} \\ \text{discard} & \text{otherwise} \end{cases}$$
+
+#### 2. Granular CPU Hatch Line Pattern Generator
+For complex dash-dot hatch definitions, an analytical CPU generator clips infinite parallel families within the polygon boundary loops:
+1. The boundary loop is sampled into a closed polygon.
+2. Parallel lines are generated at offsets $k \cdot \vec{\text{offset}}$ covering the polygon's bounding box projection.
+3. Each infinite line $P(t) = P_{\text{base}} + t \cdot \vec{d}$ is intersected with the polygon segments $A_i B_i$:
+   $$t_i = \frac{(A_{i,x} - P_{\text{base},x})(-v_y) - (A_{i,y} - P_{\text{base},y})(-v_x)}{d_x(-v_y) - d_y(-v_x)}$$
+4. Intersections are sorted and paired to yield "inside" interval segments $[t_{\text{start}}, t_{\text{end}}]$.
+5. Dash patterns are simulated along the active segment intervals and batched as discrete `DrawLine` commands.
+
+```mermaid
+flowchart TD
+    HatchIngest["Hatch Entity Ingested"] --> IsSolid{"Is Pattern SOLID?"}
+    
+    IsSolid -- "Yes" --> Triangulate["CPU Polygon Triangulation (Triangle Fan)"]
+    Triangulate --> SubmitSolid["Submit to GPU Vertex Buffer (ShapeType=7f)"]
+    
+    IsSolid -- "No" --> IsSimple{"Is Single Line Family with No Dashes?"}
+    
+    IsSimple -- "Yes" --> GpuProcedural["Create Procedural Hatch Brush (BrushType=3u)"]
+    GpuProcedural --> Triangulate
+    
+    IsSimple -- "No" --> CpuFallback["CPU Line Pattern Generator Fallback"]
+    CpuFallback --> LoopFamilies["Loop HatchPattern LineDefinitions"]
+    LoopFamilies --> BoxProjection["Project Bounding Box to normal Delta direction"]
+    BoxProjection --> GenLines["Generate Parallel Lines spaced by Delta"]
+    GenLines --> Intersect["Intersect Infinite Lines with Boundary Segments"]
+    Intersect --> SortPair["Sort and Pair Intersection t-parameters"]
+    SortPair --> ApplyDashes["Apply DashPattern dash/space cycles"]
+    ApplyDashes --> DrawLines["Draw Clipped Line Segments to DrawingContext"]
+```
+
+### C. Homogeneous 4D Rational Splines (NURBS)
+Standard spline engines evaluate curve segments in 2D or 3D Cartesian coordinates, failing to represent conic sections (circles, ellipses, hyperbolas) accurately without heavy polygon subdivision. The upgraded engine implements a fully homogeneous **4D rational spline evaluator** based on De Boor's algorithm:
+
+1. Control points $P_i = (x_i, y_i)$ are projected into 3D homogeneous coordinates by incorporating their weights $w_i$:
+   $$d_i^{(0)} = \begin{bmatrix} w_i x_i \\ w_i y_i \\ w_i \end{bmatrix} \quad \forall i \in \{0, \dots, n\}$$
+2. For a given knot parameter $u$ within the active knot span $[t_k, t_{k+1}]$, the De Boor recurrence relation is evaluated:
+   $$d_j^{(r)} = (1 - \alpha_j) \cdot d_{j-1}^{(r-1)} + \alpha_j \cdot d_j^{(r-1)}$$
+   where the weight-blended factor $\alpha_j$ is:
+   $$\alpha_j = \frac{u - t_i}{t_{i + p + 1 - r} - t_i}$$
+3. The final 3D homogeneous coordinate vector $d_p^{(p)} = [X_h, Y_h, W_h]^T$ is projected back to 2D Cartesian coordinate space via division:
+   $$P(u) = \begin{bmatrix} X_h / W_h \\ Y_h / W_h \end{bmatrix}$$
+This mathematically guarantees CAD-perfect NURBS curves with variable weights and knot vectors.
+
+### D. B-Rep 3D SAT Wireframe Projections
+3D Solid components (`3DSOLID`, `REGION`, `BODY`) in modern DXF files contain boundary representation (B-Rep) databases stored in ACIS SAT (Standard ACIS Text) formatting. The engine introduces an integrated high-performance parsing and projection pipeline:
+
+```mermaid
+graph TD
+    subgraph ACIS SAT B-Rep Entity Graph
+        Body["body"] --> Lump["lump"]
+        Lump --> Shell["shell"]
+        Shell --> Face["face"]
+        Face --> Loop["loop"]
+        Loop --> Coedge["coedge"]
+        Coedge --> Edge["edge"]
+        Edge --> Vertex1["vertex 1"]
+        Edge --> Vertex2["vertex 2"]
+        Edge --> Curve["curve geometry (straight / ellipse)"]
+        Vertex1 --> Point1["point (X, Y, Z)"]
+        Vertex2 --> Point2["point (X, Y, Z)"]
+    end
+```
+
+The rendering pipeline extracts and draws these solids as follows:
+1. **Raw DXF Scanning**: The engine parses the raw DXF stream sequentially to extract SAT textual blocks embedded under proxy objects in the `OBJECTS` stream.
+2. **Entity Relation Reconstruction**: `AcisSatParser` parses entity records, builds pointer maps using implicit entity indexes, and isolates all `edge` entities.
+3. **Vertex Point Resolution**: For each edge, the start and end `vertex` indices are resolved to their referenced `point` records, extracting 3D Cartesian coordinates:
+   $$V_{\text{start}} = (x_s, y_s, z_s), \quad V_{\text{end}} = (x_e, y_e, z_e)$$
+4. **2D Perspective/Orthographic Projection**: 3D coordinates are transformed by the active scene transformation matrix $M_{\text{combined}}$:
+   $$\mathbf{v}' = \begin{bmatrix} x & y & z & 1 \end{bmatrix} \cdot M_{\text{combined}}$$
+   $$P_{\text{screen}} = \text{TransformToScreen}\left( \frac{\mathbf{v}'_x}{\mathbf{v}'_w}, \ \frac{\mathbf{v}'_y}{\mathbf{v}'_w} \right)$$
+5. **Zero-Overhead Edge Batching**: The projected 2D wireframe edges are drawn as fast line vectors.
