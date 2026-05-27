@@ -552,3 +552,77 @@ The diagnostic tool walks the layout block hierarchically using recursive depth-
   $$\forall c \in \text{BlockEntities}, \quad \text{Scan}(c, M_{\text{child}})$$
 
 Refer to [Program.cs](file:///Users/wieslawsoltes/GitHub/ProGPU/tools/DxfDiag/Program.cs) for the complete command-line diagnostics implementation.
+
+---
+
+## 12. 3DFACE, POINT, ATTDEF, and WIPEOUT Vector Geometry Projections
+
+To support advanced structural CAD drafts, the ProGPU engine implements precise vector projections for planar 3D faces (`3DFACE`), coordinate nodes (`POINT`), attribute templates (`ATTDEF`), and polygon-masked areas (`WIPEOUT`).
+
+### A. 3DFACE Planar Projections
+`3DFACE` represents planar 3D polygons in CAD drawings. Let the four vertices of the face in local coordinate space be:
+$$v_1 = (x_1, y_1, z_1), \quad v_2 = (x_2, y_2, z_2), \quad v_3 = (x_3, y_3, z_3), \quad v_4 = (x_4, y_4, z_4)$$
+
+To render the 3D planar face onto the 2D projection plane:
+1. Extract the OCS-to-WCS rotation matrix $M_{\text{ocs}}$ using the Arbitrary Axis Algorithm from the face normal vector $N = (N_x, N_y, N_z)$.
+2. Calculate the compound transformation matrix:
+   $$M_{\text{combined}} = M_{\text{ocs}} \cdot M_{\text{transform}}$$
+3. Project the 3D vertices to the 2D screen space:
+   $$p_i = \text{Transform}(v_i, M_{\text{combined}}) \quad \forall i \in \{1, 2, 3, 4\}$$
+4. **Winding Interval Closure**:
+   * If $v_3 = v_4$, the entity is topologically a triangle. Render lines: $p_1 \to p_2$, $p_2 \to p_3$, and $p_3 \to p_1$.
+   * If $v_3 \neq v_4$, the entity is a quadrilateral. Render lines: $p_1 \to p_2$, $p_2 \to p_3$, $p_3 \to p_4$, and $p_4 \to p_1$.
+
+### B. POINT Coordinate Nodes
+A `POINT` represents a single coordinate mark. To prevent pixel-dropout at low zoom levels, ProGPU projects the position $p_0 = (x_0, y_0, z_0)$ using the intermediate OCS normal matrix:
+$$p_{\text{screen}} = \text{Transform}(p_0, M_{\text{ocs}} \cdot M_{\text{transform}})$$
+
+To ensure visibility matching CAD draft standards, it is rendered as a vector cross-hair centered at $p_{\text{screen}}$ with a half-size $s = 1.5\text{px}$:
+$$\text{Line}_1 = \left(p_{\text{screen}} - (s, 0), \ p_{\text{screen}} + (s, 0)\right)$$
+$$\text{Line}_2 = \left(p_{\text{screen}} - (0, s), \ p_{\text{screen}} + (0, s)\right)$$
+
+### C. ATTDEF Attribute Templates
+Attribute definitions (`ATTDEF`) represent template tags in block definitions. Similar to standard text entities, they define height, rotation, and alignment.
+Let $T_{\text{tag}}$ be the attribute tag string, $\theta$ be the rotation angle, $h$ be the template font height, and $A$ be the text alignment enum.
+1. The baseline rotation is transformed using the OCS-to-WCS combined matrix to obtain the directional unit baseline vector $\hat{u}$ and perpendicular height vector $\hat{v}$:
+   $$\hat{u} = (\cos\theta, \sin\theta), \quad \hat{v} = (-\sin\theta, \cos\theta)$$
+2. Shift factors are derived dynamically from text alignment metrics:
+   $$\text{Shift}_x = -w_{\text{text}} \cdot \alpha_h, \quad \text{Shift}_y = h_{\text{font}} \cdot \alpha_v$$
+   where $\alpha_h \in \{0.0, 0.5, 1.0\}$ represents the horizontal alignment shift factor and $\alpha_v \in \{0.0, 0.5, 1.0\}$ is the vertical baseline factor.
+3. The final text baseline origin $P_{\text{draw}}$ is:
+   $$P_{\text{draw}} = P_{\text{screen}} + \hat{u} \cdot \text{Shift}_x + \hat{v} \cdot \text{Shift}_y$$
+
+### D. WIPEOUT Polygon Masking
+`WIPEOUT` entities provide polygon-based visual clipping/masking of background details. 
+A wipeout maintains a closed `ClippingBoundary` consisting of $N$ boundary vertices $w_i = (x_i, y_i)$ in OCS space.
+
+To implement the masking layer:
+1. Transform each vertex $w_i$ into the screen coordinate space:
+   $$p_i = \text{Transform}(w_i, M_{\text{ocs}} \cdot M_{\text{transform}})$$
+2. Cull the entire wipeout polygon if its screen bounding box is off-screen.
+3. Construct a closed `PathGeometry` using sequential segments:
+   $$\text{Path} = \left\{ \text{StartPoint} = p_0, \ \text{Segments} = \bigcup_{i=1}^{N-1} \text{LineSegment}(p_i), \ \text{IsClosed} = \text{true} \right\}$$
+4. Draw the filled path to the GPU compositor using the context's dynamic canvas background brush:
+   $$\text{Mask} = \text{DrawPath}\left(context.BackgroundBrush, \ \text{null}, \ \text{Path}\right)$$
+
+```mermaid
+flowchart TD
+    Ingest["Wipeout Entity Ingested"] --> checkBound["ClippingBoundary & Vertices Count >= 3?"]
+    checkBound -- "No" --> abort["Bypass Rendering"]
+    checkBound -- "Yes" --> getCombined["Compute Combined Transform: M_ocs * M_transform"]
+    
+    getCombined --> transformLoop["Loop through vertices w_i"]
+    transformLoop --> project["Project to Screen: p_i = Transform(w_i, M_combined)"]
+    project --> updateBounds["Update Bounding Box: [minX, minY] to [maxX, maxY]"]
+    
+    updateBounds --> isOffScreen{"IsOffScreen(Box)?"}
+    isOffScreen -- "Yes (Cull)" --> abort
+    isOffScreen -- "No" --> initPath["Create PathGeometry & PathFigure(p_0, IsClosed=true)"]
+    
+    initPath --> appendSegments["Append LineSegment(p_i) for i = 1 to N-1"]
+    appendSegments --> resolveBrush["Retrieve Dynamic context.BackgroundBrush"]
+    resolveBrush --> gpuCompositor["DrawPath(BackgroundBrush, null, Path)"]
+    gpuCompositor --> completed["Background Masking Composited Successfully"]
+```
+
+Refer to [DxfEntityRenderers.cs](file:///Users/wieslawsoltes/GitHub/ProGPU/src/ProGPU.Dxf/DxfEntityRenderers.cs#L1206) for the complete Wipeout masking code.
