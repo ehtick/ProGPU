@@ -12,4 +12,5 @@
   <Project Path="ProGPU.Tests.Headless/ProGPU.Tests.Headless.csproj" />
   <Project Path="ProGPU.Tests/ProGPU.Tests.csproj" />
   <Project Path="../tools/TtfDiag/TtfDiag.csproj" />
+  <Project Path="../tools/DxfDiag/DxfDiag.csproj" />
 </Solution>
