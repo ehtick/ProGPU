@@ -69,6 +69,21 @@ public static class DxfDocumentRenderer
 
             foreach (var flatEntity in context.FlatWcsEntities)
             {
+                // Check parent layers visibility first
+                bool isParentVisible = true;
+                if (flatEntity.ParentInsertLayers != null)
+                {
+                    foreach (var pLayer in flatEntity.ParentInsertLayers)
+                    {
+                        if (!context.ActiveLayers.Contains(pLayer))
+                        {
+                            isParentVisible = false;
+                            break;
+                        }
+                    }
+                }
+                if (!isParentVisible) continue;
+
                 if (flatEntity.Entity is netDxf.Entities.Attribute attr)
                 {
                     if (context.ActiveLayers.Contains(attr.Layer.Name))

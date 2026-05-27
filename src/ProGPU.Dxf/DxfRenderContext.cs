@@ -273,12 +273,14 @@ public class DxfRenderContext
     {
         public object Entity { get; }
         public Matrix4x4 Transform { get; }
+        public List<string>? ParentInsertLayers { get; }
         public float ScaleY { get; }
 
-        public FlatWcsEntity(object entity, Matrix4x4 transform, float scaleY = 1.0f)
+        public FlatWcsEntity(object entity, Matrix4x4 transform, List<string>? parentInsertLayers = null, float scaleY = 1.0f)
         {
             Entity = entity;
             Transform = transform;
+            ParentInsertLayers = parentInsertLayers;
             ScaleY = scaleY;
         }
     }
@@ -326,7 +328,7 @@ public class DxfRenderContext
         }
     }
 
-    private void FlattenEntityRecursive(netDxf.Entities.EntityObject entity, Matrix4x4 currentTransform)
+    private void FlattenEntityRecursive(netDxf.Entities.EntityObject entity, Matrix4x4 currentTransform, List<string>? parentInsertLayers = null)
     {
         if (entity is Insert insert)
         {
@@ -343,20 +345,26 @@ public class DxfRenderContext
 
             var combined = localMat * currentTransform;
 
+            var nextParentLayers = parentInsertLayers != null ? new List<string>(parentInsertLayers) : new List<string>();
+            if (insert.Layer != null && !string.IsNullOrEmpty(insert.Layer.Name))
+            {
+                nextParentLayers.Add(insert.Layer.Name);
+            }
+
             foreach (var childEntity in insert.Block.Entities)
             {
-                FlattenEntityRecursive(childEntity, combined);
+                FlattenEntityRecursive(childEntity, combined, nextParentLayers);
             }
             
             foreach (var attr in insert.Attributes)
             {
-                var flatAttr = new FlatWcsEntity(attr, currentTransform, (float)insert.Scale.Y);
+                var flatAttr = new FlatWcsEntity(attr, currentTransform, nextParentLayers, (float)insert.Scale.Y);
                 _flatWcsEntities.Add(flatAttr);
             }
         }
         else
         {
-            _flatWcsEntities.Add(new FlatWcsEntity(entity, currentTransform));
+            _flatWcsEntities.Add(new FlatWcsEntity(entity, currentTransform, parentInsertLayers));
         }
     }
 
