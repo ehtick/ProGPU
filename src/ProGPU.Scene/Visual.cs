@@ -320,16 +320,7 @@ public class ContainerVisual : Visual
     private readonly List<Visual> _children = new();
     private readonly object _childrenLock = new();
 
-    public IReadOnlyList<Visual> Children
-    {
-        get
-        {
-            lock (_childrenLock)
-            {
-                return _children.ToArray();
-            }
-        }
-    }
+    public IReadOnlyList<Visual> Children => _children;
 
     public void AddChild(Visual child)
     {

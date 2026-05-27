@@ -342,12 +342,12 @@ public static unsafe class MainWindowController
 
         AppState._statsText = new RichTextBlock
         {
-            FontSize = 11f,
+            FontSize = 10f,
             Foreground = new ProGPU.Vector.ThemeResourceBrush("TextSecondary"),
-            Font = AppState._font,
+            Font = AppState._fontCourier ?? AppState._font,
             VerticalAlignment = VerticalAlignment.Center
         };
-        AppState._statsText.Inlines.Add(new Run("FPS: -- | CPU: -- ms | Cursor: (0, 0) | Focused Element: None"));
+        AppState._statsText.Inlines.Add(new Run("FPS:  -- | CPU:   --.-- ms (Layout: --.--ms, Compile: --.--ms, Upload: --.--ms, Render: --.--ms) | Draws:  -- | Verts:     - (Vec),     - (Txt) | Atlas:  -- | Cursor: (   -,    -) | Focused: None        "));
         statusBar.Child = AppState._statsText;
         AppState._rootGrid.AddChild(statusBar);
         Microsoft.UI.Xaml.Controls.Grid.SetRow(statusBar, 2);
@@ -501,38 +501,7 @@ public static unsafe class MainWindowController
             }
         }
 
-        // 2. Metrics & stats overlay updates
-        AppState._cpuFrameTimeMs = AppState._frameStopwatch.Elapsed.TotalMilliseconds;
-        
-        AppState._frameCount++;
-        AppState._fpsAccumulator += delta;
-        if (AppState._fpsAccumulator >= 0.5)
-        {
-            AppState._currentFps = AppState._frameCount / AppState._fpsAccumulator;
-            AppState._frameCount = 0;
-            AppState._fpsAccumulator = 0;
-        }
-
-        if (AppState._statsText != null)
-        {
-            AppState._statsText.Inlines.Clear();
-            
-            AppState._statsText.Inlines.Add(new Run("FPS: "));
-            AppState._statsText.Inlines.Add(new Bold(new Run($"{AppState._currentFps:F0}")) { Foreground = new SolidColorBrush(0x0078D4FF) });
-            
-            AppState._statsText.Inlines.Add(new Run("  |  CPU Frame: "));
-            AppState._statsText.Inlines.Add(new Bold(new Run($"{AppState._cpuFrameTimeMs:F2} ms")) { Foreground = new SolidColorBrush(0x0078D4FF) });
-            
-            AppState._statsText.Inlines.Add(new Run("  |  Cursor: "));
-            AppState._statsText.Inlines.Add(new Run($"({AppState._mousePos.X:F0}, {AppState._mousePos.Y:F0})"));
-            
-            AppState._statsText.Inlines.Add(new Run("  |  Focused Element: "));
-            AppState._statsText.Inlines.Add(new Bold(new Run(AppState._activeFocusedName)) { Foreground = new SolidColorBrush(0x0078D4FF) });
-            
-            AppState._statsText.PerformRichLayout(1200f);
-        }
-
-        // 3. Swapchain present
+        // 2. Swapchain present
         TextureView* targetView = null;
         if (AppState._wgpuContext.Surface != null)
         {
@@ -561,6 +530,51 @@ public static unsafe class MainWindowController
             
             AppState._wgpuContext.Wgpu.SurfacePresent(AppState._wgpuContext.Surface);
             AppState._wgpuContext.Wgpu.TextureViewRelease(targetView);
+        }
+
+        // 3. Metrics & stats overlay updates (now measuring full frame time)
+        AppState._cpuFrameTimeMs = AppState._frameStopwatch.Elapsed.TotalMilliseconds;
+        
+        AppState._frameCount++;
+        AppState._fpsAccumulator += delta;
+        if (AppState._fpsAccumulator >= 0.5)
+        {
+            AppState._currentFps = AppState._frameCount / AppState._fpsAccumulator;
+            AppState._frameCount = 0;
+            AppState._fpsAccumulator = 0;
+        }
+
+        if (AppState._statsText != null)
+        {
+            AppState._statsText.Inlines.Clear();
+            
+            var metrics = AppState._screenCompositor.Metrics;
+            double measureArrangeMs = AppState._cpuFrameTimeMs - metrics.FrameTimeMs;
+            if (measureArrangeMs < 0) measureArrangeMs = 0;
+
+            AppState._statsText.Inlines.Add(new Run("FPS: "));
+            AppState._statsText.Inlines.Add(new Bold(new Run($"{AppState._currentFps,3:F0}")) { Foreground = new SolidColorBrush(0x0078D4FF) });
+            
+            AppState._statsText.Inlines.Add(new Run(" | CPU: "));
+            AppState._statsText.Inlines.Add(new Bold(new Run($"{AppState._cpuFrameTimeMs,6:F2} ms")) { Foreground = new SolidColorBrush(0x0078D4FF) });
+            AppState._statsText.Inlines.Add(new Run($" (Layout: {measureArrangeMs,5:F2}ms, Compile: {metrics.VisualTreeCompileTimeMs,5:F2}ms, Upload: {metrics.GpuUploadTimeMs,5:F2}ms, Render: {metrics.RenderPassTimeMs,5:F2}ms)"));
+
+            AppState._statsText.Inlines.Add(new Run(" | Draws: "));
+            AppState._statsText.Inlines.Add(new Bold(new Run($"{metrics.DrawCallsCount,3}")) { Foreground = new SolidColorBrush(0x0078D4FF) });
+
+            AppState._statsText.Inlines.Add(new Run(" | Verts: "));
+            AppState._statsText.Inlines.Add(new Run($"{metrics.VectorVerticesCount,5} (Vec), {metrics.TextVerticesCount,5} (Txt)"));
+
+            AppState._statsText.Inlines.Add(new Run(" | Atlas: "));
+            AppState._statsText.Inlines.Add(new Bold(new Run($"{metrics.PathAtlasCachedCount,3}")) { Foreground = new SolidColorBrush(0x0078D4FF) });
+
+            AppState._statsText.Inlines.Add(new Run(" | Cursor: "));
+            AppState._statsText.Inlines.Add(new Run($"({AppState._mousePos.X,4:F0}, {AppState._mousePos.Y,4:F0})"));
+            
+            AppState._statsText.Inlines.Add(new Run(" | Focused: "));
+            AppState._statsText.Inlines.Add(new Bold(new Run($"{AppState._activeFocusedName,-12}")) { Foreground = new SolidColorBrush(0x0078D4FF) });
+            
+            AppState._statsText.PerformRichLayout(1200f);
         }
     }
 
