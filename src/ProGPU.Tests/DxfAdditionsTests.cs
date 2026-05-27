@@ -388,9 +388,9 @@ EOF";
             ctx.FilePath = tempPath;
 
             Assert.Single(ctx.Cached3dSolids);
-            var edges = ctx.Cached3dSolids[0];
-            Assert.Single(edges);
-            var edge = edges[0];
+            var solid = ctx.Cached3dSolids[0];
+            Assert.Single(solid.Edges);
+            var edge = solid.Edges[0];
             Assert.Equal(new Vector3(0f, 0f, 0f), edge.StartPoint);
             Assert.Equal(new Vector3(5f, 6f, 7f), edge.EndPoint);
             Assert.Equal("straight", edge.CurveType.ToLowerInvariant());

@@ -201,8 +201,8 @@ public class DxfRenderContext
         }
     }
 
-    private readonly List<List<Acis3dEdge>> _cached3dSolids = new();
-    public IReadOnlyList<List<Acis3dEdge>> Cached3dSolids => _cached3dSolids;
+    private readonly List<Dxf3dSolid> _cached3dSolids = new();
+    public IReadOnlyList<Dxf3dSolid> Cached3dSolids => _cached3dSolids;
 
     private readonly List<DxfMLeader> _cachedMLeaders = new();
     public IReadOnlyList<DxfMLeader> CachedMLeaders => _cachedMLeaders;
@@ -211,8 +211,8 @@ public class DxfRenderContext
 
     private void ParseAndCache3dSolids(string path)
     {
-        var satBlocks = new List<string>();
-        var sabBlocks = new List<byte[]>();
+        var satBlocks = new List<(string Layer, string Sat)>();
+        var sabBlocks = new List<(string Layer, byte[] Sab)>();
         
         using var reader = new System.IO.StreamReader(path);
         string? line;
@@ -221,6 +221,8 @@ public class DxfRenderContext
         var currentBlock = new System.Text.StringBuilder();
         
         string currentEntity = "";
+        string currentSolidLayer = "0";
+        string currentSatLayer = "0";
         var currentSabBytes = new List<byte>();
 
         while ((line = reader.ReadLine()) != null)
@@ -236,26 +238,30 @@ public class DxfRenderContext
                 if (code == 0)
                 {
                     // New entity starts
-                    currentEntity = val;
-
-                    // If we were collecting SAB for a 3D solid, flush it
                     if (currentSabBytes.Count > 0)
                     {
-                        sabBlocks.Add(currentSabBytes.ToArray());
+                        sabBlocks.Add((currentSolidLayer, currentSabBytes.ToArray()));
                         currentSabBytes.Clear();
                     }
 
+                    currentEntity = val;
                     collectingSat = false;
+                    currentSolidLayer = "0";
                 }
                 else if (currentEntity == "3DSOLID" || currentEntity == "REGION" || currentEntity == "BODY")
                 {
-                    if (code == 1 || code == 3)
+                    if (code == 8)
+                    {
+                        currentSolidLayer = val;
+                    }
+                    else if (code == 1 || code == 3)
                     {
                         // Check if this is the start of an ACIS block
                         if (!collectingSat && (val.Contains("sb_version") || val.Contains("20800 0 1 0") || val.Contains("40000 0 1 0") || val.Contains("21200 0 1 0")))
                         {
                             collectingSat = true;
                             currentBlock.Clear();
+                            currentSatLayer = currentSolidLayer;
                         }
 
                         if (collectingSat)
@@ -264,7 +270,7 @@ public class DxfRenderContext
                             if (val.Contains("End of ACIS") || val.Contains("End of ACIS Solid"))
                             {
                                 collectingSat = false;
-                                satBlocks.Add(currentBlock.ToString());
+                                satBlocks.Add((currentSatLayer, currentBlock.ToString()));
                             }
                         }
                     }
@@ -288,7 +294,7 @@ public class DxfRenderContext
         // Flush any remaining SAB bytes
         if (currentSabBytes.Count > 0)
         {
-            sabBlocks.Add(currentSabBytes.ToArray());
+            sabBlocks.Add((currentSolidLayer, currentSabBytes.ToArray()));
         }
 
         // Parse SAT blocks
@@ -296,10 +302,12 @@ public class DxfRenderContext
         {
             try
             {
-                var edges = AcisSatParser.ParseSat(sat);
+                var edges = AcisSatParser.ParseSat(sat.Sat);
                 if (edges.Count > 0)
                 {
-                    _cached3dSolids.Add(edges);
+                    var solid = new Dxf3dSolid { Layer = sat.Layer };
+                    solid.Edges.AddRange(edges);
+                    _cached3dSolids.Add(solid);
                 }
             }
             catch
@@ -313,10 +321,12 @@ public class DxfRenderContext
         {
             try
             {
-                var edges = AcisSabParser.ParseSab(sab);
+                var edges = AcisSabParser.ParseSab(sab.Sab);
                 if (edges.Count > 0)
                 {
-                    _cached3dSolids.Add(edges);
+                    var solid = new Dxf3dSolid { Layer = sab.Layer };
+                    solid.Edges.AddRange(edges);
+                    _cached3dSolids.Add(solid);
                 }
             }
             catch
@@ -517,4 +527,10 @@ public class DxfMLeader
     public float TextHeight { get; set; } = 1.0f;
     public string TextValue { get; set; } = "";
     public List<List<Vector3>> LeaderLines { get; } = new();
+}
+
+public class Dxf3dSolid
+{
+    public string Layer { get; set; } = "0";
+    public List<Acis3dEdge> Edges { get; } = new();
 }

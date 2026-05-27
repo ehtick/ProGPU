@@ -4,8 +4,10 @@ using System.Numerics;
 using netDxf;
 using netDxf.Entities;
 using ProGPU.Scene;
+using ProGPU.Vector;
 using Vector2 = System.Numerics.Vector2;
 using Vector3 = System.Numerics.Vector3;
+using Vector4 = System.Numerics.Vector4;
 
 namespace ProGPU.Dxf;
 
@@ -83,14 +85,24 @@ public static class DxfDocumentRenderer
         // Render 3D ACIS Solids if cached in context via GPU projection
         if (context.Cached3dSolids.Count > 0)
         {
-            var pen = new ProGPU.Vector.Pen(context.FallbackBrush, 1.0f);
-            foreach (var edges in context.Cached3dSolids)
+            foreach (var solid in context.Cached3dSolids)
             {
-                foreach (var edge in edges)
+                if (!context.ActiveLayers.Contains(solid.Layer)) continue;
+
+                // Resolve layer color
+                var color = new Vector4(1f, 1f, 1f, 1f); // Default white
+                if (context.LayerColors.TryGetValue(solid.Layer, out var lColor))
                 {
-                    // Project 3D coordinate to screen space using our custom 3D projection
-                    var screenP1 = context.TransformToScreen3D(edge.StartPoint, Matrix4x4.Identity);
-                    var screenP2 = context.TransformToScreen3D(edge.EndPoint, Matrix4x4.Identity);
+                    color = lColor;
+                }
+                var brush = new SolidColorBrush(color);
+                var pen = new ProGPU.Vector.Pen(brush, 1.0f);
+
+                foreach (var edge in solid.Edges)
+                {
+                    // Project 3D coordinate to screen space using our custom 3D projection, applying active CurrentTransform
+                    var screenP1 = context.TransformToScreen3D(edge.StartPoint, context.CurrentTransform);
+                    var screenP2 = context.TransformToScreen3D(edge.EndPoint, context.CurrentTransform);
                     
                     // Simple frustum culling on screen coordinates
                     float minX = Math.Min(screenP1.X, screenP2.X);
@@ -112,27 +124,35 @@ public static class DxfDocumentRenderer
             {
                 if (!context.ActiveLayers.Contains(mleader.Layer)) continue;
 
+                // Resolve layer color
+                var color = new Vector4(1f, 1f, 1f, 1f); // Default white
+                if (context.LayerColors.TryGetValue(mleader.Layer, out var lColor))
+                {
+                    color = lColor;
+                }
+                var brush = new SolidColorBrush(color);
+                var pen = new ProGPU.Vector.Pen(brush, 1.5f);
+
                 // 1. Draw leader line segments
                 foreach (var line in mleader.LeaderLines)
                 {
                     if (line.Count < 2) continue;
 
-                    // Gather screen space points
+                    // Gather screen space points, applying active CurrentTransform
                     var screenPoints = new List<Vector2>();
                     foreach (var pt in line)
                     {
-                        screenPoints.Add(context.Transform(pt, Matrix4x4.Identity));
+                        screenPoints.Add(context.Transform(pt, context.CurrentTransform));
                     }
 
                     // Draw segments
-                    var pen = new ProGPU.Vector.Pen(context.FallbackBrush, 1.5f);
                     for (int i = 0; i < screenPoints.Count - 1; i++)
                     {
                         context.DrawingContext.DrawLine(pen, screenPoints[i], screenPoints[i + 1]);
                     }
 
                     // Draw standard CAD arrowhead at V0 pointing towards V1
-                    DrawArrowhead(context, screenPoints[0], screenPoints[1], context.FallbackBrush, pen, mleader.TextHeight);
+                    DrawArrowhead(context, screenPoints[0], screenPoints[1], brush, pen, mleader.TextHeight);
                 }
 
                 // 2. Draw the text label
@@ -141,7 +161,7 @@ public static class DxfDocumentRenderer
                     // Clean MText formatting using DxfTextRenderer.CleanMText
                     string cleanText = DxfTextRenderer.CleanMText(mleader.TextValue);
                     
-                    var pos = context.Transform(mleader.TextInsertionPoint, Matrix4x4.Identity);
+                    var pos = context.Transform(mleader.TextInsertionPoint, context.CurrentTransform);
                     
                     // Render using default font and scale
                     float fontSize = mleader.TextHeight * context.Zoom;
@@ -151,7 +171,7 @@ public static class DxfDocumentRenderer
                             cleanText, 
                             context.Font, 
                             fontSize, 
-                            context.FallbackBrush, 
+                            brush, 
                             pos
                         );
                     }
