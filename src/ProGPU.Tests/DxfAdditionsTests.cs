@@ -644,5 +644,63 @@ EOF";
         Assert.Empty(ctx.FlatWcsEntities);
         Assert.Null(ctx.CachedActiveLayout);
     }
+
+    [Fact]
+    public void DxfGpuTransforms_DiagnosticMatrix()
+    {
+        string path = "/Users/wieslawsoltes/Downloads/dwg/dxf/Schemat IOS Karvina CZ.dxf";
+        if (!File.Exists(path)) return;
+
+        var doc = netDxf.DxfDocument.Load(path);
+        var drawingContext = new ProGPU.Scene.DrawingContext();
+        var ctx = new DxfRenderContext(drawingContext, null!);
+        ctx.EnableGpuTransforms = true;
+
+        ctx.ActiveLayers.Clear();
+        foreach (var l in doc.Layers) ctx.ActiveLayers.Add(l.Name);
+
+        // Compute bounds
+        var (min, max) = DxfDocumentRenderer.CalculateBounds(doc, ctx);
+        float dxfWidth = max.X - min.X;
+        float dxfHeight = max.Y - min.Y;
+
+        ctx.Center = (min + max) * 0.5f;
+        
+        var Size = new Vector2(1676f, 960f); // Typical screen/layout size in the screenshot
+        ctx.ScreenCenter = Size * 0.5f;
+
+        float padding = 0.88f;
+        float scaleX = (Size.X * padding) / dxfWidth;
+        float scaleY = (Size.Y * padding) / dxfHeight;
+        ctx.Zoom = Math.Min(scaleX, scaleY);
+        ctx.Pan = Vector2.Zero;
+
+        // Build View Matrix (CPU-side View Matrix for GPU Transforms)
+        var viewMatrix = new Matrix4x4(
+            ctx.Zoom, 0f, 0f, 0f,
+            0f, -ctx.Zoom, 0f, 0f,
+            0f, 0f, 1f, 0f,
+            -ctx.Center.X * ctx.Zoom + ctx.ScreenCenter.X + ctx.Pan.X,
+            ctx.Center.Y * ctx.Zoom + ctx.ScreenCenter.Y + ctx.Pan.Y,
+            0f, 1f
+        );
+
+        // Let's project min and max bounds to verify their screen coordinates
+        var screenMin = Vector2.Transform(min, viewMatrix);
+        var screenMax = Vector2.Transform(max, viewMatrix);
+
+        Console.WriteLine($"[Diagnostic] dxfWidth={dxfWidth}, dxfHeight={dxfHeight}, Zoom={ctx.Zoom}");
+        Console.WriteLine($"[Diagnostic] Center={ctx.Center}, ScreenCenter={ctx.ScreenCenter}");
+        Console.WriteLine($"[Diagnostic] min={min} -> screenMin={screenMin}");
+        Console.WriteLine($"[Diagnostic] max={max} -> screenMax={screenMax}");
+
+        // The screen coordinate of min and max should be perfectly centered on the 1676x960 layout!
+        // X screen coordinates should be roughly in the [Size.X * 0.06, Size.X * 0.94] range
+        Assert.True(screenMin.X >= 0f && screenMin.X <= Size.X);
+        Assert.True(screenMax.X >= 0f && screenMax.X <= Size.X);
+        Assert.True(screenMin.Y >= 0f && screenMin.Y <= Size.Y);
+        Assert.True(screenMax.Y >= 0f && screenMax.Y <= Size.Y);
+    }
 }
+
 
