@@ -165,12 +165,17 @@ public class DxfCanvasControl : FrameworkElement
             || Document.ActiveLayout != _lastActiveLayout 
             || layersHash != _lastActiveLayersHash;
 
-        if (!AppState.EnableGpuTransforms)
+        // Invalidate if zoom changes (to re-rasterize paths/text at crisp resolution).
+        // If static buffers are disabled, also invalidate when panning.
+        bool cameraChanged = Context.Zoom != _lastZoom;
+        if (!AppState.EnableStaticGpuBuffers && !AppState.EnableGpuTransforms)
         {
-            if (Context.Zoom != _lastZoom || Context.Pan != _lastPan)
-            {
-                invalidateCache = true;
-            }
+            cameraChanged = cameraChanged || Context.Pan != _lastPan;
+        }
+
+        if (cameraChanged)
+        {
+            invalidateCache = true;
         }
 
         if (!AppState.EnableCommandCaching)
@@ -200,8 +205,9 @@ public class DxfCanvasControl : FrameworkElement
                 bool savedEnableGpuTransforms = Context.EnableGpuTransforms;
                 bool savedIsCompilingStatic = Context.IsCompilingStatic;
 
-                // Compile in screen space (Y goes down, centered) at Zoom=1.0 and Pan=0 for the static buffer.
-                Context.Zoom = 1.0f;
+                // Compile in screen space at the current zoom level (for perfect crispness and line thickness)
+                // but centered with Pan = 0 (so we can pan dynamically on the GPU).
+                Context.Zoom = savedZoom;
                 Context.Pan = Vector2.Zero;
                 Context.Center = savedCenter;
                 Context.ScreenCenter = savedScreenCenter;
@@ -238,7 +244,9 @@ public class DxfCanvasControl : FrameworkElement
                 -1.0f, 1.0f, 0f, 1.0f
             );
 
-            _staticBuffer.UpdateViewport(projection, Context.Zoom, Context.Pan, Context.Center, Context.ScreenCenter);
+            // Since the static buffer is already compiled at Context.Zoom, the GPU-side zoom scale is 1.0.
+            // Panning is applied dynamically on the GPU.
+            _staticBuffer.UpdateViewport(projection, 1.0f, Context.Pan, Context.Center, Context.ScreenCenter);
 
             context.PushClip(new Rect(0f, 0f, Size.X, Size.Y));
             context.DrawStaticDxf(_staticBuffer);
