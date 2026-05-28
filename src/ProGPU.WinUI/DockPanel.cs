@@ -72,8 +72,11 @@ public class DockPanel : Panel
 
     protected override Vector2 MeasureOverride(Vector2 availableSize)
     {
-        float remainingWidth = availableSize.X;
-        float remainingHeight = availableSize.Y;
+        float remainingWidth = float.IsInfinity(availableSize.X) ? float.PositiveInfinity : availableSize.X;
+        float remainingHeight = float.IsInfinity(availableSize.Y) ? float.PositiveInfinity : availableSize.Y;
+
+        float consumedWidth = 0f;
+        float consumedHeight = 0f;
 
         float maxAccumulatedWidth = 0f;
         float maxAccumulatedHeight = 0f;
@@ -86,38 +89,51 @@ public class DockPanel : Panel
             if (children[i] is LayoutNode node)
             {
                 bool isLast = i == count - 1;
+                
+                // Pass remaining sizes safely handling infinity
+                float availW = float.IsInfinity(remainingWidth) ? float.PositiveInfinity : remainingWidth;
+                float availH = float.IsInfinity(remainingHeight) ? float.PositiveInfinity : remainingHeight;
+                node.Measure(new Vector2(availW, availH));
+                
+                var desired = node.DesiredSize;
+
                 if (isLast && LastChildFill)
                 {
-                    node.Measure(new Vector2(remainingWidth, remainingHeight));
-                    maxAccumulatedWidth = Math.Max(maxAccumulatedWidth, availableSize.X - remainingWidth + node.DesiredSize.X);
-                    maxAccumulatedHeight = Math.Max(maxAccumulatedHeight, availableSize.Y - remainingHeight + node.DesiredSize.Y);
+                    maxAccumulatedWidth = Math.Max(maxAccumulatedWidth, consumedWidth + desired.X);
+                    maxAccumulatedHeight = Math.Max(maxAccumulatedHeight, consumedHeight + desired.Y);
                 }
                 else
                 {
-                    node.Measure(new Vector2(remainingWidth, remainingHeight));
-                    var desired = node.DesiredSize;
                     var dock = GetDock(node);
 
                     switch (dock)
                     {
                         case Dock.Left:
                         case Dock.Right:
-                            maxAccumulatedHeight = Math.Max(maxAccumulatedHeight, availableSize.Y - remainingHeight + desired.Y);
-                            remainingWidth = Math.Max(0f, remainingWidth - desired.X);
+                            consumedWidth += desired.X;
+                            maxAccumulatedHeight = Math.Max(maxAccumulatedHeight, consumedHeight + desired.Y);
+                            if (!float.IsInfinity(remainingWidth))
+                            {
+                                remainingWidth = Math.Max(0f, remainingWidth - desired.X);
+                            }
                             break;
 
                         case Dock.Top:
                         case Dock.Bottom:
-                            maxAccumulatedWidth = Math.Max(maxAccumulatedWidth, availableSize.X - remainingWidth + desired.X);
-                            remainingHeight = Math.Max(0f, remainingHeight - desired.Y);
+                            consumedHeight += desired.Y;
+                            maxAccumulatedWidth = Math.Max(maxAccumulatedWidth, consumedWidth + desired.X);
+                            if (!float.IsInfinity(remainingHeight))
+                            {
+                                remainingHeight = Math.Max(0f, remainingHeight - desired.Y);
+                            }
                             break;
                     }
                 }
             }
         }
 
-        maxAccumulatedWidth = Math.Max(maxAccumulatedWidth, availableSize.X - remainingWidth);
-        maxAccumulatedHeight = Math.Max(maxAccumulatedHeight, availableSize.Y - remainingHeight);
+        maxAccumulatedWidth = Math.Max(maxAccumulatedWidth, consumedWidth);
+        maxAccumulatedHeight = Math.Max(maxAccumulatedHeight, consumedHeight);
 
         return new Vector2(maxAccumulatedWidth, maxAccumulatedHeight);
     }
