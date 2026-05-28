@@ -95,9 +95,10 @@ public class NavigationViewItem : Control
 
     public override Brush? GetCurrentBackground()
     {
-        if (IsSelected) return ThemeManager.GetBrush("NavigationViewItemBackgroundSelected");
-        if (IsPointerOver) return ThemeManager.GetBrush("NavigationViewItemBackgroundPointerOver");
-        return Background;
+        var theme = ActualTheme;
+        if (IsSelected) return ThemeManager.GetBrush("NavigationViewItemBackgroundSelected", theme);
+        if (IsPointerOver) return ThemeManager.GetBrush("NavigationViewItemBackgroundPointerOver", theme);
+        return null;
     }
 
     public NavigationViewItem()
