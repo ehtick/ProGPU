@@ -29,7 +29,7 @@ public class DesignerHost : Grid
     
     private readonly Toolbox _toolbox;
     private readonly VisualTreeOutline _visualTreeOutline;
-    private readonly RichTextBlock _csharpCodeBlock;
+    private readonly VirtualizedCodeEditor _csharpCodeBlock;
     
     private readonly DesignerCanvas _designerCanvas;
     private RichTextBlock? _zoomValText;
@@ -213,7 +213,7 @@ public class DesignerHost : Grid
         contentGrid.AddChild(_sidebarRightBorder);
 
         // 4. Bottom Collapsible Panel - C# Script Preview
-        _bottomPanel = new Border { Background = new ThemeResourceBrush("CardBackground") };
+        _bottomPanel = new Border { Background = new ThemeResourceBrush("CardBackground"), Height = 120f };
         _bottomPanel.BorderThickness = new Thickness(0, 1, 0, 0);
         _bottomPanel.BorderBrush = new ThemeResourceBrush("ControlBorder");
         Grid.SetRow(_bottomPanel, 1);
@@ -243,8 +243,8 @@ public class DesignerHost : Grid
         toggleText.Inlines.Add(new Run("Expand Preview Panel"));
         toggleBottomBtn.Content = toggleText;
         
-        _csharpCodeBlock = new RichTextBlock { FontSize = 11f, Margin = new Thickness(12) };
-        _csharpCodeBlock.Foreground = new ThemeResourceBrush("TextSecondary");
+        _csharpCodeBlock = new VirtualizedCodeEditor { Height = 88f };
+        bottomContainer.AddChild(_csharpCodeBlock);
 
         toggleBottomBtn.Click += (s, e) => {
             _isBottomExpanded = !_isBottomExpanded;
@@ -252,15 +252,15 @@ public class DesignerHost : Grid
             {
                 toggleText.Inlines.Clear();
                 toggleText.Inlines.Add(new Run("Collapse Preview Panel"));
-                bottomContainer.AddChild(_csharpCodeBlock);
-                OnCanvasModified();
+                _bottomPanel.Height = 300f;
+                _csharpCodeBlock.Height = 268f;
             }
             else
             {
                 toggleText.Inlines.Clear();
                 toggleText.Inlines.Add(new Run("Expand Preview Panel"));
-                bottomContainer.RemoveChild(_csharpCodeBlock);
-                _csharpCodeBlock.Inlines.Clear();
+                _bottomPanel.Height = 120f;
+                _csharpCodeBlock.Height = 88f;
             }
             InvalidateMeasure();
             InvalidateArrange();
@@ -310,10 +310,13 @@ public class DesignerHost : Grid
 
     private void ApplyFontToVisualTree(Visual element, TtfFont mainFont, TtfFont codeFont)
     {
-        if (element is RichTextBlock rtb)
+        if (element is VirtualizedCodeEditor vce)
         {
-            if (rtb == _csharpCodeBlock) rtb.Font = codeFont;
-            else rtb.Font = mainFont;
+            vce.Font = codeFont;
+        }
+        else if (element is RichTextBlock rtb)
+        {
+            rtb.Font = mainFont;
         }
         else if (element is TextBox tb)
         {
@@ -416,31 +419,8 @@ public class DesignerHost : Grid
     {
         UpdateZoomLabel();
 
-        if (!_isBottomExpanded)
-        {
-            _csharpCodeBlock.Inlines.Clear();
-            return;
-        }
-
         string csharpScript = DesignerSerializer.SerializeToCSharp(_designerCanvas.DesignSurface);
-        _csharpCodeBlock.Inlines.Clear();
-        
-        var lines = csharpScript.Split('\n');
-        foreach (var line in lines)
-        {
-            var run = new Run(line + "\n");
-            var trimmed = line.Trim();
-            if (trimmed.StartsWith("var ") || trimmed.StartsWith("Canvas.Set") || trimmed.StartsWith("Grid.Set"))
-            {
-                run.Foreground = new ThemeResourceBrush("SystemAccentColor");
-            }
-            else if (trimmed.StartsWith("//"))
-            {
-                run.Foreground = new ThemeResourceBrush("TextSecondary");
-            }
-            _csharpCodeBlock.Inlines.Add(run);
-        }
-        _csharpCodeBlock.Invalidate();
+        _csharpCodeBlock.SetCode(csharpScript);
     }
 
     private void UpdateZoomLabel()
