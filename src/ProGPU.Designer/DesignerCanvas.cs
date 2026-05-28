@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Documents;
+using Microsoft.UI.Xaml.Markup;
 using System;
 using System.Collections.Generic;
 using System.Numerics;
@@ -578,10 +579,6 @@ public class DesignerCanvas : Panel
                     if (newInstance != null)
                     {
                         newInstance.IsHitTestVisible = false;
-                        Vector2 snappedPos = SnapPositionToGrid(args.Position, GridSize);
-
-                        Canvas.SetLeft(newInstance, snappedPos.X);
-                        Canvas.SetTop(newInstance, snappedPos.Y);
 
                         if (float.IsNaN(newInstance.Width) || newInstance.Width <= 0) newInstance.Width = 120f;
                         if (float.IsNaN(newInstance.Height) || newInstance.Height <= 0) newInstance.Height = 36f;
@@ -597,7 +594,40 @@ public class DesignerCanvas : Panel
                             textBlock.Text = toolName;
                         }
 
-                        DesignSurface.Children.Add(newInstance);
+                        // Determine unique name
+                        int suffix = 1;
+                        string baseName = $"{toolName}";
+                        string candidateName = $"{baseName}_{suffix}";
+                        var existingNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        FindNamesInVisualTree(DesignSurface, existingNames);
+                        while (existingNames.Contains(candidateName))
+                        {
+                            candidateName = $"{baseName}_{++suffix}";
+                        }
+                        newInstance.Name = candidateName;
+
+                        // Find drop container under logicalPos
+                        FrameworkElement dropTarget = DesignSurface;
+                        var hitContainer = FindContainerAtPosition(DesignSurface, args.Position);
+                        if (hitContainer != null)
+                        {
+                            dropTarget = hitContainer;
+                        }
+
+                        if (dropTarget is Canvas canvasTarget)
+                        {
+                            // Snap to grid relative to the canvas target
+                            Vector2 snappedPos = SnapPositionToGrid(args.Position - canvasTarget.Offset, GridSize);
+                            Canvas.SetLeft(newInstance, snappedPos.X);
+                            Canvas.SetTop(newInstance, snappedPos.Y);
+                            canvasTarget.Children.Add(newInstance);
+                        }
+                        else
+                        {
+                            // Add child to the non-canvas container (Panel, Border, ContentControl)
+                            AddChildToTarget(dropTarget, newInstance);
+                        }
+
                         SelectElement(newInstance);
 
                         CanvasModified?.Invoke();
@@ -733,6 +763,118 @@ public class DesignerCanvas : Panel
             float nextX = Math.Min(x + dashLength, x2);
             context.DrawLine(pen, new Vector2(x, y), new Vector2(nextX, y));
             x += dashLength + gapLength;
+        }
+    }
+
+    private FrameworkElement? FindContainerAtPosition(Visual parent, Vector2 parentPos)
+    {
+        if (parent is not FrameworkElement fe) return null;
+
+        Vector2 localPos = parentPos - fe.Offset;
+
+        Rect localBounds = new Rect(Vector2.Zero, fe.Size);
+        if (!localBounds.Contains(localPos))
+        {
+            return null;
+        }
+
+        if (fe is ContainerVisual container)
+        {
+            for (int i = container.Children.Count - 1; i >= 0; i--)
+            {
+                var child = container.Children[i];
+                if (child is FrameworkElement childFe)
+                {
+                    var hit = FindContainerAtPosition(childFe, localPos);
+                    if (hit != null)
+                    {
+                        return hit;
+                    }
+                }
+            }
+        }
+
+        if (IsValidDropContainer(fe))
+        {
+            return fe;
+        }
+
+        return null;
+    }
+
+    private bool IsValidDropContainer(FrameworkElement fe)
+    {
+        if (fe is Panel) return true;
+        
+        var type = fe.GetType();
+        var contentPropertyAttr = type.GetCustomAttribute<ContentPropertyAttribute>(true);
+        if (contentPropertyAttr != null && !string.IsNullOrEmpty(contentPropertyAttr.Name))
+        {
+            return true;
+        }
+
+        if (type.GetProperty("Child") != null || type.GetProperty("Content") != null)
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private void AddChildToTarget(FrameworkElement target, FrameworkElement newChild)
+    {
+        if (target == null || newChild == null) return;
+
+        if (target is Panel panel)
+        {
+            panel.Children.Add(newChild);
+            return;
+        }
+
+        var type = target.GetType();
+        var contentPropertyAttr = type.GetCustomAttribute<ContentPropertyAttribute>(true);
+        if (contentPropertyAttr != null && !string.IsNullOrEmpty(contentPropertyAttr.Name))
+        {
+            var prop = type.GetProperty(contentPropertyAttr.Name);
+            if (prop != null && prop.CanWrite)
+            {
+                prop.SetValue(target, newChild);
+                return;
+            }
+        }
+
+        var childProp = type.GetProperty("Child");
+        if (childProp != null && childProp.CanWrite && typeof(FrameworkElement).IsAssignableFrom(childProp.PropertyType))
+        {
+            childProp.SetValue(target, newChild);
+            return;
+        }
+
+        var contentProp = type.GetProperty("Content");
+        if (contentProp != null && contentProp.CanWrite)
+        {
+            contentProp.SetValue(target, newChild);
+            return;
+        }
+
+        if (target is ContainerVisual container)
+        {
+            container.AddChild(newChild);
+        }
+    }
+
+    private void FindNamesInVisualTree(Visual? root, HashSet<string> names)
+    {
+        if (root is FrameworkElement fe)
+        {
+            if (!string.IsNullOrEmpty(fe.Name)) names.Add(fe.Name);
+            if (fe is ContainerVisual container)
+            {
+                foreach (var child in container.Children)
+                {
+                    FindNamesInVisualTree(child, names);
+                }
+            }
         }
     }
 }

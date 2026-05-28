@@ -2,10 +2,12 @@ namespace ProGPU.Designer;
 
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Documents;
+using Microsoft.UI.Xaml.Markup;
 using ProGPU.Vector;
 using ProGPU.Layout;
 using Thickness = Microsoft.UI.Xaml.Thickness;
@@ -32,15 +34,47 @@ public class VisualTreeOutlineItem : Border
         _isSelected = isSelected;
 
         Margin = new Thickness(2, 1, 2, 1);
-        Padding = new Thickness(depth * 14 + 6, 6, 6, 6);
+        Padding = new Thickness(depth * 12 + 6, 6, 6, 6);
         CornerRadius = 4f;
         Background = isSelected 
             ? new ThemeResourceBrush("SelectionHighlight") 
             : new ThemeResourceBrush("Transparent");
 
+        AllowDrop = true;
+
         var grid = new Grid { HorizontalAlignment = HorizontalAlignment.Stretch };
         grid.ColumnDefinitions.Add(new GridLength(1, GridUnitType.Star));
         grid.ColumnDefinitions.Add(new GridLength(24, GridUnitType.Absolute));
+
+        var indentPanel = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        
+        // Expansion arrow prefix if element has visual children
+        if (element is ContainerVisual container && container.Children.Count > 0)
+        {
+            bool isCollapsed = parentOutline.IsCollapsed(element);
+            var toggleText = new RichTextBlock { FontSize = 8f, Foreground = new ThemeResourceBrush("TextSecondary") };
+            toggleText.Inlines.Add(new Run(isCollapsed ? "▶" : "▼"));
+            var toggleBtn = new Button
+            {
+                Content = toggleText,
+                WidthConstraint = 14f,
+                HeightConstraint = 14f,
+                Padding = new Thickness(0),
+                BorderThickness = new Thickness(0),
+                Background = new ThemeResourceBrush("Transparent"),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 4, 0)
+            };
+            toggleBtn.Click += (s, e) => {
+                parentOutline.ToggleExpanded(element);
+            };
+            indentPanel.AddChild(toggleBtn);
+        }
+        else
+        {
+            var spacer = new Border { Width = 14f, Height = 1f };
+            indentPanel.AddChild(spacer);
+        }
 
         var textBlock = new RichTextBlock
         {
@@ -54,8 +88,10 @@ public class VisualTreeOutlineItem : Border
         
         string name = string.IsNullOrEmpty(element.Name) ? "" : $" \"{element.Name}\"";
         textBlock.Inlines.Add(new Run($"{element.GetType().Name}{name}"));
-        grid.AddChild(textBlock);
-        Grid.SetColumn(textBlock, 0);
+        indentPanel.AddChild(textBlock);
+
+        grid.AddChild(indentPanel);
+        Grid.SetColumn(indentPanel, 0);
 
         var delBtn = new Button
         {
@@ -103,8 +139,319 @@ public class VisualTreeOutlineItem : Border
         {
             _parentOutline.SelectElement(_element);
             e.Handled = true;
+
+            // Start drag-and-drop move operation for re-arranging!
+            var dp = new DataPackage();
+            dp.SetData("OutlineItem", _element);
+
+            var dragVisual = new Border
+            {
+                Width = 140f,
+                Height = 30f,
+                Background = new ThemeResourceBrush("SystemAccentColor"),
+                BorderBrush = new ThemeResourceBrush("ControlBorder"),
+                BorderThickness = new Thickness(1f),
+                CornerRadius = 4f,
+                Opacity = 0.75f,
+                Padding = new Thickness(6, 4, 6, 4)
+            };
+            var visualText = new RichTextBlock
+            {
+                Font = _font,
+                FontSize = 10f,
+                Foreground = new ThemeResourceBrush("TextPrimary"),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            string name = string.IsNullOrEmpty(_element.Name) ? "" : $" \"{_element.Name}\"";
+            visualText.Inlines.Add(new Run($"{_element.GetType().Name}{name}"));
+            dragVisual.Child = visualText;
+
+            DragDropManager.StartDrag(this, dp, DragDropEffects.Move, dragVisual);
         }
         base.OnPointerPressed(e);
+    }
+
+    public override void OnDragOver(Microsoft.UI.Xaml.DragEventArgs e)
+    {
+        if (e.Data.Contains("OutlineItem") || e.Data.Contains(StandardDataFormats.Tool))
+        {
+            e.AcceptedOperation = DragDropEffects.Move;
+            e.Handled = true;
+        }
+        base.OnDragOver(e);
+    }
+
+    public override void OnDrop(Microsoft.UI.Xaml.DragEventArgs e)
+    {
+        if (e.Data.Contains("OutlineItem"))
+        {
+            var sourceElement = e.Data.GetData("OutlineItem") as FrameworkElement;
+            if (sourceElement != null && sourceElement != _element && !IsAncestorOf(sourceElement, _element))
+            {
+                MoveElement(sourceElement, _element);
+                e.Handled = true;
+            }
+        }
+        else if (e.Data.Contains(StandardDataFormats.Tool))
+        {
+            var toolData = e.Data.GetData(StandardDataFormats.Tool);
+            string? toolName = toolData as string;
+            if (!string.IsNullOrEmpty(toolName))
+            {
+                CreateAndAddTool(toolName, _element);
+                e.Handled = true;
+            }
+        }
+        base.OnDrop(e);
+    }
+
+    private static bool IsAncestorOf(FrameworkElement possibleAncestor, FrameworkElement child)
+    {
+        var current = child.Parent as FrameworkElement;
+        while (current != null)
+        {
+            if (current == possibleAncestor) return true;
+            current = current.Parent as FrameworkElement;
+        }
+        return false;
+    }
+
+    private bool IsValidDropContainer(FrameworkElement fe)
+    {
+        if (fe is Panel) return true;
+        
+        var type = fe.GetType();
+        var contentPropertyAttr = type.GetCustomAttribute<ContentPropertyAttribute>(true);
+        if (contentPropertyAttr != null && !string.IsNullOrEmpty(contentPropertyAttr.Name))
+        {
+            return true;
+        }
+
+        if (type.GetProperty("Child") != null || type.GetProperty("Content") != null)
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    public static void AddChildToTarget(FrameworkElement target, FrameworkElement newChild)
+    {
+        if (target == null || newChild == null) return;
+
+        if (target is Panel panel)
+        {
+            panel.Children.Add(newChild);
+            return;
+        }
+
+        var type = target.GetType();
+        var contentPropertyAttr = type.GetCustomAttribute<ContentPropertyAttribute>(true);
+        if (contentPropertyAttr != null && !string.IsNullOrEmpty(contentPropertyAttr.Name))
+        {
+            var prop = type.GetProperty(contentPropertyAttr.Name);
+            if (prop != null && prop.CanWrite)
+            {
+                prop.SetValue(target, newChild);
+                return;
+            }
+        }
+
+        var childProp = type.GetProperty("Child");
+        if (childProp != null && childProp.CanWrite && typeof(FrameworkElement).IsAssignableFrom(childProp.PropertyType))
+        {
+            childProp.SetValue(target, newChild);
+            return;
+        }
+
+        var contentProp = type.GetProperty("Content");
+        if (contentProp != null && contentProp.CanWrite)
+        {
+            contentProp.SetValue(target, newChild);
+            return;
+        }
+
+        if (target is ContainerVisual container)
+        {
+            container.AddChild(newChild);
+        }
+    }
+
+    private void MoveElement(FrameworkElement source, FrameworkElement target)
+    {
+        if (source.Parent is ContainerVisual parentContainer)
+        {
+            if (parentContainer is Border borderParent && borderParent.Child == source)
+            {
+                borderParent.Child = null;
+            }
+            else if (parentContainer is ContentControl contentControlParent && contentControlParent.Content == source)
+            {
+                contentControlParent.Content = null;
+            }
+            else
+            {
+                parentContainer.RemoveChild(source);
+            }
+        }
+
+        if (IsValidDropContainer(target))
+        {
+            if (target is Canvas canvasTarget)
+            {
+                Canvas.SetLeft(source, 20f);
+                Canvas.SetTop(source, 20f);
+                canvasTarget.Children.Add(source);
+            }
+            else
+            {
+                AddChildToTarget(target, source);
+            }
+        }
+        else
+        {
+            if (target.Parent is ContainerVisual targetParent)
+            {
+                if (targetParent is Canvas canvasParent)
+                {
+                    Canvas.SetLeft(source, Canvas.GetLeft(target) + 20f);
+                    Canvas.SetTop(source, Canvas.GetTop(target) + 20f);
+                    canvasParent.Children.Add(source);
+                }
+                else
+                {
+                    AddChildToTarget(targetParent as FrameworkElement, source);
+                }
+            }
+        }
+
+        _parentOutline.SelectElement(source);
+        _parentOutline.NotifyCanvasModified();
+    }
+
+    private void CreateAndAddTool(string toolName, FrameworkElement target)
+    {
+        Type? controlType = null;
+        string[] searchNamespaces = {
+            "Microsoft.UI.Xaml.Controls",
+            "Microsoft.UI.Xaml",
+            "ProGPU.Designer"
+        };
+
+        foreach (var ns in searchNamespaces)
+        {
+            var typeName = $"{ns}.{toolName}";
+            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                controlType = assembly.GetType(typeName);
+                if (controlType != null) break;
+            }
+            if (controlType != null) break;
+        }
+
+        if (controlType == null)
+        {
+            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                foreach (var type in assembly.GetTypes())
+                {
+                    if (type.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        controlType = type;
+                        break;
+                    }
+                }
+                if (controlType != null) break;
+            }
+        }
+
+        if (controlType != null && typeof(FrameworkElement).IsAssignableFrom(controlType))
+        {
+            try
+            {
+                var newInstance = Activator.CreateInstance(controlType) as FrameworkElement;
+                if (newInstance != null)
+                {
+                    newInstance.IsHitTestVisible = false;
+
+                    if (float.IsNaN(newInstance.Width) || newInstance.Width <= 0) newInstance.Width = 120f;
+                    if (float.IsNaN(newInstance.Height) || newInstance.Height <= 0) newInstance.Height = 36f;
+
+                    if (newInstance is Button button)
+                    {
+                        var richText = new RichTextBlock { Font = _font ?? PopupService.DefaultFont };
+                        richText.Inlines.Add(new Run(toolName));
+                        button.Content = richText;
+                    }
+                    else if (newInstance is TextBlock textBlock)
+                    {
+                        textBlock.Text = toolName;
+                    }
+
+                    int suffix = 1;
+                    string baseName = $"{toolName}";
+                    string candidateName = $"{baseName}_{suffix}";
+                    
+                    var existingNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    FindNamesInVisualTree(_parentOutline.RootElement, existingNames);
+                    while (existingNames.Contains(candidateName))
+                    {
+                        candidateName = $"{baseName}_{++suffix}";
+                    }
+                    newInstance.Name = candidateName;
+
+                    if (IsValidDropContainer(target))
+                    {
+                        if (target is Canvas canvasTarget)
+                        {
+                            Canvas.SetLeft(newInstance, 50f);
+                            Canvas.SetTop(newInstance, 50f);
+                            canvasTarget.Children.Add(newInstance);
+                        }
+                        else
+                        {
+                            AddChildToTarget(target, newInstance);
+                        }
+                    }
+                    else if (target.Parent is ContainerVisual targetParent)
+                    {
+                        if (targetParent is Canvas canvasParent)
+                        {
+                            Canvas.SetLeft(newInstance, Canvas.GetLeft(target) + 20f);
+                            Canvas.SetTop(newInstance, Canvas.GetTop(target) + 20f);
+                            canvasParent.Children.Add(newInstance);
+                        }
+                        else
+                        {
+                            AddChildToTarget(targetParent as FrameworkElement, newInstance);
+                        }
+                    }
+
+                    _parentOutline.SelectElement(newInstance);
+                    _parentOutline.NotifyCanvasModified();
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[VisualTreeOutlineItem] Error instantiating {toolName}: {ex.Message}");
+            }
+        }
+    }
+
+    private void FindNamesInVisualTree(Visual? root, HashSet<string> names)
+    {
+        if (root is FrameworkElement fe)
+        {
+            if (!string.IsNullOrEmpty(fe.Name)) names.Add(fe.Name);
+            if (fe is ContainerVisual container)
+            {
+                foreach (var child in container.Children)
+                {
+                    FindNamesInVisualTree(child, names);
+                }
+            }
+        }
     }
 }
 
@@ -114,9 +461,24 @@ public class VisualTreeOutline : Border
     private FrameworkElement? _selectedElement;
     private readonly StackPanel _treeStack;
     private readonly ScrollViewer _scrollViewer;
-    private readonly ProGPU.Text.TtfFont? _font;
+    private ProGPU.Text.TtfFont? _font;
+    private readonly HashSet<FrameworkElement> _collapsedElements = new();
 
     public event Action<FrameworkElement?>? SelectionChanged;
+    public event Action? CanvasModified;
+
+    public ProGPU.Text.TtfFont? Font
+    {
+        get => _font;
+        set
+        {
+            if (_font != value)
+            {
+                _font = value;
+                RefreshTree();
+            }
+        }
+    }
 
     public FrameworkElement? RootElement
     {
@@ -168,7 +530,7 @@ public class VisualTreeOutline : Border
             Margin = new Thickness(4, 4, 4, 12),
             HorizontalAlignment = HorizontalAlignment.Left
         };
-        titleText.Inlines.Add(new Bold(new Run("Visual Tree")));
+        titleText.Inlines.Add(new Bold(new Run("Visual Tree Outline")));
         _treeStack.AddChild(titleText);
 
         _scrollViewer = new ScrollViewer
@@ -182,6 +544,30 @@ public class VisualTreeOutline : Border
         
         KeyDown += OnOutlineKeyDown;
         
+        RefreshTree();
+    }
+
+    public bool IsCollapsed(FrameworkElement element)
+    {
+        return _collapsedElements.Contains(element);
+    }
+
+    public void ToggleExpanded(FrameworkElement element)
+    {
+        if (_collapsedElements.Contains(element))
+        {
+            _collapsedElements.Remove(element);
+        }
+        else
+        {
+            _collapsedElements.Add(element);
+        }
+        RefreshTree();
+    }
+
+    public void NotifyCanvasModified()
+    {
+        CanvasModified?.Invoke();
         RefreshTree();
     }
 
@@ -230,7 +616,7 @@ public class VisualTreeOutline : Border
         var row = new VisualTreeOutlineItem(element, depth, isSelected, _font, this);
         _treeStack.AddChild(row);
 
-        if (element is ContainerVisual container)
+        if (element is ContainerVisual container && !IsCollapsed(element))
         {
             foreach (var child in container.Children)
             {
@@ -257,7 +643,18 @@ public class VisualTreeOutline : Border
         var parent = element.Parent as ContainerVisual;
         if (parent != null)
         {
-            parent.RemoveChild(element);
+            if (parent is Border borderParent && borderParent.Child == element)
+            {
+                borderParent.Child = null;
+            }
+            else if (parent is ContentControl contentControlParent && contentControlParent.Content == element)
+            {
+                contentControlParent.Content = null;
+            }
+            else
+            {
+                parent.RemoveChild(element);
+            }
             
             if (_selectedElement == element)
             {
@@ -266,6 +663,7 @@ public class VisualTreeOutline : Border
             }
             
             RefreshTree();
+            NotifyCanvasModified();
             
             _rootElement?.InvalidateMeasure();
             _rootElement?.Invalidate();

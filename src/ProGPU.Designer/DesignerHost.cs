@@ -28,7 +28,7 @@ public class DesignerHost : Grid
     private readonly Border _bottomPanel;
     
     private readonly Toolbox _toolbox;
-    private readonly StackPanel _outlinePanel;
+    private readonly VisualTreeOutline _visualTreeOutline;
     private readonly RichTextBlock _csharpCodeBlock;
     
     private readonly DesignerCanvas _designerCanvas;
@@ -79,31 +79,20 @@ public class DesignerHost : Grid
         _sidebarLeft.AddChild(_toolbox);
 
         // Bottom half: Visual Tree Outline
-        var outlineContainer = new Border
-        {
-            Background = new ThemeResourceBrush("CardBackground"),
-            BorderThickness = new Thickness(0, 1, 0, 0),
-            BorderBrush = new ThemeResourceBrush("ControlBorder"),
-            Padding = new Thickness(8)
+        _visualTreeOutline = new VisualTreeOutline(DesignerFont);
+        _visualTreeOutline.BorderThickness = new Thickness(0, 1, 0, 0); // border separator
+        _visualTreeOutline.CornerRadius = 0f; // clean look
+        _visualTreeOutline.SelectionChanged += (fe) => {
+            _designerCanvas.SelectElement(fe);
+            _designerCanvas.Invalidate();
         };
-        var outlineStack = new StackPanel { Orientation = Orientation.Vertical, HorizontalAlignment = HorizontalAlignment.Stretch };
-        var outlineTitle = new RichTextBlock { FontSize = 14f, Margin = new Thickness(4, 4, 4, 8) };
-        outlineTitle.Inlines.Add(new Bold(new Run("Visual Tree Outline")));
-        outlineStack.AddChild(outlineTitle);
-
-        _outlinePanel = new StackPanel { Orientation = Orientation.Vertical, HorizontalAlignment = HorizontalAlignment.Stretch };
-        outlineStack.AddChild(_outlinePanel);
-
-        var outlineScroll = new ScrollViewer
-        {
-            Content = outlineStack,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Stretch
+        _visualTreeOutline.CanvasModified += () => {
+            OnCanvasModified();
+            _designerCanvas.Invalidate();
         };
-        outlineContainer.Child = outlineScroll;
 
-        Grid.SetRow(outlineContainer, 1);
-        _sidebarLeft.AddChild(outlineContainer);
+        Grid.SetRow(_visualTreeOutline, 1);
+        _sidebarLeft.AddChild(_visualTreeOutline);
 
         // 2. Center Workspace
         _workspaceCenter = new Grid();
@@ -243,7 +232,6 @@ public class DesignerHost : Grid
         TtfFont primaryFont = DesignerFont ?? Microsoft.UI.Xaml.Controls.PopupService.DefaultFont;
         TtfFont courierFont = DesignerFontCourier ?? DesignerFont ?? Microsoft.UI.Xaml.Controls.PopupService.DefaultFont;
         
-        outlineTitle.Font = primaryFont;
         gridLinesLabel.Font = primaryFont;
         snapLabel.Font = primaryFont;
         clearBtnText.Font = primaryFont;
@@ -269,6 +257,7 @@ public class DesignerHost : Grid
         }
         
         _csharpCodeBlock.Font = courierFont;
+        _visualTreeOutline.Font = primaryFont;
         
         UpdateOutline();
         OnCanvasModified();
@@ -387,35 +376,11 @@ public class DesignerHost : Grid
 
     private void UpdateOutline()
     {
-        _outlinePanel.Children.Clear();
-        foreach (var child in _designerCanvas.DesignSurface.Children)
+        if (_visualTreeOutline != null)
         {
-            if (child is FrameworkElement fe)
-            {
-                var selectBtn = new Button { Width = 220f, Height = 28f, Margin = new Thickness(0, 2, 0, 2) };
-                
-                if (fe == _designerCanvas.SelectedElement)
-                {
-                    selectBtn.Background = new ThemeResourceBrush("SystemAccentColor");
-                }
-                else
-                {
-                    selectBtn.Background = new ThemeResourceBrush("ButtonBackground");
-                }
-
-                var label = new RichTextBlock { Font = DesignerFont ?? Microsoft.UI.Xaml.Controls.PopupService.DefaultFont, FontSize = 11f };
-                string displayName = string.IsNullOrEmpty(fe.Name) ? fe.GetType().Name : fe.Name;
-                label.Inlines.Add(new Run(displayName));
-                
-                selectBtn.Content = label;
-                selectBtn.Click += (s, e) => {
-                    _designerCanvas.SelectElement(fe);
-                    _designerCanvas.Invalidate();
-                    UpdateOutline();
-                };
-                _outlinePanel.AddChild(selectBtn);
-            }
+            _visualTreeOutline.SelectedElement = _designerCanvas.SelectedElement;
+            _visualTreeOutline.RootElement = _designerCanvas.DesignSurface;
+            _visualTreeOutline.RefreshTree();
         }
-        _outlinePanel.InvalidateMeasure();
     }
 }

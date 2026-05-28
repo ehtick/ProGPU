@@ -701,6 +701,9 @@ public class DataGrid : Control
         if (_cellEditor == null)
         {
             _cellEditor = new CellEditorTextBox(this);
+        }
+        if (_cellEditor.Parent == null)
+        {
             AddChild(_cellEditor);
         }
 
@@ -734,6 +737,7 @@ public class DataGrid : Control
             _cellEditor.HeightConstraint = 0f;
             _cellEditor.Measure(new Vector2(0, 0));
             _cellEditor.Arrange(new Rect(0, 0, 0, 0));
+            RemoveChild(_cellEditor);
 
             if (InputSystem.FocusedElement == _cellEditor)
             {
@@ -795,6 +799,7 @@ public class DataGrid : Control
                 _cellEditor.HeightConstraint = 0f;
                 _cellEditor.Measure(new Vector2(0, 0));
                 _cellEditor.Arrange(new Rect(0, 0, 0, 0));
+                RemoveChild(_cellEditor);
 
                 if (InputSystem.FocusedElement == _cellEditor)
                 {
