@@ -62,7 +62,8 @@ public static class ThemeManager
         { "ButtonPenumbraShadow", new Vector4(0f, 0f, 0f, 0.08f) },
         { "NavigationViewItemBackgroundSelected", new Vector4(1f, 1f, 1f, 0.07f) },
         { "NavigationViewItemBackgroundPointerOver", new Vector4(1f, 1f, 1f, 0.05f) },
-        { "TabViewItemCloseHover", new Vector4(1.0f, 0.33f, 0.33f, 1.0f) }
+        { "TabViewItemCloseHover", new Vector4(1.0f, 0.33f, 0.33f, 1.0f) },
+        { "TextOnAccent", new Vector4(1f, 1f, 1f, 1.0f) }
     };
 
     private static readonly Dictionary<string, Vector4> LightPalette = new()
@@ -87,7 +88,8 @@ public static class ThemeManager
         { "ButtonPenumbraShadow", new Vector4(0f, 0f, 0f, 0.08f) },
         { "NavigationViewItemBackgroundSelected", new Vector4(0f, 0f, 0f, 0.08f) },
         { "NavigationViewItemBackgroundPointerOver", new Vector4(0f, 0f, 0f, 0.05f) },
-        { "TabViewItemCloseHover", new Vector4(1.0f, 0.33f, 0.33f, 1.0f) }
+        { "TabViewItemCloseHover", new Vector4(1.0f, 0.33f, 0.33f, 1.0f) },
+        { "TextOnAccent", new Vector4(1f, 1f, 1f, 1.0f) }
     };
 
     private static readonly Dictionary<string, string> ResourceAliases = new(StringComparer.OrdinalIgnoreCase)
@@ -127,7 +129,7 @@ public static class ThemeManager
         { "CheckBoxCheckBackgroundFillChecked", "SystemAccentColor" },
         { "CheckBoxCheckBackgroundFillCheckedPointerOver", "SystemAccentColorLight1" },
         { "CheckBoxCheckBackgroundFillCheckedPressed", "SystemAccentColorDark1" },
-        { "CheckBoxCheckGlyphForegroundChecked", "TextPrimary" },
+        { "CheckBoxCheckGlyphForegroundChecked", "TextOnAccent" },
 
         { "CheckBoxBackground", "ControlBackground" },
         { "CheckBoxBackgroundPointerOver", "ControlBackgroundHover" },
@@ -161,7 +163,7 @@ public static class ThemeManager
         { "RadioButtonCheckBackgroundFillChecked", "SystemAccentColor" },
         { "RadioButtonCheckBackgroundFillCheckedPointerOver", "SystemAccentColorLight1" },
         { "RadioButtonCheckBackgroundFillCheckedPressed", "SystemAccentColorDark1" },
-        { "RadioButtonCheckGlyphForegroundChecked", "TextPrimary" },
+        { "RadioButtonCheckGlyphForegroundChecked", "TextOnAccent" },
 
         { "ComboBoxBackground", "ControlBackground" },
         { "ComboBoxBackgroundPointerOver", "ControlBackgroundHover" },
