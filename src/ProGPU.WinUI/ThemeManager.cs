@@ -109,6 +109,21 @@ public static class ThemeManager
         { "ButtonBorderBrushFocused", "ControlBorderHover" },
         { "ButtonBorderBrushDisabled", "ControlBorder" },
 
+        { "AccentButtonBackground", "SystemAccentColor" },
+        { "AccentButtonBackgroundPointerOver", "SystemAccentColorLight1" },
+        { "AccentButtonBackgroundPressed", "SystemAccentColorDark1" },
+        { "AccentButtonBackgroundFocused", "SystemAccentColor" },
+        { "AccentButtonBackgroundDisabled", "ControlBackground" },
+        { "AccentButtonForeground", "TextOnAccent" },
+        { "AccentButtonForegroundPointerOver", "TextOnAccent" },
+        { "AccentButtonForegroundPressed", "TextOnAccent" },
+        { "AccentButtonForegroundDisabled", "TextSecondary" },
+        { "AccentButtonBorderBrush", "SystemAccentColor" },
+        { "AccentButtonBorderBrushPointerOver", "SystemAccentColorLight1" },
+        { "AccentButtonBorderBrushPressed", "SystemAccentColorDark1" },
+        { "AccentButtonBorderBrushFocused", "SystemAccentColor" },
+        { "AccentButtonBorderBrushDisabled", "ControlBorder" },
+
         { "RepeatButtonBackground", "ControlBackground" },
         { "RepeatButtonBackgroundFocused", "ControlBackground" },
         { "RepeatButtonForeground", "TextPrimary" },
@@ -307,7 +322,7 @@ public static class ThemeManager
         if (key.Equals("AccentButtonStyle", StringComparison.OrdinalIgnoreCase))
         {
             var accentStyle = new Style(typeof(Button));
-            AddControlChrome(accentStyle, "SystemAccentColor", "TextPrimary", "SystemAccentColor", new Thickness(1f), 6f, new Thickness(12f, 6f, 12f, 6f));
+            AddControlChrome(accentStyle, "SystemAccentColor", "TextOnAccent", "SystemAccentColor", new Thickness(1f), 6f, new Thickness(12f, 6f, 12f, 6f));
             return accentStyle;
         }
 
