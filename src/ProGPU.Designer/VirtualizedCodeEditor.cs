@@ -10,6 +10,9 @@ using ProGPU.Scene;
 using ProGPU.Text;
 using ProGPU.Vector;
 using ProGPU.Virtualization;
+using TextMateSharp.Grammars;
+using TextMateSharp.Themes;
+using TextMateSharp.Registry;
 
 using Thickness = Microsoft.UI.Xaml.Thickness;
 
@@ -26,6 +29,11 @@ public class VirtualizedCodeEditor : Control
     private float _dragStartMouseY = 0f;
     private float _dragStartScrollOffset = 0f;
     private bool _isPointerOverScrollbar = false;
+    
+    private Registry? _registry;
+    private IGrammar? _grammar;
+    private string _rawCode = "";
+    private readonly List<List<Run>> _tokenizedLines = new();
 
     public TtfFont? Font
     {
@@ -62,6 +70,8 @@ public class VirtualizedCodeEditor : Control
         Background = new ThemeResourceBrush("HeaderBackground");
         Foreground = new ThemeResourceBrush("TextPrimary");
         
+        InitializeTextMate();
+
         _panel = new VirtualizingScrollPanel();
         _panel.ItemHeight = _itemHeight;
         _panel.CreateVisualFactory = () => {
@@ -78,16 +88,19 @@ public class VirtualizedCodeEditor : Control
             if (visual is RichTextBlock rtb)
             {
                 rtb.Font = _font ?? Microsoft.UI.Xaml.Controls.PopupService.DefaultFont;
-                
-                // Rebuild the inlines with C# syntax coloring
-                string text = index >= 0 && index < _lines.Count ? _lines[index] : "";
                 rtb.Inlines.Clear();
                 
-                var defaultFg = Foreground ?? ThemeManager.GetBrush("TextPrimary", ActualTheme);
-                var runs = CSharpColorizer.TokenizeCSharpLine(text, defaultFg);
-                foreach (var run in runs)
+                if (index >= 0 && index < _tokenizedLines.Count)
                 {
-                    rtb.Inlines.Add(run);
+                    var runs = _tokenizedLines[index];
+                    foreach (var run in runs)
+                    {
+                        rtb.Inlines.Add(run);
+                    }
+                }
+                else
+                {
+                    rtb.Inlines.Add(new Run(" ") { FontSize = 11f });
                 }
                 rtb.Invalidate();
             }
@@ -97,21 +110,169 @@ public class VirtualizedCodeEditor : Control
         IsHitTestVisible = true;
     }
 
+    private void InitializeTextMate()
+    {
+        try
+        {
+            var themeName = ActualTheme == ElementTheme.Light ? ThemeName.LightPlus : ThemeName.DarkPlus;
+            var options = new RegistryOptions(themeName);
+            _registry = new Registry(options);
+            _grammar = _registry.LoadGrammar("source.cs");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[VirtualizedCodeEditor] Error initializing TextMateSharp: {ex.Message}");
+        }
+    }
+
+    public override void OnVisualStateChanged()
+    {
+        base.OnVisualStateChanged();
+        InitializeTextMate();
+        SetCode(_rawCode);
+    }
+
     public void SetCode(string code)
     {
+        _rawCode = code ?? "";
         _lines.Clear();
-        if (!string.IsNullOrEmpty(code))
+        _tokenizedLines.Clear();
+
+        if (string.IsNullOrEmpty(code))
         {
-            var rawLines = code.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
-            foreach (var l in rawLines)
+            _panel.ItemsCount = 0;
+            _panel.ScrollOffset = 0f;
+            Invalidate();
+            return;
+        }
+
+        var rawLines = code.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+        foreach (var l in rawLines)
+        {
+            _lines.Add(l);
+        }
+
+        if (_registry == null || _grammar == null)
+        {
+            InitializeTextMate();
+        }
+
+        IStateStack? ruleStack = null;
+        Theme? theme = _registry?.GetTheme();
+
+        for (int i = 0; i < _lines.Count; i++)
+        {
+            string lineText = _lines[i];
+            var lineRuns = new List<Run>();
+
+            if (string.IsNullOrEmpty(lineText))
             {
-                _lines.Add(l);
+                lineRuns.Add(new Run(" ") { FontSize = 11f });
+                _tokenizedLines.Add(lineRuns);
+                continue;
+            }
+
+            if (_grammar == null || theme == null)
+            {
+                lineRuns.Add(new Run(lineText) { FontSize = 11f, Foreground = Foreground ?? ThemeManager.GetBrush("TextPrimary", ActualTheme) });
+                _tokenizedLines.Add(lineRuns);
+                continue;
+            }
+
+            try
+            {
+                var tokenizeResult = _grammar.TokenizeLine(new LineText(lineText), ruleStack, TimeSpan.FromMilliseconds(500));
+                ruleStack = tokenizeResult.RuleStack;
+
+                var tokens = tokenizeResult.Tokens;
+                int lastIdx = 0;
+
+                foreach (var token in tokens)
+                {
+                    int start = token.StartIndex;
+                    int end = token.EndIndex;
+                    if (start < 0 || end <= start || end > lineText.Length) continue;
+
+                    if (start > lastIdx)
+                    {
+                        var gapText = lineText.Substring(lastIdx, start - lastIdx);
+                        lineRuns.Add(new Run(gapText) { FontSize = 11f, Foreground = Foreground ?? ThemeManager.GetBrush("TextPrimary", ActualTheme) });
+                    }
+
+                    string tokenText = lineText.Substring(start, end - start);
+                    var rules = theme.Match(token.Scopes);
+                    SolidColorBrush? brush = null;
+
+                    if (rules != null)
+                    {
+                        for (int r = rules.Count - 1; r >= 0; r--)
+                        {
+                            var rule = rules[r];
+                            if (rule.foreground > 0)
+                            {
+                                string colorHex = theme.GetColor(rule.foreground);
+                                if (!string.IsNullOrEmpty(colorHex))
+                                {
+                                    var colorVec = ParseHexColor(colorHex);
+                                    brush = new SolidColorBrush(colorVec);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    brush ??= (Foreground as SolidColorBrush) ?? (ThemeManager.GetBrush("TextPrimary", ActualTheme) as SolidColorBrush);
+                    lineRuns.Add(new Run(tokenText) { FontSize = 11f, Foreground = brush });
+                    lastIdx = end;
+                }
+
+                if (lastIdx < lineText.Length)
+                {
+                    var remText = lineText.Substring(lastIdx);
+                    lineRuns.Add(new Run(remText) { FontSize = 11f, Foreground = Foreground ?? ThemeManager.GetBrush("TextPrimary", ActualTheme) });
+                }
+            }
+            catch
+            {
+                lineRuns.Add(new Run(lineText) { FontSize = 11f, Foreground = Foreground ?? ThemeManager.GetBrush("TextPrimary", ActualTheme) });
+            }
+
+            _tokenizedLines.Add(lineRuns);
+        }
+
+        _panel.ItemsCount = _lines.Count;
+        _panel.ScrollOffset = _scrollOffset;
+        Invalidate();
+    }
+
+    private Vector4 ParseHexColor(string hex)
+    {
+        if (string.IsNullOrEmpty(hex)) return new Vector4(1f, 1f, 1f, 1f);
+        if (hex.StartsWith("#")) hex = hex.Substring(1);
+
+        try
+        {
+            if (hex.Length == 6)
+            {
+                float r = Convert.ToInt32(hex.Substring(0, 2), 16) / 255f;
+                float g = Convert.ToInt32(hex.Substring(2, 2), 16) / 255f;
+                float b = Convert.ToInt32(hex.Substring(4, 2), 16) / 255f;
+                return new Vector4(r, g, b, 1f);
+            }
+            if (hex.Length == 8)
+            {
+                float r = Convert.ToInt32(hex.Substring(0, 2), 16) / 255f;
+                float g = Convert.ToInt32(hex.Substring(2, 2), 16) / 255f;
+                float b = Convert.ToInt32(hex.Substring(4, 2), 16) / 255f;
+                float a = Convert.ToInt32(hex.Substring(6, 2), 16) / 255f;
+                return new Vector4(r, g, b, a);
             }
         }
-        
-        _panel.ItemsCount = _lines.Count;
-        _panel.ScrollOffset = _scrollOffset; // force refresh
-        Invalidate();
+        catch
+        {
+        }
+
+        return new Vector4(1f, 1f, 1f, 1f);
     }
 
     public override void OnPointerWheelChanged(PointerRoutedEventArgs e)
@@ -211,6 +372,8 @@ public class VirtualizedCodeEditor : Control
 
     public override void OnRender(DrawingContext context)
     {
+        if (Size.Y <= 0.01f) return;
+
         var bg = Background ?? ThemeManager.GetBrush("HeaderBackground", ActualTheme);
         context.DrawRectangle(bg, null, new Rect(Vector2.Zero, Size));
 

@@ -74,6 +74,9 @@ public class DesignerCanvas : Panel
     private float _elementStartTop;
     private Vector2 _dragStartElementPosInRoot;
     public FrameworkElement? HoveredElement { get; set; }
+    
+    private Vector2? _dragOverPosition;
+    private bool _isExternalDragActive;
 
     // Panning state
     private bool _isPanning;
@@ -304,6 +307,7 @@ public class DesignerCanvas : Panel
         {
             HoveredElement = null;
             Vector2 logicalPos = (e.Position - PanOffset) / ZoomScale;
+            _dragOverPosition = logicalPos;
             Vector2 delta = logicalPos - _dragStartOffset;
             
             // Calculate absolute target position in root DesignSurface coordinates
@@ -403,6 +407,7 @@ public class DesignerCanvas : Panel
         {
             InputSystem.ReleasePointerCapture();
             _isDraggingElement = false;
+            _dragOverPosition = null;
             
             // Clear guidelines
             ActiveVerticalSnapX = null;
@@ -697,8 +702,35 @@ public class DesignerCanvas : Panel
         return snapVal;
     }
 
+    public override void OnDragEnter(Microsoft.UI.Xaml.DragEventArgs e)
+    {
+        base.OnDragEnter(e);
+        _isExternalDragActive = true;
+        _dragOverPosition = (e.Position - PanOffset) / ZoomScale;
+        Invalidate();
+    }
+
+    public override void OnDragOver(Microsoft.UI.Xaml.DragEventArgs e)
+    {
+        base.OnDragOver(e);
+        _isExternalDragActive = true;
+        _dragOverPosition = (e.Position - PanOffset) / ZoomScale;
+        Invalidate();
+    }
+
+    public override void OnDragLeave(Microsoft.UI.Xaml.DragEventArgs e)
+    {
+        base.OnDragLeave(e);
+        _isExternalDragActive = false;
+        _dragOverPosition = null;
+        Invalidate();
+    }
+
     public override void OnDrop(Microsoft.UI.Xaml.DragEventArgs e)
     {
+        _isExternalDragActive = false;
+        _dragOverPosition = null;
+
         base.OnDrop(e);
         
         // Translate local pointer coordinates to logical design coordinate
@@ -953,6 +985,61 @@ public class DesignerCanvas : Panel
             screenSnapY = MathF.Round(screenSnapY * dpiScale * 4f) / 4f / dpiScale;
             DrawDashedHorizontalLine(context, neonPen, screenSnapY, 0f, Size.X);
         }
+
+        // 3. Figma-Style Container Drop Target Outlines
+        bool isAnyDragActive = _isDraggingElement || _isExternalDragActive;
+        if (isAnyDragActive)
+        {
+            var containers = new List<FrameworkElement>();
+            FindAllContainers(DesignSurface, containers, _isDraggingElement ? SelectedElement : null);
+
+            FrameworkElement? activeContainer = null;
+            if (_dragOverPosition != null)
+            {
+                activeContainer = FindContainerAtPosition(DesignSurface, _dragOverPosition.Value, _isDraggingElement ? SelectedElement : null);
+            }
+
+            var candidateColor = new SolidColorBrush(new Vector4(0.0f, 0.94f, 1.0f, 0.4f)); // Translucent Neon Blue (#00F0FF)
+            var activeColor = new SolidColorBrush(new Vector4(0.0f, 0.94f, 1.0f, 1.0f));    // Solid Neon Blue
+            
+            var candidatePen = new Pen(candidateColor, 1.0f);
+            var activePen = new Pen(activeColor, 2.0f);
+
+            foreach (var panel in containers)
+            {
+                float w = float.IsNaN(panel.Width) ? panel.Size.X : panel.Width;
+                float h = float.IsNaN(panel.Height) ? panel.Size.Y : panel.Height;
+                if (w <= 0) w = 120f;
+                if (h <= 0) h = 36f;
+
+                var transform = panel.TransformToVisual(DesignSurface);
+                Vector2 p00 = transform.TransformPoint(new Vector2(0, 0)) * ZoomScale + PanOffset;
+                Vector2 p10 = transform.TransformPoint(new Vector2(w, 0)) * ZoomScale + PanOffset;
+                Vector2 p11 = transform.TransformPoint(new Vector2(w, h)) * ZoomScale + PanOffset;
+                Vector2 p01 = transform.TransformPoint(new Vector2(0, h)) * ZoomScale + PanOffset;
+
+                // 4-Way Subpixel Snapping snapped to 1/4th of a physical pixel
+                p00 = new Vector2(MathF.Round(p00.X * dpiScale * 4f) / 4f, MathF.Round(p00.Y * dpiScale * 4f) / 4f) / dpiScale;
+                p10 = new Vector2(MathF.Round(p10.X * dpiScale * 4f) / 4f, MathF.Round(p10.Y * dpiScale * 4f) / 4f) / dpiScale;
+                p11 = new Vector2(MathF.Round(p11.X * dpiScale * 4f) / 4f, MathF.Round(p11.Y * dpiScale * 4f) / 4f) / dpiScale;
+                p01 = new Vector2(MathF.Round(p01.X * dpiScale * 4f) / 4f, MathF.Round(p01.Y * dpiScale * 4f) / 4f) / dpiScale;
+
+                if (panel == activeContainer)
+                {
+                    context.DrawLine(activePen, p00, p10);
+                    context.DrawLine(activePen, p10, p11);
+                    context.DrawLine(activePen, p11, p01);
+                    context.DrawLine(activePen, p01, p00);
+                }
+                else
+                {
+                    DrawDashedLine(context, candidatePen, p00, p10);
+                    DrawDashedLine(context, candidatePen, p10, p11);
+                    DrawDashedLine(context, candidatePen, p11, p01);
+                    DrawDashedLine(context, candidatePen, p01, p00);
+                }
+            }
+        }
     }
 
     private void DrawDashedVerticalLine(DrawingContext context, Pen pen, float x, float y1, float y2, float dashLength = 6f, float gapLength = 4f)
@@ -976,6 +1063,21 @@ public class DesignerCanvas : Panel
             float nextX = Math.Min(x + dashLength, x2);
             context.DrawLine(pen, new Vector2(x, y), new Vector2(nextX, y));
             x += dashLength + gapLength;
+        }
+    }
+
+    private void DrawDashedLine(DrawingContext context, Pen pen, Vector2 pA, Vector2 pB, float dashLength = 6f, float gapLength = 4f)
+    {
+        float distance = Vector2.Distance(pA, pB);
+        if (distance <= 0.001f || dashLength + gapLength <= 0.001f) return;
+        
+        Vector2 dir = Vector2.Normalize(pB - pA);
+        float current = 0f;
+        while (current < distance)
+        {
+            float next = Math.Min(current + dashLength, distance);
+            context.DrawLine(pen, pA + dir * current, pA + dir * next);
+            current += dashLength + gapLength;
         }
     }
 
@@ -1043,6 +1145,28 @@ public class DesignerCanvas : Panel
         }
 
         return false;
+    }
+
+    private void FindAllContainers(FrameworkElement parent, List<FrameworkElement> results, FrameworkElement? excludeElement)
+    {
+        if (parent == null || parent == excludeElement || (excludeElement != null && IsAncestorOf(excludeElement, parent)))
+            return;
+
+        if (IsValidDropContainer(parent) && parent != DesignSurface)
+        {
+            results.Add(parent);
+        }
+
+        if (parent is ContainerVisual container)
+        {
+            for (int i = 0; i < container.Children.Count; i++)
+            {
+                if (container.Children[i] is FrameworkElement child)
+                {
+                    FindAllContainers(child, results, excludeElement);
+                }
+            }
+        }
     }
 
     private void AddChildToTarget(FrameworkElement target, FrameworkElement newChild)

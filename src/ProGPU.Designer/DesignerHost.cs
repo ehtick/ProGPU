@@ -213,7 +213,7 @@ public class DesignerHost : Grid
         contentGrid.AddChild(_sidebarRightBorder);
 
         // 4. Bottom Collapsible Panel - C# Script Preview
-        _bottomPanel = new Border { Background = new ThemeResourceBrush("CardBackground"), Height = 120f };
+        _bottomPanel = new Border { Background = new ThemeResourceBrush("CardBackground"), Height = 32f };
         _bottomPanel.BorderThickness = new Thickness(0, 1, 0, 0);
         _bottomPanel.BorderBrush = new ThemeResourceBrush("ControlBorder");
         Grid.SetRow(_bottomPanel, 1);
@@ -243,7 +243,7 @@ public class DesignerHost : Grid
         toggleText.Inlines.Add(new Run("Expand Preview Panel"));
         toggleBottomBtn.Content = toggleText;
         
-        _csharpCodeBlock = new VirtualizedCodeEditor { Height = 88f };
+        _csharpCodeBlock = new VirtualizedCodeEditor { Height = 0f };
         bottomContainer.AddChild(_csharpCodeBlock);
 
         toggleBottomBtn.Click += (s, e) => {
@@ -259,8 +259,8 @@ public class DesignerHost : Grid
             {
                 toggleText.Inlines.Clear();
                 toggleText.Inlines.Add(new Run("Expand Preview Panel"));
-                _bottomPanel.Height = 120f;
-                _csharpCodeBlock.Height = 88f;
+                _bottomPanel.Height = 32f;
+                _csharpCodeBlock.Height = 0f;
             }
             InvalidateMeasure();
             InvalidateArrange();
