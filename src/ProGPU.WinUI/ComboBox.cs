@@ -379,8 +379,7 @@ public class ComboBox : Control
                     arrowBrush = new SolidColorBrush(new Vector4(0.55f, 0.55f, 0.57f, 1f));
                 }
 
-                context.DrawText("▲", activeFont, FontSize - 4f, arrowBrush, new Vector2(Size.X - 18f, textY - 3f));
-                context.DrawText("▼", activeFont, FontSize - 4f, arrowBrush, new Vector2(Size.X - 18f, textY + 5f));
+                context.DrawText("▼", activeFont, FontSize - 2f, arrowBrush, new Vector2(Size.X - 18f, textY + 1f));
             }
             else
             {

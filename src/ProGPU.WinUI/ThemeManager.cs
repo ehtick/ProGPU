@@ -1332,7 +1332,7 @@ public class ToggleSwitchChrome : FrameworkElement
         {
             if (activeFamily == VisualThemeFamily.macOS)
             {
-                trackBg = ThemeManager.GetBrush("SystemGreenAccent", activeTheme, activeFamily);
+                trackBg = ThemeManager.GetBrush("SystemAccentColor", activeTheme, activeFamily);
             }
             else
             {
