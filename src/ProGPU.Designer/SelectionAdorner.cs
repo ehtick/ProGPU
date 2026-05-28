@@ -185,10 +185,10 @@ public class SelectionAdorner : Panel
             float snapDy = snappedLeftTop.Y - currentTop;
             
             newWidth = MathF.Max(minWidth, currentWidth - snapDx);
-            newLeft = snappedLeftTop.X;
+            newLeft = (currentLeft + currentWidth) - newWidth;
             
             newHeight = MathF.Max(minHeight, currentHeight - snapDy);
-            newTop = snappedLeftTop.Y;
+            newTop = (currentTop + currentHeight) - newHeight;
         }
         else if (thumb == _topCenterThumb)
         {
@@ -199,7 +199,7 @@ public class SelectionAdorner : Panel
             float snapDy = snapped.Y - currentTop;
 
             newHeight = MathF.Max(minHeight, currentHeight - snapDy);
-            newTop = snapped.Y;
+            newTop = (currentTop + currentHeight) - newHeight;
         }
         else if (thumb == _topRightThumb)
         {
@@ -210,7 +210,7 @@ public class SelectionAdorner : Panel
             float snapDy = snapped.Y - currentTop;
             
             newHeight = MathF.Max(minHeight, currentHeight - snapDy);
-            newTop = snapped.Y;
+            newTop = (currentTop + currentHeight) - newHeight;
             
             float candidateRight = currentLeft + targetWidth;
             float? snapX = ParentCanvas.GetSnapX(element, candidateRight);
@@ -230,7 +230,7 @@ public class SelectionAdorner : Panel
             float snapDx = snapped.X - currentLeft;
 
             newWidth = MathF.Max(minWidth, currentWidth - snapDx);
-            newLeft = snapped.X;
+            newLeft = (currentLeft + currentWidth) - newWidth;
         }
         else if (thumb == _middleRightThumb)
         {
@@ -254,7 +254,7 @@ public class SelectionAdorner : Panel
             Vector2 snapped = ParentCanvas.SnapPosition(element, new Vector2(targetLeft, currentTop));
             float snapDx = snapped.X - currentLeft;
             newWidth = MathF.Max(minWidth, currentWidth - snapDx);
-            newLeft = snapped.X;
+            newLeft = (currentLeft + currentWidth) - newWidth;
 
             float candidateBottom = currentTop + targetHeight;
             float? snapYVal = ParentCanvas.GetSnapY(element, candidateBottom);
