@@ -65,24 +65,49 @@ public class SelectionAdorner : Panel
         _bottomRightThumb.DragDelta += (s, e) => HandleDragDelta((Thumb)s, e.HorizontalChange, e.VerticalChange);
         _rotateThumb.DragDelta += (s, e) => HandleRotateDrag();
 
-        void ClearSnapGuidelines(object sender, DragCompletedEventArgs e)
+        void OnDragStarted(object sender, DragStartedEventArgs e)
         {
             if (ParentCanvas != null)
             {
-                ParentCanvas.ActiveVerticalSnapX = null;
-                ParentCanvas.ActiveHorizontalSnapY = null;
+                ParentCanvas.NotifyCanvasModifying();
+                ParentCanvas.IsResizingElement = true;
+                ParentCanvas.PrepareSnapCache(AssociatedElement);
                 ParentCanvas.Invalidate();
             }
         }
-        _topLeftThumb.DragCompleted += ClearSnapGuidelines;
-        _topCenterThumb.DragCompleted += ClearSnapGuidelines;
-        _topRightThumb.DragCompleted += ClearSnapGuidelines;
-        _middleLeftThumb.DragCompleted += ClearSnapGuidelines;
-        _middleRightThumb.DragCompleted += ClearSnapGuidelines;
-        _bottomLeftThumb.DragCompleted += ClearSnapGuidelines;
-        _bottomCenterThumb.DragCompleted += ClearSnapGuidelines;
-        _bottomRightThumb.DragCompleted += ClearSnapGuidelines;
-        _rotateThumb.DragCompleted += ClearSnapGuidelines;
+
+        void OnDragCompleted(object sender, DragCompletedEventArgs e)
+        {
+            if (ParentCanvas != null)
+            {
+                ParentCanvas.IsResizingElement = false;
+                ParentCanvas.ClearSnapCache();
+                ParentCanvas.ActiveVerticalSnapX = null;
+                ParentCanvas.ActiveHorizontalSnapY = null;
+                ParentCanvas.NotifyCanvasModified();
+                ParentCanvas.Invalidate();
+            }
+        }
+
+        _topLeftThumb.DragStarted += OnDragStarted;
+        _topCenterThumb.DragStarted += OnDragStarted;
+        _topRightThumb.DragStarted += OnDragStarted;
+        _middleLeftThumb.DragStarted += OnDragStarted;
+        _middleRightThumb.DragStarted += OnDragStarted;
+        _bottomLeftThumb.DragStarted += OnDragStarted;
+        _bottomCenterThumb.DragStarted += OnDragStarted;
+        _bottomRightThumb.DragStarted += OnDragStarted;
+        _rotateThumb.DragStarted += OnDragStarted;
+
+        _topLeftThumb.DragCompleted += OnDragCompleted;
+        _topCenterThumb.DragCompleted += OnDragCompleted;
+        _topRightThumb.DragCompleted += OnDragCompleted;
+        _middleLeftThumb.DragCompleted += OnDragCompleted;
+        _middleRightThumb.DragCompleted += OnDragCompleted;
+        _bottomLeftThumb.DragCompleted += OnDragCompleted;
+        _bottomCenterThumb.DragCompleted += OnDragCompleted;
+        _bottomRightThumb.DragCompleted += OnDragCompleted;
+        _rotateThumb.DragCompleted += OnDragCompleted;
     }
 
     private void ApplyThumbStyle(Thumb thumb)
@@ -100,8 +125,11 @@ public class SelectionAdorner : Panel
         var transform = AssociatedElement.TransformToVisual(ParentCanvas.DesignSurface);
         Vector2 rootTopLeft = transform.TransformPoint(Vector2.Zero);
         
-        float width = float.IsNaN(AssociatedElement.Width) ? AssociatedElement.Size.X : AssociatedElement.Width;
-        float height = float.IsNaN(AssociatedElement.Height) ? AssociatedElement.Size.Y : AssociatedElement.Height;
+        float width = AssociatedElement.Size.X;
+        float height = AssociatedElement.Size.Y;
+        
+        if (width <= 0f) width = float.IsNaN(AssociatedElement.Width) ? 120f : AssociatedElement.Width;
+        if (height <= 0f) height = float.IsNaN(AssociatedElement.Height) ? 36f : AssociatedElement.Height;
         
         Canvas.SetLeft(this, rootTopLeft.X);
         Canvas.SetTop(this, rootTopLeft.Y);
@@ -320,7 +348,6 @@ public class SelectionAdorner : Panel
         element.InvalidateArrange();
         element.Invalidate();
         
-        ParentCanvas.NotifyCanvasModified();
         ParentCanvas.InvalidateArrange();
         ParentCanvas.Invalidate();
     }
@@ -378,7 +405,6 @@ public class SelectionAdorner : Panel
 
         UpdatePositionAndSize();
         element.Invalidate();
-        ParentCanvas.NotifyCanvasModified();
         ParentCanvas.Invalidate();
     }
 

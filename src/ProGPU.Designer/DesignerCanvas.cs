@@ -61,11 +61,21 @@ public class DesignerCanvas : Panel
     public bool GridSnappingEnabled { get; set; } = true;
     public float GridSize { get; set; } = 10f;
     public Func<float>? GetDpiScale { get; set; }
+    
+    public bool IsResizingElement { get; set; }
+    public bool AlwaysShowPanelOutlines { get; set; } = false;
 
     public event Action? SelectionChanged;
     public event Action? CanvasModified;
+    public event Action? CanvasModifying;
+
+    public void NotifyCanvasModifying()
+    {
+        CanvasModifying?.Invoke();
+    }
 
     private readonly RTree<FrameworkElement> _spatialIndex = new RTree<FrameworkElement>();
+    private List<(FrameworkElement Element, Rect Rect)>? _cachedSnapElements;
 
     // Pointer movement state
     private bool _isDraggingElement;
@@ -114,6 +124,28 @@ public class DesignerCanvas : Panel
     {
         CanvasModified?.Invoke();
     }
+
+    public void PrepareSnapCache(FrameworkElement? excludeElement)
+    {
+        var allElements = new List<FrameworkElement>();
+        GetAllElementsRecursive(DesignSurface, allElements);
+
+        _cachedSnapElements = new List<(FrameworkElement Element, Rect Rect)>();
+        foreach (var other in allElements)
+        {
+            if (other == excludeElement)
+                continue;
+
+            _cachedSnapElements.Add((other, GetElementRect(other)));
+        }
+    }
+
+    public void ClearSnapCache()
+    {
+        _cachedSnapElements = null;
+    }
+
+    public List<(FrameworkElement Element, Rect Rect)>? CachedSnapElements => _cachedSnapElements;
 
     public void ApplyTransforms()
     {
@@ -169,9 +201,8 @@ public class DesignerCanvas : Panel
     protected override void ArrangeOverride(Rect arrangeRect)
     {
         DesignSurface.Arrange(arrangeRect);
-        AdornerSurface.Arrange(arrangeRect);
-        
         _selectionAdorner?.UpdatePositionAndSize();
+        AdornerSurface.Arrange(arrangeRect);
     }
 
     public override void OnPointerPressed(PointerRoutedEventArgs e)
@@ -245,13 +276,11 @@ public class DesignerCanvas : Panel
             }
             else
             {
-                // Figma-style cycle selection:
-                // If the currently selected element is already in the hit list, select the next one down (wrap around to the shallowest)
-                int currentIndex = SelectedElement != null ? hitElements.IndexOf(SelectedElement) : -1;
-                if (currentIndex >= 0)
+                // To avoid deselecting children when trying to drag them,
+                // prioritize keeping the currently selected element if it is under the pointer.
+                if (SelectedElement != null && hitElements.Contains(SelectedElement))
                 {
-                    int nextIndex = (currentIndex + 1) % hitElements.Count;
-                    hitChild = hitElements[nextIndex];
+                    hitChild = SelectedElement;
                 }
                 else
                 {
@@ -263,7 +292,9 @@ public class DesignerCanvas : Panel
 
         if (hitChild != null)
         {
+            NotifyCanvasModifying();
             SelectElement(hitChild);
+            InputSystem.SetFocus(hitChild);
             
             // Start dragging in logical space
             _isDraggingElement = true;
@@ -276,12 +307,15 @@ public class DesignerCanvas : Panel
             _elementStartLeft = Canvas.GetLeft(hitChild);
             _elementStartTop = Canvas.GetTop(hitChild);
             
+            PrepareSnapCache(hitChild);
+            
             InputSystem.CapturePointer(this);
             e.Handled = true;
         }
         else
         {
             SelectElement(null);
+            InputSystem.SetFocus(this);
         }
         
         base.OnPointerPressed(e);
@@ -310,24 +344,68 @@ public class DesignerCanvas : Panel
             _dragOverPosition = logicalPos;
             Vector2 delta = logicalPos - _dragStartOffset;
             
-            // Calculate absolute target position in root DesignSurface coordinates
-            Vector2 candidatePosInRoot = _dragStartElementPosInRoot + delta;
-            
-            // Snap position in DesignSurface coordinates
-            Vector2 snappedInRoot = SnapPosition(SelectedElement, candidatePosInRoot);
-            
-            // Convert snappedInRoot to parent container coordinates
             var parentFe = SelectedElement.Parent as FrameworkElement;
             if (parentFe != null && parentFe != DesignSurface)
             {
+                // Map logical mouse position to parent local coordinate space
                 var toParent = DesignSurface.TransformToVisual(parentFe);
-                Vector2 parentLocalPos = toParent.TransformPoint(snappedInRoot);
+                Vector2 localMousePos = toParent.TransformPoint(logicalPos);
                 
-                Canvas.SetLeft(SelectedElement, parentLocalPos.X);
-                Canvas.SetTop(SelectedElement, parentLocalPos.Y);
+                // Get parent size bounds
+                float pw = float.IsNaN(parentFe.Width) ? parentFe.Size.X : parentFe.Width;
+                float ph = float.IsNaN(parentFe.Height) ? parentFe.Size.Y : parentFe.Height;
+                if (pw <= 0) pw = 120f;
+                if (ph <= 0) ph = 36f;
+                
+                Rect parentLocalBounds = new Rect(0, 0, pw, ph);
+                
+                if (!parentLocalBounds.Contains(localMousePos))
+                {
+                    // Dragged OUTSIDE bounds of panel! Stop panel in drag and drag out to canvas or other panel target
+                    FrameworkElement? targetContainer = FindContainerAtPosition(DesignSurface, logicalPos, SelectedElement);
+                    var newParent = targetContainer ?? DesignSurface;
+                    
+                    if (newParent != parentFe)
+                    {
+                        var currentTransform = SelectedElement.TransformToVisual(DesignSurface);
+                        Vector2 currentRootPos = currentTransform.TransformPoint(Vector2.Zero);
+                        
+                        RemoveChildFromParent(SelectedElement);
+                        AddChildToContainer(newParent, SelectedElement);
+                        
+                        if (newParent != DesignSurface)
+                        {
+                            var toNewParent = DesignSurface.TransformToVisual(newParent);
+                            Vector2 parentLocalPos = toNewParent.TransformPoint(currentRootPos);
+                            Canvas.SetLeft(SelectedElement, parentLocalPos.X);
+                            Canvas.SetTop(SelectedElement, parentLocalPos.Y);
+                        }
+                        else
+                        {
+                            Canvas.SetLeft(SelectedElement, currentRootPos.X);
+                            Canvas.SetTop(SelectedElement, currentRootPos.Y);
+                        }
+                        
+                        // Atomically reset drag start markers to prevent any coordinate jumps
+                        _dragStartOffset = logicalPos;
+                        _dragStartElementPosInRoot = currentRootPos;
+                        _elementStartLeft = Canvas.GetLeft(SelectedElement);
+                        _elementStartTop = Canvas.GetTop(SelectedElement);
+                        PrepareSnapCache(SelectedElement);
+                    }
+                }
+                else
+                {
+                    // Dragged INSIDE bounds of panel! Invoke modular panel-specific drag editor
+                    PanelDragEditorRegistry.HandleDrag(SelectedElement, parentFe, localMousePos, delta);
+                }
             }
             else
             {
+                // Standard canvas dragging (dragging in DesignSurface root)
+                Vector2 candidatePosInRoot = _dragStartElementPosInRoot + delta;
+                Vector2 snappedInRoot = SnapPosition(SelectedElement, candidatePosInRoot);
+                
                 Canvas.SetLeft(SelectedElement, snappedInRoot.X);
                 Canvas.SetTop(SelectedElement, snappedInRoot.Y);
             }
@@ -338,7 +416,6 @@ public class DesignerCanvas : Panel
             SelectedElement.InvalidateArrange();
             SelectedElement.Invalidate();
 
-            CanvasModified?.Invoke();
             InvalidateArrange();
             Invalidate();
             e.Handled = true;
@@ -409,6 +486,8 @@ public class DesignerCanvas : Panel
             _isDraggingElement = false;
             _dragOverPosition = null;
             
+            ClearSnapCache();
+            
             // Clear guidelines
             ActiveVerticalSnapX = null;
             ActiveHorizontalSnapY = null;
@@ -448,6 +527,17 @@ public class DesignerCanvas : Panel
         }
         
         base.OnPointerReleased(e);
+    }
+
+    public override void OnPointerExited(PointerRoutedEventArgs e)
+    {
+        if (HoveredElement != null)
+        {
+            HoveredElement = null;
+            Invalidate();
+            _selectionAdorner?.Invalidate();
+        }
+        base.OnPointerExited(e);
     }
 
     public override void OnPointerWheelChanged(PointerRoutedEventArgs e)
@@ -511,7 +601,7 @@ public class DesignerCanvas : Panel
         {
             foreach (var child in container.Children)
             {
-                if (child is FrameworkElement fe)
+                if (child is FrameworkElement fe && fe.IsVisible && !fe.IsCollapsed)
                 {
                     float w = float.IsNaN(fe.Width) ? fe.Size.X : fe.Width;
                     float h = float.IsNaN(fe.Height) ? fe.Size.Y : fe.Height;
@@ -551,60 +641,119 @@ public class DesignerCanvas : Panel
         float snappedLeft = gridSnappedX;
         float snappedTop = gridSnappedY;
 
-        var allElements = new List<FrameworkElement>();
-        GetAllElementsRecursive(DesignSurface, allElements);
-
-        foreach (var other in allElements)
+        if (_cachedSnapElements != null)
         {
-            if (other == element)
-                continue;
-
-            Rect otherRect = GetElementRect(other);
-            float otherLeft = otherRect.X;
-            float otherTop = otherRect.Y;
-            float otherRight = otherRect.X + otherRect.Width;
-            float otherBottom = otherRect.Y + otherRect.Height;
-            float otherCenterX = otherRect.X + otherRect.Width / 2f;
-            float otherCenterY = otherRect.Y + otherRect.Height / 2f;
-
-            // Check vertical alignments
-            float[] myXs = { x, x + w, x + w / 2f };
-            float[] otherXs = { otherLeft, otherRight, otherCenterX };
-
-            for (int i = 0; i < myXs.Length; i++)
+            foreach (var cache in _cachedSnapElements)
             {
-                for (int j = 0; j < otherXs.Length; j++)
+                if (cache.Element == element)
+                    continue;
+
+                Rect otherRect = cache.Rect;
+                float otherLeft = otherRect.X;
+                float otherTop = otherRect.Y;
+                float otherRight = otherRect.X + otherRect.Width;
+                float otherBottom = otherRect.Y + otherRect.Height;
+                float otherCenterX = otherRect.X + otherRect.Width / 2f;
+                float otherCenterY = otherRect.Y + otherRect.Height / 2f;
+
+                // Check vertical alignments
+                float[] myXs = { x, x + w, x + w / 2f };
+                float[] otherXs = { otherLeft, otherRight, otherCenterX };
+
+                for (int i = 0; i < myXs.Length; i++)
                 {
-                    if (Math.Abs(myXs[i] - otherXs[j]) <= snapThreshold)
+                    for (int j = 0; j < otherXs.Length; j++)
                     {
-                        snapX = otherXs[j];
-                        if (i == 0) snappedLeft = otherXs[j];
-                        else if (i == 1) snappedLeft = otherXs[j] - w;
-                        else if (i == 2) snappedLeft = otherXs[j] - w / 2f;
-                        break;
+                        if (Math.Abs(myXs[i] - otherXs[j]) <= snapThreshold)
+                        {
+                            snapX = otherXs[j];
+                            if (i == 0) snappedLeft = otherXs[j];
+                            else if (i == 1) snappedLeft = otherXs[j] - w;
+                            else if (i == 2) snappedLeft = otherXs[j] - w / 2f;
+                            break;
+                        }
                     }
+                    if (snapX != null) break;
                 }
-                if (snapX != null) break;
+
+                // Check horizontal alignments
+                float[] myYs = { y, y + h, y + h / 2f };
+                float[] otherYs = { otherTop, otherBottom, otherCenterY };
+
+                for (int i = 0; i < myYs.Length; i++)
+                {
+                    for (int j = 0; j < otherYs.Length; j++)
+                    {
+                        if (Math.Abs(myYs[i] - otherYs[j]) <= snapThreshold)
+                        {
+                            snapY = otherYs[j];
+                            if (i == 0) snappedTop = otherYs[j];
+                            else if (i == 1) snappedTop = otherYs[j] - h;
+                            else if (i == 2) snappedTop = otherYs[j] - h / 2f;
+                            break;
+                        }
+                    }
+                    if (snapY != null) break;
+                }
             }
+        }
+        else
+        {
+            var allElements = new List<FrameworkElement>();
+            GetAllElementsRecursive(DesignSurface, allElements);
 
-            // Check horizontal alignments
-            float[] myYs = { y, y + h, y + h / 2f };
-            float[] otherYs = { otherTop, otherBottom, otherCenterY };
-
-            for (int i = 0; i < myYs.Length; i++)
+            foreach (var other in allElements)
             {
-                for (int j = 0; j < otherYs.Length; j++)
+                if (other == element)
+                    continue;
+
+                Rect otherRect = GetElementRect(other);
+                float otherLeft = otherRect.X;
+                float otherTop = otherRect.Y;
+                float otherRight = otherRect.X + otherRect.Width;
+                float otherBottom = otherRect.Y + otherRect.Height;
+                float otherCenterX = otherRect.X + otherRect.Width / 2f;
+                float otherCenterY = otherRect.Y + otherRect.Height / 2f;
+
+                // Check vertical alignments
+                float[] myXs = { x, x + w, x + w / 2f };
+                float[] otherXs = { otherLeft, otherRight, otherCenterX };
+
+                for (int i = 0; i < myXs.Length; i++)
                 {
-                    if (Math.Abs(myYs[i] - otherYs[j]) <= snapThreshold)
+                    for (int j = 0; j < otherXs.Length; j++)
                     {
-                        snapY = otherYs[j];
-                        if (i == 0) snappedTop = otherYs[j];
-                        else if (i == 1) snappedTop = otherYs[j] - h;
-                        else if (i == 2) snappedTop = otherYs[j] - h / 2f;
-                        break;
+                        if (Math.Abs(myXs[i] - otherXs[j]) <= snapThreshold)
+                        {
+                            snapX = otherXs[j];
+                            if (i == 0) snappedLeft = otherXs[j];
+                            else if (i == 1) snappedLeft = otherXs[j] - w;
+                            else if (i == 2) snappedLeft = otherXs[j] - w / 2f;
+                            break;
+                        }
                     }
+                    if (snapX != null) break;
                 }
-                if (snapY != null) break;
+
+                // Check horizontal alignments
+                float[] myYs = { y, y + h, y + h / 2f };
+                float[] otherYs = { otherTop, otherBottom, otherCenterY };
+
+                for (int i = 0; i < myYs.Length; i++)
+                {
+                    for (int j = 0; j < otherYs.Length; j++)
+                    {
+                        if (Math.Abs(myYs[i] - otherYs[j]) <= snapThreshold)
+                        {
+                            snapY = otherYs[j];
+                            if (i == 0) snappedTop = otherYs[j];
+                            else if (i == 1) snappedTop = otherYs[j] - h;
+                            else if (i == 2) snappedTop = otherYs[j] - h / 2f;
+                            break;
+                        }
+                    }
+                    if (snapY != null) break;
+                }
             }
         }
 
@@ -638,26 +787,51 @@ public class DesignerCanvas : Panel
     {
         float snapThreshold = MathF.Min(5f, 5f / ZoomScale);
         float? snapVal = null;
-        var allElements = new List<FrameworkElement>();
-        GetAllElementsRecursive(DesignSurface, allElements);
 
-        foreach (var other in allElements)
+        if (_cachedSnapElements != null)
         {
-            if (other == element)
-                continue;
-
-            Rect otherRect = GetElementRect(other);
-            float[] otherXs = { otherRect.X, otherRect.X + otherRect.Width, otherRect.X + otherRect.Width / 2f };
-
-            foreach (var ox in otherXs)
+            foreach (var cache in _cachedSnapElements)
             {
-                if (Math.Abs(targetX - ox) <= snapThreshold)
+                if (cache.Element == element)
+                    continue;
+
+                Rect otherRect = cache.Rect;
+                float[] otherXs = { otherRect.X, otherRect.X + otherRect.Width, otherRect.X + otherRect.Width / 2f };
+
+                foreach (var ox in otherXs)
                 {
-                    snapVal = ox;
-                    break;
+                    if (Math.Abs(targetX - ox) <= snapThreshold)
+                    {
+                        snapVal = ox;
+                        break;
+                    }
                 }
+                if (snapVal != null) break;
             }
-            if (snapVal != null) break;
+        }
+        else
+        {
+            var allElements = new List<FrameworkElement>();
+            GetAllElementsRecursive(DesignSurface, allElements);
+
+            foreach (var other in allElements)
+            {
+                if (other == element)
+                    continue;
+
+                Rect otherRect = GetElementRect(other);
+                float[] otherXs = { otherRect.X, otherRect.X + otherRect.Width, otherRect.X + otherRect.Width / 2f };
+
+                foreach (var ox in otherXs)
+                {
+                    if (Math.Abs(targetX - ox) <= snapThreshold)
+                    {
+                        snapVal = ox;
+                        break;
+                    }
+                }
+                if (snapVal != null) break;
+            }
         }
 
         ActiveVerticalSnapX = snapVal;
@@ -672,26 +846,51 @@ public class DesignerCanvas : Panel
     {
         float snapThreshold = MathF.Min(5f, 5f / ZoomScale);
         float? snapVal = null;
-        var allElements = new List<FrameworkElement>();
-        GetAllElementsRecursive(DesignSurface, allElements);
 
-        foreach (var other in allElements)
+        if (_cachedSnapElements != null)
         {
-            if (other == element)
-                continue;
-
-            Rect otherRect = GetElementRect(other);
-            float[] otherYs = { otherRect.Y, otherRect.Y + otherRect.Height, otherRect.Y + otherRect.Height / 2f };
-
-            foreach (var oy in otherYs)
+            foreach (var cache in _cachedSnapElements)
             {
-                if (Math.Abs(targetY - oy) <= snapThreshold)
+                if (cache.Element == element)
+                    continue;
+
+                Rect otherRect = cache.Rect;
+                float[] otherYs = { otherRect.Y, otherRect.Y + otherRect.Height, otherRect.Y + otherRect.Height / 2f };
+
+                foreach (var oy in otherYs)
                 {
-                    snapVal = oy;
-                    break;
+                    if (Math.Abs(targetY - oy) <= snapThreshold)
+                    {
+                        snapVal = oy;
+                        break;
+                    }
                 }
+                if (snapVal != null) break;
             }
-            if (snapVal != null) break;
+        }
+        else
+        {
+            var allElements = new List<FrameworkElement>();
+            GetAllElementsRecursive(DesignSurface, allElements);
+
+            foreach (var other in allElements)
+            {
+                if (other == element)
+                    continue;
+
+                Rect otherRect = GetElementRect(other);
+                float[] otherYs = { otherRect.Y, otherRect.Y + otherRect.Height, otherRect.Y + otherRect.Height / 2f };
+
+                foreach (var oy in otherYs)
+                {
+                    if (Math.Abs(targetY - oy) <= snapThreshold)
+                    {
+                        snapVal = oy;
+                        break;
+                    }
+                }
+                if (snapVal != null) break;
+            }
         }
 
         ActiveHorizontalSnapY = snapVal;
@@ -925,43 +1124,45 @@ public class DesignerCanvas : Panel
         if (ShowGridLines && GridSize > 1f)
         {
             float gridSpacing = GridSize;
-            var gridBrush = ActualTheme == ElementTheme.Dark
-                ? new SolidColorBrush(new Vector4(1f, 1f, 1f, 0.08f))
-                : new SolidColorBrush(new Vector4(0f, 0f, 0f, 0.06f));
-
-            // Calculate visible logical bounds
-            Vector2 minLogical = (Vector2.Zero - PanOffset) / ZoomScale;
-            Vector2 maxLogical = (Size - PanOffset) / ZoomScale;
-
-            float minX = MathF.Floor(minLogical.X / gridSpacing) * gridSpacing;
-            float maxX = MathF.Ceiling(maxLogical.X / gridSpacing) * gridSpacing;
-            float minY = MathF.Floor(minLogical.Y / gridSpacing) * gridSpacing;
-            float maxY = MathF.Ceiling(maxLogical.Y / gridSpacing) * gridSpacing;
-
-            if (!float.IsFinite(minX) || !float.IsFinite(maxX) ||
-                !float.IsFinite(minY) || !float.IsFinite(maxY))
+            float physicalSpacing = gridSpacing * ZoomScale * dpiScale;
+            if (physicalSpacing >= 8f)
             {
-                return;
-            }
+                var gridBrush = ActualTheme == ElementTheme.Dark
+                    ? new SolidColorBrush(new Vector4(1f, 1f, 1f, 0.08f))
+                    : new SolidColorBrush(new Vector4(0f, 0f, 0f, 0.06f));
 
-            for (float x = minX; x <= maxX; x += gridSpacing)
-            {
-                for (float y = minY; y <= maxY; y += gridSpacing)
+                // Calculate visible logical bounds
+                Vector2 minLogical = (Vector2.Zero - PanOffset) / ZoomScale;
+                Vector2 maxLogical = (Size - PanOffset) / ZoomScale;
+
+                float minX = MathF.Floor(minLogical.X / gridSpacing) * gridSpacing;
+                float maxX = MathF.Ceiling(maxLogical.X / gridSpacing) * gridSpacing;
+                float minY = MathF.Floor(minLogical.Y / gridSpacing) * gridSpacing;
+                float maxY = MathF.Ceiling(maxLogical.Y / gridSpacing) * gridSpacing;
+
+                if (float.IsFinite(minX) && float.IsFinite(maxX) &&
+                    float.IsFinite(minY) && float.IsFinite(maxY))
                 {
-                    // Calculate screen position
-                    Vector2 screenPos = new Vector2(x, y) * ZoomScale + PanOffset;
+                    for (float x = minX; x <= maxX; x += gridSpacing)
+                    {
+                        for (float y = minY; y <= maxY; y += gridSpacing)
+                        {
+                            // Calculate screen position
+                            Vector2 screenPos = new Vector2(x, y) * ZoomScale + PanOffset;
 
-                    // Skip if outside screen bounds
-                    if (screenPos.X < 0 || screenPos.X > Size.X || screenPos.Y < 0 || screenPos.Y > Size.Y)
-                        continue;
+                            // Skip if outside screen bounds
+                            if (screenPos.X < 0 || screenPos.X > Size.X || screenPos.Y < 0 || screenPos.Y > Size.Y)
+                                continue;
 
-                    // DPI-Aware Snapping: snaps in physical coordinates snapped to 1/4th of a physical pixel, then snap-backed
-                    float physX = MathF.Round(screenPos.X * dpiScale * 4f) / 4f;
-                    float physY = MathF.Round(screenPos.Y * dpiScale * 4f) / 4f;
+                            // DPI-Aware Snapping: snaps in physical coordinates snapped to 1/4th of a physical pixel, then snap-backed
+                            float physX = MathF.Round(screenPos.X * dpiScale * 4f) / 4f;
+                            float physY = MathF.Round(screenPos.Y * dpiScale * 4f) / 4f;
 
-                    Vector2 snapBackPos = new Vector2(physX, physY) / dpiScale;
-                    
-                    context.FillCircle(gridBrush, snapBackPos, 0.75f);
+                            Vector2 snapBackPos = new Vector2(physX, physY) / dpiScale;
+                            
+                            context.FillCircle(gridBrush, snapBackPos, 0.75f);
+                        }
+                    }
                 }
             }
         }
@@ -986,17 +1187,34 @@ public class DesignerCanvas : Panel
             DrawDashedHorizontalLine(context, neonPen, screenSnapY, 0f, Size.X);
         }
 
-        // 3. Figma-Style Container Drop Target Outlines
-        bool isAnyDragActive = _isDraggingElement || _isExternalDragActive;
-        if (isAnyDragActive)
+        // 3. Figma-Style Container Target Outlines (Drag, Resize, Hover, or Always-Show)
+        bool showPanelOutlines = _isDraggingElement || _isExternalDragActive || IsResizingElement || AlwaysShowPanelOutlines;
+        if (showPanelOutlines)
         {
             var containers = new List<FrameworkElement>();
-            FindAllContainers(DesignSurface, containers, _isDraggingElement ? SelectedElement : null);
+            FindAllContainers(DesignSurface, containers, SelectedElement);
 
             FrameworkElement? activeContainer = null;
             if (_dragOverPosition != null)
             {
-                activeContainer = FindContainerAtPosition(DesignSurface, _dragOverPosition.Value, _isDraggingElement ? SelectedElement : null);
+                activeContainer = FindContainerAtPosition(DesignSurface, _dragOverPosition.Value, SelectedElement);
+            }
+            else if (SelectedElement != null && IsResizingElement)
+            {
+                activeContainer = SelectedElement.Parent as FrameworkElement;
+            }
+            else if (HoveredElement != null)
+            {
+                var curr = HoveredElement;
+                while (curr != null)
+                {
+                    if (IsValidDropContainer(curr) && curr != DesignSurface && curr != SelectedElement)
+                    {
+                        activeContainer = curr;
+                        break;
+                    }
+                    curr = curr.Parent as FrameworkElement;
+                }
             }
 
             var candidateColor = new SolidColorBrush(new Vector4(0.0f, 0.94f, 1.0f, 0.4f)); // Translucent Neon Blue (#00F0FF)
@@ -1083,7 +1301,7 @@ public class DesignerCanvas : Panel
 
     private FrameworkElement? FindContainerAtPosition(FrameworkElement parent, Vector2 logicalPos, FrameworkElement? excludeElement)
     {
-        if (parent == excludeElement || (excludeElement != null && IsAncestorOf(excludeElement, parent)))
+        if (!parent.IsVisible || parent.IsCollapsed || parent == excludeElement || (excludeElement != null && IsAncestorOf(excludeElement, parent)))
         {
             return null;
         }
