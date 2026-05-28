@@ -275,14 +275,18 @@ public class Toolbox : Border
             ("PasswordBox", "PasswordBox", "🔒"),
             ("TreeView", "TreeView", "🌲"),
             ("DataGrid", "DataGrid", "🔢"),
+            ("ColorPicker", "ColorPicker", "🌈"),
             
-            // Panels (6)
+            // Panels
             ("StackPanel", "StackPanel", "🥞"),
             ("Grid", "Grid", "🌐"),
             ("Canvas", "Canvas", "🎨"),
             ("Border", "Border", "🔲"),
             ("ScrollViewer", "ScrollViewer", "📜"),
-            ("SplitView", "SplitView", "📖")
+            ("SplitView", "SplitView", "📖"),
+            ("WrapPanel", "WrapPanel", "🧱"),
+            ("DockPanel", "DockPanel", "⚓"),
+            ("GridSplitter", "GridSplitter", "↔️")
         };
 
         foreach (var ctrl in controls)

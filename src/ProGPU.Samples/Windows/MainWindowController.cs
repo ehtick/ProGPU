@@ -282,8 +282,17 @@ public static unsafe class MainWindowController
         var dxfViewerItem = new NavigationViewItem("DXF CAD Viewer", "📐", DxfViewerPage.Create());
         var visualDesignerItem = new NavigationViewItem("Visual Designer", "📐", VisualDesignerPage.Create());
 
+        var wrapPanelItem = new NavigationViewItem("Wrap Panel", "🔲", WrapPanelPage.Create());
+        var dockPanelItem = new NavigationViewItem("Dock Panel", "🪟", DockPanelPage.Create());
+        var gridSplitterItem = new NavigationViewItem("Grid Splitter", "↔️", GridSplitterPage.Create());
+        var colorPickerItem = new NavigationViewItem("Color Picker", "🎨", ColorPickerPage.Create());
+
         AppState._navigationView.MenuItems.Add(basicInputItem);
         AppState._navigationView.MenuItems.Add(panelsItem);
+        AppState._navigationView.MenuItems.Add(wrapPanelItem);
+        AppState._navigationView.MenuItems.Add(dockPanelItem);
+        AppState._navigationView.MenuItems.Add(gridSplitterItem);
+        AppState._navigationView.MenuItems.Add(colorPickerItem);
         AppState._navigationView.MenuItems.Add(textItem);
         AppState._navigationView.MenuItems.Add(dataItem);
         AppState._navigationView.MenuItems.Add(frameworkEffectsItem);
