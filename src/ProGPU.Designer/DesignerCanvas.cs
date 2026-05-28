@@ -1434,21 +1434,60 @@ public class DesignerCanvas : Panel
 
     private void RemoveChildFromParent(FrameworkElement child)
     {
-        var parent = child.Parent as ContainerVisual;
-        if (parent == null) return;
+        if (child == null) return;
+        var parent = child.Parent as FrameworkElement;
+        if (parent == null)
+        {
+            var containerParent = child.Parent as ContainerVisual;
+            containerParent?.RemoveChild(child);
+            return;
+        }
 
-        if (parent is Border borderParent && borderParent.Child == child)
+        var type = parent.GetType();
+        var contentPropertyAttr = type.GetCustomAttribute<ContentPropertyAttribute>(true);
+        if (contentPropertyAttr != null && !string.IsNullOrEmpty(contentPropertyAttr.Name))
         {
-            borderParent.Child = null;
+            var prop = type.GetProperty(contentPropertyAttr.Name);
+            if (prop != null)
+            {
+                if (prop.CanWrite && prop.GetValue(parent) == child)
+                {
+                    prop.SetValue(parent, null);
+                    return;
+                }
+                else if (typeof(System.Collections.IList).IsAssignableFrom(prop.PropertyType))
+                {
+                    var list = prop.GetValue(parent) as System.Collections.IList;
+                    if (list != null && list.Contains(child))
+                    {
+                        list.Remove(child);
+                        return;
+                    }
+                }
+            }
         }
-        else if (parent is ContentControl contentControlParent && contentControlParent.Content == child)
+
+        var childProp = type.GetProperty("Child");
+        if (childProp != null && childProp.CanWrite && childProp.GetValue(parent) == child)
         {
-            contentControlParent.Content = null;
+            childProp.SetValue(parent, null);
+            return;
         }
-        else
+
+        var contentProp = type.GetProperty("Content");
+        if (contentProp != null && contentProp.CanWrite && contentProp.GetValue(parent) == child)
         {
-            parent.RemoveChild(child);
+            contentProp.SetValue(parent, null);
+            return;
         }
+
+        if (parent is Panel panel)
+        {
+            panel.Children.Remove(child);
+            return;
+        }
+
+        parent.RemoveChild(child);
     }
 
     private static bool IsAncestorOf(FrameworkElement possibleAncestor, FrameworkElement child)

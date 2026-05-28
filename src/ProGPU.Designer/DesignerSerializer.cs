@@ -379,7 +379,15 @@ public static class DesignerSerializer
                 var contentVal = contentProp.GetValue(element);
                 if (contentVal is RichTextBlock rtb)
                 {
-                    var rtbName = $"{varName}_content_text";
+                    string rtbBase = $"{varName}_content_text";
+                    string rtbName = rtbBase;
+                    int rtbSuffix = 1;
+                    while (declaredNames.Contains(rtbName))
+                    {
+                        rtbName = $"{rtbBase}_{rtbSuffix++}";
+                    }
+                    declaredNames.Add(rtbName);
+
                     sb.AppendLine($"{indent}var {rtbName} = new RichTextBlock();");
                     foreach (var inline in rtb.Inlines)
                     {

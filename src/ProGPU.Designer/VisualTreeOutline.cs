@@ -311,21 +311,7 @@ public class VisualTreeOutlineItem : Border
     private void MoveElement(FrameworkElement source, FrameworkElement target)
     {
         _parentOutline.NotifyCanvasModifying();
-        if (source.Parent is ContainerVisual parentContainer)
-        {
-            if (parentContainer is Border borderParent && borderParent.Child == source)
-            {
-                borderParent.Child = null;
-            }
-            else if (parentContainer is ContentControl contentControlParent && contentControlParent.Content == source)
-            {
-                contentControlParent.Content = null;
-            }
-            else
-            {
-                parentContainer.RemoveChild(source);
-            }
-        }
+        VisualTreeOutline.RemoveChildFromParent(source);
 
         if (IsValidDropContainer(target))
         {
@@ -527,6 +513,64 @@ public class VisualTreeOutline : Border
         CanvasModifying?.Invoke();
     }
 
+    public static void RemoveChildFromParent(FrameworkElement child)
+    {
+        if (child == null) return;
+        var parent = child.Parent as FrameworkElement;
+        if (parent == null)
+        {
+            var containerParent = child.Parent as ContainerVisual;
+            containerParent?.RemoveChild(child);
+            return;
+        }
+
+        var type = parent.GetType();
+        var contentPropertyAttr = type.GetCustomAttribute<ContentPropertyAttribute>(true);
+        if (contentPropertyAttr != null && !string.IsNullOrEmpty(contentPropertyAttr.Name))
+        {
+            var prop = type.GetProperty(contentPropertyAttr.Name);
+            if (prop != null)
+            {
+                if (prop.CanWrite && prop.GetValue(parent) == child)
+                {
+                    prop.SetValue(parent, null);
+                    return;
+                }
+                else if (typeof(System.Collections.IList).IsAssignableFrom(prop.PropertyType))
+                {
+                    var list = prop.GetValue(parent) as System.Collections.IList;
+                    if (list != null && list.Contains(child))
+                    {
+                        list.Remove(child);
+                        return;
+                    }
+                }
+            }
+        }
+
+        var childProp = type.GetProperty("Child");
+        if (childProp != null && childProp.CanWrite && childProp.GetValue(parent) == child)
+        {
+            childProp.SetValue(parent, null);
+            return;
+        }
+
+        var contentProp = type.GetProperty("Content");
+        if (contentProp != null && contentProp.CanWrite && contentProp.GetValue(parent) == child)
+        {
+            contentProp.SetValue(parent, null);
+            return;
+        }
+
+        if (parent is Panel panel)
+        {
+            panel.Children.Remove(child);
+            return;
+        }
+
+        parent.RemoveChild(child);
+    }
+
     public new ProGPU.Text.TtfFont? Font
     {
         get => _font;
@@ -705,18 +749,7 @@ public class VisualTreeOutline : Border
         var parent = element.Parent as ContainerVisual;
         if (parent != null)
         {
-            if (parent is Border borderParent && borderParent.Child == element)
-            {
-                borderParent.Child = null;
-            }
-            else if (parent is ContentControl contentControlParent && contentControlParent.Content == element)
-            {
-                contentControlParent.Content = null;
-            }
-            else
-            {
-                parent.RemoveChild(element);
-            }
+            RemoveChildFromParent(element);
             
             if (_selectedElement == element)
             {
