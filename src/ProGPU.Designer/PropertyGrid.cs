@@ -40,11 +40,20 @@ public class PropertyItem
         }
     }
     public Action<string>? OnChanged { get; set; }
+    public Type PropertyType { get; set; } = typeof(string);
 
     public PropertyItem(string name, string value, Action<string> onChanged)
     {
         Name = name;
         _value = value;
+        OnChanged = onChanged;
+    }
+
+    public PropertyItem(string name, string value, Type propertyType, Action<string> onChanged)
+    {
+        Name = name;
+        _value = value;
+        PropertyType = propertyType;
         OnChanged = onChanged;
     }
 }
@@ -199,6 +208,19 @@ public class PropertyGrid : Border
             }
         }));
 
+        // Visibility
+        _dataGrid.AddItem(new PropertyItem("Visibility", _selectedElement.Visibility.ToString(), typeof(Visibility), val =>
+        {
+            if (Enum.TryParse<Visibility>(val, out var vis))
+            {
+                _selectedElement.Visibility = vis;
+                _selectedElement.InvalidateMeasure();
+                _selectedElement.InvalidateArrange();
+                _selectedElement.Invalidate();
+                PropertyChanged?.Invoke();
+            }
+        }));
+
         var type = _selectedElement.GetType();
 
         // CornerRadius
@@ -319,7 +341,7 @@ public class PropertyGrid : Border
         if (isCheckedProp != null && isCheckedProp.PropertyType == typeof(bool))
         {
             bool isCheckedVal = (bool)isCheckedProp.GetValue(_selectedElement);
-            _dataGrid.AddItem(new PropertyItem("IsChecked", isCheckedVal.ToString(), val =>
+            _dataGrid.AddItem(new PropertyItem("IsChecked", isCheckedVal.ToString(), typeof(bool), val =>
             {
                 if (bool.TryParse(val, out bool bval))
                 {
@@ -335,7 +357,7 @@ public class PropertyGrid : Border
         if (isOnProp != null && isOnProp.PropertyType == typeof(bool))
         {
             bool isOnVal = (bool)isOnProp.GetValue(_selectedElement);
-            _dataGrid.AddItem(new PropertyItem("IsOn", isOnVal.ToString(), val =>
+            _dataGrid.AddItem(new PropertyItem("IsOn", isOnVal.ToString(), typeof(bool), val =>
             {
                 if (bool.TryParse(val, out bool bval))
                 {
@@ -351,7 +373,7 @@ public class PropertyGrid : Border
         if (orientProp != null)
         {
             var orientVal = orientProp.GetValue(_selectedElement);
-            _dataGrid.AddItem(new PropertyItem("Orientation", orientVal.ToString(), val =>
+            _dataGrid.AddItem(new PropertyItem("Orientation", orientVal.ToString(), orientProp.PropertyType, val =>
             {
                 if (Enum.TryParse(orientProp.PropertyType, val, out var eval))
                 {
@@ -361,5 +383,153 @@ public class PropertyGrid : Border
                 }
             }));
         }
+
+        // HorizontalAlignment
+        _dataGrid.AddItem(new PropertyItem("HorizontalAlignment", _selectedElement.HorizontalAlignment.ToString(), typeof(HorizontalAlignment), val =>
+        {
+            if (Enum.TryParse<HorizontalAlignment>(val, out var align))
+            {
+                _selectedElement.HorizontalAlignment = align;
+                _selectedElement.InvalidateMeasure();
+                _selectedElement.InvalidateArrange();
+                PropertyChanged?.Invoke();
+            }
+        }));
+
+        // VerticalAlignment
+        _dataGrid.AddItem(new PropertyItem("VerticalAlignment", _selectedElement.VerticalAlignment.ToString(), typeof(VerticalAlignment), val =>
+        {
+            if (Enum.TryParse<VerticalAlignment>(val, out var align))
+            {
+                _selectedElement.VerticalAlignment = align;
+                _selectedElement.InvalidateMeasure();
+                _selectedElement.InvalidateArrange();
+                PropertyChanged?.Invoke();
+            }
+        }));
+
+        // HorizontalContentAlignment
+        var horizContentProp = type.GetProperty("HorizontalContentAlignment");
+        if (horizContentProp != null)
+        {
+            var alignVal = horizContentProp.GetValue(_selectedElement);
+            _dataGrid.AddItem(new PropertyItem("HorizontalContentAlignment", alignVal.ToString(), typeof(HorizontalAlignment), val =>
+            {
+                if (Enum.TryParse<HorizontalAlignment>(val, out var align))
+                {
+                    horizContentProp.SetValue(_selectedElement, align);
+                    _selectedElement.InvalidateMeasure();
+                    _selectedElement.InvalidateArrange();
+                    PropertyChanged?.Invoke();
+                }
+            }));
+        }
+
+        // VerticalContentAlignment
+        var vertContentProp = type.GetProperty("VerticalContentAlignment");
+        if (vertContentProp != null)
+        {
+            var alignVal = vertContentProp.GetValue(_selectedElement);
+            _dataGrid.AddItem(new PropertyItem("VerticalContentAlignment", alignVal.ToString(), typeof(VerticalAlignment), val =>
+            {
+                if (Enum.TryParse<VerticalAlignment>(val, out var align))
+                {
+                    vertContentProp.SetValue(_selectedElement, align);
+                    _selectedElement.InvalidateMeasure();
+                    _selectedElement.InvalidateArrange();
+                    PropertyChanged?.Invoke();
+                }
+            }));
+        }
+
+        // Background
+        var bgProp = type.GetProperty("Background");
+        if (bgProp != null)
+        {
+            var bgVal = bgProp.GetValue(_selectedElement);
+            string bgStr = GetBrushString(bgVal as Brush);
+            _dataGrid.AddItem(new PropertyItem("Background", bgStr, typeof(Brush), val =>
+            {
+                var converted = ConvertValueToBrush(val);
+                bgProp.SetValue(_selectedElement, converted);
+                _selectedElement.Invalidate();
+                PropertyChanged?.Invoke();
+            }));
+        }
+
+        // Foreground
+        var fgProp = type.GetProperty("Foreground");
+        if (fgProp != null)
+        {
+            var fgVal = fgProp.GetValue(_selectedElement);
+            string fgStr = GetBrushString(fgVal as Brush);
+            _dataGrid.AddItem(new PropertyItem("Foreground", fgStr, typeof(Brush), val =>
+            {
+                var converted = ConvertValueToBrush(val);
+                fgProp.SetValue(_selectedElement, converted);
+                _selectedElement.Invalidate();
+                PropertyChanged?.Invoke();
+            }));
+        }
+
+        // BorderBrush
+        var borderBrushProp = type.GetProperty("BorderBrush");
+        if (borderBrushProp != null)
+        {
+            var borderVal = borderBrushProp.GetValue(_selectedElement);
+            string borderStr = GetBrushString(borderVal as Brush);
+            _dataGrid.AddItem(new PropertyItem("BorderBrush", borderStr, typeof(Brush), val =>
+            {
+                var converted = ConvertValueToBrush(val);
+                borderBrushProp.SetValue(_selectedElement, converted);
+                _selectedElement.Invalidate();
+                PropertyChanged?.Invoke();
+            }));
+        }
+    }
+
+    private string GetBrushString(Brush? brush)
+    {
+        if (brush == null) return "";
+        if (brush is ThemeResourceBrush tr) return tr.ResourceKey;
+        if (brush is SolidColorBrush scb)
+        {
+            var col = scb.Color;
+            byte r = (byte)Math.Clamp(Math.Round(col.X * 255f), 0, 255);
+            byte g = (byte)Math.Clamp(Math.Round(col.Y * 255f), 0, 255);
+            byte b = (byte)Math.Clamp(Math.Round(col.Z * 255f), 0, 255);
+            byte a = (byte)Math.Clamp(Math.Round(col.W * 255f), 0, 255);
+            if (a == 0 && r == 0 && g == 0 && b == 0) return "Transparent";
+            return $"#{a:X2}{r:X2}{g:X2}{b:X2}";
+        }
+        return brush.ToString() ?? "";
+    }
+
+    private Brush? ConvertValueToBrush(string val)
+    {
+        if (string.IsNullOrEmpty(val)) return null;
+        if (val.Equals("Transparent", StringComparison.OrdinalIgnoreCase))
+        {
+            return new SolidColorBrush(new Vector4(0f, 0f, 0f, 0f));
+        }
+        if (val.StartsWith("#"))
+        {
+            try
+            {
+                var hex = val.Substring(1);
+                if (hex.Length == 6) hex = "FF" + hex;
+                if (hex.Length == 8)
+                {
+                    uint rgba = Convert.ToUInt32(hex, 16);
+                    float a = ((rgba >> 24) & 0xFF) / 255.0f;
+                    float r = ((rgba >> 16) & 0xFF) / 255.0f;
+                    float g = ((rgba >> 8) & 0xFF) / 255.0f;
+                    float b = (rgba & 0xFF) / 255.0f;
+                    return new SolidColorBrush(new Vector4(r, g, b, a));
+                }
+            }
+            catch {}
+        }
+        return new ThemeResourceBrush(val);
     }
 }
