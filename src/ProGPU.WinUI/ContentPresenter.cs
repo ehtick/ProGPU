@@ -182,7 +182,7 @@ public class ContentPresenter : FrameworkElement
             contentDesired = contentVisual.DesiredSize;
         }
 
-        return contentDesired + new Vector2(borderH, borderV);
+        return contentDesired + inset;
     }
 
     protected override void ArrangeOverride(Rect arrangeRect)
