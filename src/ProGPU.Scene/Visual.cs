@@ -478,25 +478,6 @@ public class DropShadowEffect : EffectBase
     }
 }
 
-public class LiquidGlassEffect : EffectBase
-{
-    public Vector4 GlassColor { get; set; }
-    public Vector4 FluidColor { get; set; }
-    public float Progress { get; set; }
-    public float Time { get; set; }
-    public float Refraction { get; set; }
-    public float Shininess { get; set; }
-
-    public LiquidGlassEffect(float progress = 0.5f, Vector4 glassColor = default, Vector4 fluidColor = default)
-    {
-        Progress = progress;
-        GlassColor = glassColor == default ? new Vector4(1f, 1f, 1f, 0.15f) : glassColor;
-        FluidColor = fluidColor == default ? new Vector4(0f, 0.478f, 1f, 1f) : fluidColor;
-        Refraction = 0.15f;
-        Shininess = 32f;
-        Time = 0.0f;
-    }
-}
 
 public interface ILayoutNode
 {

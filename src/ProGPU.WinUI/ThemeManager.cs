@@ -1588,58 +1588,14 @@ public class SliderChrome : FrameworkElement
 
 
 
-    private Visual? _thumbVisual;
-    private LiquidGlassEffect? _glassEffect;
 
-    private void EnsureLiquidGlassEffect()
-    {
-        if (ActualThemeFamily == VisualThemeFamily.macOS)
-        {
-            if (_glassEffect == null)
-            {
-                // macOS 26 Tahoe slider thumb uses Liquid Glass as a clear 3D glass sphere
-                // We set progress to 0.0f so it is clear solid glass with beveled specular refraction
-                _glassEffect = new LiquidGlassEffect(0.0f);
-                _glassEffect.Refraction = 0.6f;
-                _glassEffect.Shininess = 64f;
-            }
-
-            if (_thumbVisual == null)
-            {
-                _thumbVisual = new SliderThumbVisual();
-                _thumbVisual.Effect = _glassEffect;
-                AddChild(_thumbVisual);
-            }
-            
-            // Update colors based on the actual theme (Light/Dark)
-            _glassEffect.GlassColor = ActualTheme == ElementTheme.Light
-                ? new Vector4(1f, 1f, 1f, 0.15f)
-                : new Vector4(0.2f, 0.2f, 0.2f, 0.25f);
-            
-            _glassEffect.FluidColor = new Vector4(0f, 0f, 0f, 0f); // Clear glass marble, no fluid sloshing inside
-            
-            this.Effect = null; // No effect on the parent track container
-        }
-        else
-        {
-            if (_thumbVisual != null)
-            {
-                RemoveChild(_thumbVisual);
-                _thumbVisual = null;
-            }
-            if (_glassEffect != null)
-            {
-                _glassEffect = null;
-            }
-        }
-    }
 
     public override void OnRender(DrawingContext context)
     {
         var activeFamily = ActualThemeFamily;
         var activeTheme = ActualTheme;
 
-        EnsureLiquidGlassEffect();
+
 
         float baseThumbRadius = activeFamily == VisualThemeFamily.macOS ? 10f : 8f;
         float trackHeight = activeFamily == VisualThemeFamily.macOS ? 8f : 4f;
@@ -1683,16 +1639,19 @@ public class SliderChrome : FrameworkElement
                 context.DrawRoundedRectangle(activeBg, null, activeRect, trackHeight / 2f);
             }
 
-            // 3. Update position and size of the liquid glass 3D thumb child visual
-            if (_thumbVisual != null)
+            // 3. Draw macOS Thumb (Glossy round sphere)
+            Rect thumbRect = new Rect(thumbX - drawThumbRadius, yCenter - drawThumbRadius, drawThumbRadius * 2f, drawThumbRadius * 2f);
+            Brush thumbBg = activeTheme == ElementTheme.Light ? ThemeManager.GetBrush("CardBackground", activeTheme, activeFamily) : ThemeManager.GetBrush("TextPrimary", activeTheme, activeFamily);
+            Pen? thumbBorder = new Pen(ThemeManager.GetBrush("SliderThumbBorderBrush", activeTheme, activeFamily), 1f);
+            context.DrawRoundedRectangle(thumbBg, thumbBorder, thumbRect, drawThumbRadius);
+
+            // 4. Focus visual if focused
+            if (IsEnabled && IsFocused)
             {
-                _thumbVisual.Offset = new Vector2(thumbX - drawThumbRadius, yCenter - drawThumbRadius);
-                _thumbVisual.Size = new Vector2(drawThumbRadius * 2f, drawThumbRadius * 2f);
-                if (_thumbVisual is SliderThumbVisual thumbVisual)
-                {
-                    thumbVisual.Radius = drawThumbRadius;
-                }
-                _thumbVisual.Invalidate();
+                var accentColor = ThemeManager.GetBrush("SystemAccentColor", activeTheme, activeFamily);
+                var focusPen = new Pen(accentColor, 1.5f);
+                Rect focusRect = new Rect(thumbRect.X - 2.5f, thumbRect.Y - 2.5f, thumbRect.Width + 5f, thumbRect.Height + 5f);
+                context.DrawRoundedRectangle(null, focusPen, focusRect, drawThumbRadius + 2.5f);
             }
         }
         else
@@ -1748,14 +1707,4 @@ public class SliderChrome : FrameworkElement
     }
 }
 
-public class SliderThumbVisual : Visual
-{
-    public float Radius { get; set; } = 10f;
 
-    public override void OnRender(DrawingContext context)
-    {
-        var silhouetteBrush = new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f));
-        var r = new Rect(0, 0, Size.X, Size.Y);
-        context.DrawRoundedRectangle(silhouetteBrush, null, r, Radius);
-    }
-}

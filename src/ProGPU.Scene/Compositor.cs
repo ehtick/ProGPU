@@ -3476,16 +3476,13 @@ public unsafe class Compositor : IDisposable
             blurRadius = shadow.BlurRadius;
             padding = MathF.Ceiling(blurRadius * 2f);
         }
-        else if (fe.Effect is LiquidGlassEffect)
-        {
-            padding = 8f; // Padding to ensure edge specular reflections and refractions aren't clipped
-        }
+
 
         uint w = (uint)(fe.Size.X + padding * 2f);
         uint h = (uint)(fe.Size.Y + padding * 2f);
 
         bool hasCached = _effectTextures.TryGetValue(fe, out var textures);
-        bool needsUpdate = !hasCached || fe.IsDirty || (fe.Effect is LiquidGlassEffect); // Always update LiquidGlass for dynamic wave flow animation!
+        bool needsUpdate = !hasCached || fe.IsDirty;
 
         if (needsUpdate)
         {
@@ -3529,21 +3526,7 @@ public unsafe class Compositor : IDisposable
                 // We pass zero offset to the compute shader because we handle offset dynamically in DrawTextureOnMain on the CPU
                 _compute.ApplyDropShadow(textures.Source, textures.Temp, textures.Destination, Vector2.Zero, shadowEffect.Color, shadowEffect.BlurRadius);
             }
-            else if (fe.Effect is LiquidGlassEffect lgEffect)
-            {
-                lgEffect.Time = _totalTime;
-                _compute.ApplyLiquidGlass(
-                    textures.Source, 
-                    textures.Temp, 
-                    textures.Destination, 
-                    lgEffect.GlassColor, 
-                    lgEffect.FluidColor, 
-                    lgEffect.Progress, 
-                    lgEffect.Time, 
-                    lgEffect.Refraction, 
-                    lgEffect.Shininess
-                );
-            }
+
         }
 
         // Draw the cached texture onto the main swapchain
@@ -3572,12 +3555,7 @@ public unsafe class Compositor : IDisposable
             var controlRect = new Rect(fe.Offset - new Vector2(padding, padding), new Vector2(w, h));
             DrawTextureOnMain(textures.Source, controlRect, parentTransform);
         }
-        else if (fe.Effect is LiquidGlassEffect)
-        {
-            // Draw the liquid glass result (shifted back by padding)
-            var controlRect = new Rect(fe.Offset - new Vector2(padding, padding), new Vector2(w, h));
-            DrawTextureOnMain(textures.Destination, controlRect, parentTransform);
-        }
+
 
         fe.IsDirty = false;
     }

@@ -295,7 +295,7 @@ public static unsafe class MainWindowController
         var textItem = new NavigationViewItem("Text & Documents", "📄", TextDocumentsPage.Create());
         var dataItem = new NavigationViewItem("Data Virtualization", "📊", DataVirtualizationPage.Create());
         var frameworkEffectsItem = new NavigationViewItem("Framework Effects", "✨", FrameworkEffectsPage.Create());
-        var liquidGlassItem = new NavigationViewItem("Liquid Glass", "💧", LiquidGlassPage.Create());
+
         var computeItem = new NavigationViewItem("Compute FX", "⚙", ComputeFxPage.Create());
         var motionAnimationsItem = new NavigationViewItem("Motion & Animations", "🎬", MotionAnimationsPage.Create());
         var advancedItem = new NavigationViewItem("Advanced Controls", "🛠", AdvancedControlsPage.Create());
@@ -331,7 +331,6 @@ public static unsafe class MainWindowController
         AppState._navigationView.MenuItems.Add(textItem);
         AppState._navigationView.MenuItems.Add(dataItem);
         AppState._navigationView.MenuItems.Add(frameworkEffectsItem);
-        AppState._navigationView.MenuItems.Add(liquidGlassItem);
         AppState._navigationView.MenuItems.Add(computeItem);
         AppState._navigationView.MenuItems.Add(motionAnimationsItem);
         AppState._navigationView.MenuItems.Add(advancedItem);
