@@ -64,6 +64,12 @@ public class TabViewItem : ContentControl
         Padding = new Thickness(12, 6, 28, 6); // Extra right padding for 'x' close button
         HeightConstraint = 36f;
         WidthConstraint = 150f;
+
+        var defaultStyle = ThemeManager.GetDefaultStyle(GetType());
+        if (defaultStyle != null)
+        {
+            Style = defaultStyle;
+        }
     }
 
     public TabViewItem(string headerText) : this()
@@ -210,13 +216,17 @@ public class TabViewItem : ContentControl
             float closeX = Size.X - 18f;
             float closeY = (Size.Y - closeSize) / 2f;
 
-            var closeBrush = _isCloseHovered 
-                ? new SolidColorBrush(0xFF5555FF) // Reddish close highlight
-                : (IsPointerOver || IsSelected 
-                    ? (Foreground ?? ThemeManager.GetBrush("TextSecondary")) 
-                    : new SolidColorBrush(0x00000000));
+            Brush? closeBrush = null;
+            if (_isCloseHovered)
+            {
+                closeBrush = ThemeManager.GetBrush("TabViewItemCloseHover");
+            }
+            else if (IsPointerOver || IsSelected)
+            {
+                closeBrush = Foreground ?? ThemeManager.GetBrush("TextSecondary");
+            }
 
-            if (_isCloseHovered || IsPointerOver || IsSelected)
+            if (closeBrush != null)
             {
                 if (_isCloseHovered)
                 {

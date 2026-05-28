@@ -34,6 +34,31 @@ public class CheckBox : ContentControl
     {
         CornerRadius = 4f;
         Padding = new Thickness(8, 4, 8, 4);
+
+        var defaultStyle = ThemeManager.GetDefaultStyle(GetType());
+        if (defaultStyle != null)
+        {
+            Style = defaultStyle;
+        }
+    }
+
+    public override Brush? GetCurrentBackground()
+    {
+        if (!IsEnabled) return ThemeManager.GetBrush("CheckBoxBackgroundDisabled") ?? Background;
+        if (IsChecked)
+        {
+            if (IsPointerPressed) return ThemeManager.GetBrush("CheckBoxCheckBackgroundFillCheckedPressed");
+            if (IsPointerOver) return ThemeManager.GetBrush("CheckBoxCheckBackgroundFillCheckedPointerOver");
+            return ThemeManager.GetBrush("CheckBoxCheckBackgroundFillChecked");
+        }
+        return base.GetCurrentBackground();
+    }
+
+    public override Brush? GetCurrentBorderBrush()
+    {
+        if (!IsEnabled) return ThemeManager.GetBrush("CheckBoxBorderBrushDisabled") ?? BorderBrush;
+        if (IsChecked) return null;
+        return base.GetCurrentBorderBrush();
     }
 
     private void OnCheckedChanged()
@@ -114,35 +139,15 @@ public class CheckBox : ContentControl
     public override void OnRender(DrawingContext context)
     {
         float leftInset = BorderThickness.Left + Padding.Left;
-        float topInset = BorderThickness.Top + Padding.Top;
         float boxSize = 18f;
         float boxY = (Size.Y - boxSize) / 2f;
 
         Rect boxRect = new Rect(leftInset, boxY, boxSize, boxSize);
 
         // Styling brushes
-        Brush? boxBg;
-        Pen? boxBorder;
-
-        if (!IsEnabled)
-        {
-            boxBg = Background ?? ThemeManager.GetBrush("ControlBackground");
-            boxBorder = new Pen(BorderBrush ?? ThemeManager.GetBrush("ControlBorder"), 1f);
-        }
-        else if (IsChecked)
-        {
-            // Filled accent color for checked state (Segoe Accent / Hover Accent / Pressed Accent)
-            boxBg = IsPointerPressed 
-                ? ThemeManager.GetBrush("SystemAccentColorDark1") 
-                : (IsPointerOver ? ThemeManager.GetBrush("SystemAccentColorLight1") : ThemeManager.GetBrush("SystemAccentColor"));
-            boxBorder = null;
-        }
-        else
-        {
-            boxBg = Background ?? ThemeManager.GetBrush(IsPointerPressed ? "ControlBackgroundPressed" : IsPointerOver ? "ControlBackgroundHover" : "ControlBackground");
-
-            boxBorder = new Pen(BorderBrush ?? ThemeManager.GetBrush(IsPointerOver ? "ControlBorderHover" : "ControlBorder"), 1f);
-        }
+        Brush? boxBg = GetCurrentBackground();
+        Brush? borderBrush = GetCurrentBorderBrush();
+        Pen? boxBorder = borderBrush != null ? new Pen(borderBrush, BorderThickness.Left > 0 ? BorderThickness.Left : 1f) : null;
 
         // Draw check box frame
         context.DrawRoundedRectangle(boxBg, boxBorder, boxRect, CornerRadius);
@@ -158,7 +163,7 @@ public class CheckBox : ContentControl
 
             // Draw white/muted checkmark stroke
             var checkBrush = IsEnabled 
-                ? (ThemeManager.CurrentTheme == ElementTheme.Light ? ThemeManager.GetBrush("CardBackground") : ThemeManager.GetBrush("TextPrimary"))
+                ? (ThemeManager.GetBrush("CheckBoxCheckGlyphForegroundChecked") ?? (ThemeManager.CurrentTheme == ElementTheme.Light ? ThemeManager.GetBrush("CardBackground") : ThemeManager.GetBrush("TextPrimary")))
                 : ThemeManager.GetBrush("TextSecondary");
             var checkPen = new Pen(checkBrush, 2f);
             context.DrawPath(null, checkPen, checkGeometry);

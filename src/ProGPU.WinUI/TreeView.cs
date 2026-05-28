@@ -79,7 +79,19 @@ public class TreeViewItem : Control
         Items.CollectionChanged += (s, e) => Invalidate();
         HeightConstraint = 24f; // More compact than NavigationViewItem
         HorizontalAlignment = HorizontalAlignment.Stretch;
-        Background = new SolidColorBrush(0x00000000);
+
+        var defaultStyle = ThemeManager.GetDefaultStyle(GetType());
+        if (defaultStyle != null)
+        {
+            Style = defaultStyle;
+        }
+    }
+
+    public override Brush? GetCurrentBackground()
+    {
+        if (IsSelected) return ThemeManager.GetBrush("SelectionHighlight");
+        if (IsPointerOver) return ThemeManager.GetBrush("ControlBackgroundHover");
+        return null;
     }
 
     public TreeViewItem(object header) : this()
@@ -133,14 +145,16 @@ public class TreeViewItem : Control
 
     public override void OnRender(DrawingContext context)
     {
+        Brush? bg = GetCurrentBackground();
+        if (bg != null)
+        {
+            context.DrawRectangle(bg, null, new Rect(0f, 0f, Size.X, Size.Y));
+        }
+
         if (IsSelected)
         {
-            context.DrawRectangle(new SolidColorBrush(0x0078D425), null, new Rect(0f, 0f, Size.X, Size.Y)); // Translucent Segoe active row
-            context.DrawRectangle(new SolidColorBrush(0x0078D4FF), null, new Rect(2f, 2f, 2f, Size.Y - 4f)); // Left active accent indicator stripe
-        }
-        else if (IsPointerOver)
-        {
-            context.DrawRectangle(new SolidColorBrush(0xFFFFFF0D), null, new Rect(0f, 0f, Size.X, Size.Y)); // Hover feedback
+            var accentBrush = ThemeManager.GetBrush("SystemAccentColor");
+            context.DrawRectangle(accentBrush, null, new Rect(2f, 2f, 2f, Size.Y - 4f)); // Left active accent indicator stripe
         }
 
         var font = PopupService.DefaultFont;
@@ -153,14 +167,14 @@ public class TreeViewItem : Control
             if (Items.Count > 0)
             {
                 string arrow = IsExpanded ? "▼" : "▶";
-                context.DrawText(arrow, font, 8f, new SolidColorBrush(0xFFFFFF80), new Vector2(indentX - 12f, centerY + 2f));
+                context.DrawText(arrow, font, 8f, ThemeManager.GetBrush("TextSecondary"), new Vector2(indentX - 12f, centerY + 2f));
             }
 
             // Draw Header Text
             float textX = indentX + 6f;
             float textY = (Size.Y - 12f) / 2f;
             string label = Header?.ToString() ?? string.Empty;
-            Brush textBrush = IsSelected ? new SolidColorBrush(0xFFFFFFFF) : new SolidColorBrush(0xCCCCCCFF);
+            Brush textBrush = IsSelected ? ThemeManager.GetBrush("TextPrimary") : ThemeManager.GetBrush("TextSecondary");
             context.DrawText(label, font, 11f, textBrush, new Vector2(textX, textY));
         }
 
@@ -204,10 +218,11 @@ public class TreeView : Control
         
         AddChild(_scrollViewer);
         
-        Background = new SolidColorBrush(0x0C0C12FA); // Dark translucent plate
-        BorderBrush = new SolidColorBrush(0xFFFFFF15);
-        BorderThickness = new Thickness(1f);
-        CornerRadius = 4f;
+        var defaultStyle = ThemeManager.GetDefaultStyle(GetType());
+        if (defaultStyle != null)
+        {
+            Style = defaultStyle;
+        }
     }
 
     private void OnItemsChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)

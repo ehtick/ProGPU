@@ -16,10 +16,6 @@ namespace Microsoft.UI.Xaml.Controls;
 
 public class TextBox : Control
 {
-    private static readonly SolidColorBrush AmbientShadowBrush = new SolidColorBrush(0x0000000A);
-    private static readonly SolidColorBrush PenumbraShadowBrush = new SolidColorBrush(0x00000014);
-    private static readonly SolidColorBrush SelectionHighlightBrush = new SolidColorBrush(0x0078D440);
-
     private string _text = string.Empty;
     private string _placeholderText = "Enter text...";
     private int _caretIndex;
@@ -587,42 +583,10 @@ public class TextBox : Control
 
     public override void OnRender(DrawingContext context)
     {
-        // 1. Draw background card and border under premium Fluent dark specs
-        Brush bg;
-        Pen borderPen;
-
-        var activeTheme = this.ActualTheme;
-        bool hasLocalBg = IsPropertySetLocally(BackgroundProperty) || IsPropertySetInStyle(BackgroundProperty);
-        bool hasLocalBorder = IsPropertySetLocally(BorderBrushProperty) || IsPropertySetInStyle(BorderBrushProperty);
-
-        if (!IsEnabled)
-        {
-            bg = hasLocalBg ? (Background ?? ThemeManager.GetBrush("TextControlBackground", activeTheme)) : ThemeManager.GetBrush("TextControlBackground", activeTheme);
-            borderPen = hasLocalBorder && BorderBrush != null 
-                ? new Pen(BorderBrush, 1f) 
-                : ThemeManager.GetPen("TextControlBorderBrush", 1f, activeTheme);
-        }
-        else if (IsFocused)
-        {
-            bg = hasLocalBg ? (Background ?? ThemeManager.GetBrush("TextControlBackgroundFocused", activeTheme)) : ThemeManager.GetBrush("TextControlBackgroundFocused", activeTheme);
-            borderPen = hasLocalBorder && BorderBrush != null 
-                ? new Pen(BorderBrush, 2f) 
-                : ThemeManager.GetPen("TextControlBorderBrushFocused", 2f, activeTheme);
-        }
-        else if (IsPointerOver)
-        {
-            bg = hasLocalBg ? (Background ?? ThemeManager.GetBrush("TextControlBackgroundPointerOver", activeTheme)) : ThemeManager.GetBrush("TextControlBackgroundPointerOver", activeTheme);
-            borderPen = hasLocalBorder && BorderBrush != null 
-                ? new Pen(BorderBrush, 1f) 
-                : ThemeManager.GetPen("TextControlBorderBrushPointerOver", 1f, activeTheme);
-        }
-        else
-        {
-            bg = hasLocalBg ? (Background ?? ThemeManager.GetBrush("TextControlBackground", activeTheme)) : ThemeManager.GetBrush("TextControlBackground", activeTheme);
-            borderPen = hasLocalBorder && BorderBrush != null 
-                ? new Pen(BorderBrush, 1f) 
-                : ThemeManager.GetPen("TextControlBorderBrush", 1f, activeTheme);
-        }
+        // 1. Draw background card and border
+        Brush? bg = GetCurrentBackground();
+        Brush? borderBrush = GetCurrentBorderBrush();
+        Pen borderPen = new Pen(borderBrush ?? ThemeManager.GetBrush("ControlBorder"), BorderThickness.Left > 0 ? BorderThickness.Left : 1f);
 
         // Draw soft 3D elevation shadows (ambient & penumbra layers)
         if (IsEnabled)
@@ -631,11 +595,11 @@ public class TextBox : Control
             
             // Ambient shadow (offset Y=2, very soft, low opacity)
             var ambientRect = new Rect(0, 2, Size.X, Size.Y);
-            context.DrawRoundedRectangle(AmbientShadowBrush, null, ambientRect, shadowR);
+            context.DrawRoundedRectangle(ThemeManager.GetBrush("ButtonAmbientShadow"), null, ambientRect, shadowR);
 
             // Penumbra shadow (offset Y=1, tighter, slightly higher opacity)
             var penumbraRect = new Rect(0, 1, Size.X, Size.Y);
-            context.DrawRoundedRectangle(PenumbraShadowBrush, null, penumbraRect, shadowR);
+            context.DrawRoundedRectangle(ThemeManager.GetBrush("ButtonPenumbraShadow"), null, penumbraRect, shadowR);
         }
 
         context.DrawRoundedRectangle(bg, borderPen, new Rect(Vector2.Zero, Size), CornerRadius);
@@ -652,7 +616,7 @@ public class TextBox : Control
                 float x1 = GetXForIndex(selStart);
                 float x2 = GetXForIndex(selEnd);
                 Rect selRect = new Rect(x1, textY - 1f, x2 - x1, FontSize + 2f);
-                context.DrawRectangle(SelectionHighlightBrush, null, selRect);
+                context.DrawRectangle(ThemeManager.GetBrush("SelectionHighlight"), null, selRect);
             }
 
             if (string.IsNullOrEmpty(Text))
@@ -660,22 +624,22 @@ public class TextBox : Control
                 // Draw placeholder
                 if (!string.IsNullOrEmpty(PlaceholderText))
                 {
-                    context.DrawText(PlaceholderText, Font, FontSize, ThemeManager.GetBrush("TextControlPlaceholderForeground", activeTheme), new Vector2(Padding.Left, textY));
+                    context.DrawText(PlaceholderText, Font, FontSize, ThemeManager.GetBrush("TextBoxForegroundDisabled"), new Vector2(Padding.Left, textY));
                 }
             }
             else
             {
                 // Draw normal text
-                var fgBrush = Foreground ?? ThemeManager.GetBrush("TextControlForeground", activeTheme);
+                var fgBrush = GetCurrentForeground() ?? ThemeManager.GetBrush("TextBoxForeground");
                 context.DrawText(Text, Font, FontSize, fgBrush, new Vector2(Padding.Left, textY));
             }
 
-            // 3. Draw insertion caret using Segoe Blue active color for Fluent modern style
+            // 3. Draw insertion caret
             if (IsFocused && (DateTime.Now.Millisecond / 500) % 2 == 0)
             {
                 float caretX = GetCaretX();
                 Rect caretRect = new Rect(caretX, textY - 1f, 1.5f, FontSize + 2f);
-                context.DrawRectangle(ThemeManager.GetBrush("TextControlBorderBrushFocused", activeTheme), null, caretRect);
+                context.DrawRectangle(ThemeManager.GetBrush("TextBoxBorderBrushFocused"), null, caretRect);
             }
         }
 

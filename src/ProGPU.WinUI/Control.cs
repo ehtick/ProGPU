@@ -319,7 +319,7 @@ public class Control : FrameworkElement, ITemplatedControl
     }
 
 
-    private string GetThemePrefix()
+    protected virtual string GetThemePrefix()
     {
         string className = GetType().Name;
         if (this is Button && Style != null)
@@ -335,28 +335,31 @@ public class Control : FrameworkElement, ITemplatedControl
         return className;
     }
 
-    public Brush? GetCurrentBackground()
+    public virtual Brush? GetCurrentBackground()
     {
         string prefix = GetThemePrefix();
         if (!IsEnabled) return ThemeManager.GetBrush($"{prefix}BackgroundDisabled") ?? Background;
+        if (IsFocused) return ThemeManager.GetBrush($"{prefix}BackgroundFocused") ?? ThemeManager.GetBrush($"{prefix}BackgroundPressed") ?? Background;
         if (IsPointerPressed) return ThemeManager.GetBrush($"{prefix}BackgroundPressed") ?? Background;
         if (IsPointerOver) return ThemeManager.GetBrush($"{prefix}BackgroundPointerOver") ?? Background;
         return Background;
     }
 
-    public Brush? GetCurrentForeground()
+    public virtual Brush? GetCurrentForeground()
     {
         string prefix = GetThemePrefix();
         if (!IsEnabled) return ThemeManager.GetBrush($"{prefix}ForegroundDisabled") ?? Foreground;
+        if (IsFocused) return ThemeManager.GetBrush($"{prefix}ForegroundFocused") ?? Foreground;
         if (IsPointerPressed) return ThemeManager.GetBrush($"{prefix}ForegroundPressed") ?? Foreground;
         if (IsPointerOver) return ThemeManager.GetBrush($"{prefix}ForegroundPointerOver") ?? Foreground;
         return Foreground;
     }
 
-    public Brush? GetCurrentBorderBrush()
+    public virtual Brush? GetCurrentBorderBrush()
     {
         string prefix = GetThemePrefix();
         if (!IsEnabled) return ThemeManager.GetBrush($"{prefix}BorderBrushDisabled") ?? BorderBrush;
+        if (IsFocused) return ThemeManager.GetBrush($"{prefix}BorderBrushFocused") ?? ThemeManager.GetBrush($"{prefix}BorderBrushPressed") ?? BorderBrush;
         if (IsPointerPressed) return ThemeManager.GetBrush($"{prefix}BorderBrushPressed") ?? BorderBrush;
         if (IsPointerOver) return ThemeManager.GetBrush($"{prefix}BorderBrushPointerOver") ?? BorderBrush;
         return BorderBrush;

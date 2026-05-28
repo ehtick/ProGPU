@@ -66,8 +66,12 @@ public class ProgressBar : Control
     {
         Width = 200f;
         Height = 4f; // Clean, modern WinUI thin track
-        Background = new SolidColorBrush(0xFFFFFF15); // Translucent track background
-        BorderBrush = new SolidColorBrush(0x0078D4FF); // Segoe Accent Blue fill
+
+        var defaultStyle = ThemeManager.GetDefaultStyle(GetType());
+        if (defaultStyle != null)
+        {
+            Style = defaultStyle;
+        }
     }
 
     protected override Vector2 MeasureOverride(Vector2 availableSize)
@@ -79,7 +83,7 @@ public class ProgressBar : Control
     {
         // 1. Draw flat track background
         var rect = new Rect(Vector2.Zero, Size);
-        context.FillRoundedRectangle(Background ?? new SolidColorBrush(0xFFFFFF15), rect, rect.Height / 2f);
+        context.FillRoundedRectangle(Background ?? ThemeManager.GetBrush("ProgressBarBackground"), rect, rect.Height / 2f);
 
         // 2. Draw progress segment
         if (IsIndeterminate)
@@ -94,7 +98,7 @@ public class ProgressBar : Control
 
             if (renderW > 0f)
             {
-                context.FillRoundedRectangle(BorderBrush ?? new SolidColorBrush(0x0078D4FF), new Rect(renderX, rect.Y, renderW, rect.Height), rect.Height / 2f);
+                context.FillRoundedRectangle(BorderBrush ?? ThemeManager.GetBrush("ProgressBarForeground"), new Rect(renderX, rect.Y, renderW, rect.Height), rect.Height / 2f);
             }
 
             // Animate offset smoothly at 60 FPS
@@ -116,7 +120,7 @@ public class ProgressBar : Control
 
             if (fillWidth > 0f)
             {
-                context.FillRoundedRectangle(BorderBrush ?? new SolidColorBrush(0x0078D4FF), new Rect(rect.X, rect.Y, fillWidth, rect.Height), rect.Height / 2f);
+                context.FillRoundedRectangle(BorderBrush ?? ThemeManager.GetBrush("ProgressBarForeground"), new Rect(rect.X, rect.Y, fillWidth, rect.Height), rect.Height / 2f);
             }
         }
 

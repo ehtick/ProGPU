@@ -76,14 +76,6 @@ public class PasswordBox : Control
         set => SetValue(IsPasswordRevealButtonEnabledProperty, value);
     }
 
-    private static readonly SolidColorBrush AmbientShadowBrush = new SolidColorBrush(0x0000000A);
-    private static readonly SolidColorBrush PenumbraShadowBrush = new SolidColorBrush(0x00000014);
-    private static readonly SolidColorBrush SelectionHighlightBrush = new SolidColorBrush(0x0078D440);
-    private static readonly SolidColorBrush LightRevealPressedBrush = new SolidColorBrush(new Vector4(0f, 0f, 0f, 0.08f));
-    private static readonly SolidColorBrush DarkRevealPressedBrush = new SolidColorBrush(new Vector4(1f, 1f, 1f, 0.08f));
-    private static readonly SolidColorBrush LightRevealHoveredBrush = new SolidColorBrush(new Vector4(0f, 0f, 0f, 0.04f));
-    private static readonly SolidColorBrush DarkRevealHoveredBrush = new SolidColorBrush(new Vector4(1f, 1f, 1f, 0.04f));
-
     private int _caretIndex;
     private float _fontSize = 14f;
     private bool _isPasswordRevealed;
@@ -648,51 +640,19 @@ public class PasswordBox : Control
     public override void OnRender(DrawingContext context)
     {
         // 1. Draw dynamic background and border matching TextBox styling
-        Brush bg;
-        Pen borderPen;
-
-        var activeTheme = this.ActualTheme;
-        bool hasLocalBg = IsPropertySetLocally(BackgroundProperty) || IsPropertySetInStyle(BackgroundProperty);
-        bool hasLocalBorder = IsPropertySetLocally(BorderBrushProperty) || IsPropertySetInStyle(BorderBrushProperty);
-
-        if (!IsEnabled)
-        {
-            bg = hasLocalBg ? (Background ?? ThemeManager.GetBrush("TextControlBackground", activeTheme)) : ThemeManager.GetBrush("TextControlBackground", activeTheme);
-            borderPen = hasLocalBorder && BorderBrush != null 
-                ? new Pen(BorderBrush, 1f) 
-                : ThemeManager.GetPen("TextControlBorderBrush", 1f, activeTheme);
-        }
-        else if (IsFocused)
-        {
-            bg = hasLocalBg ? (Background ?? ThemeManager.GetBrush("TextControlBackgroundFocused", activeTheme)) : ThemeManager.GetBrush("TextControlBackgroundFocused", activeTheme);
-            borderPen = hasLocalBorder && BorderBrush != null 
-                ? new Pen(BorderBrush, 2f) 
-                : ThemeManager.GetPen("TextControlBorderBrushFocused", 2f, activeTheme);
-        }
-        else if (IsPointerOver)
-        {
-            bg = hasLocalBg ? (Background ?? ThemeManager.GetBrush("TextControlBackgroundPointerOver", activeTheme)) : ThemeManager.GetBrush("TextControlBackgroundPointerOver", activeTheme);
-            borderPen = hasLocalBorder && BorderBrush != null 
-                ? new Pen(BorderBrush, 1f) 
-                : ThemeManager.GetPen("TextControlBorderBrushPointerOver", 1f, activeTheme);
-        }
-        else
-        {
-            bg = hasLocalBg ? (Background ?? ThemeManager.GetBrush("TextControlBackground", activeTheme)) : ThemeManager.GetBrush("TextControlBackground", activeTheme);
-            borderPen = hasLocalBorder && BorderBrush != null 
-                ? new Pen(BorderBrush, 1f) 
-                : ThemeManager.GetPen("TextControlBorderBrush", 1f, activeTheme);
-        }
+        Brush? bg = GetCurrentBackground();
+        Brush? borderBrush = GetCurrentBorderBrush();
+        Pen borderPen = new Pen(borderBrush ?? ThemeManager.GetBrush("ControlBorder"), BorderThickness.Left > 0 ? BorderThickness.Left : 1f);
 
         // Draw ambient & penumbra soft card elevation shadows
         if (IsEnabled)
         {
             float shadowR = CornerRadius;
             var ambientRect = new Rect(0, 2, Size.X, Size.Y);
-            context.DrawRoundedRectangle(AmbientShadowBrush, null, ambientRect, shadowR);
+            context.DrawRoundedRectangle(ThemeManager.GetBrush("ButtonAmbientShadow"), null, ambientRect, shadowR);
 
             var penumbraRect = new Rect(0, 1, Size.X, Size.Y);
-            context.DrawRoundedRectangle(PenumbraShadowBrush, null, penumbraRect, shadowR);
+            context.DrawRoundedRectangle(ThemeManager.GetBrush("ButtonPenumbraShadow"), null, penumbraRect, shadowR);
         }
 
         context.DrawRoundedRectangle(bg, borderPen, new Rect(Vector2.Zero, Size), CornerRadius);
@@ -711,19 +671,19 @@ public class PasswordBox : Control
                 float x1 = GetXForIndex(selStart);
                 float x2 = GetXForIndex(selEnd);
                 Rect selRect = new Rect(x1, textY - 1f, x2 - x1, FontSize + 2f);
-                context.DrawRectangle(SelectionHighlightBrush, null, selRect);
+                context.DrawRectangle(ThemeManager.GetBrush("SelectionHighlight"), null, selRect);
             }
 
             if (string.IsNullOrEmpty(Password))
             {
                 if (!string.IsNullOrEmpty(PlaceholderText))
                 {
-                    context.DrawText(PlaceholderText, Font, FontSize, ThemeManager.GetBrush("TextControlPlaceholderForeground", activeTheme), new Vector2(Padding.Left, textY));
+                    context.DrawText(PlaceholderText, Font, FontSize, ThemeManager.GetBrush("PasswordBoxForegroundDisabled"), new Vector2(Padding.Left, textY));
                 }
             }
             else
             {
-                var fgBrush = Foreground ?? ThemeManager.GetBrush("TextControlForeground", activeTheme);
+                var fgBrush = GetCurrentForeground() ?? ThemeManager.GetBrush("PasswordBoxForeground");
                 context.DrawText(visText, Font, FontSize, fgBrush, new Vector2(Padding.Left, textY));
             }
 
@@ -732,7 +692,7 @@ public class PasswordBox : Control
             {
                 float caretX = GetCaretX();
                 Rect caretRect = new Rect(caretX, textY - 1f, 1.5f, FontSize + 2f);
-                context.DrawRectangle(ThemeManager.GetBrush("TextControlBorderBrushFocused", activeTheme), null, caretRect);
+                context.DrawRectangle(ThemeManager.GetBrush("PasswordBoxBorderBrushFocused"), null, caretRect);
             }
         }
 
@@ -744,24 +704,26 @@ public class PasswordBox : Control
             float ry = (Size.Y - revealSize) / 2f;
             Rect revealRect = new Rect(rx, ry, revealSize, revealSize);
 
+            var activeTheme = this.ActualTheme;
+
             // Draw reveal hover/press backgrounds
             if (IsEnabled)
             {
                 if (_isRevealPressed)
                 {
-                    context.DrawRoundedRectangle(activeTheme == ElementTheme.Light ? LightRevealPressedBrush : DarkRevealPressedBrush, null, revealRect, 4f);
+                    context.DrawRoundedRectangle(ThemeManager.GetBrush("ControlBackgroundPressed"), null, revealRect, 4f);
                 }
                 else if (_isRevealHovered)
                 {
-                    context.DrawRoundedRectangle(activeTheme == ElementTheme.Light ? LightRevealHoveredBrush : DarkRevealHoveredBrush, null, revealRect, 4f);
+                    context.DrawRoundedRectangle(ThemeManager.GetBrush("ControlBackgroundHover"), null, revealRect, 4f);
                 }
             }
 
             // Draw vector eye icon
             float cx = rx + revealSize / 2f;
             float cy = ry + revealSize / 2f;
-            var eyeBrush = ThemeManager.GetBrush("TextControlForeground", activeTheme);
-            var eyePen = ThemeManager.GetPen("TextControlForeground", 1.25f, activeTheme);
+            var eyeBrush = GetCurrentForeground() ?? ThemeManager.GetBrush("PasswordBoxForeground");
+            var eyePen = new Pen(eyeBrush, 1.25f);
 
             if (_eyelidGeometry == null || _cachedRevealSize != Size)
             {
@@ -780,7 +742,7 @@ public class PasswordBox : Control
             // Draw diagonal strike line if password is masked (visual state matches WinUI hidden toggle)
             if (!_isPasswordRevealed)
             {
-                var strikePen = ThemeManager.GetPen("TextControlPlaceholderForeground", 1.25f, activeTheme);
+                var strikePen = new Pen(ThemeManager.GetBrush("PasswordBoxForegroundDisabled"), 1.25f);
                 context.DrawPath(null, strikePen, _strikeGeometry!);
             }
         }

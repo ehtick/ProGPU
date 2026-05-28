@@ -224,21 +224,18 @@ public class ToggleSwitch : Control
 
         if (!IsEnabled)
         {
-            trackBg = Background ?? ThemeManager.GetBrush("ControlBackground");
+            trackBg = ThemeManager.GetBrush("ToggleSwitchContainerBackground");
             trackBorder = new Pen(BorderBrush ?? ThemeManager.GetBrush("ControlBorder"), 1f);
         }
         else if (IsOn)
         {
-            // Filled Segoe Blue
             trackBg = IsPointerPressed
-                ? ThemeManager.GetBrush("SystemAccentColorDark1")
-                : (IsPointerOver ? ThemeManager.GetBrush("SystemAccentColorLight1") : ThemeManager.GetBrush("SystemAccentColor"));
+                ? ThemeManager.GetBrush("ToggleSwitchFillOnPressed")
+                : (IsPointerOver ? ThemeManager.GetBrush("ToggleSwitchFillOnPointerOver") : ThemeManager.GetBrush("ToggleSwitchFillOn"));
         }
         else
         {
-            // Off: Outlined or dark translucent capsule
-            trackBg = Background ?? ThemeManager.GetBrush(IsPointerPressed ? "ControlBackgroundPressed" : IsPointerOver ? "ControlBackgroundHover" : "ControlBackground");
-
+            trackBg = Background ?? ThemeManager.GetBrush(IsPointerPressed ? "ControlBackgroundPressed" : IsPointerOver ? "ToggleSwitchContainerBackgroundPointerOver" : "ToggleSwitchContainerBackground");
             trackBorder = new Pen(BorderBrush ?? ThemeManager.GetBrush(IsPointerOver ? "ControlBorderHover" : "ControlBorder"), 1f);
         }
 
@@ -246,7 +243,6 @@ public class ToggleSwitch : Control
         context.DrawRoundedRectangle(trackBg, trackBorder, trackRect, CornerRadius);
 
         // Draw thumb
-        // Thumb size inside track. Track height is 20f, so thumb height/width can be 12f (radius = 6f).
         float thumbRadius = IsPointerPressed ? 5f : 6f; // breathing thumb
         float thumbMargin = 4f;
         float thumbDiameter = thumbRadius * 2f;
@@ -269,15 +265,13 @@ public class ToggleSwitch : Control
         }
         else if (IsOn)
         {
-            // Fluent Switch: White thumb when active On
-            thumbBg = ThemeManager.CurrentTheme == ElementTheme.Light ? ThemeManager.GetBrush("CardBackground") : ThemeManager.GetBrush("TextPrimary");
+            thumbBg = ThemeManager.GetBrush("ToggleSwitchKnobFillOn");
         }
         else
         {
-            // Muted white / light grey thumb when Off
             thumbBg = IsPointerOver 
-                ? (ThemeManager.CurrentTheme == ElementTheme.Light ? ThemeManager.GetBrush("CardBackground") : ThemeManager.GetBrush("TextPrimary"))
-                : ThemeManager.GetBrush("TextSecondary");
+                ? ThemeManager.GetBrush("ToggleSwitchKnobFillOn")
+                : ThemeManager.GetBrush("ToggleSwitchKnobFillOff");
             thumbBorder = new Pen(BorderBrush ?? ThemeManager.GetBrush("ControlBorder"), 1f);
         }
 

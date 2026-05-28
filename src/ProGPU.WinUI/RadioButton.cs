@@ -48,6 +48,31 @@ public class RadioButton : ContentControl
     {
         CornerRadius = 9f; // Perfect circle for 18x18 size
         Padding = new Thickness(8, 4, 8, 4);
+
+        var defaultStyle = ThemeManager.GetDefaultStyle(GetType());
+        if (defaultStyle != null)
+        {
+            Style = defaultStyle;
+        }
+    }
+
+    public override Brush? GetCurrentBackground()
+    {
+        if (!IsEnabled) return ThemeManager.GetBrush("RadioButtonBackgroundDisabled") ?? Background;
+        if (IsChecked)
+        {
+            if (IsPointerPressed) return ThemeManager.GetBrush("RadioButtonCheckBackgroundFillCheckedPressed");
+            if (IsPointerOver) return ThemeManager.GetBrush("RadioButtonCheckBackgroundFillCheckedPointerOver");
+            return ThemeManager.GetBrush("RadioButtonCheckBackgroundFillChecked");
+        }
+        return base.GetCurrentBackground();
+    }
+
+    public override Brush? GetCurrentBorderBrush()
+    {
+        if (!IsEnabled) return ThemeManager.GetBrush("RadioButtonBorderBrushDisabled") ?? BorderBrush;
+        if (IsChecked) return null;
+        return base.GetCurrentBorderBrush();
     }
 
     private void OnCheckedChanged()
@@ -337,30 +362,9 @@ public class RadioButton : ContentControl
 
         Rect boxRect = new Rect(leftInset, boxY, boxSize, boxSize);
 
-        Brush? boxBg;
-        Pen? boxBorder;
-
-        if (!IsEnabled)
-        {
-            boxBg = Background ?? ThemeManager.GetBrush("ControlBackground");
-            boxBorder = BorderBrush != null
-                ? new Pen(BorderBrush, 1f)
-                : ThemeManager.GetPen("ControlBorder", 1f);
-        }
-        else if (IsChecked)
-        {
-            boxBg = IsPointerPressed 
-                ? ThemeManager.GetBrush("SystemAccentColorDark1") 
-                : (IsPointerOver ? ThemeManager.GetBrush("SystemAccentColorLight1") : ThemeManager.GetBrush("SystemAccentColor"));
-            boxBorder = null;
-        }
-        else
-        {
-            boxBg = Background ?? ThemeManager.GetBrush(IsPointerPressed ? "ControlBackgroundPressed" : IsPointerOver ? "ControlBackgroundHover" : "ControlBackground");
-            boxBorder = BorderBrush != null
-                ? new Pen(BorderBrush, 1f)
-                : ThemeManager.GetPen(IsPointerOver ? "ControlBorderHover" : "ControlBorder", 1f);
-        }
+        Brush? boxBg = GetCurrentBackground();
+        Brush? borderBrush = GetCurrentBorderBrush();
+        Pen? boxBorder = borderBrush != null ? new Pen(borderBrush, BorderThickness.Left > 0 ? BorderThickness.Left : 1f) : null;
 
         // Draw outer radio circle
         context.DrawRoundedRectangle(boxBg, boxBorder, boxRect, 9f);
@@ -369,7 +373,7 @@ public class RadioButton : ContentControl
         if (IsChecked)
         {
             var dotBrush = IsEnabled 
-                ? (ThemeManager.CurrentTheme == ElementTheme.Light ? ThemeManager.GetBrush("CardBackground") : ThemeManager.GetBrush("TextPrimary"))
+                ? (ThemeManager.GetBrush("RadioButtonCheckGlyphForegroundChecked") ?? (ThemeManager.CurrentTheme == ElementTheme.Light ? ThemeManager.GetBrush("CardBackground") : ThemeManager.GetBrush("TextPrimary")))
                 : ThemeManager.GetBrush("TextSecondary");
 
             // Draw center dot of diameter 6px

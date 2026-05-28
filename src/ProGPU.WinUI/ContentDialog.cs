@@ -85,6 +85,12 @@ public class ContentDialog : Control
         };
         
         AddChild(_cardBorder);
+
+        var defaultStyle = ThemeManager.GetDefaultStyle(GetType());
+        if (defaultStyle != null)
+        {
+            Style = defaultStyle;
+        }
     }
 
     public Task<ContentDialogResult> ShowAsync()

@@ -31,11 +31,11 @@ public class ToolTip : Control
 
     public ToolTip()
     {
-        Background = new SolidColorBrush(0x1F1F24FA); // Mica-dark translucent
-        BorderBrush = new SolidColorBrush(0xFFFFFF15); // Translucent border
-        BorderThickness = new Thickness(1f);
-        CornerRadius = 4f;
-        Padding = new Thickness(8f, 4f, 8f, 4f);
+        var defaultStyle = ThemeManager.GetDefaultStyle(GetType());
+        if (defaultStyle != null)
+        {
+            Style = defaultStyle;
+        }
     }
 
     protected override Vector2 MeasureOverride(Vector2 availableSize)
@@ -89,7 +89,12 @@ public class ToolTip : Control
         
         // Soft ambient and shadow overlays
         context.FillRoundedRectangle(new SolidColorBrush(0x0000002A), new Rect(rect.X, rect.Y + 2f, rect.Width, rect.Height), CornerRadius);
-        context.DrawRoundedRectangle(Background, new Pen(BorderBrush ?? new SolidColorBrush(0xFFFFFF15), BorderThickness.Left), rect, CornerRadius);
+        
+        Brush? bg = Background ?? ThemeManager.GetBrush("ToolTipBackground");
+        Brush? borderBrush = BorderBrush ?? ThemeManager.GetBrush("ToolTipBorderBrush");
+        Pen pen = new Pen(borderBrush ?? ThemeManager.GetBrush("ControlBorder"), BorderThickness.Left > 0 ? BorderThickness.Left : 1f);
+        
+        context.DrawRoundedRectangle(bg, pen, rect, CornerRadius);
 
         // 2. Render content
         if (Content != null)
@@ -100,11 +105,12 @@ public class ToolTip : Control
                 var font = PopupService.DefaultFont;
                 if (font != null)
                 {
+                    Brush textBrush = Foreground ?? ThemeManager.GetBrush("ToolTipForeground");
                     context.DrawText(
                         text,
                         font,
                         14f,
-                        new SolidColorBrush(0xFFFFFFE0), // Soft white
+                        textBrush,
                         new Vector2(Padding.Left, Padding.Top)
                     );
                 }

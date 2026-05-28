@@ -176,25 +176,25 @@ public class ComboBoxItem : ContentControl
         return null;
     }
 
+    public override Brush? GetCurrentBackground()
+    {
+        if (IsSelected) return ThemeManager.GetBrush("ComboBoxItemBackgroundSelected") ?? ThemeManager.GetBrush("SelectionHighlight");
+        if (IsPointerOver) return ThemeManager.GetBrush("ComboBoxItemBackgroundPointerOver") ?? ThemeManager.GetBrush("ControlBackgroundHover");
+        return null;
+    }
+
+    public override Brush? GetCurrentBorderBrush()
+    {
+        if (IsSelected) return ThemeManager.GetBrush("SystemAccentColor");
+        if (IsPointerOver) return base.GetCurrentBorderBrush();
+        return null;
+    }
+
     public override void OnRender(DrawingContext context)
     {
-        Brush? bg = null;
-        Pen? pen = null;
-
-        if (IsSelected)
-        {
-            bg = ThemeManager.GetBrush("SelectionHighlight"); // Segoe Blue transparent active background
-            pen = new Pen(ThemeManager.GetBrush("SystemAccentColor"), 1f); // Segoe Blue thin border
-        }
-        else if (IsPointerOver)
-        {
-            bg = GetCurrentBackground() ?? ThemeManager.GetBrush("ControlBackgroundHover");
-            var borderBrush = GetCurrentBorderBrush();
-            if (borderBrush != null)
-            {
-                pen = new Pen(borderBrush, BorderThickness.Left > 0 ? BorderThickness.Left : 1f);
-            }
-        }
+        Brush? bg = GetCurrentBackground();
+        Brush? borderBrush = GetCurrentBorderBrush();
+        Pen? pen = borderBrush != null ? new Pen(borderBrush, BorderThickness.Left > 0 ? BorderThickness.Left : 1f) : null;
 
         if (bg != null)
         {

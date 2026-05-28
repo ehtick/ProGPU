@@ -320,44 +320,34 @@ public class ComboBox : Control
         return null;
     }
 
+    public override Brush? GetCurrentBackground()
+    {
+        if (!IsEnabled) return ThemeManager.GetBrush("ComboBoxBackgroundDisabled") ?? Background;
+        if (IsDropDownOpen) return ThemeManager.GetBrush("ComboBoxBackgroundPressed") ?? ThemeManager.GetBrush("CardBackground");
+        return base.GetCurrentBackground();
+    }
+
+    public override Brush? GetCurrentBorderBrush()
+    {
+        if (!IsEnabled) return ThemeManager.GetBrush("ComboBoxBorderBrushDisabled") ?? BorderBrush;
+        if (IsDropDownOpen) return ThemeManager.GetBrush("ComboBoxBorderBrushFocused") ?? ThemeManager.GetBrush("SystemAccentColor");
+        return base.GetCurrentBorderBrush();
+    }
+
     public override void OnRender(DrawingContext context)
     {
         float headerH = HeightConstraint ?? 32f;
         Rect headerRect = new Rect(0, 0, Size.X, headerH);
 
-        // 1. Draw ComboBox main button card
-        Brush bg;
-        Pen borderPen;
-        float borderThickness = BorderThickness.Left > 0 ? BorderThickness.Left : 1f;
-
-        bool hasCustomBg = Background != null && Background is not ThemeResourceBrush;
-        bool hasCustomBorder = BorderBrush != null && BorderBrush is not ThemeResourceBrush;
-
-        if (!IsEnabled)
-        {
-            bg = hasCustomBg ? Background! : ThemeManager.GetBrush("ControlBackground");
-            borderPen = new Pen(hasCustomBorder ? BorderBrush! : ThemeManager.GetBrush("ControlBorder"), borderThickness);
-        }
-        else if (IsDropDownOpen || IsFocused)
-        {
-            bg = hasCustomBg ? Background! : ThemeManager.GetBrush("CardBackground");
-            borderPen = new Pen(ThemeManager.GetBrush("SystemAccentColor"), 2f); // Segoe Blue active focus ring/active state
-        }
-        else if (IsPointerOver)
-        {
-            bg = hasCustomBg ? Background! : ThemeManager.GetBrush("ControlBackgroundHover");
-            borderPen = new Pen(hasCustomBorder ? BorderBrush! : ThemeManager.GetBrush("ControlBorderHover"), borderThickness);
-        }
-        else
-        {
-            bg = Background ?? ThemeManager.GetBrush("ControlBackground");
-            borderPen = new Pen(BorderBrush ?? ThemeManager.GetBrush("ControlBorder"), borderThickness);
-        }
+        // ComboBox main button card
+        Brush? bg = GetCurrentBackground();
+        Brush? borderBrush = GetCurrentBorderBrush();
+        Pen pen = new Pen(borderBrush ?? ThemeManager.GetBrush("ControlBorder"), BorderThickness.Left > 0 ? BorderThickness.Left : 1f);
 
         // Draw header background shape
-        context.DrawRoundedRectangle(bg, borderPen, headerRect, CornerRadius);
+        context.DrawRoundedRectangle(bg, pen, headerRect, CornerRadius);
 
-        // 2. Draw active Selected Text or Placeholder Text
+        // Draw active Selected Text or Placeholder Text
         var activeFont = GetActiveFont();
         if (activeFont != null)
         {

@@ -39,7 +39,7 @@ public class HyperlinkButton : Button
         Background = null;
         BorderThickness = new Thickness(0);
         Padding = new Thickness(0, 2, 0, 2);
-        Foreground = new SolidColorBrush(0x0078D4FF); // Standard Fluent Segoe Blue accent
+        Foreground = new ThemeResourceBrush("HyperlinkButtonForeground");
     }
 
     private void UpdateContentForeground()
@@ -61,7 +61,7 @@ public class HyperlinkButton : Button
         // Active focus indicator
         if (IsEnabled && IsFocused)
         {
-            var focusPen = new Pen(new SolidColorBrush(0x0078D4FF), 1f);
+            var focusPen = ThemeManager.GetPen("SystemAccentColor", 1f);
             context.DrawRectangle(null, focusPen, new Rect(0f, 0f, Size.X, Size.Y));
         }
 
@@ -79,7 +79,7 @@ public class HyperlinkButton : Button
             float childX = leftInset + (Size.X - (leftInset + rightInset) - childW) / 2f;
             float childY = topInset + (Size.Y - (topInset + bottomInset) - childH) / 2f;
 
-            var accentBrush = Foreground ?? new SolidColorBrush(0x0078D4FF);
+            var accentBrush = Foreground ?? ThemeManager.GetBrush("SystemAccentColor");
             // Draw a 1px solid rectangle line as underline
             context.DrawRectangle(accentBrush, null, new Rect(childX, childY + childH + 1f, childW, 1f));
         }

@@ -245,57 +245,43 @@ public class Slider : Control
 
         // 1. Draw Inactive Track (Right side)
         Rect inactiveRect = new Rect(thumbX, yCenter - trackHeight / 2f, Math.Max(0f, width - baseThumbRadius - thumbX), trackHeight);
-        Brush inactiveBg = Background ?? ThemeManager.GetBrush("ControlBorder");
+        Brush inactiveBg = Background ?? ThemeManager.GetBrush(IsEnabled ? "SliderTrackFill" : "SliderTrackFillDisabled");
         context.DrawRectangle(inactiveBg, null, inactiveRect);
 
         // 2. Draw Active Track (Left side)
         if (thumbX > baseThumbRadius)
         {
             Rect activeRect = new Rect(baseThumbRadius, yCenter - trackHeight / 2f, thumbX - baseThumbRadius, trackHeight);
-            Brush activeBg;
-            if (!IsEnabled)
-            {
-                activeBg = ThemeManager.GetBrush("ControlBackground");
-            }
-            else if (_isDragging)
-            {
-                activeBg = ThemeManager.GetBrush("SystemAccentColorDark1"); // pressed accent
-            }
-            else if (IsPointerOver)
-            {
-                activeBg = ThemeManager.GetBrush("SystemAccentColorLight1"); // hover accent
-            }
-            else
-            {
-                activeBg = ThemeManager.GetBrush("SystemAccentColor"); // Segoe Blue
-            }
+            Brush activeBg = ThemeManager.GetBrush(IsEnabled 
+                ? (_isDragging ? "SliderTrackValueFillPressed" : IsPointerOver ? "SliderTrackValueFillPointerOver" : "SliderTrackValueFill") 
+                : "SliderTrackValueFillDisabled");
             context.DrawRectangle(activeBg, null, activeRect);
         }
 
         // 3. Draw Thumb (Circle)
         Rect thumbRect = new Rect(thumbX - drawThumbRadius, yCenter - drawThumbRadius, drawThumbRadius * 2f, drawThumbRadius * 2f);
         Brush thumbBg;
-        Pen? thumbBorder = null;
+        Pen? thumbBorder;
 
         if (!IsEnabled)
         {
             thumbBg = ThemeManager.GetBrush("ControlBackground");
-            thumbBorder = new Pen(BorderBrush ?? ThemeManager.GetBrush("ControlBorder"), 1f);
+            thumbBorder = new Pen(BorderBrush ?? ThemeManager.GetBrush("SliderThumbBorderBrush"), 1f);
         }
         else if (_isDragging)
         {
-            thumbBg = ThemeManager.GetBrush("SystemAccentColorDark1"); // Pressed Accent Segoe Blue
+            thumbBg = ThemeManager.GetBrush("SliderTrackValueFillPressed"); // Pressed Accent Segoe Blue
             thumbBorder = new Pen(ThemeManager.CurrentTheme == ElementTheme.Light ? ThemeManager.GetBrush("CardBackground") : ThemeManager.GetBrush("TextPrimary"), 1.5f);
         }
         else if (IsPointerOver)
         {
-            thumbBg = ThemeManager.CurrentTheme == ElementTheme.Light ? ThemeManager.GetBrush("CardBackground") : ThemeManager.GetBrush("TextPrimary"); // bright white or primary text
-            thumbBorder = new Pen(ThemeManager.GetBrush("SystemAccentColorLight1"), 1f); // hover accent border
+            thumbBg = ThemeManager.CurrentTheme == ElementTheme.Light ? ThemeManager.GetBrush("CardBackground") : ThemeManager.GetBrush("TextPrimary");
+            thumbBorder = new Pen(ThemeManager.GetBrush("SliderTrackValueFillPointerOver"), 1f);
         }
         else
         {
-            thumbBg = ThemeManager.CurrentTheme == ElementTheme.Light ? ThemeManager.GetBrush("CardBackground") : ThemeManager.GetBrush("TextPrimary"); // bright white or primary text
-            thumbBorder = new Pen(BorderBrush ?? ThemeManager.GetBrush("ControlBorder"), 1f);
+            thumbBg = ThemeManager.CurrentTheme == ElementTheme.Light ? ThemeManager.GetBrush("CardBackground") : ThemeManager.GetBrush("TextPrimary");
+            thumbBorder = new Pen(BorderBrush ?? ThemeManager.GetBrush("SliderThumbBorderBrush"), 1f);
         }
 
         // Standard Circle rendering using rounded rect path (radius = drawThumbRadius)

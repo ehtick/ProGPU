@@ -143,6 +143,12 @@ public class DataGrid : Control
         Padding = new Thickness(0);
         WidthConstraint = 600f;
         HeightConstraint = 350f;
+
+        var defaultStyle = ThemeManager.GetDefaultStyle(GetType());
+        if (defaultStyle != null)
+        {
+            Style = defaultStyle;
+        }
     }
 
     public void AddItem(object item)

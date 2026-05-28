@@ -15,6 +15,13 @@ public class ProgressRing : Control
 {
     private bool _isActive = true;
     private float _rotationOffset;
+    private SolidColorBrush[]? _dotBrushes;
+
+    public override void OnVisualStateChanged()
+    {
+        _dotBrushes = null; // invalidate cached brushes
+        base.OnVisualStateChanged();
+    }
 
     public bool IsActive
     {
@@ -35,8 +42,12 @@ public class ProgressRing : Control
         Height = 32f;
         HorizontalAlignment = HorizontalAlignment.Center;
         VerticalAlignment = VerticalAlignment.Center;
-        Background = new SolidColorBrush(0x00000000); // Fully transparent container
-        BorderBrush = new SolidColorBrush(0x0078D4FF); // Segoe Accent Blue dots
+
+        var defaultStyle = ThemeManager.GetDefaultStyle(GetType());
+        if (defaultStyle != null)
+        {
+            Style = defaultStyle;
+        }
     }
 
     protected override Vector2 MeasureOverride(Vector2 availableSize)
@@ -52,6 +63,23 @@ public class ProgressRing : Control
             float radius = (Size.X - 8f) / 2f; // Keep dot bounds inside control nicely
             float dotRadius = 3f;
 
+            if (_dotBrushes == null)
+            {
+                var brush = Foreground ?? ThemeManager.GetBrush("ProgressRingForeground");
+                Vector4 colorVec = new Vector4(0.0f, 0.47f, 0.83f, 1.0f); // Default Accent Blue
+                if (brush is SolidColorBrush scb)
+                {
+                    colorVec = scb.Color;
+                }
+
+                _dotBrushes = new SolidColorBrush[8];
+                for (int i = 0; i < 8; i++)
+                {
+                    float opacityFraction = (i / 8f);
+                    _dotBrushes[i] = new SolidColorBrush(new Vector4(colorVec.X, colorVec.Y, colorVec.Z, opacityFraction));
+                }
+            }
+
             // Draw 8 circular dots in a loop with a tail fading opacity sweep
             for (int i = 0; i < 8; i++)
             {
@@ -60,12 +88,7 @@ public class ProgressRing : Control
                 float x = cx + radius * (float)Math.Cos(angle);
                 float y = cy + radius * (float)Math.Sin(angle);
 
-                // Sweep opacity: creates a fading trail of loaded dots
-                float opacityFraction = (i / 8f);
-                uint alpha = (uint)(255 * opacityFraction);
-                
-                // Segoe Accent Blue with dynamic alpha opacity
-                var dotColor = new SolidColorBrush(0x0078D400 | alpha);
+                var dotColor = _dotBrushes[i];
 
                 context.FillCircle(dotColor, new Vector2(x, y), dotRadius);
             }

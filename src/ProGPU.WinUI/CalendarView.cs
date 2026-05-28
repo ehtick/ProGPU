@@ -269,7 +269,7 @@ public class CalendarView : Control
             Brush textBrush;
             if (isSelected)
             {
-                textBrush = new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f));
+                textBrush = ThemeManager.GetBrush("CardBackground", ElementTheme.Light);
             }
             else if (isCurrentMonth)
             {
