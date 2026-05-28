@@ -11,6 +11,7 @@ public class Visual
 {
     private Vector2 _offset;
     private Vector2 _size;
+    private bool _isVisible = true;
     private float _opacity = 1.0f;
     private Matrix4x4 _transform = Matrix4x4.Identity;
     private bool _isDirty = true;
@@ -62,6 +63,19 @@ public class Visual
             if (_offset != value)
             {
                 _offset = value;
+                Invalidate();
+            }
+        }
+    }
+
+    public bool IsVisible
+    {
+        get => _isVisible;
+        set
+        {
+            if (_isVisible != value)
+            {
+                _isVisible = value;
                 Invalidate();
             }
         }
