@@ -91,6 +91,41 @@ public class GridSplitter : Thumb
             int leftIdx = colIndex - 1;
             int rightIdx = colIndex + 1;
 
+            var behavior = ResizeBehavior;
+            if (behavior == GridSplitterResizeBehavior.BasedOnAlignment)
+            {
+                if (HorizontalAlignment == HorizontalAlignment.Left)
+                {
+                    leftIdx = colIndex - 1;
+                    rightIdx = colIndex;
+                }
+                else if (HorizontalAlignment == HorizontalAlignment.Right)
+                {
+                    leftIdx = colIndex;
+                    rightIdx = colIndex + 1;
+                }
+                else
+                {
+                    leftIdx = colIndex - 1;
+                    rightIdx = colIndex + 1;
+                }
+            }
+            else if (behavior == GridSplitterResizeBehavior.CurrentAndNext)
+            {
+                leftIdx = colIndex;
+                rightIdx = colIndex + 1;
+            }
+            else if (behavior == GridSplitterResizeBehavior.PreviousAndCurrent)
+            {
+                leftIdx = colIndex - 1;
+                rightIdx = colIndex;
+            }
+            else // PreviousAndNext
+            {
+                leftIdx = colIndex - 1;
+                rightIdx = colIndex + 1;
+            }
+
             if (leftIdx < 0 || rightIdx >= parentGrid.ColumnDefinitions.Count) return;
 
             var leftCol = parentGrid.ColumnDefinitions[leftIdx];
@@ -140,6 +175,41 @@ public class GridSplitter : Thumb
             int rowIndex = Grid.GetRow(this);
             int topIdx = rowIndex - 1;
             int bottomIdx = rowIndex + 1;
+
+            var behavior = ResizeBehavior;
+            if (behavior == GridSplitterResizeBehavior.BasedOnAlignment)
+            {
+                if (VerticalAlignment == VerticalAlignment.Top)
+                {
+                    topIdx = rowIndex - 1;
+                    bottomIdx = rowIndex;
+                }
+                else if (VerticalAlignment == VerticalAlignment.Bottom)
+                {
+                    topIdx = rowIndex;
+                    bottomIdx = rowIndex + 1;
+                }
+                else
+                {
+                    topIdx = rowIndex - 1;
+                    bottomIdx = rowIndex + 1;
+                }
+            }
+            else if (behavior == GridSplitterResizeBehavior.CurrentAndNext)
+            {
+                topIdx = rowIndex;
+                bottomIdx = rowIndex + 1;
+            }
+            else if (behavior == GridSplitterResizeBehavior.PreviousAndCurrent)
+            {
+                topIdx = rowIndex - 1;
+                bottomIdx = rowIndex;
+            }
+            else // PreviousAndNext
+            {
+                topIdx = rowIndex - 1;
+                bottomIdx = rowIndex + 1;
+            }
 
             if (topIdx < 0 || bottomIdx >= parentGrid.RowDefinitions.Count) return;
 
