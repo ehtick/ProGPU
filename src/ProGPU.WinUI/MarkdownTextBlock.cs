@@ -57,6 +57,8 @@ namespace Microsoft.UI.Xaml.Controls
                 if (_fontSize != value)
                 {
                     _fontSize = value;
+                    _lastParsedMarkdown = string.Empty;
+                    _blocks.Clear();
                     _isLayoutDirty = true;
                     Invalidate();
                 }
@@ -71,6 +73,8 @@ namespace Microsoft.UI.Xaml.Controls
                 if (_foreground != value)
                 {
                     _foreground = value;
+                    _lastParsedMarkdown = string.Empty;
+                    _blocks.Clear();
                     _isLayoutDirty = true;
                     Invalidate();
                 }
@@ -114,6 +118,8 @@ namespace Microsoft.UI.Xaml.Controls
                 if (_codeFont != value)
                 {
                     _codeFont = value;
+                    _lastParsedMarkdown = string.Empty;
+                    _blocks.Clear();
                     _isLayoutDirty = true;
                     Invalidate();
                 }
@@ -130,6 +136,8 @@ namespace Microsoft.UI.Xaml.Controls
             base.OnPropertyChanged(dp, oldValue, newValue);
             if (dp == FontProperty)
             {
+                _lastParsedMarkdown = string.Empty;
+                _blocks.Clear();
                 _isLayoutDirty = true;
                 Invalidate();
             }
@@ -137,6 +145,8 @@ namespace Microsoft.UI.Xaml.Controls
 
         protected override void OnThemeChanged()
         {
+            _lastParsedMarkdown = string.Empty;
+            _blocks.Clear();
             _isLayoutDirty = true;
             base.OnThemeChanged();
         }
