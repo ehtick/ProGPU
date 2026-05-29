@@ -2,23 +2,21 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Input;
-using Microsoft.UI.Xaml.Documents;
 using System;
 using System.Numerics;
 using ProGPU.Layout;
 using ProGPU.Vector;
-using ProGPU.Scene;
 
 namespace Microsoft.UI.Xaml.Controls;
 
-public class CheckBox : ContentControl
+public class ToggleButton : Button
 {
     public static readonly DependencyProperty IsCheckedProperty =
         DependencyProperty.Register(
             "IsChecked",
             typeof(bool),
-            typeof(CheckBox),
-            new PropertyMetadata(false, (d, e) => ((CheckBox)d).OnCheckedChanged()));
+            typeof(ToggleButton),
+            new PropertyMetadata(false, (d, e) => ((ToggleButton)d).OnCheckedChanged()));
 
     public bool IsChecked
     {
@@ -30,18 +28,20 @@ public class CheckBox : ContentControl
     public event EventHandler? Unchecked;
     public event EventHandler? CheckedChanged;
 
-    public CheckBox()
+    public ToggleButton()
     {
         var defaultStyle = ThemeManager.GetDefaultStyle(GetType());
         if (defaultStyle != null)
         {
             SetDefaultStyle(defaultStyle);
         }
+        UpdateForeground();
     }
 
     private void OnCheckedChanged()
     {
         Invalidate();
+        UpdateForeground();
         CheckedChanged?.Invoke(this, EventArgs.Empty);
         if (IsChecked)
         {
@@ -53,6 +53,18 @@ public class CheckBox : ContentControl
         }
     }
 
+    private void UpdateForeground()
+    {
+        if (IsChecked)
+        {
+            Foreground = new ThemeResourceBrush("AccentButtonForeground");
+        }
+        else
+        {
+            Foreground = new ThemeResourceBrush("ButtonForeground");
+        }
+    }
+
     public override void OnPointerReleased(PointerRoutedEventArgs e)
     {
         if (IsEnabled && IsPointerPressed && IsPointerOver)
@@ -60,20 +72,5 @@ public class CheckBox : ContentControl
             IsChecked = !IsChecked;
         }
         base.OnPointerReleased(e);
-    }
-
-    protected override Vector2 MeasureOverride(Vector2 availableSize)
-    {
-        return base.MeasureOverride(availableSize);
-    }
-
-    protected override void ArrangeOverride(Rect arrangeRect)
-    {
-        base.ArrangeOverride(arrangeRect);
-    }
-
-    public override void OnRender(DrawingContext context)
-    {
-        base.OnRender(context);
     }
 }

@@ -159,8 +159,9 @@ public static unsafe class MainWindowController
         var headerGrid = new Microsoft.UI.Xaml.Controls.Grid();
         headerGrid.ColumnDefinitions.Add(new GridLength(45f, GridUnitType.Absolute));  // Column 0: Hamburger Button
         headerGrid.ColumnDefinitions.Add(new GridLength(1f, GridUnitType.Star));       // Column 1: Title Logo
-        headerGrid.ColumnDefinitions.Add(new GridLength(120f, GridUnitType.Absolute));  // Column 2: Theme Selector
-        headerGrid.ColumnDefinitions.Add(new GridLength(300f, GridUnitType.Absolute));  // Column 3: Subtitle text
+        headerGrid.ColumnDefinitions.Add(new GridLength(120f, GridUnitType.Absolute)); // Column 2: Theme Family Selector
+        headerGrid.ColumnDefinitions.Add(new GridLength(120f, GridUnitType.Absolute)); // Column 3: Theme Selector
+        headerGrid.ColumnDefinitions.Add(new GridLength(300f, GridUnitType.Absolute)); // Column 4: Subtitle text
 
         var hamburgerBtn = new Button
         {
@@ -188,6 +189,41 @@ public static unsafe class MainWindowController
         titleText.Inlines.Add(new Bold(new Run("GPU WinUI Gallery")));
         headerGrid.AddChild(titleText);
         Microsoft.UI.Xaml.Controls.Grid.SetColumn(titleText, 1);
+
+        // Theme Family selector button [ WinUI / macOS ]
+        var familyBtn = new Button
+        {
+            Width = 100f,
+            Height = 32f,
+            CornerRadius = 6f,
+            Margin = new Thickness(0, 0, 10, 0),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var familyStack = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var familyBtnText = new RichTextBlock { Font = AppState._font, FontSize = 11f, VerticalAlignment = VerticalAlignment.Center };
+        var familyRun = new Run("WinUI");
+        familyBtnText.Inlines.Add(new Bold(familyRun));
+        familyStack.AddChild(familyBtnText);
+        familyBtn.Content = familyStack;
+
+        familyBtn.Click += (s, e) =>
+        {
+            if (ThemeManager.CurrentThemeFamily == VisualThemeFamily.WinUI)
+            {
+                ThemeManager.CurrentThemeFamily = VisualThemeFamily.macOS;
+            }
+            else
+            {
+                ThemeManager.CurrentThemeFamily = VisualThemeFamily.WinUI;
+            }
+        };
+        headerGrid.AddChild(familyBtn);
+        Microsoft.UI.Xaml.Controls.Grid.SetColumn(familyBtn, 2);
 
         // Sun/Moon dynamic theme selector toggle button
         var themeBtn = new Button
@@ -221,16 +257,14 @@ public static unsafe class MainWindowController
             if (ThemeManager.CurrentTheme == ElementTheme.Dark)
             {
                 ThemeManager.CurrentTheme = ElementTheme.Light;
-                themeRun.Text = "Light";
             }
             else
             {
                 ThemeManager.CurrentTheme = ElementTheme.Dark;
-                themeRun.Text = "Dark";
             }
         };
         headerGrid.AddChild(themeBtn);
-        Microsoft.UI.Xaml.Controls.Grid.SetColumn(themeBtn, 2);
+        Microsoft.UI.Xaml.Controls.Grid.SetColumn(themeBtn, 3);
 
         var subtitleText = new RichTextBlock 
         { 
@@ -241,7 +275,7 @@ public static unsafe class MainWindowController
         };
         subtitleText.Inlines.Add(new Run(".NET 10 cross-platform high-performance engine showcase"));
         headerGrid.AddChild(subtitleText);
-        Microsoft.UI.Xaml.Controls.Grid.SetColumn(subtitleText, 3);
+        Microsoft.UI.Xaml.Controls.Grid.SetColumn(subtitleText, 4);
 
         headerBar.Child = headerGrid;
         AppState._rootGrid.AddChild(headerBar);
@@ -261,6 +295,7 @@ public static unsafe class MainWindowController
         var textItem = new NavigationViewItem("Text & Documents", "📄", TextDocumentsPage.Create());
         var dataItem = new NavigationViewItem("Data Virtualization", "📊", DataVirtualizationPage.Create());
         var frameworkEffectsItem = new NavigationViewItem("Framework Effects", "✨", FrameworkEffectsPage.Create());
+
         var computeItem = new NavigationViewItem("Compute FX", "⚙", ComputeFxPage.Create());
         var motionAnimationsItem = new NavigationViewItem("Motion & Animations", "🎬", MotionAnimationsPage.Create());
         var advancedItem = new NavigationViewItem("Advanced Controls", "🛠", AdvancedControlsPage.Create());
@@ -371,6 +406,8 @@ public static unsafe class MainWindowController
             {
                 AppState._screenCompositor.ClearColor = ThemeManager.GetColor("PageBackground");
             }
+            themeRun.Text = ThemeManager.CurrentTheme == ElementTheme.Dark ? "Dark" : "Light";
+            familyRun.Text = ThemeManager.CurrentThemeFamily == VisualThemeFamily.WinUI ? "WinUI" : "macOS";
             AppState._topLevelGrid?.NotifyThemeChanged();
             foreach (var popup in Microsoft.UI.Xaml.Controls.PopupService.ActivePopups)
             {

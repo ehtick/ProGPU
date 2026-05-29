@@ -46,33 +46,11 @@ public class RadioButton : ContentControl
 
     public RadioButton()
     {
-        CornerRadius = 9f; // Perfect circle for 18x18 size
-        Padding = new Thickness(8, 4, 8, 4);
-
         var defaultStyle = ThemeManager.GetDefaultStyle(GetType());
         if (defaultStyle != null)
         {
-            Style = defaultStyle;
+            SetDefaultStyle(defaultStyle);
         }
-    }
-
-    public override Brush? GetCurrentBackground()
-    {
-        if (!IsEnabled) return ThemeManager.GetBrush("RadioButtonBackgroundDisabled") ?? Background;
-        if (IsChecked)
-        {
-            if (IsPointerPressed) return ThemeManager.GetBrush("RadioButtonCheckBackgroundFillCheckedPressed");
-            if (IsPointerOver) return ThemeManager.GetBrush("RadioButtonCheckBackgroundFillCheckedPointerOver");
-            return ThemeManager.GetBrush("RadioButtonCheckBackgroundFillChecked");
-        }
-        return base.GetCurrentBackground();
-    }
-
-    public override Brush? GetCurrentBorderBrush()
-    {
-        if (!IsEnabled) return ThemeManager.GetBrush("RadioButtonBorderBrushDisabled") ?? BorderBrush;
-        if (IsChecked) return null;
-        return base.GetCurrentBorderBrush();
     }
 
     private void OnCheckedChanged()
@@ -107,7 +85,6 @@ public class RadioButton : ContentControl
 
         if (!string.IsNullOrEmpty(groupName))
         {
-            // Explicit Grouping: find all radio buttons with the same GroupName in the entire visual tree
             var root = FindRoot(this);
             if (root != null)
             {
@@ -124,7 +101,6 @@ public class RadioButton : ContentControl
         }
         else
         {
-            // Implicit Grouping: find sibling RadioButtons (same parent) with empty GroupName
             if (parent is ContainerVisual container)
             {
                 foreach (var child in container.Children)
@@ -305,90 +281,16 @@ public class RadioButton : ContentControl
 
     protected override Vector2 MeasureOverride(Vector2 availableSize)
     {
-        float borderH = BorderThickness.Horizontal;
-        float borderV = BorderThickness.Vertical;
-        float paddingH = Padding.Horizontal;
-        float paddingV = Padding.Vertical;
-
-        float boxSize = 18f;
-        float spacing = 8f;
-
-        Vector2 inset = new Vector2(borderH + paddingH + boxSize + spacing, borderV + paddingV);
-        Vector2 contentAvail = new Vector2(
-            Math.Max(0f, availableSize.X - inset.X),
-            Math.Max(0f, availableSize.Y - inset.Y)
-        );
-
-        Vector2 contentDesired = Vector2.Zero;
-        var contentVisual = ContentVisual;
-        if (contentVisual != null)
-        {
-            contentVisual.Measure(contentAvail);
-            contentDesired = contentVisual.DesiredSize;
-        }
-
-        return new Vector2(
-            contentDesired.X + borderH + boxSize + spacing,
-            Math.Max(boxSize, contentDesired.Y) + borderV
-        );
+        return base.MeasureOverride(availableSize);
     }
 
     protected override void ArrangeOverride(Rect arrangeRect)
     {
-        float leftInset = BorderThickness.Left;
-        float topInset = BorderThickness.Top;
-        float boxSize = 18f;
-        float spacing = 8f;
-
-        float boxY = arrangeRect.Y + topInset + (arrangeRect.Height - (topInset + BorderThickness.Bottom) - boxSize) / 2f;
-
-        var contentVisual = ContentVisual;
-        if (contentVisual != null)
-        {
-            float contentX = arrangeRect.X + leftInset + boxSize + spacing;
-            float contentW = arrangeRect.Width - (leftInset + BorderThickness.Right + boxSize + spacing);
-            float contentH = contentVisual.DesiredSize.Y;
-            float contentY = arrangeRect.Y + topInset + (arrangeRect.Height - (topInset + BorderThickness.Bottom) - contentH) / 2f;
-
-            contentVisual.Arrange(new Rect(contentX, contentY, contentW, contentH));
-        }
+        base.ArrangeOverride(arrangeRect);
     }
 
     public override void OnRender(DrawingContext context)
     {
-        float leftInset = BorderThickness.Left + Padding.Left;
-        float boxSize = 18f;
-        float boxY = (Size.Y - boxSize) / 2f;
-
-        Rect boxRect = new Rect(leftInset, boxY, boxSize, boxSize);
-
-        Brush? boxBg = GetCurrentBackground();
-        Brush? borderBrush = GetCurrentBorderBrush();
-        Pen? boxBorder = borderBrush != null ? new Pen(borderBrush, BorderThickness.Left > 0 ? BorderThickness.Left : 1f) : null;
-
-        // Draw outer radio circle
-        context.DrawRoundedRectangle(boxBg, boxBorder, boxRect, 9f);
-
-        // Draw inner dot if checked
-        if (IsChecked)
-        {
-            var dotBrush = IsEnabled 
-                ? (ThemeManager.GetBrush("RadioButtonCheckGlyphForegroundChecked") ?? (ThemeManager.CurrentTheme == ElementTheme.Light ? ThemeManager.GetBrush("CardBackground") : ThemeManager.GetBrush("TextPrimary")))
-                : ThemeManager.GetBrush("TextSecondary");
-
-            // Draw center dot of diameter 6px
-            Rect dotRect = new Rect(boxRect.X + 6f, boxRect.Y + 6f, 6f, 6f);
-            context.DrawRoundedRectangle(dotBrush, null, dotRect, 3f);
-        }
-
-        // Draw active blue focus ring 2px outside the circle
-        if (IsEnabled && IsFocused && InputSystem.IsKeyboardFocusActive)
-        {
-            var focusPen = ThemeManager.GetPen("SystemAccentColor", 2f);
-            Rect focusRect = new Rect(boxRect.X - 2f, boxRect.Y - 2f, boxRect.Width + 4f, boxRect.Height + 4f);
-            context.DrawRoundedRectangle(null, focusPen, focusRect, 11f);
-        }
-
         base.OnRender(context);
     }
 }

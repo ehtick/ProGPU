@@ -478,6 +478,7 @@ public class DropShadowEffect : EffectBase
     }
 }
 
+
 public interface ILayoutNode
 {
     void InvalidateMeasure();

@@ -18,6 +18,7 @@ public unsafe class ComputeAccelerator : IDisposable
     private ComputePipeline* _shadowPipeline;
     private ComputePipeline* _shadowBlurHorizPipeline;
 
+
     private bool _isDisposed;
 
     [StructLayout(LayoutKind.Explicit, Size = 64)]
@@ -49,6 +50,8 @@ public unsafe class ComputeAccelerator : IDisposable
         }
     }
 
+
+
     public ComputeAccelerator(WgpuContext context)
     {
         _context = context;
@@ -70,6 +73,8 @@ public unsafe class ComputeAccelerator : IDisposable
 
         var shShadowBlurH = _cache.GetOrCreateShader("ShadowBlurH", ComputeShaders.ShadowBlurHorizontal, "ShadowBlurHShader");
         _shadowBlurHorizPipeline = _cache.GetOrCreateComputePipeline("ShadowBlurH", shShadowBlurH);
+
+
     }
 
     private void RunBlurPass(CommandEncoder* encoder, ComputePipeline* pipeline, BindGroupLayout* layout, GpuTexture input, GpuTexture output, uint width, uint height, List<nint> bindGroupsToRelease)
@@ -303,6 +308,8 @@ public unsafe class ComputeAccelerator : IDisposable
         _context.Wgpu.BindGroupLayoutRelease(blurVLayout);
         paramsBuffer.Dispose();
     }
+
+
 
     public void Dispose()
     {

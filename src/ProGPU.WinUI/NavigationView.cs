@@ -89,10 +89,21 @@ public class NavigationView : FrameworkElement
         public override void OnRender(DrawingContext context)
         {
             var activeTheme = _navigationView.ActualTheme;
-            var paneBg = ThemeManager.GetBrush("HeaderBackground", activeTheme);
+            var activeFamily = _navigationView.ActualThemeFamily;
+            Brush paneBg;
+            if (activeFamily == VisualThemeFamily.macOS)
+            {
+                paneBg = new SolidColorBrush(activeTheme == ElementTheme.Light
+                    ? new Vector4(0.953f, 0.953f, 0.953f, 1f) // #F3F3F3
+                    : new Vector4(0.118f, 0.118f, 0.118f, 1f)); // #1E1E1E
+            }
+            else
+            {
+                paneBg = ThemeManager.GetBrush("HeaderBackground", activeTheme);
+            }
             context.DrawRectangle(paneBg, null, new Rect(0f, 0f, Size.X, Size.Y));
             
-            var sepBrush = ThemeManager.GetBrush("ControlBorder", activeTheme);
+            var sepBrush = ThemeManager.GetBrush("ControlBorder", activeTheme, activeFamily);
             context.DrawRectangle(sepBrush, null, new Rect(Size.X - 1f, 0f, 1f, Size.Y));
 
             base.OnRender(context);

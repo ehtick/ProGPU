@@ -107,6 +107,11 @@ public class DependencyProperty
         var type = ownerType;
         while (type != null)
         {
+            try
+            {
+                System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(type.TypeHandle);
+            }
+            catch {}
             var key = (type, name);
             if (Registry.TryGetValue(key, out var dp)) return dp;
             type = type.BaseType;
@@ -210,9 +215,11 @@ public class DependencyObject : ProGPU.Layout.LayoutNode
         _isThemeDirty = false;
         
         ElementTheme activeTheme = ElementTheme.Dark;
+        VisualThemeFamily activeFamily = VisualThemeFamily.WinUI;
         if (this is FrameworkElement fe)
         {
             activeTheme = fe.ActualTheme;
+            activeFamily = fe.ActualThemeFamily;
         }
         else
         {
@@ -222,6 +229,7 @@ public class DependencyObject : ProGPU.Layout.LayoutNode
                 if (p is FrameworkElement pFe)
                 {
                     activeTheme = pFe.ActualTheme;
+                    activeFamily = pFe.ActualThemeFamily;
                     break;
                 }
                 p = p.Parent as DependencyObject;
@@ -229,6 +237,7 @@ public class DependencyObject : ProGPU.Layout.LayoutNode
             if (p == null)
             {
                 activeTheme = ThemeManager.CurrentTheme;
+                activeFamily = ThemeManager.CurrentThemeFamily;
             }
         }
 
@@ -239,17 +248,17 @@ public class DependencyObject : ProGPU.Layout.LayoutNode
             
             if (i < _localThemeResources.Length && _localThemeResources[i] is ThemeResource localTr)
             {
-                _localValues[i] = ThemeManager.GetResource(localTr.ResourceKey, activeTheme);
+                _localValues[i] = ThemeManager.GetResource(localTr.ResourceKey, activeTheme, activeFamily);
                 hasThemeResource = true;
             }
             if (i < _styleThemeResources.Length && _styleThemeResources[i] is ThemeResource styleTr)
             {
-                _styleValues[i] = ThemeManager.GetResource(styleTr.ResourceKey, activeTheme);
+                _styleValues[i] = ThemeManager.GetResource(styleTr.ResourceKey, activeTheme, activeFamily);
                 hasThemeResource = true;
             }
             if (i < _defaultStyleThemeResources.Length && _defaultStyleThemeResources[i] is ThemeResource defaultStyleTr)
             {
-                _defaultStyleValues[i] = ThemeManager.GetResource(defaultStyleTr.ResourceKey, activeTheme);
+                _defaultStyleValues[i] = ThemeManager.GetResource(defaultStyleTr.ResourceKey, activeTheme, activeFamily);
                 hasThemeResource = true;
             }
             
@@ -307,14 +316,14 @@ public class DependencyObject : ProGPU.Layout.LayoutNode
         if (value is ThemeResource themeResource)
         {
             _localThemeResources[idx] = themeResource;
-            var resolved = ThemeManager.GetResource(themeResource.ResourceKey, (this is FrameworkElement fe) ? fe.ActualTheme : ThemeManager.CurrentTheme);
+            var resolved = ThemeManager.GetResource(themeResource.ResourceKey, (this is FrameworkElement fe) ? fe.ActualTheme : ThemeManager.CurrentTheme, (this is FrameworkElement feFam) ? feFam.ActualThemeFamily : ThemeManager.CurrentThemeFamily);
             _localValues[idx] = resolved;
         }
         else if (value is ProGPU.Vector.ThemeResourceBrush trBrush)
         {
             var tr = new ThemeResource(trBrush.ResourceKey);
             _localThemeResources[idx] = tr;
-            var resolved = ThemeManager.GetResource(tr.ResourceKey, (this is FrameworkElement fe) ? fe.ActualTheme : ThemeManager.CurrentTheme);
+            var resolved = ThemeManager.GetResource(tr.ResourceKey, (this is FrameworkElement fe) ? fe.ActualTheme : ThemeManager.CurrentTheme, (this is FrameworkElement feFam) ? feFam.ActualThemeFamily : ThemeManager.CurrentThemeFamily);
             _localValues[idx] = resolved;
         }
         else
@@ -347,14 +356,14 @@ public class DependencyObject : ProGPU.Layout.LayoutNode
         if (value is ThemeResource themeResource)
         {
             _styleThemeResources[idx] = themeResource;
-            var resolved = ThemeManager.GetResource(themeResource.ResourceKey, (this is FrameworkElement fe) ? fe.ActualTheme : ThemeManager.CurrentTheme);
+            var resolved = ThemeManager.GetResource(themeResource.ResourceKey, (this is FrameworkElement fe) ? fe.ActualTheme : ThemeManager.CurrentTheme, (this is FrameworkElement feFam) ? feFam.ActualThemeFamily : ThemeManager.CurrentThemeFamily);
             _styleValues[idx] = resolved;
         }
         else if (value is ProGPU.Vector.ThemeResourceBrush trBrush)
         {
             var tr = new ThemeResource(trBrush.ResourceKey);
             _styleThemeResources[idx] = tr;
-            var resolved = ThemeManager.GetResource(tr.ResourceKey, (this is FrameworkElement fe) ? fe.ActualTheme : ThemeManager.CurrentTheme);
+            var resolved = ThemeManager.GetResource(tr.ResourceKey, (this is FrameworkElement fe) ? fe.ActualTheme : ThemeManager.CurrentTheme, (this is FrameworkElement feFam) ? feFam.ActualThemeFamily : ThemeManager.CurrentThemeFamily);
             _styleValues[idx] = resolved;
         }
         else
@@ -393,14 +402,14 @@ public class DependencyObject : ProGPU.Layout.LayoutNode
         if (value is ThemeResource themeResource)
         {
             _defaultStyleThemeResources[idx] = themeResource;
-            var resolved = ThemeManager.GetResource(themeResource.ResourceKey, (this is FrameworkElement fe) ? fe.ActualTheme : ThemeManager.CurrentTheme);
+            var resolved = ThemeManager.GetResource(themeResource.ResourceKey, (this is FrameworkElement fe) ? fe.ActualTheme : ThemeManager.CurrentTheme, (this is FrameworkElement feFam) ? feFam.ActualThemeFamily : ThemeManager.CurrentThemeFamily);
             _defaultStyleValues[idx] = resolved;
         }
         else if (value is ProGPU.Vector.ThemeResourceBrush trBrush)
         {
             var tr = new ThemeResource(trBrush.ResourceKey);
             _defaultStyleThemeResources[idx] = tr;
-            var resolved = ThemeManager.GetResource(tr.ResourceKey, (this is FrameworkElement fe) ? fe.ActualTheme : ThemeManager.CurrentTheme);
+            var resolved = ThemeManager.GetResource(tr.ResourceKey, (this is FrameworkElement fe) ? fe.ActualTheme : ThemeManager.CurrentTheme, (this is FrameworkElement feFam) ? feFam.ActualThemeFamily : ThemeManager.CurrentThemeFamily);
             _defaultStyleValues[idx] = resolved;
         }
         else

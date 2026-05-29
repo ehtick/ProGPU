@@ -141,8 +141,22 @@ public class NavigationViewItem : Control
             var nav = FindParentNavigationView();
             if (nav != null)
             {
-                // In expanded view and clicking on the right expand/collapse indicator (arrow)
-                if (Items.Count > 0 && nav.IsPaneOpen && e.Position.X >= Size.X - 40f)
+                var activeFamily = nav.ActualThemeFamily;
+                bool isChevronClick = false;
+                if (Items.Count > 0 && nav.IsPaneOpen)
+                {
+                    if (activeFamily == VisualThemeFamily.macOS)
+                    {
+                        float baseIndent = 16f + (Level * 16f);
+                        isChevronClick = e.Position.X >= baseIndent - 8f && e.Position.X <= baseIndent + 20f;
+                    }
+                    else
+                    {
+                        isChevronClick = e.Position.X >= Size.X - 40f;
+                    }
+                }
+
+                if (isChevronClick)
                 {
                     IsExpanded = !IsExpanded;
                     nav.OnItemExpandedChanged(this);
@@ -297,6 +311,7 @@ public class NavigationViewItem : Control
     {
         var nav = FindParentNavigationView();
         bool isPaneOpen = nav?.IsPaneOpen ?? false;
+        var activeFamily = nav?.ActualThemeFamily ?? VisualThemeFamily.WinUI;
         
         var activeTheme = this.ActualTheme;
         var textPrimary = ThemeManager.GetBrush("TextPrimary", activeTheme);
@@ -323,24 +338,66 @@ public class NavigationViewItem : Control
         var translucentPen = _translucentPen!;
         var OrangeBrush = _orangeBrush!;
         var RedPen = _redPen!;
+        var greenBrush = _greenBrush!;
 
-        // 1. Draw modern backgrounds depending on active selection or hover
-        var bg = GetCurrentBackground();
-        if (bg != null)
+        if (activeFamily == VisualThemeFamily.macOS && IsSelected)
         {
-            context.DrawRectangle(bg, null, new Rect(0f, 0f, Size.X, Size.Y));
+            var whiteBrush = new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f));
+            var whitePen = new Pen(whiteBrush, 1f);
+
+            textPrimary = whiteBrush;
+            textSecondary = whiteBrush;
+            accentBrush = whiteBrush;
+            translucentBrush = new SolidColorBrush(new Vector4(1f, 1f, 1f, 0.25f));
+            translucentHeavyBrush = new SolidColorBrush(new Vector4(1f, 1f, 1f, 0.6f));
+            primaryPen = new Pen(new SolidColorBrush(new Vector4(1f, 1f, 1f, 0.8f)), 1f);
+            secondaryPen = new Pen(new SolidColorBrush(new Vector4(1f, 1f, 1f, 0.8f)), 1f);
+            translucentPen = new Pen(new SolidColorBrush(new Vector4(1f, 1f, 1f, 0.4f)), 1f);
+            OrangeBrush = whiteBrush;
+            RedPen = whitePen;
+            greenBrush = whiteBrush;
         }
 
-        // 2. Draw 3px left accent stripe indicator
-        if (IsSelected)
+        // 1. Draw modern backgrounds depending on active selection or hover
+        if (activeFamily == VisualThemeFamily.macOS)
         {
-            context.DrawRectangle(accentBrush, null, new Rect(3f, 6f, 3f, Size.Y - 12f));
+            if (IsSelected)
+            {
+                var macOSSelectedBg = ThemeManager.GetBrush("SystemAccentColor", activeTheme);
+                context.DrawRoundedRectangle(macOSSelectedBg, null, new Rect(6f, 2f, Size.X - 12f, Size.Y - 4f), 5f);
+            }
+            else if (IsPointerOver)
+            {
+                var macOSHoverBg = activeTheme == ElementTheme.Light
+                    ? new SolidColorBrush(new Vector4(0f, 0f, 0f, 0.05f))
+                    : new SolidColorBrush(new Vector4(1f, 1f, 1f, 0.05f));
+                context.DrawRoundedRectangle(macOSHoverBg, null, new Rect(6f, 2f, Size.X - 12f, Size.Y - 4f), 5f);
+            }
+        }
+        else
+        {
+            var bg = GetCurrentBackground();
+            if (bg != null)
+            {
+                context.DrawRectangle(bg, null, new Rect(0f, 0f, Size.X, Size.Y));
+            }
+
+            // 2. Draw 3px left accent stripe indicator
+            if (IsSelected)
+            {
+                context.DrawRectangle(accentBrush, null, new Rect(3f, 6f, 3f, Size.Y - 12f));
+            }
         }
 
         var font = nav?.GetActiveFont();
         if (font != null)
         {
-            float startX = 16f + (Level * 16f); // nesting indentation
+            float baseIndent = 16f + (Level * 16f); // nesting indentation
+            float startX = baseIndent;
+            if (activeFamily == VisualThemeFamily.macOS)
+            {
+                startX += 14f;
+            }
             float textY = (Size.Y - 14f) / 2f;
 
             // 3. Draw Icon
@@ -539,7 +596,7 @@ public class NavigationViewItem : Control
 
                     context.DrawPath(translucentBrush, primaryPen, _iconGeo1!);
                     context.DrawRoundedRectangle(accentBrush, null, new Rect(startX + 5f, startY + 4f, 2.5f, 2.5f), 1f);
-                    context.DrawRoundedRectangle(_greenBrush, null, new Rect(startX + 10f, startY + 5f, 2.5f, 2.5f), 1f);
+                    context.DrawRoundedRectangle(greenBrush, null, new Rect(startX + 10f, startY + 5f, 2.5f, 2.5f), 1f);
                     context.DrawRoundedRectangle(textPrimary, null, new Rect(startX + 9f, startY + 10f, 2.5f, 2.5f), 1f);
 
                     drewCustomIcon = true;
@@ -790,7 +847,14 @@ public class NavigationViewItem : Control
             if (isPaneOpen && Items.Count > 0)
             {
                 string arrow = IsExpanded ? "▼" : "▶";
-                context.DrawText(arrow, font, 10f, translucentHeavyBrush, new Vector2(Size.X - 24f, (Size.Y - 10f) / 2f));
+                if (activeFamily == VisualThemeFamily.macOS)
+                {
+                    context.DrawText(arrow, font, 10f, translucentHeavyBrush, new Vector2(baseIndent - 2f, (Size.Y - 10f) / 2f));
+                }
+                else
+                {
+                    context.DrawText(arrow, font, 10f, translucentHeavyBrush, new Vector2(Size.X - 24f, (Size.Y - 10f) / 2f));
+                }
             }
         }
 

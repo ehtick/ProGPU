@@ -22,6 +22,12 @@ public class Style
     {
         TargetType = targetType;
     }
+
+    public void SetSetters(IEnumerable<Setter> setters)
+    {
+        Setters.Clear();
+        Setters.AddRange(setters);
+    }
 }
 
 public class Setter

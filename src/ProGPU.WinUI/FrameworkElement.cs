@@ -57,6 +57,21 @@ public partial class FrameworkElement
         set => SetValue(RequestedThemeProperty, value);
     }
 
+    public static readonly Microsoft.UI.Xaml.DependencyProperty RequestedThemeFamilyProperty =
+        Microsoft.UI.Xaml.DependencyProperty.Register(
+            "RequestedThemeFamily",
+            typeof(VisualThemeFamily),
+            typeof(FrameworkElement),
+            new Microsoft.UI.Xaml.PropertyMetadata(VisualThemeFamily.Default, (d, e) => {
+                ((FrameworkElement)d).NotifyThemeChanged();
+            }));
+
+    public VisualThemeFamily RequestedThemeFamily
+    {
+        get => (VisualThemeFamily)(GetValue(RequestedThemeFamilyProperty) ?? VisualThemeFamily.Default);
+        set => SetValue(RequestedThemeFamilyProperty, value);
+    }
+
     public static readonly Microsoft.UI.Xaml.DependencyProperty AllowDropProperty =
         Microsoft.UI.Xaml.DependencyProperty.Register(
             "AllowDrop",
@@ -92,6 +107,31 @@ public partial class FrameworkElement
             }
 
             return ThemeManager.CurrentTheme;
+        }
+    }
+
+    public VisualThemeFamily ActualThemeFamily
+    {
+        get
+        {
+            var family = RequestedThemeFamily;
+            if (family != VisualThemeFamily.Default)
+            {
+                return family;
+            }
+
+            var p = Parent as FrameworkElement;
+            while (p != null)
+            {
+                var pFamily = p.RequestedThemeFamily;
+                if (pFamily != VisualThemeFamily.Default)
+                {
+                    return pFamily;
+                }
+                p = p.Parent as FrameworkElement;
+            }
+
+            return ThemeManager.CurrentThemeFamily;
         }
     }
 
@@ -146,11 +186,25 @@ public partial class FrameworkElement
         set { if (_isHitTestVisible != value) { _isHitTestVisible = value; OnPropertyChanged(); } }
     }
 
-    private bool _isEnabled = true;
+    public static readonly Microsoft.UI.Xaml.DependencyProperty IsEnabledProperty =
+        Microsoft.UI.Xaml.DependencyProperty.Register(
+            "IsEnabled",
+            typeof(bool),
+            typeof(FrameworkElement),
+            new Microsoft.UI.Xaml.PropertyMetadata(true, (d, e) => {
+                ((FrameworkElement)d).OnIsEnabledChanged((bool)(e.NewValue ?? true));
+            }));
+
     public bool IsEnabled
     {
-        get => _isEnabled;
-        set { if (_isEnabled != value) { _isEnabled = value; OnPropertyChanged(); } }
+        get => (bool)(GetValue(IsEnabledProperty) ?? true);
+        set => SetValue(IsEnabledProperty, value);
+    }
+
+    protected virtual void OnIsEnabledChanged(bool enabled)
+    {
+        OnPropertyChanged(nameof(IsEnabled));
+        Invalidate();
     }
 
     private object? _toolTip;
@@ -161,6 +215,8 @@ public partial class FrameworkElement
     }
 
     private Style? _style;
+    private bool _isUsingDefaultStyle = false;
+
     public Style? Style
     {
         get => _style;
@@ -169,10 +225,18 @@ public partial class FrameworkElement
             if (_style != value)
             {
                 _style = value;
+                _isUsingDefaultStyle = false;
                 ApplyStyle();
                 OnPropertyChanged();
             }
         }
+    }
+
+    public void SetDefaultStyle(Style defaultStyle)
+    {
+        _style = defaultStyle;
+        _isUsingDefaultStyle = true;
+        ApplyStyle();
     }
 
     private object? ConvertValue(Type targetType, object? value)
@@ -286,6 +350,14 @@ public partial class FrameworkElement
     protected override void OnThemeChanged()
     {
         base.OnThemeChanged();
+        if (_isUsingDefaultStyle)
+        {
+            var defaultStyle = ThemeManager.GetDefaultStyle(GetType(), ActualThemeFamily);
+            if (defaultStyle != null)
+            {
+                _style = defaultStyle;
+            }
+        }
         ApplyStyle();
     }
 

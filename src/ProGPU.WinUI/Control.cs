@@ -61,9 +61,7 @@ public class Control : FrameworkElement, ITemplatedControl
 
 
 
-    private bool _isPointerOver;
-    private bool _isPointerPressed;
-    private bool _isFocused;
+
 
     private FrameworkElement? _templateRoot;
 
@@ -139,22 +137,55 @@ public class Control : FrameworkElement, ITemplatedControl
         set => SetValue(VerticalContentAlignmentProperty, value);
     }
 
+    public static readonly DependencyProperty IsPointerOverProperty =
+        DependencyProperty.Register(
+            "IsPointerOver",
+            typeof(bool),
+            typeof(Control),
+            new PropertyMetadata(false, (d, e) => {
+                var c = (Control)d;
+                c.OnVisualStateChanged();
+                c.OnPropertyChanged("IsPointerOver");
+            }));
+
     public bool IsPointerOver
     {
-        get => _isPointerOver;
-        protected set { if (_isPointerOver != value) { _isPointerOver = value; OnVisualStateChanged(); OnPropertyChanged(); } }
+        get => (bool)(GetValue(IsPointerOverProperty) ?? false);
+        protected set => SetValue(IsPointerOverProperty, value);
     }
+
+    public static readonly DependencyProperty IsPointerPressedProperty =
+        DependencyProperty.Register(
+            "IsPointerPressed",
+            typeof(bool),
+            typeof(Control),
+            new PropertyMetadata(false, (d, e) => {
+                var c = (Control)d;
+                c.OnVisualStateChanged();
+                c.OnPropertyChanged("IsPointerPressed");
+            }));
 
     public bool IsPointerPressed
     {
-        get => _isPointerPressed;
-        protected set { if (_isPointerPressed != value) { _isPointerPressed = value; OnVisualStateChanged(); OnPropertyChanged(); } }
+        get => (bool)(GetValue(IsPointerPressedProperty) ?? false);
+        protected set => SetValue(IsPointerPressedProperty, value);
     }
+
+    public static readonly DependencyProperty IsFocusedProperty =
+        DependencyProperty.Register(
+            "IsFocused",
+            typeof(bool),
+            typeof(Control),
+            new PropertyMetadata(false, (d, e) => {
+                var c = (Control)d;
+                c.OnVisualStateChanged();
+                c.OnPropertyChanged("IsFocused");
+            }));
 
     public bool IsFocused
     {
-        get => _isFocused;
-        internal set { if (_isFocused != value) { _isFocused = value; OnVisualStateChanged(); OnPropertyChanged(); } }
+        get => (bool)(GetValue(IsFocusedProperty) ?? false);
+        internal set => SetValue(IsFocusedProperty, value);
     }
 
     private bool _isTabStop = true;

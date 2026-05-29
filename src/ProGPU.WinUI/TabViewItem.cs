@@ -88,8 +88,17 @@ public class TabViewItem : ContentControl
     {
         // Detect hover over the close button zone
         bool wasCloseHovered = _isCloseHovered;
-        _isCloseHovered = IsEnabled && (e.Position.X >= Size.X - 24f && e.Position.X <= Size.X - 8f &&
-                                        e.Position.Y >= (Size.Y - 16f) / 2f && e.Position.Y <= (Size.Y + 16f) / 2f);
+        bool isMacOS = ActualThemeFamily == VisualThemeFamily.macOS;
+        if (isMacOS)
+        {
+            _isCloseHovered = IsEnabled && (e.Position.X >= 0f && e.Position.X <= 24f &&
+                                            e.Position.Y >= 0f && e.Position.Y <= Size.Y);
+        }
+        else
+        {
+            _isCloseHovered = IsEnabled && (e.Position.X >= Size.X - 24f && e.Position.X <= Size.X - 8f &&
+                                            e.Position.Y >= (Size.Y - 16f) / 2f && e.Position.Y <= (Size.Y + 16f) / 2f);
+        }
         if (wasCloseHovered != _isCloseHovered)
         {
             Invalidate();
@@ -113,8 +122,12 @@ public class TabViewItem : ContentControl
         {
             base.OnPointerPressed(e);
 
-            // If click inside the 'x' close button hit zone (right 28 pixels)
-            if (e.Position.X >= Size.X - 28f)
+            bool isMacOS = ActualThemeFamily == VisualThemeFamily.macOS;
+            bool isCloseClick = isMacOS 
+                ? (e.Position.X >= 0f && e.Position.X <= 24f)
+                : (e.Position.X >= Size.X - 28f);
+
+            if (isCloseClick)
             {
                 CloseRequested?.Invoke(this, EventArgs.Empty);
                 e.Handled = true;
@@ -159,44 +172,85 @@ public class TabViewItem : ContentControl
 
     public override void OnRender(DrawingContext context)
     {
+        var activeFamily = ActualThemeFamily;
+        var activeTheme = ActualTheme;
+
         // 1. Draw Tab Header Background Card matching browser tabs styling
         Brush bg;
         Pen? borderPen = null;
+        bool isMacOS = activeFamily == VisualThemeFamily.macOS;
 
-        if (IsSelected)
+        if (isMacOS)
         {
-            // Selected active tab: deeper dark or distinct grey, matching open tab
-            bg = Background ?? ThemeManager.GetBrush("CardBackground");
-            // Subtle top/left/right border for tabs
-            borderPen = new Pen(BorderBrush ?? ThemeManager.GetBrush("ControlBorder"), 1f);
-        }
-        else if (IsPointerOver)
-        {
-            // Hover tab: slightly translucent white overlay
-            bg = Background ?? ThemeManager.GetBrush("ControlBackgroundHover");
+            if (IsSelected)
+            {
+                bg = Background ?? ThemeManager.GetBrush("CardBackground", activeTheme, activeFamily);
+            }
+            else
+            {
+                if (IsPointerOver)
+                {
+                    bg = activeTheme == ElementTheme.Light
+                        ? new SolidColorBrush(new Vector4(0.92f, 0.92f, 0.92f, 1f)) // #EAEAEA
+                        : new SolidColorBrush(new Vector4(0.18f, 0.18f, 0.18f, 1f)); // #2E2E2E
+                }
+                else
+                {
+                    bg = activeTheme == ElementTheme.Light
+                        ? new SolidColorBrush(new Vector4(0.898f, 0.898f, 0.898f, 1f)) // #E5E5E5
+                        : new SolidColorBrush(new Vector4(0.145f, 0.145f, 0.145f, 1f)); // #252525
+                }
+            }
         }
         else
         {
-            // Inactive idle tab: translucent background
-            bg = Background ?? ThemeManager.GetBrush("ControlBackground");
+            if (IsSelected)
+            {
+                bg = Background ?? ThemeManager.GetBrush("CardBackground", activeTheme, activeFamily);
+                borderPen = new Pen(BorderBrush ?? ThemeManager.GetBrush("ControlBorder", activeTheme, activeFamily), 1f);
+            }
+            else if (IsPointerOver)
+            {
+                bg = Background ?? ThemeManager.GetBrush("ControlBackgroundHover", activeTheme, activeFamily);
+            }
+            else
+            {
+                bg = Background ?? ThemeManager.GetBrush("ControlBackground", activeTheme, activeFamily);
+            }
         }
 
         // Draw header background (only round top corners)
         var tabRect = new Rect(0, 0, Size.X, Size.Y);
-        if (CornerRadius <= 0f)
+        if (isMacOS)
         {
-            context.DrawRectangle(bg, borderPen, tabRect);
+            context.DrawRectangle(bg, null, tabRect);
+
+            // Draw a subtle vertical separator on the right side of the tab if it's not selected
+            if (!IsSelected)
+            {
+                var sepColor = activeTheme == ElementTheme.Light
+                    ? new SolidColorBrush(new Vector4(0.8f, 0.8f, 0.8f, 1f))
+                    : new SolidColorBrush(new Vector4(0.25f, 0.25f, 0.25f, 1f));
+                context.DrawRectangle(sepColor, null, new Rect(Size.X - 1f, 0f, 1f, Size.Y));
+            }
         }
         else
         {
-            var path = CreateTabShapePath(tabRect, CornerRadius);
-            context.DrawPath(bg, borderPen, path);
+            if (CornerRadius <= 0f)
+            {
+                context.DrawRectangle(bg, borderPen, tabRect);
+            }
+            else
+            {
+                var path = CreateTabShapePath(tabRect, CornerRadius);
+                context.DrawPath(bg, borderPen, path);
+            }
         }
 
         // 2. Draw Active Segoe Blue Bottom accent indicator line
-        if (IsSelected && IsEnabled)
+        if (!isMacOS && IsSelected && IsEnabled)
         {
-            var activeAccent = ThemeManager.GetBrush("SystemAccentColor"); // Segoe Blue accent
+            var activeAccent = ThemeManager.GetBrush("SystemAccentColor", activeTheme, activeFamily);
             context.DrawRectangle(activeAccent, null, new Rect(4f, Size.Y - 2f, Size.X - 8f, 2f));
         }
 
@@ -208,12 +262,13 @@ public class TabViewItem : ContentControl
             var textBrush = IsSelected 
                 ? (Foreground ?? ThemeManager.GetBrush("TextPrimary")) 
                 : ThemeManager.GetBrush("TextSecondary");
-            context.DrawText(HeaderText, activeFont, 13f, textBrush, new Vector2(Padding.Left, textY));
+            float textX = isMacOS ? 24f : Padding.Left;
+            context.DrawText(HeaderText, activeFont, 13f, textBrush, new Vector2(textX, textY));
 
-            // 4. Draw Close (x) button on the right side
+            // 4. Draw Close (x) button on the left side in macOS mode (offset 8f) or right side in others (offset Size.X - 18f)
             // Beautiful hover styling for close button zone
             float closeSize = 12f;
-            float closeX = Size.X - 18f;
+            float closeX = isMacOS ? 8f : Size.X - 18f;
             float closeY = (Size.Y - closeSize) / 2f;
 
             Brush? closeBrush = null;

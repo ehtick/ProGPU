@@ -396,6 +396,11 @@ public class ControlRenderTests
         var hit = InputSystem.HitTest(new Vector2(175f, 175f)); // inside button: 100 (canvas margin left) + 50 (button canvas left) + 25 = 175
         
         Assert.NotNull(hit);
-        Assert.Equal(button, hit);
+        var target = hit;
+        while (target != null && target != button)
+        {
+            target = target.Parent as FrameworkElement;
+        }
+        Assert.Equal(button, target);
     }
 }

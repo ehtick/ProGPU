@@ -147,5 +147,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     textureStore(outputTex, vec2<i32>(x, y), shadowColor);
 }
 ";
+
+
 }
 

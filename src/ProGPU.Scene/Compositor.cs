@@ -235,6 +235,7 @@ public unsafe class Compositor : IDisposable
     private readonly List<GpuBrush> _activeBrushes = new();
     private readonly GpuBuffer _brushesStorageBuffer;
     private ulong _frameNumber = 0;
+    private float _totalTime = 0f;
     private readonly Dictionary<(string Text, TtfFont Font, float Size, TextAlignment Align), TextLayout> _layoutCache = new();
     private uint _pendingVectorStart = 0;
     private uint _pendingTextStart = 0;
@@ -1081,6 +1082,7 @@ public unsafe class Compositor : IDisposable
         _context.Wgpu.CommandEncoderRelease(encoder);
 
         _frameNumber++;
+        _totalTime += 1f / 60f;
         EvictUnusedBindGroups();
         SweepUnusedEffectTextures(root, externalLayers, activeToolTip);
 
@@ -3462,11 +3464,20 @@ public unsafe class Compositor : IDisposable
         if (fe.Size.X <= 0f || fe.Size.Y <= 0f) return;
 
         float blurRadius = 0f;
-        if (fe.Effect is BlurEffect blur) blurRadius = blur.BlurRadius;
-        else if (fe.Effect is DropShadowEffect shadow) blurRadius = shadow.BlurRadius;
+        float padding = 0f;
 
-        // Inflate offscreen texture size to prevent clipping of blurred/shadow edges
-        float padding = MathF.Ceiling(blurRadius * 2f);
+        if (fe.Effect is BlurEffect blur)
+        {
+            blurRadius = blur.BlurRadius;
+            padding = MathF.Ceiling(blurRadius * 2f);
+        }
+        else if (fe.Effect is DropShadowEffect shadow)
+        {
+            blurRadius = shadow.BlurRadius;
+            padding = MathF.Ceiling(blurRadius * 2f);
+        }
+
+
         uint w = (uint)(fe.Size.X + padding * 2f);
         uint h = (uint)(fe.Size.Y + padding * 2f);
 
@@ -3515,6 +3526,7 @@ public unsafe class Compositor : IDisposable
                 // We pass zero offset to the compute shader because we handle offset dynamically in DrawTextureOnMain on the CPU
                 _compute.ApplyDropShadow(textures.Source, textures.Temp, textures.Destination, Vector2.Zero, shadowEffect.Color, shadowEffect.BlurRadius);
             }
+
         }
 
         // Draw the cached texture onto the main swapchain
@@ -3543,6 +3555,7 @@ public unsafe class Compositor : IDisposable
             var controlRect = new Rect(fe.Offset - new Vector2(padding, padding), new Vector2(w, h));
             DrawTextureOnMain(textures.Source, controlRect, parentTransform);
         }
+
 
         fe.IsDirty = false;
     }

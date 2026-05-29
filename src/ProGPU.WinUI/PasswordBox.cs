@@ -188,7 +188,7 @@ public class PasswordBox : Control
         var defaultStyle = ThemeManager.GetDefaultStyle(GetType());
         if (defaultStyle != null)
         {
-            Style = defaultStyle;
+            SetDefaultStyle(defaultStyle);
         }
     }
 
@@ -639,23 +639,37 @@ public class PasswordBox : Control
 
     public override void OnRender(DrawingContext context)
     {
-        // 1. Draw dynamic background and border matching TextBox styling
-        Brush? bg = GetCurrentBackground();
-        Brush? borderBrush = GetCurrentBorderBrush();
-        Pen borderPen = new Pen(borderBrush ?? ThemeManager.GetBrush("ControlBorder"), BorderThickness.Left > 0 ? BorderThickness.Left : 1f);
+        base.OnRender(context); // Draw template background child first
 
-        // Draw ambient & penumbra soft card elevation shadows
-        if (IsEnabled)
+        // 1. Draw dynamic background and border matching TextBox styling ONLY if not templated
+        if (!HasTemplate)
         {
-            float shadowR = CornerRadius;
-            var ambientRect = new Rect(0, 2, Size.X, Size.Y);
-            context.DrawRoundedRectangle(ThemeManager.GetBrush("ButtonAmbientShadow"), null, ambientRect, shadowR);
+            Brush? bg = GetCurrentBackground();
+            Brush? borderBrush = GetCurrentBorderBrush();
+            Pen borderPen = new Pen(borderBrush ?? ThemeManager.GetBrush("ControlBorder"), BorderThickness.Left > 0 ? BorderThickness.Left : 1f);
 
-            var penumbraRect = new Rect(0, 1, Size.X, Size.Y);
-            context.DrawRoundedRectangle(ThemeManager.GetBrush("ButtonPenumbraShadow"), null, penumbraRect, shadowR);
+            // Draw ambient & penumbra soft card elevation shadows
+            if (IsEnabled && ActualThemeFamily != VisualThemeFamily.macOS)
+            {
+                float shadowR = CornerRadius;
+                var ambientRect = new Rect(0, 2, Size.X, Size.Y);
+                context.DrawRoundedRectangle(ThemeManager.GetBrush("ButtonAmbientShadow"), null, ambientRect, shadowR);
+
+                var penumbraRect = new Rect(0, 1, Size.X, Size.Y);
+                context.DrawRoundedRectangle(ThemeManager.GetBrush("ButtonPenumbraShadow"), null, penumbraRect, shadowR);
+            }
+
+            context.DrawRoundedRectangle(bg, borderPen, new Rect(Vector2.Zero, Size), CornerRadius);
+
+            if (IsFocused && IsEnabled && ActualThemeFamily == VisualThemeFamily.macOS)
+            {
+                var accentColor = ThemeManager.GetBrush("SystemAccentColor", ActualTheme, ActualThemeFamily);
+                var accentVec = (accentColor as SolidColorBrush)?.Color ?? new Vector4(0f, 0.478f, 1f, 1f);
+                var focusPen = new Pen(new SolidColorBrush(new Vector4(accentVec.X, accentVec.Y, accentVec.Z, 0.5f)), 2f);
+                Rect focusRect = new Rect(-2.5f, -2.5f, Size.X + 5f, Size.Y + 5f);
+                context.DrawRoundedRectangle(null, focusPen, focusRect, CornerRadius + 2.5f);
+            }
         }
-
-        context.DrawRoundedRectangle(bg, borderPen, new Rect(Vector2.Zero, Size), CornerRadius);
 
         // 2. Draw text
         float textY = (Size.Y - FontSize) / 2f;
