@@ -33,7 +33,8 @@ namespace ProGPU.WinUI.Charts.Renderers
                     defaultSize = (float)scs.SymbolSizeConstant.Value;
                 }
 
-                if (scs.GpuBuffer.PointsCount != count || scs.GpuBuffer.Buffer == null)
+                if (scs.GpuBuffer.PointsCount != count || scs.GpuBuffer.Buffer == null ||
+                    scs.GpuBuffer.AssociatedData != scs.Data || scs.GpuBuffer.AssociatedDataVersion != scs.Data.Version)
                 {
                     int requiredLength = count * 3;
                     float[] interleaved = scs.GpuBuffer.CachedInterleaved;
@@ -69,6 +70,8 @@ namespace ProGPU.WinUI.Charts.Renderers
                         }
                     }
                     scs.GpuBuffer.Upload(interleaved, count);
+                    scs.GpuBuffer.AssociatedData = scs.Data;
+                    scs.GpuBuffer.AssociatedDataVersion = scs.Data.Version;
                 }
 
                 // Compute GPU scale and translate parameters

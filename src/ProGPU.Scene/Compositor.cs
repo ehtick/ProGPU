@@ -182,6 +182,7 @@ public unsafe class Compositor : IDisposable
     private GpuBuffer _acisEdgesBuffer;
     private readonly List<GpuAcisRecord> _acisRecordsList = new();
     private readonly List<GpuAcisEdge> _acisEdgesList = new();
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<float[], GpuSeriesBuffer> _dynamicGpuBufferCache = new();
 
     // Batch buffers (Dynamic GPU vertex & index buffers)
     private GpuBuffer _vectorVertexBuffer;
@@ -4251,10 +4252,25 @@ public unsafe class Compositor : IDisposable
     private void CompileGpuLineSeriesCommand(RenderCommand cmd, Matrix4x4 transform)
     {
         CommitPendingDrawCalls();
+        object? staticBuffer = cmd.StaticBuffer;
+        if (staticBuffer == null && cmd.GpuPoints != null)
+        {
+            if (!_dynamicGpuBufferCache.TryGetValue(cmd.GpuPoints, out var cachedBuffer))
+            {
+                cachedBuffer = new GpuSeriesBuffer();
+                _dynamicGpuBufferCache.Add(cmd.GpuPoints, cachedBuffer);
+            }
+            if (cachedBuffer.PointsCount != cmd.GpuPointsCount || cachedBuffer.Buffer == null)
+            {
+                cachedBuffer.Upload(cmd.GpuPoints, cmd.GpuPointsCount);
+            }
+            staticBuffer = cachedBuffer;
+        }
+
         _drawCalls.Add(new CompositorDrawCall
         {
             Type = DrawCallType.ChartLine,
-            StaticBuffer = cmd.StaticBuffer,
+            StaticBuffer = staticBuffer,
             Transform = transform,
             LineThicknessOrRadius = cmd.RadiusX,
             Color = (cmd.Brush is SolidColorBrush solid) ? solid.Color : new Vector4(1f, 1f, 1f, 1f),
@@ -4268,10 +4284,25 @@ public unsafe class Compositor : IDisposable
     private void CompileGpuScatterSeriesCommand(RenderCommand cmd, Matrix4x4 transform)
     {
         CommitPendingDrawCalls();
+        object? staticBuffer = cmd.StaticBuffer;
+        if (staticBuffer == null && cmd.GpuPoints != null)
+        {
+            if (!_dynamicGpuBufferCache.TryGetValue(cmd.GpuPoints, out var cachedBuffer))
+            {
+                cachedBuffer = new GpuSeriesBuffer();
+                _dynamicGpuBufferCache.Add(cmd.GpuPoints, cachedBuffer);
+            }
+            if (cachedBuffer.PointsCount != cmd.GpuPointsCount || cachedBuffer.Buffer == null)
+            {
+                cachedBuffer.Upload(cmd.GpuPoints, cmd.GpuPointsCount);
+            }
+            staticBuffer = cachedBuffer;
+        }
+
         _drawCalls.Add(new CompositorDrawCall
         {
             Type = DrawCallType.ChartScatter,
-            StaticBuffer = cmd.StaticBuffer,
+            StaticBuffer = staticBuffer,
             Transform = transform,
             LineThicknessOrRadius = cmd.RadiusX,
             Color = (cmd.Brush is SolidColorBrush solid) ? solid.Color : new Vector4(1f, 1f, 1f, 1f),

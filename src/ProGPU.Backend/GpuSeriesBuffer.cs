@@ -14,6 +14,8 @@ namespace ProGPU.Backend
         public nint LineBindGroup { get; set; }
         public nint ScatterBindGroup { get; set; }
         public float[]? CachedInterleaved { get; set; }
+        public object? AssociatedData { get; set; }
+        public int AssociatedDataVersion { get; set; }
         
         private bool _isDisposed;
 

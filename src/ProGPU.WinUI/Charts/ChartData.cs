@@ -122,6 +122,13 @@ namespace ProGPU.WinUI.Charts
         public XYArraysData? XYArrays { get; private set; }
         public float[]? Interleaved { get; private set; }
 
+        public int Version { get; private set; }
+
+        public void IncrementVersion()
+        {
+            Version++;
+        }
+
         public CartesianSeriesData(IReadOnlyList<DataPoint?> points)
         {
             Format = CartesianDataFormat.PointsList;
@@ -176,6 +183,7 @@ namespace ProGPU.WinUI.Charts
                 }
                 Interleaved = newArray;
             }
+            IncrementVersion();
         }
 
         public int PointCount
