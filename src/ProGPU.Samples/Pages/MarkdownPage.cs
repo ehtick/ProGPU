@@ -73,11 +73,14 @@ namespace ProGPU.Samples
             fileStack.AddChild(loadBtn);
 
             // Save File Button
-            var saveBtn = new Button { WidthConstraint = 130f, HeightConstraint = 32f, CornerRadius = 4f, Margin = new Thickness(0, 0, 16, 0) };
+            var saveBtn = new Button { WidthConstraint = 130f, HeightConstraint = 32f, CornerRadius = 4f, Margin = new Thickness(0, 0, 8, 0) };
             var saveBtnText = new RichTextBlock { Font = activeFont, FontSize = 11.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
             saveBtnText.Inlines.Add(new Run("💾 Save MD File..."));
             saveBtn.Content = saveBtnText;
             fileStack.AddChild(saveBtn);
+
+
+
 
             // Preset Label
             var presetLabel = new RichTextBlock { Font = activeFont, FontSize = 12f, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) };
@@ -344,6 +347,8 @@ namespace ProGPU.Samples
             sizeSlider.ValueChanged += (s, e) => updateConfigs();
             colSlider.ValueChanged += (s, e) => updateConfigs();
             gapSlider.ValueChanged += (s, e) => updateConfigs();
+
+
 
             // Load External MD File Action
             loadBtn.Click += async (s, e) =>
