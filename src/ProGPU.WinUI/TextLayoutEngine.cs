@@ -1170,6 +1170,14 @@ namespace Microsoft.UI.Xaml.Controls
                         AccumulateInlines(inline, charList, resolvedFg, baseFontSize, false, false, false, theme, null, 0f);
                     }
                 }
+                else if (block is ListBlock listBlock)
+                {
+                    AccumulateInlines(listBlock, charList, resolvedFg, baseFontSize, false, false, false, theme, null, 0f);
+                }
+                else if (block is Table tableBlock)
+                {
+                    AccumulateInlines(tableBlock, charList, resolvedFg, baseFontSize, false, false, false, theme, null, 0f);
+                }
                 else if (block is Inline inlineBlock)
                 {
                     AccumulateInlines(inlineBlock, charList, resolvedFg, baseFontSize, false, false, false, theme, null, 0f);
