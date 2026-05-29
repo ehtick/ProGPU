@@ -86,7 +86,7 @@ public class FlowDocument : FrameworkElement
         base.OnPointerMoved(e);
         if (!IsEnabled) return;
 
-        var localPos = InputSystem.GetLocalPosition(this, e.Position);
+        var localPos = InputSystem.GetLocalPosition(this, e.ScreenPosition);
         Hyperlink? foundLink = null;
 
         foreach (var pc in _positionedChars)

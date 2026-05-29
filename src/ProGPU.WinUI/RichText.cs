@@ -17,7 +17,17 @@ namespace Microsoft.UI.Xaml.Documents {
 public abstract class Block
 {
     public float MarginBottom { get; set; } = 12f;
+
+    // Virtualization Cache
+    public float CachedHeight { get; set; } = -1f;
+    public float CachedYOffset { get; set; } = 0f;
+    public bool IsLayoutValid { get; set; } = false;
+    public float CachedWidthConstraint { get; set; } = -1f;
+    public ElementTheme CachedTheme { get; set; } = ElementTheme.Default;
+    public System.Collections.Generic.List<Microsoft.UI.Xaml.Controls.PositionedRichChar> CachedChars { get; } = new();
+    public System.Collections.Generic.List<Microsoft.UI.Xaml.Controls.TableVisualDecoration> CachedDecorations { get; } = new();
 }
+
 
 public abstract class TextElement : Block
 {
@@ -293,7 +303,7 @@ public class RichTextBlock : FrameworkElement
         base.OnPointerMoved(e);
         if (!IsEnabled) return;
 
-        var localPos = InputSystem.GetLocalPosition(this, e.Position);
+        var localPos = InputSystem.GetLocalPosition(this, e.ScreenPosition);
         Hyperlink? foundLink = null;
         var activeFont = ActiveFont;
 

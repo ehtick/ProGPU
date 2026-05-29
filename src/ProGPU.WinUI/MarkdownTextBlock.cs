@@ -28,6 +28,9 @@ namespace Microsoft.UI.Xaml.Controls
         private Hyperlink? _hoveredHyperlink = null;
         private bool _isLayoutDirty = true;
         private string _lastParsedMarkdown = string.Empty;
+        private float _lastScrollY = -1f;
+        private float _measuredHeight = 0f;
+
 
         public string Markdown
         {
@@ -43,7 +46,10 @@ namespace Microsoft.UI.Xaml.Controls
             }
         }
 
+        public List<PositionedRichChar> PositionedChars => _positionedChars;
+
         public float FontSize
+
         {
             get => _fontSize;
             set
@@ -145,7 +151,7 @@ namespace Microsoft.UI.Xaml.Controls
             base.OnPointerMoved(e);
             if (!IsEnabled) return;
 
-            var localPos = InputSystem.GetLocalPosition(this, e.Position);
+            var localPos = InputSystem.GetLocalPosition(this, e.ScreenPosition);
             Hyperlink? foundLink = null;
             var activeFont = GetActiveFont();
 
@@ -196,24 +202,7 @@ namespace Microsoft.UI.Xaml.Controls
 
             if (ColumnCount == 1)
             {
-                float measuredH = 0f;
-                float measuredW = 0f;
-                foreach (var pc in _positionedChars)
-                {
-                    float adv = 0f;
-                    if (pc.Info.EmbeddedElement != null)
-                    {
-                        adv = pc.Info.EmbeddedElement.DesiredSize.X + 4f;
-                    }
-                    else
-                    {
-                        ushort idx = activeFont.GetGlyphIndex(pc.Info.Character);
-                        adv = activeFont.GetAdvanceWidth(idx, pc.Info.FontSize);
-                    }
-                    measuredW = Math.Max(measuredW, pc.Position.X + adv);
-                    measuredH = Math.Max(measuredH, pc.Position.Y + pc.Info.FontSize);
-                }
-                return new Vector2(measuredW + Padding.Right, measuredH + Padding.Bottom);
+                return new Vector2(w, _measuredHeight);
             }
             else
             {
@@ -254,15 +243,31 @@ namespace Microsoft.UI.Xaml.Controls
 
         private void PerformEngineLayout(float width, float height)
         {
-            if (!_isLayoutDirty) return;
+            float currentScrollY = 0f;
+            var current = Parent;
+            while (current != null)
+            {
+                if (current is ScrollViewer sv)
+                {
+                    currentScrollY = sv.VerticalOffset;
+                    break;
+                }
+                current = current.Parent;
+            }
+
+            bool scrollChanged = Math.Abs(currentScrollY - _lastScrollY) > 0.1f;
+            _lastScrollY = currentScrollY;
+
+            if (!_isLayoutDirty && !scrollChanged) return;
 
             var activeFont = GetActiveFont();
+
             if (activeFont == null || _blocks.Count == 0) return;
 
             if (ColumnCount == 1)
             {
                 // Single column layout passing blocks directly to preserve paragraph margins
-                TextLayoutEngine.LayoutSingleColumn(
+                _measuredHeight = TextLayoutEngine.LayoutSingleColumn(
                     _blocks, 
                     width, 
                     Padding, 
