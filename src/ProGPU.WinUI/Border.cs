@@ -171,54 +171,26 @@ public class Border : FrameworkElement
 
             if (!isEnabled)
             {
-                Vector4 disabledBg = activeTheme == ElementTheme.Light 
-                    ? new Vector4(0.95f, 0.95f, 0.95f, 1f) 
-                    : new Vector4(0.2f, 0.2f, 0.2f, 1f);
-                bg = new SolidColorBrush(disabledBg);
-                
-                Vector4 disabledBorder = activeTheme == ElementTheme.Light
-                    ? new Vector4(0f, 0f, 0f, 0.15f)
-                    : new Vector4(1f, 1f, 1f, 0.12f);
-                pen = new Pen(new SolidColorBrush(disabledBorder), 0.5f);
+                bg = ThemeManager.GetBrush("ButtonBackgroundDisabled", activeTheme, activeFamily);
+                pen = new Pen(ThemeManager.GetBrush("ButtonBorderBrushDisabled", activeTheme, activeFamily), 0.5f);
             }
             else if (isAccent)
             {
                 Vector4 topColor, bottomColor;
-                if (activeTheme == ElementTheme.Light)
+                if (isPressed)
                 {
-                    if (isPressed)
-                    {
-                        topColor = new Vector4(0.1f, 0.45f, 0.85f, 0.95f);
-                        bottomColor = new Vector4(0.0f, 0.35f, 0.75f, 0.95f);
-                    }
-                    else if (isHovered)
-                    {
-                        topColor = new Vector4(0.3f, 0.65f, 1.0f, 0.95f);
-                        bottomColor = new Vector4(0.1f, 0.55f, 0.95f, 0.95f);
-                    }
-                    else
-                    {
-                        topColor = new Vector4(0.2f, 0.55f, 0.95f, 0.9f);
-                        bottomColor = new Vector4(0.0f, 0.45f, 0.9f, 0.9f);
-                    }
+                    topColor = ThemeManager.GetColor("AccentButtonBackgroundTopPressed", activeTheme, activeFamily);
+                    bottomColor = ThemeManager.GetColor("AccentButtonBackgroundBottomPressed", activeTheme, activeFamily);
+                }
+                else if (isHovered)
+                {
+                    topColor = ThemeManager.GetColor("AccentButtonBackgroundTopPointerOver", activeTheme, activeFamily);
+                    bottomColor = ThemeManager.GetColor("AccentButtonBackgroundBottomPointerOver", activeTheme, activeFamily);
                 }
                 else
                 {
-                    if (isPressed)
-                    {
-                        topColor = new Vector4(0.0f, 0.35f, 0.8f, 0.9f);
-                        bottomColor = new Vector4(0.0f, 0.25f, 0.7f, 0.9f);
-                    }
-                    else if (isHovered)
-                    {
-                        topColor = new Vector4(0.15f, 0.55f, 1.0f, 0.9f);
-                        bottomColor = new Vector4(0.05f, 0.45f, 0.9f, 0.9f);
-                    }
-                    else
-                    {
-                        topColor = new Vector4(0.05f, 0.45f, 0.9f, 0.85f);
-                        bottomColor = new Vector4(0.0f, 0.35f, 0.8f, 0.85f);
-                    }
+                    topColor = ThemeManager.GetColor("AccentButtonBackgroundTop", activeTheme, activeFamily);
+                    bottomColor = ThemeManager.GetColor("AccentButtonBackgroundBottom", activeTheme, activeFamily);
                 }
 
                 bg = new LinearGradientBrush(startPt, endPt, new GradientStop[] {
@@ -226,49 +198,25 @@ public class Border : FrameworkElement
                     new GradientStop(bottomColor, 1f)
                 });
                 
-                Vector4 borderCol = activeTheme == ElementTheme.Light
-                    ? new Vector4(0f, 0f, 0f, 0.15f)
-                    : new Vector4(1f, 1f, 1f, 0.12f);
-                pen = new Pen(new SolidColorBrush(borderCol), 0.5f);
+                pen = new Pen(ThemeManager.GetBrush("ControlBorder", activeTheme, activeFamily), 0.5f);
             }
             else
             {
                 Vector4 topColor, bottomColor;
-                if (activeTheme == ElementTheme.Light)
+                if (isPressed)
                 {
-                    if (isPressed)
-                    {
-                        topColor = new Vector4(0.79f, 0.79f, 0.81f, 1.0f);
-                        bottomColor = new Vector4(0.77f, 0.77f, 0.79f, 1.0f);
-                    }
-                    else if (isHovered)
-                    {
-                        topColor = new Vector4(0.83f, 0.83f, 0.85f, 1.0f);
-                        bottomColor = new Vector4(0.81f, 0.81f, 0.83f, 1.0f);
-                    }
-                    else
-                    {
-                        topColor = new Vector4(0.92f, 0.92f, 0.93f, 1.0f);
-                        bottomColor = new Vector4(0.89f, 0.89f, 0.90f, 1.0f);
-                    }
+                    topColor = ThemeManager.GetColor("ButtonBackgroundTopPressed", activeTheme, activeFamily);
+                    bottomColor = ThemeManager.GetColor("ButtonBackgroundBottomPressed", activeTheme, activeFamily);
+                }
+                else if (isHovered)
+                {
+                    topColor = ThemeManager.GetColor("ButtonBackgroundTopPointerOver", activeTheme, activeFamily);
+                    bottomColor = ThemeManager.GetColor("ButtonBackgroundBottomPointerOver", activeTheme, activeFamily);
                 }
                 else
                 {
-                    if (isPressed)
-                    {
-                        topColor = new Vector4(0.34f, 0.34f, 0.35f, 1.0f);
-                        bottomColor = new Vector4(0.32f, 0.32f, 0.33f, 1.0f);
-                    }
-                    else if (isHovered)
-                    {
-                        topColor = new Vector4(0.29f, 0.29f, 0.30f, 1.0f);
-                        bottomColor = new Vector4(0.27f, 0.27f, 0.28f, 1.0f);
-                    }
-                    else
-                    {
-                        topColor = new Vector4(0.24f, 0.24f, 0.25f, 1.0f);
-                        bottomColor = new Vector4(0.21f, 0.21f, 0.22f, 1.0f);
-                    }
+                    topColor = ThemeManager.GetColor("ButtonBackgroundTop", activeTheme, activeFamily);
+                    bottomColor = ThemeManager.GetColor("ButtonBackgroundBottom", activeTheme, activeFamily);
                 }
                 
                 bg = new LinearGradientBrush(startPt, endPt, new GradientStop[] {
@@ -276,15 +224,12 @@ public class Border : FrameworkElement
                     new GradientStop(bottomColor, 1f)
                 });
                 
-                Vector4 borderCol = activeTheme == ElementTheme.Light
-                    ? new Vector4(0f, 0f, 0f, 0.15f)
-                    : new Vector4(1f, 1f, 1f, 0.12f);
-                pen = new Pen(new SolidColorBrush(borderCol), 0.5f);
+                pen = new Pen(ThemeManager.GetBrush("ControlBorder", activeTheme, activeFamily), 0.5f);
             }
 
             if (activeTheme == ElementTheme.Light && isEnabled)
             {
-                var shadowColor = new SolidColorBrush(new Vector4(0f, 0f, 0f, 0.04f));
+                var shadowColor = ThemeManager.GetBrush("ButtonAmbientShadow", activeTheme, activeFamily);
                 context.FillRoundedRectangle(shadowColor, new Rect(0f, 1f, Size.X, Size.Y), CornerRadius);
             }
 
@@ -305,54 +250,26 @@ public class Border : FrameworkElement
 
             if (!isEnabled)
             {
-                Vector4 disabledBg = activeTheme == ElementTheme.Light 
-                    ? new Vector4(0.95f, 0.95f, 0.95f, 1f) 
-                    : new Vector4(0.2f, 0.2f, 0.2f, 1f);
-                bg = new SolidColorBrush(disabledBg);
-                
-                Vector4 disabledBorder = activeTheme == ElementTheme.Light
-                    ? new Vector4(0f, 0f, 0f, 0.15f)
-                    : new Vector4(1f, 1f, 1f, 0.12f);
-                pen = new Pen(new SolidColorBrush(disabledBorder), 0.5f);
+                bg = ThemeManager.GetBrush("ButtonBackgroundDisabled", activeTheme, activeFamily);
+                pen = new Pen(ThemeManager.GetBrush("ButtonBorderBrushDisabled", activeTheme, activeFamily), 0.5f);
             }
             else
             {
                 Vector4 topColor, bottomColor;
-                if (activeTheme == ElementTheme.Light)
+                if (isPressed)
                 {
-                    if (isPressed)
-                    {
-                        topColor = new Vector4(0.88f, 0.88f, 0.88f, 0.95f);
-                        bottomColor = new Vector4(0.84f, 0.84f, 0.84f, 0.95f);
-                    }
-                    else if (isHovered)
-                    {
-                        topColor = new Vector4(0.98f, 0.98f, 0.98f, 0.95f);
-                        bottomColor = new Vector4(0.94f, 0.94f, 0.94f, 0.95f);
-                    }
-                    else
-                    {
-                        topColor = new Vector4(1.0f, 1.0f, 1.0f, 0.9f);
-                        bottomColor = new Vector4(0.96f, 0.96f, 0.96f, 0.9f);
-                    }
+                    topColor = ThemeManager.GetColor("ComboBoxBackgroundTopPressed", activeTheme, activeFamily);
+                    bottomColor = ThemeManager.GetColor("ComboBoxBackgroundBottomPressed", activeTheme, activeFamily);
+                }
+                else if (isHovered)
+                {
+                    topColor = ThemeManager.GetColor("ComboBoxBackgroundTopPointerOver", activeTheme, activeFamily);
+                    bottomColor = ThemeManager.GetColor("ComboBoxBackgroundBottomPointerOver", activeTheme, activeFamily);
                 }
                 else
                 {
-                    if (isPressed)
-                    {
-                        topColor = new Vector4(0.18f, 0.18f, 0.18f, 0.9f);
-                        bottomColor = new Vector4(0.16f, 0.16f, 0.16f, 0.9f);
-                    }
-                    else if (isHovered)
-                    {
-                        topColor = new Vector4(0.32f, 0.32f, 0.32f, 0.9f);
-                        bottomColor = new Vector4(0.28f, 0.28f, 0.28f, 0.9f);
-                    }
-                    else
-                    {
-                        topColor = new Vector4(0.26f, 0.26f, 0.26f, 0.85f);
-                        bottomColor = new Vector4(0.22f, 0.22f, 0.22f, 0.85f);
-                    }
+                    topColor = ThemeManager.GetColor("ComboBoxBackgroundTop", activeTheme, activeFamily);
+                    bottomColor = ThemeManager.GetColor("ComboBoxBackgroundBottom", activeTheme, activeFamily);
                 }
                 
                 bg = new LinearGradientBrush(startPt, endPt, new[] {
@@ -360,15 +277,12 @@ public class Border : FrameworkElement
                     new GradientStop(bottomColor, 1f)
                 });
                 
-                Vector4 borderCol = activeTheme == ElementTheme.Light
-                    ? new Vector4(0f, 0f, 0f, 0.15f)
-                    : new Vector4(1f, 1f, 1f, 0.12f);
-                pen = new Pen(new SolidColorBrush(borderCol), 0.5f);
+                pen = new Pen(ThemeManager.GetBrush("ControlBorder", activeTheme, activeFamily), 0.5f);
             }
 
             if (activeTheme == ElementTheme.Light && isEnabled)
             {
-                var shadowColor = new SolidColorBrush(new Vector4(0f, 0f, 0f, 0.04f));
+                var shadowColor = ThemeManager.GetBrush("ButtonAmbientShadow", activeTheme, activeFamily);
                 context.FillRoundedRectangle(shadowColor, new Rect(0f, 1f, Size.X, Size.Y), CornerRadius);
             }
 

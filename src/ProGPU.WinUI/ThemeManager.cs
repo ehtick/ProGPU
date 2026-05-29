@@ -161,7 +161,33 @@ public static class ThemeManager
         { "NavigationViewItemBackgroundSelected", new Vector4(1f, 1f, 1f, 0.08f) },
         { "NavigationViewItemBackgroundPointerOver", new Vector4(1f, 1f, 1f, 0.05f) },
         { "TabViewItemCloseHover", new Vector4(1.0f, 0.2f, 0.2f, 1.0f) },
-        { "TextOnAccent", new Vector4(1.0f, 1.0f, 1.0f, 1.0f) }
+        { "TextOnAccent", new Vector4(1.0f, 1.0f, 1.0f, 1.0f) },
+        { "ButtonBackgroundTop", new Vector4(0.24f, 0.24f, 0.25f, 1.0f) },
+        { "ButtonBackgroundBottom", new Vector4(0.21f, 0.21f, 0.22f, 1.0f) },
+        { "ButtonBackgroundTopPointerOver", new Vector4(0.29f, 0.29f, 0.30f, 1.0f) },
+        { "ButtonBackgroundBottomPointerOver", new Vector4(0.27f, 0.27f, 0.28f, 1.0f) },
+        { "ButtonBackgroundTopPressed", new Vector4(0.34f, 0.34f, 0.35f, 1.0f) },
+        { "ButtonBackgroundBottomPressed", new Vector4(0.32f, 0.32f, 0.33f, 1.0f) },
+        { "AccentButtonBackgroundTop", new Vector4(0.05f, 0.45f, 0.9f, 0.85f) },
+        { "AccentButtonBackgroundBottom", new Vector4(0.0f, 0.35f, 0.8f, 0.85f) },
+        { "AccentButtonBackgroundTopPointerOver", new Vector4(0.15f, 0.55f, 1.0f, 0.9f) },
+        { "AccentButtonBackgroundBottomPointerOver", new Vector4(0.05f, 0.45f, 0.9f, 0.9f) },
+        { "AccentButtonBackgroundTopPressed", new Vector4(0.0f, 0.35f, 0.8f, 0.9f) },
+        { "AccentButtonBackgroundBottomPressed", new Vector4(0.0f, 0.25f, 0.7f, 0.9f) },
+        { "ComboBoxBackgroundTop", new Vector4(0.26f, 0.26f, 0.26f, 0.85f) },
+        { "ComboBoxBackgroundBottom", new Vector4(0.22f, 0.22f, 0.22f, 0.85f) },
+        { "ComboBoxBackgroundTopPointerOver", new Vector4(0.32f, 0.32f, 0.32f, 0.9f) },
+        { "ComboBoxBackgroundBottomPointerOver", new Vector4(0.28f, 0.28f, 0.28f, 0.9f) },
+        { "ComboBoxBackgroundTopPressed", new Vector4(0.18f, 0.18f, 0.18f, 0.9f) },
+        { "ComboBoxBackgroundBottomPressed", new Vector4(0.16f, 0.16f, 0.16f, 0.9f) },
+        { "ButtonBackgroundDisabled", new Vector4(0.2f, 0.2f, 0.2f, 1.0f) },
+        { "ButtonBorderBrushDisabled", new Vector4(1f, 1f, 1f, 0.12f) },
+        { "CheckboxCheckedBackgroundTop", new Vector4(0.24f, 0.56f, 1f, 1f) },
+        { "CheckboxCheckedBackgroundBottom", new Vector4(0.04f, 0.52f, 1f, 1f) },
+        { "CheckboxCheckedBorder", new Vector4(0f, 0.43f, 0.88f, 1f) },
+        { "CheckboxUncheckedBackgroundTop", new Vector4(0.26f, 0.26f, 0.26f, 1f) },
+        { "CheckboxUncheckedBackgroundBottom", new Vector4(0.2f, 0.2f, 0.2f, 1f) },
+        { "CheckboxUncheckedBorder", new Vector4(0.33f, 0.33f, 0.33f, 1f) }
     };
 
     private static readonly Dictionary<string, Vector4> MacOsLightPalette = new()
@@ -189,7 +215,33 @@ public static class ThemeManager
         { "NavigationViewItemBackgroundSelected", new Vector4(0f, 0f, 0f, 0.06f) },
         { "NavigationViewItemBackgroundPointerOver", new Vector4(0f, 0f, 0f, 0.04f) },
         { "TabViewItemCloseHover", new Vector4(0.95f, 0.2f, 0.2f, 1.0f) },
-        { "TextOnAccent", new Vector4(1.0f, 1.0f, 1.0f, 1.0f) }
+        { "TextOnAccent", new Vector4(1.0f, 1.0f, 1.0f, 1.0f) },
+        { "ButtonBackgroundTop", new Vector4(0.92f, 0.92f, 0.93f, 1.0f) },
+        { "ButtonBackgroundBottom", new Vector4(0.89f, 0.89f, 0.90f, 1.0f) },
+        { "ButtonBackgroundTopPointerOver", new Vector4(0.83f, 0.83f, 0.85f, 1.0f) },
+        { "ButtonBackgroundBottomPointerOver", new Vector4(0.81f, 0.81f, 0.83f, 1.0f) },
+        { "ButtonBackgroundTopPressed", new Vector4(0.79f, 0.79f, 0.81f, 1.0f) },
+        { "ButtonBackgroundBottomPressed", new Vector4(0.77f, 0.77f, 0.79f, 1.0f) },
+        { "AccentButtonBackgroundTop", new Vector4(0.2f, 0.55f, 0.95f, 0.9f) },
+        { "AccentButtonBackgroundBottom", new Vector4(0.0f, 0.45f, 0.9f, 0.9f) },
+        { "AccentButtonBackgroundTopPointerOver", new Vector4(0.3f, 0.65f, 1.0f, 0.95f) },
+        { "AccentButtonBackgroundBottomPointerOver", new Vector4(0.1f, 0.55f, 0.95f, 0.95f) },
+        { "AccentButtonBackgroundTopPressed", new Vector4(0.1f, 0.45f, 0.85f, 0.95f) },
+        { "AccentButtonBackgroundBottomPressed", new Vector4(0.0f, 0.35f, 0.75f, 0.95f) },
+        { "ComboBoxBackgroundTop", new Vector4(1.0f, 1.0f, 1.0f, 0.9f) },
+        { "ComboBoxBackgroundBottom", new Vector4(0.96f, 0.96f, 0.96f, 0.9f) },
+        { "ComboBoxBackgroundTopPointerOver", new Vector4(0.98f, 0.98f, 0.98f, 0.95f) },
+        { "ComboBoxBackgroundBottomPointerOver", new Vector4(0.94f, 0.94f, 0.94f, 0.95f) },
+        { "ComboBoxBackgroundTopPressed", new Vector4(0.88f, 0.88f, 0.88f, 0.95f) },
+        { "ComboBoxBackgroundBottomPressed", new Vector4(0.84f, 0.84f, 0.84f, 0.95f) },
+        { "ButtonBackgroundDisabled", new Vector4(0.95f, 0.95f, 0.95f, 1.0f) },
+        { "ButtonBorderBrushDisabled", new Vector4(0f, 0f, 0f, 0.15f) },
+        { "CheckboxCheckedBackgroundTop", new Vector4(0.21f, 0.55f, 1f, 1f) },
+        { "CheckboxCheckedBackgroundBottom", new Vector4(0f, 0.478f, 1f, 1f) },
+        { "CheckboxCheckedBorder", new Vector4(0f, 0.39f, 0.84f, 1f) },
+        { "CheckboxUncheckedBackgroundTop", new Vector4(1f, 1f, 1f, 1f) },
+        { "CheckboxUncheckedBackgroundBottom", new Vector4(0.96f, 0.96f, 0.98f, 1f) },
+        { "CheckboxUncheckedBorder", new Vector4(0.76f, 0.76f, 0.76f, 1f) }
     };
 
     private static readonly Dictionary<string, string> ResourceAliases = new(StringComparer.OrdinalIgnoreCase)
@@ -1040,38 +1092,31 @@ public class CheckboxChrome : FrameworkElement
 
             if (!IsEnabled)
             {
-                Vector4 disabledBg = activeTheme == ElementTheme.Light 
-                    ? new Vector4(0.95f, 0.95f, 0.95f, 1f) 
-                    : new Vector4(0.2f, 0.2f, 0.2f, 1f);
-                bg = new SolidColorBrush(disabledBg);
-                
-                Vector4 disabledBorder = activeTheme == ElementTheme.Light
-                    ? new Vector4(0.85f, 0.85f, 0.85f, 1f)
-                    : new Vector4(0.15f, 0.15f, 0.15f, 1f);
-                pen = new Pen(new SolidColorBrush(disabledBorder), 0.5f);
+                bg = ThemeManager.GetBrush("ButtonBackgroundDisabled", activeTheme, activeFamily);
+                pen = new Pen(ThemeManager.GetBrush("ButtonBorderBrushDisabled", activeTheme, activeFamily), 0.5f);
             }
             else if (IsChecked)
             {
-                Vector4 topColor = activeTheme == ElementTheme.Light ? new Vector4(0.21f, 0.55f, 1f, 1f) : new Vector4(0.24f, 0.56f, 1f, 1f);
-                Vector4 bottomColor = activeTheme == ElementTheme.Light ? new Vector4(0f, 0.478f, 1f, 1f) : new Vector4(0.04f, 0.52f, 1f, 1f);
+                var topColor = ThemeManager.GetColor("CheckboxCheckedBackgroundTop", activeTheme, activeFamily);
+                var bottomColor = ThemeManager.GetColor("CheckboxCheckedBackgroundBottom", activeTheme, activeFamily);
                 bg = new LinearGradientBrush(startPt, endPt, new[] {
                     new GradientStop(topColor, 0f),
                     new GradientStop(bottomColor, 1f)
                 });
                 
-                Vector4 borderCol = activeTheme == ElementTheme.Light ? new Vector4(0f, 0.39f, 0.84f, 1f) : new Vector4(0f, 0.43f, 0.88f, 1f);
+                var borderCol = ThemeManager.GetColor("CheckboxCheckedBorder", activeTheme, activeFamily);
                 pen = new Pen(new SolidColorBrush(borderCol), 0.5f);
             }
             else
             {
-                Vector4 topColor = activeTheme == ElementTheme.Light ? new Vector4(1f, 1f, 1f, 1f) : new Vector4(0.26f, 0.26f, 0.26f, 1f);
-                Vector4 bottomColor = activeTheme == ElementTheme.Light ? new Vector4(0.96f, 0.96f, 0.98f, 1f) : new Vector4(0.2f, 0.2f, 0.2f, 1f);
+                var topColor = ThemeManager.GetColor("CheckboxUncheckedBackgroundTop", activeTheme, activeFamily);
+                var bottomColor = ThemeManager.GetColor("CheckboxUncheckedBackgroundBottom", activeTheme, activeFamily);
                 bg = new LinearGradientBrush(startPt, endPt, new[] {
                     new GradientStop(topColor, 0f),
                     new GradientStop(bottomColor, 1f)
                 });
                 
-                Vector4 borderCol = activeTheme == ElementTheme.Light ? new Vector4(0.76f, 0.76f, 0.76f, 1f) : new Vector4(0.33f, 0.33f, 0.33f, 1f);
+                var borderCol = ThemeManager.GetColor("CheckboxUncheckedBorder", activeTheme, activeFamily);
                 pen = new Pen(new SolidColorBrush(borderCol), 0.5f);
             }
         }
@@ -1197,38 +1242,31 @@ public class RadioButtonChrome : FrameworkElement
 
             if (!IsEnabled)
             {
-                Vector4 disabledBg = activeTheme == ElementTheme.Light 
-                    ? new Vector4(0.95f, 0.95f, 0.95f, 1f) 
-                    : new Vector4(0.2f, 0.2f, 0.2f, 1f);
-                bg = new SolidColorBrush(disabledBg);
-                
-                Vector4 disabledBorder = activeTheme == ElementTheme.Light
-                    ? new Vector4(0.85f, 0.85f, 0.85f, 1f)
-                    : new Vector4(0.15f, 0.15f, 0.15f, 1f);
-                pen = new Pen(new SolidColorBrush(disabledBorder), 0.5f);
+                bg = ThemeManager.GetBrush("ButtonBackgroundDisabled", activeTheme, activeFamily);
+                pen = new Pen(ThemeManager.GetBrush("ButtonBorderBrushDisabled", activeTheme, activeFamily), 0.5f);
             }
             else if (IsChecked)
             {
-                Vector4 topColor = activeTheme == ElementTheme.Light ? new Vector4(0.21f, 0.55f, 1f, 1f) : new Vector4(0.24f, 0.56f, 1f, 1f);
-                Vector4 bottomColor = activeTheme == ElementTheme.Light ? new Vector4(0f, 0.478f, 1f, 1f) : new Vector4(0.04f, 0.52f, 1f, 1f);
+                var topColor = ThemeManager.GetColor("CheckboxCheckedBackgroundTop", activeTheme, activeFamily);
+                var bottomColor = ThemeManager.GetColor("CheckboxCheckedBackgroundBottom", activeTheme, activeFamily);
                 bg = new LinearGradientBrush(startPt, endPt, new[] {
                     new GradientStop(topColor, 0f),
                     new GradientStop(bottomColor, 1f)
                 });
                 
-                Vector4 borderCol = activeTheme == ElementTheme.Light ? new Vector4(0f, 0.39f, 0.84f, 1f) : new Vector4(0f, 0.43f, 0.88f, 1f);
+                var borderCol = ThemeManager.GetColor("CheckboxCheckedBorder", activeTheme, activeFamily);
                 pen = new Pen(new SolidColorBrush(borderCol), 0.5f);
             }
             else
             {
-                Vector4 topColor = activeTheme == ElementTheme.Light ? new Vector4(1f, 1f, 1f, 1f) : new Vector4(0.26f, 0.26f, 0.26f, 1f);
-                Vector4 bottomColor = activeTheme == ElementTheme.Light ? new Vector4(0.96f, 0.96f, 0.98f, 1f) : new Vector4(0.2f, 0.2f, 0.2f, 1f);
+                var topColor = ThemeManager.GetColor("CheckboxUncheckedBackgroundTop", activeTheme, activeFamily);
+                var bottomColor = ThemeManager.GetColor("CheckboxUncheckedBackgroundBottom", activeTheme, activeFamily);
                 bg = new LinearGradientBrush(startPt, endPt, new[] {
                     new GradientStop(topColor, 0f),
                     new GradientStop(bottomColor, 1f)
                 });
                 
-                Vector4 borderCol = activeTheme == ElementTheme.Light ? new Vector4(0.76f, 0.76f, 0.76f, 1f) : new Vector4(0.33f, 0.33f, 0.33f, 1f);
+                var borderCol = ThemeManager.GetColor("CheckboxUncheckedBorder", activeTheme, activeFamily);
                 pen = new Pen(new SolidColorBrush(borderCol), 0.5f);
             }
         }
@@ -1496,35 +1534,27 @@ public class ToggleButtonChrome : FrameworkElement
         {
             if (!IsEnabled)
             {
-                Vector4 disabledBg = activeTheme == ElementTheme.Light 
-                    ? new Vector4(0.95f, 0.95f, 0.95f, 1f) 
-                    : new Vector4(0.2f, 0.2f, 0.2f, 1f);
-                bg = new SolidColorBrush(disabledBg);
-                
-                Vector4 disabledBorder = activeTheme == ElementTheme.Light
-                    ? new Vector4(0.85f, 0.85f, 0.85f, 1f)
-                    : new Vector4(0.15f, 0.15f, 0.15f, 1f);
-                pen = new Pen(new SolidColorBrush(disabledBorder), 1f);
+                bg = ThemeManager.GetBrush("ButtonBackgroundDisabled", activeTheme, activeFamily);
+                pen = new Pen(ThemeManager.GetBrush("ButtonBorderBrushDisabled", activeTheme, activeFamily), 1f);
             }
             else if (IsChecked)
             {
-                // Vibrant macOS blue gel gradient
-                Vector4 topColor = activeTheme == ElementTheme.Light ? new Vector4(0.21f, 0.55f, 1f, 1f) : new Vector4(0.24f, 0.56f, 1f, 1f);
-                Vector4 bottomColor = activeTheme == ElementTheme.Light ? new Vector4(0f, 0.478f, 1f, 1f) : new Vector4(0.04f, 0.52f, 1f, 1f);
-                
+                // Vibrant macOS blue gel gradient using centralized accent button keys
+                Vector4 topColor, bottomColor;
                 if (IsPointerPressed)
                 {
-                    topColor *= 0.85f;
-                    topColor.W = 1f;
-                    bottomColor *= 0.85f;
-                    bottomColor.W = 1f;
+                    topColor = ThemeManager.GetColor("AccentButtonBackgroundTopPressed", activeTheme, activeFamily);
+                    bottomColor = ThemeManager.GetColor("AccentButtonBackgroundBottomPressed", activeTheme, activeFamily);
                 }
                 else if (IsPointerOver)
                 {
-                    topColor = topColor * 1.05f;
-                    topColor.W = 1f;
-                    bottomColor = bottomColor * 1.05f;
-                    bottomColor.W = 1f;
+                    topColor = ThemeManager.GetColor("AccentButtonBackgroundTopPointerOver", activeTheme, activeFamily);
+                    bottomColor = ThemeManager.GetColor("AccentButtonBackgroundBottomPointerOver", activeTheme, activeFamily);
+                }
+                else
+                {
+                    topColor = ThemeManager.GetColor("AccentButtonBackgroundTop", activeTheme, activeFamily);
+                    bottomColor = ThemeManager.GetColor("AccentButtonBackgroundBottom", activeTheme, activeFamily);
                 }
 
                 bg = new LinearGradientBrush(startPt, endPt, new[] {
@@ -1532,28 +1562,27 @@ public class ToggleButtonChrome : FrameworkElement
                     new GradientStop(bottomColor, 1f)
                 });
                 
-                Vector4 borderCol = activeTheme == ElementTheme.Light ? new Vector4(0f, 0.39f, 0.84f, 1f) : new Vector4(0f, 0.43f, 0.88f, 1f);
+                var borderCol = ThemeManager.GetColor("CheckboxCheckedBorder", activeTheme, activeFamily);
                 pen = new Pen(new SolidColorBrush(borderCol), 1f);
             }
             else
             {
-                // Standard macOS white/gray Aqua vertical gel gradient
-                Vector4 topColor = activeTheme == ElementTheme.Light ? new Vector4(1f, 1f, 1f, 1f) : new Vector4(0.26f, 0.26f, 0.26f, 1f);
-                Vector4 bottomColor = activeTheme == ElementTheme.Light ? new Vector4(0.96f, 0.96f, 0.98f, 1f) : new Vector4(0.2f, 0.2f, 0.2f, 1f);
-                
+                // Standard macOS white/gray Aqua vertical gel gradient using centralized button keys
+                Vector4 topColor, bottomColor;
                 if (IsPointerPressed)
                 {
-                    topColor *= 0.9f;
-                    topColor.W = 1f;
-                    bottomColor *= 0.9f;
-                    bottomColor.W = 1f;
+                    topColor = ThemeManager.GetColor("ButtonBackgroundTopPressed", activeTheme, activeFamily);
+                    bottomColor = ThemeManager.GetColor("ButtonBackgroundBottomPressed", activeTheme, activeFamily);
                 }
                 else if (IsPointerOver)
                 {
-                    topColor *= 0.98f;
-                    topColor.W = 1f;
-                    bottomColor *= 0.98f;
-                    bottomColor.W = 1f;
+                    topColor = ThemeManager.GetColor("ButtonBackgroundTopPointerOver", activeTheme, activeFamily);
+                    bottomColor = ThemeManager.GetColor("ButtonBackgroundBottomPointerOver", activeTheme, activeFamily);
+                }
+                else
+                {
+                    topColor = ThemeManager.GetColor("ButtonBackgroundTop", activeTheme, activeFamily);
+                    bottomColor = ThemeManager.GetColor("ButtonBackgroundBottom", activeTheme, activeFamily);
                 }
 
                 bg = new LinearGradientBrush(startPt, endPt, new[] {
@@ -1561,7 +1590,7 @@ public class ToggleButtonChrome : FrameworkElement
                     new GradientStop(bottomColor, 1f)
                 });
                 
-                Vector4 borderCol = activeTheme == ElementTheme.Light ? new Vector4(0.76f, 0.76f, 0.76f, 1f) : new Vector4(0.33f, 0.33f, 0.33f, 1f);
+                var borderCol = ThemeManager.GetColor("CheckboxUncheckedBorder", activeTheme, activeFamily);
                 pen = new Pen(new SolidColorBrush(borderCol), 1f);
             }
         }
