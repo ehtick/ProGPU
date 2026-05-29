@@ -1560,6 +1560,8 @@ public unsafe class Compositor : IDisposable
         if (picture == null) return;
         foreach (var cmd in picture.Commands)
         {
+            int vectorStart = _vectorVerticesList.Count;
+            int textStart = _textVerticesList.Count;
             var activeTransform = cmd.UseGpuTransforms ? Matrix4x4.Identity : globalTransform;
             
             bool savedUseGpuTransformsActive = _useGpuTransformsActive;
@@ -1647,6 +1649,22 @@ public unsafe class Compositor : IDisposable
                 case RenderCommandType.DrawPicture:
                     CompilePicture(parentContext, cmd.Picture, activeTransform);
                     break;
+            }
+
+            if (cmd.UseGpuTransforms)
+            {
+                for (int i = vectorStart; i < _vectorVerticesList.Count; i++)
+                {
+                    var v = _vectorVerticesList[i];
+                    v.ShapeType += 100f;
+                    _vectorVerticesList[i] = v;
+                }
+                for (int i = textStart; i < _textVerticesList.Count; i++)
+                {
+                    var v = _textVerticesList[i];
+                    v.ShapeType += 100f;
+                    _textVerticesList[i] = v;
+                }
             }
 
             _useGpuTransformsActive = savedUseGpuTransformsActive;
