@@ -520,6 +520,46 @@ public void DrawAcisSolid(Pen pen, List<Line3D> edges, Matrix4x4 modelTransform)
 
 ---
 
+### 15. WinUI-Style Cooperating Scroll Virtualization
+
+High-performance viewport virtualization is highly sensitive to coordinate math re-calculation and z-order sorting. To guarantee flawless macOS Retina-quality scrollbar overlay Z-order depth, precise boundary clipping, and locked 60 FPS scrolling speeds, ProGPU implements a **WinUI-Style Cooperating Scroll Virtualization** architecture:
+
+```mermaid
+flowchart TD
+    subgraph Parent ["ItemsControl (Templated Control)"]
+        Border["Border (Chrome Background)"] --> ScrollViewer["ScrollViewer (Viewport Clipping)"]
+    end
+
+    subgraph Child ["VirtualizingPanel (Cooperating Child)"]
+        Panel["UniformVirtualizingGridPanel / VirtualizingStackPanel"]
+    end
+
+    ScrollViewer -->|Hosts Panel inside Content| Panel
+    Panel -->|Traverses Visual Tree| ParentQuery{"Parent ScrollViewer found?"}
+    ParentQuery -- Yes --> Cooperate["Cooperating Mode: Dynamic Offset Bindings"]
+    ParentQuery -- No --> Standalone["Standalone Mode: Fallback ScrollBarOverlay child"]
+
+    Cooperate -->|MeasurePass: DesiredSize.Y = TotalVirtualHeight| ScrollViewer
+    ScrollViewer -->|Updates scrollbars and sets VerticalOffset| Cooperate
+    ScrollViewer -->|Physically translates panel by -VerticalOffset| Panel
+    Cooperate -->|UpdateViewport: Render cells at absolute position row*ItemHeight| Panel
+```
+
+#### Dual-Mode Sizing & Viewport Cooperation
+* **Cooperating Mode**: When hosted inside a parent `ScrollViewer`, `VirtualizingPanel` dynamically traverses up the visual parent chain (`ScrollViewerOwner`) to establish a direct binding link:
+  * **Unified Offsets**: Reading and writing `ScrollOffset` binds directly to `ScrollViewer.VerticalOffset`.
+  * **Adaptive Viewport**: The layout viewport bounds (`ViewportWidth` / `ViewportHeight`) scale automatically with the parent `ScrollViewer` window boundaries.
+  * **Extent Reporting**: During the measure pass (`MeasureOverride`), the panel computes the total height of all items (`TotalVirtualHeight`) and returns it as its desired size. This informs the `ScrollViewer` of the total scroll extent, sizing the capsule scrollbar perfectly.
+  * **Z-Order Supremacy**: The panel's local scrollbar overlay visual is removed, allowing the `ScrollViewer` to draw its native glassmorphic capsule scrollbar in its own `OnRender` pass. Because the scrollbar is rendered *after* all visual children (including the panel and its cell cards) are painted, the scrollbar remains perfectly on top of all item cards and intercepts clicks first.
+* **Standalone Mode**: If a `ScrollViewer` is not found, the panel falls back to Standalone Mode, drawing its own internal `ScrollBarOverlay` child visual and intercepting pointer wheel events directly, ensuring full backward compatibility.
+
+#### Absolute Coordinate Mapping (Anti-Drift)
+To eliminate floating-point coordinate drift and keep layout compilation cycles fast:
+* In cooperating mode, the `ScrollViewer` physically translates its `Content` container by `-_verticalOffset` and `-_horizontalOffset` during the arrange pass.
+* The virtualizing panel detects this physical shift and places the active visible cell visuals at their **absolute virtual coordinate coordinates** (e.g., `row * ItemHeight` for grids or `i * ItemHeight` for stack panels) relative to the panel, letting the parent graphics pipeline translate them onto the screen. This reduces layout calculations to simple, zero-copy integer multiplication.
+
+---
+
 
 ## Module & Project Architecture Breakdown
 
