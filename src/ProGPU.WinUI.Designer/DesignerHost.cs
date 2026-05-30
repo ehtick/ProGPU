@@ -24,6 +24,7 @@ public class DesignerHost : Grid
     private readonly Grid _sidebarLeft;
     private readonly Grid _workspaceCenter;
     private readonly Border _sidebarRightBorder;
+    private readonly StylePanel _stylePanel;
     private readonly PropertyGrid _propertyGrid;
     private readonly Border _bottomPanel;
     
@@ -36,6 +37,10 @@ public class DesignerHost : Grid
     private RichTextBlock? _zoomOutText;
     private RichTextBlock? _zoomInText;
     private RichTextBlock? _outlinesLabelText;
+    private RichTextBlock? _webflowLabelText;
+    private RichTextBlock? _desktopText;
+    private RichTextBlock? _tabletText;
+    private RichTextBlock? _mobileText;
     
     private class DesignState
     {
@@ -77,11 +82,33 @@ public class DesignerHost : Grid
         
         var contentGrid = new Grid();
         contentGrid.ColumnDefinitions.Add(new GridLength(260f, GridUnitType.Absolute));
+        contentGrid.ColumnDefinitions.Add(new GridLength(6f, GridUnitType.Absolute));
         contentGrid.ColumnDefinitions.Add(GridLength.Star(1f));
+        contentGrid.ColumnDefinitions.Add(new GridLength(6f, GridUnitType.Absolute));
         contentGrid.ColumnDefinitions.Add(new GridLength(280f, GridUnitType.Absolute));
         
         Grid.SetRow(contentGrid, 0);
         AddChild(contentGrid);
+
+        var leftSplitter = new GridSplitter
+        {
+            WidthConstraint = 6f,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            ResizeDirection = GridSplitterResizeDirection.Columns
+        };
+        Grid.SetColumn(leftSplitter, 1);
+        contentGrid.AddChild(leftSplitter);
+
+        var rightSplitter = new GridSplitter
+        {
+            WidthConstraint = 6f,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            ResizeDirection = GridSplitterResizeDirection.Columns
+        };
+        Grid.SetColumn(rightSplitter, 3);
+        contentGrid.AddChild(rightSplitter);
 
         // 1. Left Sidebar
         _sidebarLeftBorder = new Border
@@ -131,42 +158,241 @@ public class DesignerHost : Grid
         _workspaceCenter = new Grid();
         _workspaceCenter.RowDefinitions.Add(GridLength.Auto);
         _workspaceCenter.RowDefinitions.Add(GridLength.Star(1f));
-        Grid.SetColumn(_workspaceCenter, 1);
+        Grid.SetColumn(_workspaceCenter, 2);
         contentGrid.AddChild(_workspaceCenter);
 
-        var actionBar = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(12, 8, 12, 8) };
-        var gridLinesCheck = new CheckBox { IsChecked = true, Margin = new Thickness(0, 0, 16, 0) };
-        var gridLinesLabel = new RichTextBlock { FontSize = 11f };
-        gridLinesLabel.Inlines.Add(new Run("Show Snap Grid Lines"));
-        gridLinesCheck.Content = gridLinesLabel;
-        gridLinesCheck.CheckedChanged += (s, e) => {
-            _designerCanvas.ShowGridLines = gridLinesCheck.IsChecked;
+        // Reorganized elegant top visual designer settings bar
+        var toolbarBorder = new Border
+        {
+            Background = new ThemeResourceBrush("CardBackground"),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            BorderBrush = new ThemeResourceBrush("ControlBorder"),
+            Padding = new Thickness(16, 6, 16, 6),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch
+        };
+
+        var toolbarGrid = new Grid { HorizontalAlignment = HorizontalAlignment.Stretch };
+        toolbarGrid.ColumnDefinitions.Add(GridLength.Star(1f)); // Left section: canvas settings
+        toolbarGrid.ColumnDefinitions.Add(GridLength.Auto);      // Center section: viewport breakpoints
+        toolbarGrid.ColumnDefinitions.Add(GridLength.Star(1f)); // Right section: zoom & clear
+        toolbarBorder.Child = toolbarGrid;
+
+        // Custom Helper to dynamically style active vs inactive toggle buttons
+        Action<Button, bool> updateToggleStyle = (btn, isActive) => {
+            if (isActive)
+            {
+                btn.Background = new ThemeResourceBrush("SystemAccentColor");
+                if (btn.Content is RichTextBlock rtb)
+                {
+                    rtb.Foreground = new SolidColorBrush(Vector4.One); // white text
+                }
+                btn.BorderThickness = new Thickness(0);
+            }
+            else
+            {
+                btn.Background = new ThemeResourceBrush("ControlBackground");
+                if (btn.Content is RichTextBlock rtb)
+                {
+                    rtb.Foreground = new ThemeResourceBrush("TextPrimary");
+                }
+                btn.BorderThickness = new Thickness(1f);
+                btn.BorderBrush = new ThemeResourceBrush("ControlBorder");
+            }
+        };
+
+        // 1. Left Section: Compact modern pill toggles
+        var leftPanel = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+
+        // Grid Lines Toggle
+        var btnGridLines = new Button { Height = 28f, Margin = new Thickness(0, 0, 6, 0), CornerRadius = 4f, Padding = new Thickness(8, 0, 8, 0) };
+        var rtbGrid = new RichTextBlock { Font = DesignerFont, FontSize = 10.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        rtbGrid.Inlines.Add(new Run("🌐 Grid Lines"));
+        btnGridLines.Content = rtbGrid;
+        updateToggleStyle(btnGridLines, _designerCanvas.ShowGridLines);
+        btnGridLines.Click += (s, e) => {
+            _designerCanvas.ShowGridLines = !_designerCanvas.ShowGridLines;
+            updateToggleStyle(btnGridLines, _designerCanvas.ShowGridLines);
             _designerCanvas.Invalidate();
         };
-        actionBar.AddChild(gridLinesCheck);
+        leftPanel.AddChild(btnGridLines);
 
-        var snapCheck = new CheckBox { IsChecked = true, Margin = new Thickness(0, 0, 16, 0) };
-        var snapLabel = new RichTextBlock { FontSize = 11f };
-        snapLabel.Inlines.Add(new Run("Snap to Grid (10px)"));
-        snapCheck.Content = snapLabel;
-        snapCheck.CheckedChanged += (s, e) => {
-            _designerCanvas.GridSnappingEnabled = snapCheck.IsChecked;
+        // Grid Snapping Toggle
+        var btnSnapping = new Button { Height = 28f, Margin = new Thickness(0, 0, 6, 0), CornerRadius = 4f, Padding = new Thickness(8, 0, 8, 0) };
+        var rtbSnap = new RichTextBlock { Font = DesignerFont, FontSize = 10.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        rtbSnap.Inlines.Add(new Run("🧲 Snap"));
+        btnSnapping.Content = rtbSnap;
+        updateToggleStyle(btnSnapping, _designerCanvas.GridSnappingEnabled);
+        btnSnapping.Click += (s, e) => {
+            _designerCanvas.GridSnappingEnabled = !_designerCanvas.GridSnappingEnabled;
+            updateToggleStyle(btnSnapping, _designerCanvas.GridSnappingEnabled);
         };
-        actionBar.AddChild(snapCheck);
+        leftPanel.AddChild(btnSnapping);
 
-        var outlinesCheck = new CheckBox { IsChecked = false, Margin = new Thickness(0, 0, 16, 0) };
-        _outlinesLabelText = new RichTextBlock { FontSize = 11f };
-        _outlinesLabelText.Inlines.Add(new Run("Always Show Panel Outlines"));
-        outlinesCheck.Content = _outlinesLabelText;
-        outlinesCheck.CheckedChanged += (s, e) => {
-            _designerCanvas.AlwaysShowPanelOutlines = outlinesCheck.IsChecked;
+        // Outlines Toggle
+        var btnOutlines = new Button { Height = 28f, Margin = new Thickness(0, 0, 6, 0), CornerRadius = 4f, Padding = new Thickness(8, 0, 8, 0) };
+        _outlinesLabelText = new RichTextBlock { Font = DesignerFont, FontSize = 10.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        _outlinesLabelText.Inlines.Add(new Run("🖼️ Outlines"));
+        btnOutlines.Content = _outlinesLabelText;
+        updateToggleStyle(btnOutlines, _designerCanvas.AlwaysShowPanelOutlines);
+        btnOutlines.Click += (s, e) => {
+            _designerCanvas.AlwaysShowPanelOutlines = !_designerCanvas.AlwaysShowPanelOutlines;
+            updateToggleStyle(btnOutlines, _designerCanvas.AlwaysShowPanelOutlines);
             _designerCanvas.Invalidate();
         };
-        actionBar.AddChild(outlinesCheck);
+        leftPanel.AddChild(btnOutlines);
 
-        var clearBtn = new Button { Width = 130f, Height = 32f, Margin = new Thickness(16, 0, 0, 0) };
-        var clearBtnText = new RichTextBlock { FontSize = 11f, Foreground = new ThemeResourceBrush("TextPrimary") };
-        clearBtnText.Inlines.Add(new Run("Clear Workspace"));
+        // Responsive Mode Toggle
+        var btnResponsive = new Button { Height = 28f, Margin = new Thickness(0, 0, 6, 0), CornerRadius = 4f, Padding = new Thickness(8, 0, 8, 0) };
+        _webflowLabelText = new RichTextBlock { Font = DesignerFont, FontSize = 10.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        _webflowLabelText.Inlines.Add(new Run("⚡ Responsive"));
+        btnResponsive.Content = _webflowLabelText;
+        updateToggleStyle(btnResponsive, _designerCanvas.IsResponsiveMode);
+        btnResponsive.Click += (s, e) => {
+            _designerCanvas.IsResponsiveMode = !_designerCanvas.IsResponsiveMode;
+            updateToggleStyle(btnResponsive, _designerCanvas.IsResponsiveMode);
+            _designerCanvas.SelectElement(null);
+            _designerCanvas.Invalidate();
+            OnCanvasModified();
+            UpdateOutline();
+        };
+        leftPanel.AddChild(btnResponsive);
+
+        Grid.SetColumn(leftPanel, 0);
+        toolbarGrid.AddChild(leftPanel);
+
+        // 2. Center Section: Segmented Breakpoints Control Capsule
+        var centerPanel = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center };
+        
+        var desktopBtn = new Button { Width = 80f, Height = 28f, CornerRadius = 4f, Margin = new Thickness(0), Padding = new Thickness(0) };
+        _desktopText = new RichTextBlock { Font = DesignerFont, FontSize = 10.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        _desktopText.Inlines.Add(new Run("🖥️ Desktop"));
+        desktopBtn.Content = _desktopText;
+
+        var tabletBtn = new Button { Width = 75f, Height = 28f, CornerRadius = 0f, Margin = new Thickness(0), Padding = new Thickness(0) };
+        _tabletText = new RichTextBlock { Font = DesignerFont, FontSize = 10.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        _tabletText.Inlines.Add(new Run("📟 Tablet"));
+        tabletBtn.Content = _tabletText;
+
+        var mobileBtn = new Button { Width = 75f, Height = 28f, CornerRadius = 4f, Margin = new Thickness(0), Padding = new Thickness(0) };
+        _mobileText = new RichTextBlock { Font = DesignerFont, FontSize = 10.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        _mobileText.Inlines.Add(new Run("📱 Mobile"));
+        mobileBtn.Content = _mobileText;
+
+        Action updateBreakpointSegmentStyle = () => {
+            float? vw = _designerCanvas.ViewportWidth;
+            if (vw == null)
+            {
+                desktopBtn.Background = new ThemeResourceBrush("SystemAccentColor");
+                _desktopText.Foreground = new SolidColorBrush(Vector4.One);
+                desktopBtn.BorderThickness = new Thickness(0);
+
+                tabletBtn.Background = new ThemeResourceBrush("ControlBackground");
+                _tabletText.Foreground = new ThemeResourceBrush("TextPrimary");
+                tabletBtn.BorderThickness = new Thickness(1, 1, 1, 1);
+                tabletBtn.BorderBrush = new ThemeResourceBrush("ControlBorder");
+
+                mobileBtn.Background = new ThemeResourceBrush("ControlBackground");
+                _mobileText.Foreground = new ThemeResourceBrush("TextPrimary");
+                mobileBtn.BorderThickness = new Thickness(0, 1, 1, 1);
+                mobileBtn.BorderBrush = new ThemeResourceBrush("ControlBorder");
+            }
+            else if (vw == 768f)
+            {
+                desktopBtn.Background = new ThemeResourceBrush("ControlBackground");
+                _desktopText.Foreground = new ThemeResourceBrush("TextPrimary");
+                desktopBtn.BorderThickness = new Thickness(1, 1, 0, 1);
+                desktopBtn.BorderBrush = new ThemeResourceBrush("ControlBorder");
+
+                tabletBtn.Background = new ThemeResourceBrush("SystemAccentColor");
+                _tabletText.Foreground = new SolidColorBrush(Vector4.One);
+                tabletBtn.BorderThickness = new Thickness(0);
+
+                mobileBtn.Background = new ThemeResourceBrush("ControlBackground");
+                _mobileText.Foreground = new ThemeResourceBrush("TextPrimary");
+                mobileBtn.BorderThickness = new Thickness(0, 1, 1, 1);
+                mobileBtn.BorderBrush = new ThemeResourceBrush("ControlBorder");
+            }
+            else // 375f
+            {
+                desktopBtn.Background = new ThemeResourceBrush("ControlBackground");
+                _desktopText.Foreground = new ThemeResourceBrush("TextPrimary");
+                desktopBtn.BorderThickness = new Thickness(1, 1, 0, 1);
+                desktopBtn.BorderBrush = new ThemeResourceBrush("ControlBorder");
+
+                tabletBtn.Background = new ThemeResourceBrush("ControlBackground");
+                _tabletText.Foreground = new ThemeResourceBrush("TextPrimary");
+                tabletBtn.BorderThickness = new Thickness(1, 1, 1, 1);
+                tabletBtn.BorderBrush = new ThemeResourceBrush("ControlBorder");
+
+                mobileBtn.Background = new ThemeResourceBrush("SystemAccentColor");
+                _mobileText.Foreground = new SolidColorBrush(Vector4.One);
+                mobileBtn.BorderThickness = new Thickness(0);
+            }
+        };
+
+        desktopBtn.Click += (s, e) => {
+            _designerCanvas.ViewportWidth = null;
+            updateBreakpointSegmentStyle();
+            _designerCanvas.InvalidateArrange();
+            _designerCanvas.Invalidate();
+            _designerCanvas.UpdateSelectionAdorner();
+        };
+
+        tabletBtn.Click += (s, e) => {
+            _designerCanvas.ViewportWidth = 768f;
+            updateBreakpointSegmentStyle();
+            _designerCanvas.InvalidateArrange();
+            _designerCanvas.Invalidate();
+            _designerCanvas.UpdateSelectionAdorner();
+        };
+
+        mobileBtn.Click += (s, e) => {
+            _designerCanvas.ViewportWidth = 375f;
+            updateBreakpointSegmentStyle();
+            _designerCanvas.InvalidateArrange();
+            _designerCanvas.Invalidate();
+            _designerCanvas.UpdateSelectionAdorner();
+        };
+
+        updateBreakpointSegmentStyle(); // Initial breakpoint state
+
+        centerPanel.AddChild(desktopBtn);
+        centerPanel.AddChild(tabletBtn);
+        centerPanel.AddChild(mobileBtn);
+
+        Grid.SetColumn(centerPanel, 1);
+        toolbarGrid.AddChild(centerPanel);
+
+        // 3. Right Section: History, Workspace Management, Zoom Controls
+        var rightPanel = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Right };
+
+        // Undo & Redo Capsule Group
+        var historyPanel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 12, 0) };
+        
+        var undoBtn = new Button { Width = 65f, Height = 28f, CornerRadius = 4f, Margin = new Thickness(0), Background = new ThemeResourceBrush("ControlBackground"), BorderThickness = new Thickness(1), BorderBrush = new ThemeResourceBrush("ControlBorder"), Padding = new Thickness(0) };
+        var undoText = new RichTextBlock { Font = DesignerFont, FontSize = 10.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        undoText.Inlines.Add(new Run("↩️ Undo"));
+        undoBtn.Content = undoText;
+        undoBtn.Click += (s, e) => {
+            TriggerUndo();
+        };
+        historyPanel.AddChild(undoBtn);
+
+        var redoBtn = new Button { Width = 65f, Height = 28f, CornerRadius = 4f, Margin = new Thickness(0), Background = new ThemeResourceBrush("ControlBackground"), BorderThickness = new Thickness(0, 1, 1, 1), BorderBrush = new ThemeResourceBrush("ControlBorder"), Padding = new Thickness(0) };
+        var redoText = new RichTextBlock { Font = DesignerFont, FontSize = 10.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        redoText.Inlines.Add(new Run("↪️ Redo"));
+        redoBtn.Content = redoText;
+        redoBtn.Click += (s, e) => {
+            TriggerRedo();
+        };
+        historyPanel.AddChild(redoBtn);
+        rightPanel.AddChild(historyPanel);
+
+        // Clear Workspace button
+        var clearBtn = new Button { Height = 28f, Margin = new Thickness(0, 0, 12, 0), CornerRadius = 4f, Background = new ThemeResourceBrush("ControlBackground"), BorderThickness = new Thickness(1), BorderBrush = new ThemeResourceBrush("ControlBorder"), Padding = new Thickness(10, 0, 10, 0) };
+        var clearBtnText = new RichTextBlock { Font = DesignerFont, FontSize = 10.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Foreground = new ThemeResourceBrush("TextPrimary") };
+        clearBtnText.Inlines.Add(new Run("🗑️ Clear"));
         clearBtn.Content = clearBtnText;
         clearBtn.Click += (s, e) => {
             SaveUndoState();
@@ -176,19 +402,23 @@ public class DesignerHost : Grid
             OnCanvasModified();
             UpdateOutline();
         };
-        actionBar.AddChild(clearBtn);
+        rightPanel.AddChild(clearBtn);
 
-        // Zoom Controls
-        var zoomOutBtn = new Button { Width = 32f, Height = 32f, Margin = new Thickness(24, 0, 0, 0) };
-        _zoomOutText = new RichTextBlock { FontSize = 12f, Foreground = new ThemeResourceBrush("TextPrimary"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        // Zoom capsule
+        var zoomPanel = new StackPanel { Orientation = Orientation.Horizontal };
+        
+        var zoomOutBtn = new Button { Width = 28f, Height = 28f, CornerRadius = 4f, Margin = new Thickness(0), Background = new ThemeResourceBrush("ControlBackground"), BorderThickness = new Thickness(1), BorderBrush = new ThemeResourceBrush("ControlBorder") };
+        _zoomOutText = new RichTextBlock { Font = DesignerFont, FontSize = 12f, Foreground = new ThemeResourceBrush("TextPrimary"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
         _zoomOutText.Inlines.Add(new Run("-"));
         zoomOutBtn.Content = _zoomOutText;
 
-        _zoomValText = new RichTextBlock { FontSize = 11f, Margin = new Thickness(8, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center };
+        var zoomValBorder = new Border { Height = 28f, Background = new ThemeResourceBrush("ControlBackground"), BorderThickness = new Thickness(0, 1, 0, 1), BorderBrush = new ThemeResourceBrush("ControlBorder"), Padding = new Thickness(8, 0, 8, 0), VerticalAlignment = VerticalAlignment.Stretch };
+        _zoomValText = new RichTextBlock { Font = DesignerFont, FontSize = 10.5f, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center };
         _zoomValText.Inlines.Add(new Run("100%"));
+        zoomValBorder.Child = _zoomValText;
 
-        var zoomInBtn = new Button { Width = 32f, Height = 32f, Margin = new Thickness(0, 0, 0, 0) };
-        _zoomInText = new RichTextBlock { FontSize = 12f, Foreground = new ThemeResourceBrush("TextPrimary"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        var zoomInBtn = new Button { Width = 28f, Height = 28f, CornerRadius = 4f, Margin = new Thickness(0), Background = new ThemeResourceBrush("ControlBackground"), BorderThickness = new Thickness(1, 1, 1, 1), BorderBrush = new ThemeResourceBrush("ControlBorder") };
+        _zoomInText = new RichTextBlock { Font = DesignerFont, FontSize = 12f, Foreground = new ThemeResourceBrush("TextPrimary"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
         _zoomInText.Inlines.Add(new Run("+"));
         zoomInBtn.Content = _zoomInText;
 
@@ -210,14 +440,19 @@ public class DesignerHost : Grid
             UpdateZoomLabel();
         };
 
-        actionBar.AddChild(zoomOutBtn);
-        actionBar.AddChild(_zoomValText);
-        actionBar.AddChild(zoomInBtn);
+        zoomPanel.AddChild(zoomOutBtn);
+        zoomPanel.AddChild(zoomValBorder);
+        zoomPanel.AddChild(zoomInBtn);
+        rightPanel.AddChild(zoomPanel);
 
-        Grid.SetRow(actionBar, 0);
-        _workspaceCenter.AddChild(actionBar);
+        Grid.SetColumn(rightPanel, 2);
+        toolbarGrid.AddChild(rightPanel);
+
+        _workspaceCenter.AddChild(toolbarBorder);
+        Grid.SetRow(toolbarBorder, 0);
 
         _designerCanvas.SelectionChanged += () => {
+            _stylePanel.SelectedElement = _designerCanvas.SelectedElement;
             _propertyGrid.SelectedElement = _designerCanvas.SelectedElement;
             UpdateOutline();
         };
@@ -230,10 +465,18 @@ public class DesignerHost : Grid
             VerticalAlignment = VerticalAlignment.Stretch
         };
 
-        Grid.SetRow(canvasScrollViewer, 1);
         _workspaceCenter.AddChild(canvasScrollViewer);
+        Grid.SetRow(canvasScrollViewer, 1);
 
-        // 3. Right Sidebar - PropertyGrid
+        // 3. Right Sidebar - StylePanel & PropertyGrid in Pivot
+        _stylePanel = new StylePanel(DesignerFont);
+        _stylePanel.PropertyChanged += () => {
+            _designerCanvas.UpdateSelectionAdorner();
+            _designerCanvas.Invalidate();
+            OnCanvasModified();
+            UpdateOutline();
+        };
+
         _propertyGrid = new PropertyGrid(DesignerFont);
         _propertyGrid.PropertyChanged += () => {
             _designerCanvas.UpdateSelectionAdorner();
@@ -242,14 +485,43 @@ public class DesignerHost : Grid
             UpdateOutline();
         };
 
+        var sidebarPivot = new Pivot
+        {
+            Font = DesignerFont,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            Padding = new Thickness(0)
+        };
+
+        var tabStyle = new PivotItem("Style", _stylePanel);
+        var tabSettings = new PivotItem("Property Grid", _propertyGrid);
+
+        var interactionsStack = new StackPanel { Orientation = Orientation.Vertical, Padding = new Thickness(16) };
+        var interactionsTitle = new RichTextBlock { Font = DesignerFont, FontSize = 12f, Margin = new Thickness(0, 0, 0, 8) };
+        interactionsTitle.Inlines.Add(new Bold(new Run("Element Interactions")));
+        interactionsTitle.Foreground = new ThemeResourceBrush("TextPrimary");
+
+        var interactionsDesc = new RichTextBlock { Font = DesignerFont, FontSize = 10f };
+        interactionsDesc.Foreground = new ThemeResourceBrush("TextSecondary");
+        interactionsDesc.Inlines.Add(new Run("Add dynamic triggers, hover transitions, and click behaviors to make your elements feel responsive and alive."));
+
+        interactionsStack.AddChild(interactionsTitle);
+        interactionsStack.AddChild(interactionsDesc);
+
+        var tabInteractions = new PivotItem("Interactions", interactionsStack);
+
+        sidebarPivot.Items.Add(tabStyle);
+        sidebarPivot.Items.Add(tabSettings);
+        sidebarPivot.Items.Add(tabInteractions);
+
         _sidebarRightBorder = new Border
         {
             Background = new ThemeResourceBrush("CardBackground"),
             BorderThickness = new Thickness(1, 0, 0, 0),
             BorderBrush = new ThemeResourceBrush("ControlBorder"),
-            Child = _propertyGrid
+            Child = sidebarPivot
         };
-        Grid.SetColumn(_sidebarRightBorder, 2);
+        Grid.SetColumn(_sidebarRightBorder, 4);
         contentGrid.AddChild(_sidebarRightBorder);
 
         // 4. Bottom Collapsible Panel - C# Script Preview
@@ -313,11 +585,12 @@ public class DesignerHost : Grid
 
         TtfFont primaryFont = DesignerFont ?? Microsoft.UI.Xaml.Controls.PopupService.DefaultFont;
         TtfFont courierFont = DesignerFontCourier ?? DesignerFont ?? Microsoft.UI.Xaml.Controls.PopupService.DefaultFont;
-        
-        gridLinesLabel.Font = primaryFont;
-        snapLabel.Font = primaryFont;
+
         if (_outlinesLabelText != null) _outlinesLabelText.Font = primaryFont;
-        clearBtnText.Font = primaryFont;
+        if (_webflowLabelText != null) _webflowLabelText.Font = primaryFont;
+        if (_desktopText != null) _desktopText.Font = primaryFont;
+        if (_tabletText != null) _tabletText.Font = primaryFont;
+        if (_mobileText != null) _mobileText.Font = primaryFont;
         if (_zoomOutText != null) _zoomOutText.Font = primaryFont;
         if (_zoomValText != null) _zoomValText.Font = primaryFont;
         if (_zoomInText != null) _zoomInText.Font = primaryFont;
@@ -346,6 +619,10 @@ public class DesignerHost : Grid
         if (_zoomValText != null) _zoomValText.Font = primaryFont;
         if (_zoomInText != null) _zoomInText.Font = primaryFont;
         if (_outlinesLabelText != null) _outlinesLabelText.Font = primaryFont;
+        if (_webflowLabelText != null) _webflowLabelText.Font = primaryFont;
+        if (_desktopText != null) _desktopText.Font = primaryFont;
+        if (_tabletText != null) _tabletText.Font = primaryFont;
+        if (_mobileText != null) _mobileText.Font = primaryFont;
         _csharpCodeBlock.Font = courierFont;
         _visualTreeOutline.Font = primaryFont;
         
@@ -634,14 +911,31 @@ public class DesignerHost : Grid
         SaveUndoState();
 
         float factor = InputSystem.Current.IsShiftPressed ? 10f : 1f;
-        float currentLeft = Canvas.GetLeft(sel);
-        float currentTop = Canvas.GetTop(sel);
 
-        float newLeft = currentLeft + dx * factor;
-        float newTop = currentTop + dy * factor;
+        if (_designerCanvas.IsResponsiveMode)
+        {
+            var currentMargin = sel.Margin;
+            float newLeft = currentMargin.Left + dx * factor;
+            float newTop = currentMargin.Top + dy * factor;
 
-        Canvas.SetLeft(sel, newLeft);
-        Canvas.SetTop(sel, newTop);
+            sel.Margin = new Thickness(
+                MathF.Max(0f, newLeft),
+                MathF.Max(0f, newTop),
+                MathF.Max(0f, currentMargin.Right),
+                MathF.Max(0f, currentMargin.Bottom)
+            );
+        }
+        else
+        {
+            float currentLeft = Canvas.GetLeft(sel);
+            float currentTop = Canvas.GetTop(sel);
+
+            float newLeft = currentLeft + dx * factor;
+            float newTop = currentTop + dy * factor;
+
+            Canvas.SetLeft(sel, newLeft);
+            Canvas.SetTop(sel, newTop);
+        }
 
         _designerCanvas.UpdateSelectionAdorner();
         _designerCanvas.Invalidate();
@@ -785,10 +1079,13 @@ public class DesignerHost : Grid
             clone.Opacity = original.Opacity;
             clone.IsHitTestVisible = original.IsHitTestVisible;
 
-            float left = Canvas.GetLeft(original);
-            float top = Canvas.GetTop(original);
-            Canvas.SetLeft(clone, left + 20f);
-            Canvas.SetTop(clone, top + 20f);
+            if (!_designerCanvas.IsResponsiveMode)
+            {
+                float left = Canvas.GetLeft(original);
+                float top = Canvas.GetTop(original);
+                Canvas.SetLeft(clone, left + 20f);
+                Canvas.SetTop(clone, top + 20f);
+            }
 
             if (original is Button origButton && clone is Button cloneButton)
             {

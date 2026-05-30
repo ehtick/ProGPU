@@ -12,6 +12,7 @@ using ProGPU.Scene;
 using ProGPU.Vector;
 using ProGPU.Text;
 using ProGPU.WinUI;
+using ProGPU.Layout;
 
 namespace ProGPU.WinUI.Designer;
 
@@ -65,6 +66,7 @@ public class DesignerCanvas : Panel
     public bool IsResizingElement { get; set; }
     public bool AlwaysShowPanelOutlines { get; set; } = false;
     public bool IsLogicalMode { get; set; } = true;
+    public bool IsResponsiveMode { get; set; } = false;
 
     public event Action? SelectionChanged;
     public event Action? CanvasModified;
@@ -98,7 +100,7 @@ public class DesignerCanvas : Panel
 
     public DesignerCanvas()
     {
-        DesignSurface = new Canvas();
+        DesignSurface = new DesignerSurfacePanel(this);
         AdornerSurface = new Canvas();
 
         base.AddChild(DesignSurface);
@@ -194,22 +196,31 @@ public class DesignerCanvas : Panel
         _selectionAdorner?.UpdatePositionAndSize();
     }
 
+    public float? ViewportWidth { get; set; } = null;
+
     protected override Vector2 MeasureOverride(Vector2 availableSize)
     {
         float w = !float.IsFinite(availableSize.X) ? 2000f : availableSize.X;
         float h = !float.IsFinite(availableSize.Y) ? 2000f : availableSize.Y;
         
-        DesignSurface.Measure(new Vector2(w, h));
-        AdornerSurface.Measure(new Vector2(w, h));
+        float surfaceW = ViewportWidth ?? w;
+        
+        DesignSurface.Measure(new Vector2(surfaceW, h));
+        AdornerSurface.Measure(new Vector2(surfaceW, h));
         
         return new Vector2(w, h);
     }
 
     protected override void ArrangeOverride(Rect arrangeRect)
     {
-        DesignSurface.Arrange(arrangeRect);
+        float surfaceW = ViewportWidth ?? arrangeRect.Width;
+        float leftOffset = ViewportWidth.HasValue ? (arrangeRect.Width - ViewportWidth.Value) / 2f : 0f;
+        
+        Rect surfaceRect = new Rect(arrangeRect.X + leftOffset, arrangeRect.Y, surfaceW, arrangeRect.Height);
+        
+        DesignSurface.Arrange(surfaceRect);
         _selectionAdorner?.UpdatePositionAndSize();
-        AdornerSurface.Arrange(arrangeRect);
+        AdornerSurface.Arrange(surfaceRect);
     }
 
     public override void OnPointerPressed(PointerRoutedEventArgs e)
@@ -402,11 +413,18 @@ public class DesignerCanvas : Panel
             else
             {
                 // Standard canvas dragging (dragging in DesignSurface root)
-                Vector2 candidatePosInRoot = _dragStartElementPosInRoot + delta;
-                Vector2 snappedInRoot = SnapPosition(SelectedElement, candidatePosInRoot);
-                
-                Canvas.SetLeft(SelectedElement, snappedInRoot.X);
-                Canvas.SetTop(SelectedElement, snappedInRoot.Y);
+                if (IsResponsiveMode)
+                {
+                    ReorderRootChildren(SelectedElement, logicalPos);
+                }
+                else
+                {
+                    Vector2 candidatePosInRoot = _dragStartElementPosInRoot + delta;
+                    Vector2 snappedInRoot = SnapPosition(SelectedElement, candidatePosInRoot);
+                    
+                    Canvas.SetLeft(SelectedElement, snappedInRoot.X);
+                    Canvas.SetTop(SelectedElement, snappedInRoot.Y);
+                }
             }
 
             _selectionAdorner?.UpdatePositionAndSize();
@@ -1092,13 +1110,49 @@ public class DesignerCanvas : Panel
                             dropTarget = hitContainer;
                         }
 
+                        if (IsResponsiveMode)
+                        {
+                            // Reject Canvas containers in Webflow Mode
+                            if (newInstance is Canvas)
+                            {
+                                Console.WriteLine("[DesignerCanvas] Canvas container is not allowed in responsive Webflow mode.");
+                                return;
+                            }
+
+                            // If dropping on root, it must be a responsive container, not a leaf control
+                            if (dropTarget == DesignSurface)
+                            {
+                                if (!IsResponsiveContainer(newInstance))
+                                {
+                                    Console.WriteLine($"[DesignerCanvas] Cannot drop leaf control '{newInstance.GetType().Name}' directly on canvas root in Webflow mode. Place a responsive panel first.");
+                                    return;
+                                }
+                            }
+
+                            // Auto-stretch responsive containers and give default placeholder height
+                            if (IsResponsiveContainer(newInstance))
+                            {
+                                newInstance.HorizontalAlignment = ProGPU.Layout.HorizontalAlignment.Stretch;
+                                newInstance.Width = float.NaN;
+                                newInstance.Height = 100f; // placeholder height so empty panels are visible
+                            }
+                        }
+
                         if (dropTarget is Canvas canvasTarget)
                         {
-                            // Snap to grid relative to the canvas target
-                            Vector2 snappedPos = SnapPositionToGrid(args.Position - canvasTarget.Offset, GridSize);
-                            Canvas.SetLeft(newInstance, snappedPos.X);
-                            Canvas.SetTop(newInstance, snappedPos.Y);
-                            canvasTarget.Children.Add(newInstance);
+                            if (IsResponsiveMode && canvasTarget == DesignSurface)
+                            {
+                                // In responsive mode, append directly without coordinate attachment
+                                canvasTarget.Children.Add(newInstance);
+                            }
+                            else
+                            {
+                                // Snap to grid relative to the canvas target
+                                Vector2 snappedPos = SnapPositionToGrid(args.Position - canvasTarget.Offset, GridSize);
+                                Canvas.SetLeft(newInstance, snappedPos.X);
+                                Canvas.SetTop(newInstance, snappedPos.Y);
+                                canvasTarget.Children.Add(newInstance);
+                            }
                         }
                         else
                         {
@@ -1292,6 +1346,26 @@ public class DesignerCanvas : Panel
                 }
             }
         }
+
+        // 4. Responsive Device Viewport Outline Boundaries
+        if (ViewportWidth.HasValue)
+        {
+            var deviceBrush = ActualTheme == ElementTheme.Dark
+                ? new SolidColorBrush(new Vector4(1f, 1f, 1f, 0.15f))
+                : new SolidColorBrush(new Vector4(0f, 0f, 0f, 0.12f));
+            var devicePen = new Pen(deviceBrush, 2f / ZoomScale);
+            
+            float surfaceW = ViewportWidth.Value;
+            float leftOffset = (Size.X - surfaceW) / 2f;
+            
+            Vector2 p00 = new Vector2(leftOffset, 0f) * ZoomScale + PanOffset;
+            Vector2 p10 = new Vector2(leftOffset + surfaceW, 0f) * ZoomScale + PanOffset;
+            Vector2 p11 = new Vector2(leftOffset + surfaceW, Size.Y) * ZoomScale + PanOffset;
+            Vector2 p01 = new Vector2(leftOffset, Size.Y) * ZoomScale + PanOffset;
+            
+            context.DrawLine(devicePen, p00, p01);
+            context.DrawLine(devicePen, p10, p11);
+        }
     }
 
     private void DrawDashedVerticalLine(DrawingContext context, Pen pen, float x, float y1, float y2, float dashLength = 6f, float gapLength = 4f)
@@ -1407,6 +1481,70 @@ public class DesignerCanvas : Panel
             currentType = currentType.BaseType;
         }
         return null;
+    }
+
+    public bool IsResponsiveContainer(FrameworkElement fe)
+    {
+        if (fe is Canvas) return false;
+        if (fe is Microsoft.UI.Xaml.Controls.StackPanel || fe is Microsoft.UI.Xaml.Controls.Grid || fe is Microsoft.UI.Xaml.Controls.Border || fe is ScrollViewer || fe is SplitView || fe is WrapPanel || fe is DockPanel)
+        {
+            return true;
+        }
+        if (fe is Panel && !(fe is Canvas))
+        {
+            return true;
+        }
+        return false;
+    }
+
+    private void ReorderRootChildren(FrameworkElement child, Vector2 localMousePos)
+    {
+        var children = new List<Visual>();
+        int currentIdx = -1;
+
+        for (int i = 0; i < DesignSurface.Children.Count; i++)
+        {
+            var sibling = DesignSurface.Children[i];
+            if (sibling == child)
+            {
+                currentIdx = i;
+            }
+            else
+            {
+                children.Add(sibling);
+            }
+        }
+
+        if (currentIdx == -1) return;
+
+        int targetIdx = 0;
+        for (int i = 0; i < children.Count; i++)
+        {
+            var sibling = children[i] as FrameworkElement;
+            if (sibling == null) continue;
+
+            float height = float.IsNaN(sibling.Height) ? sibling.Size.Y : sibling.Height;
+            if (height <= 0) height = 100f; // Default min height
+
+            var transform = sibling.TransformToVisual(DesignSurface);
+            Vector2 siblingPos = transform.TransformPoint(Vector2.Zero);
+            float siblingCenterY = siblingPos.Y + height / 2f;
+
+            if (localMousePos.Y > siblingCenterY)
+            {
+                targetIdx = i + 1;
+            }
+        }
+
+        if (targetIdx != currentIdx)
+        {
+            children.Insert(targetIdx, child);
+            DesignSurface.ClearChildren();
+            foreach (var item in children)
+            {
+                DesignSurface.AddChild(item);
+            }
+        }
     }
 
     private bool IsValidDropContainer(FrameworkElement fe)
@@ -1607,6 +1745,59 @@ public class DesignerCanvas : Panel
                     FindNamesInVisualTree(child, names);
                 }
             }
+        }
+    }
+}
+
+public class DesignerSurfacePanel : Canvas
+{
+    private readonly DesignerCanvas _designer;
+
+    public DesignerSurfacePanel(DesignerCanvas designer)
+    {
+        _designer = designer;
+    }
+
+    protected override Vector2 MeasureOverride(Vector2 availableSize)
+    {
+        if (_designer.IsResponsiveMode)
+        {
+            float width = 0;
+            float height = 0;
+            foreach (var child in Children)
+            {
+                if (child is LayoutNode node)
+                {
+                    node.Measure(availableSize);
+                    width = MathF.Max(width, node.DesiredSize.X);
+                    height += node.DesiredSize.Y;
+                }
+            }
+            return new Vector2(width, height);
+        }
+        else
+        {
+            return base.MeasureOverride(availableSize);
+        }
+    }
+
+    protected override void ArrangeOverride(Rect arrangeRect)
+    {
+        if (_designer.IsResponsiveMode)
+        {
+            float currentY = arrangeRect.Y;
+            foreach (var child in Children)
+            {
+                if (child is LayoutNode node)
+                {
+                    node.Arrange(new Rect(arrangeRect.X, currentY, arrangeRect.Width, node.DesiredSize.Y));
+                    currentY += node.DesiredSize.Y;
+                }
+            }
+        }
+        else
+        {
+            base.ArrangeOverride(arrangeRect);
         }
     }
 }

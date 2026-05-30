@@ -354,6 +354,11 @@ public class SelectionAdorner : Panel
 
     public override void OnRender(DrawingContext context)
     {
+        if (ParentCanvas != null && ParentCanvas.IsResponsiveMode)
+        {
+            DrawBoxModelOverlays(context, ZoomScale);
+        }
+
         base.OnRender(context);
 
         if (AssociatedElement == null || ParentCanvas == null) return;
@@ -702,5 +707,55 @@ public class SelectionAdorner : Panel
         );
 
         context.DrawText(text, font, fontSize, textBrush, textPos);
+    }
+
+    private void DrawBoxModelOverlays(DrawingContext context, float z)
+    {
+        if (AssociatedElement == null || ParentCanvas == null) return;
+
+        float w = Size.X;
+        float h = Size.Y;
+
+        // 1. Draw Margin Overlay (Translucent Orange/Peach)
+        var margin = AssociatedElement.Margin;
+        var marginBrush = new SolidColorBrush(new Vector4(0.98f, 0.44f, 0.20f, 0.20f)); // Translucent Orange
+
+        if (margin.Left > 0f)
+        {
+            context.DrawRectangle(marginBrush, null, new Rect(-margin.Left, 0f, margin.Left, h));
+        }
+        if (margin.Right > 0f)
+        {
+            context.DrawRectangle(marginBrush, null, new Rect(w, 0f, margin.Right, h));
+        }
+        if (margin.Top > 0f)
+        {
+            context.DrawRectangle(marginBrush, null, new Rect(-margin.Left, -margin.Top, w + margin.Left + margin.Right, margin.Top));
+        }
+        if (margin.Bottom > 0f)
+        {
+            context.DrawRectangle(marginBrush, null, new Rect(-margin.Left, h, w + margin.Left + margin.Right, margin.Bottom));
+        }
+
+        // 2. Draw Padding Overlay (Translucent Green/Teal)
+        var padding = AssociatedElement.Padding;
+        var paddingBrush = new SolidColorBrush(new Vector4(0.24f, 0.82f, 0.61f, 0.22f)); // Translucent Teal
+
+        if (padding.Left > 0f)
+        {
+            context.DrawRectangle(paddingBrush, null, new Rect(0f, 0f, MathF.Min(padding.Left, w), h));
+        }
+        if (padding.Right > 0f)
+        {
+            context.DrawRectangle(paddingBrush, null, new Rect(MathF.Max(0f, w - padding.Right), 0f, MathF.Min(padding.Right, w), h));
+        }
+        if (padding.Top > 0f)
+        {
+            context.DrawRectangle(paddingBrush, null, new Rect(0f, 0f, w, MathF.Min(padding.Top, h)));
+        }
+        if (padding.Bottom > 0f)
+        {
+            context.DrawRectangle(paddingBrush, null, new Rect(0f, MathF.Max(0f, h - padding.Bottom), w, MathF.Min(padding.Bottom, h)));
+        }
     }
 }
