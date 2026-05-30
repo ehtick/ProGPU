@@ -300,6 +300,7 @@ public class PasswordBox : Control
                 return;
             }
 
+            e.Handled = true; // prevent bubbling immediately to avoid parent focus theft
             base.OnPointerPressed(e);
 
             float clickX = e.Position.X - Padding.Left;
@@ -330,7 +331,6 @@ public class PasswordBox : Control
             CaretIndex = index;
             _isDraggingSelection = true;
             InputSystem.CapturePointer(this);
-            e.Handled = true;
         }
     }
 

@@ -161,6 +161,24 @@ public static class InputSystem
         DevToolsInputSystem.ReleasePointerCapture();
     }
 
+    public static void SetMouseCursor(StandardCursor cursor)
+    {
+        if (Current.InputContext != null)
+        {
+            foreach (var mouse in Current.InputContext.Mice)
+            {
+                try
+                {
+                    mouse.Cursor.StandardCursor = cursor;
+                }
+                catch
+                {
+                    // Ignore if cursor configuration is unsupported in the current platform/context
+                }
+            }
+        }
+    }
+
     public static WindowInputState Initialize(IInputContext input, FrameworkElement? root = null)
     {
         var state = new WindowInputState { Root = root, InputContext = input };

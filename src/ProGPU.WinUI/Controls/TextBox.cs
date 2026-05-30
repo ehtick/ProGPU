@@ -247,7 +247,8 @@ public class TextBox : Control
     {
         if (IsEnabled)
         {
-            base.OnPointerPressed(e); // sets focus
+            e.Handled = true; // prevent bubbling immediately to avoid parent focus theft
+            base.OnPointerPressed(e); // sets focus on this TextBox without bubbling
 
             float clickX = e.Position.X - Padding.Left;
             int index = 0;
@@ -276,7 +277,6 @@ public class TextBox : Control
             CaretIndex = index;
             _isDraggingSelection = true;
             InputSystem.CapturePointer(this);
-            e.Handled = true;
         }
     }
 

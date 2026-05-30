@@ -101,9 +101,10 @@ public class VisualTreeOutlineItem : Border
         var visCheckBox = new CheckBox
         {
             IsChecked = element.Visibility == Visibility.Visible,
-            WidthConstraint = 16f,
-            HeightConstraint = 16f,
+            WidthConstraint = 18f,
+            HeightConstraint = 18f,
             Padding = new Thickness(0),
+            BorderThickness = new Thickness(0),
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center
         };
@@ -125,8 +126,6 @@ public class VisualTreeOutlineItem : Border
                 Font = font,
                 FontSize = 12f,
                 Foreground = new ThemeResourceBrush("TextSecondary"),
-                WidthConstraint = 16f,
-                HeightConstraint = 16f,
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
                 IsHitTestVisible = true

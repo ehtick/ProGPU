@@ -26,7 +26,7 @@ public static class DesignerSerializer
         "volatile", "while"
     };
 
-    public static string SerializeToCSharp(Canvas canvas)
+    public static string SerializeToCSharp(Canvas canvas, bool isResponsiveMode = false)
     {
         if (canvas == null) return "";
 
@@ -63,7 +63,7 @@ public static class DesignerSerializer
         {
             if (child is FrameworkElement childFe)
             {
-                var childVar = SerializeElement(childFe, ref varCounter, declaredNames, sb, 2);
+                var childVar = SerializeElement(childFe, ref varCounter, declaredNames, sb, 2, isResponsiveMode);
                 sb.AppendLine($"        rootCanvas.Children.Add({childVar});");
                 sb.AppendLine();
             }
@@ -76,7 +76,7 @@ public static class DesignerSerializer
         return sb.ToString();
     }
 
-    private static string SerializeElement(FrameworkElement element, ref int varCounter, HashSet<string> declaredNames, StringBuilder sb, int indentLevel)
+    private static string SerializeElement(FrameworkElement element, ref int varCounter, HashSet<string> declaredNames, StringBuilder sb, int indentLevel, bool isResponsiveMode)
     {
         var typeName = element.GetType().Name;
         
@@ -377,15 +377,18 @@ public static class DesignerSerializer
         }
 
         // Set Attached properties
-        float left = Canvas.GetLeft(element);
-        float top = Canvas.GetTop(element);
-        if (left != 0)
+        if (!isResponsiveMode)
         {
-            sb.AppendLine($"{indent}Canvas.SetLeft({varName}, {FormatFloat(left)}f);");
-        }
-        if (top != 0)
-        {
-            sb.AppendLine($"{indent}Canvas.SetTop({varName}, {FormatFloat(top)}f);");
+            float left = Canvas.GetLeft(element);
+            float top = Canvas.GetTop(element);
+            if (left != 0)
+            {
+                sb.AppendLine($"{indent}Canvas.SetLeft({varName}, {FormatFloat(left)}f);");
+            }
+            if (top != 0)
+            {
+                sb.AppendLine($"{indent}Canvas.SetTop({varName}, {FormatFloat(top)}f);");
+            }
         }
 
         int row = Microsoft.UI.Xaml.Controls.Grid.GetRow(element);
@@ -419,7 +422,7 @@ public static class DesignerSerializer
                 var paneVal = paneProp.GetValue(element);
                 if (paneVal is FrameworkElement paneFe)
                 {
-                    var paneVar = SerializeElement(paneFe, ref varCounter, declaredNames, sb, indentLevel);
+                    var paneVar = SerializeElement(paneFe, ref varCounter, declaredNames, sb, indentLevel, isResponsiveMode);
                     sb.AppendLine($"{indent}{varName}.Pane = {paneVar};");
                 }
             }
@@ -430,7 +433,7 @@ public static class DesignerSerializer
                 var contentVal = splitContentProp.GetValue(element);
                 if (contentVal is FrameworkElement contentFe)
                 {
-                    var contentVar = SerializeElement(contentFe, ref varCounter, declaredNames, sb, indentLevel);
+                    var contentVar = SerializeElement(contentFe, ref varCounter, declaredNames, sb, indentLevel, isResponsiveMode);
                     sb.AppendLine($"{indent}{varName}.Content = {contentVar};");
                 }
             }
@@ -464,7 +467,7 @@ public static class DesignerSerializer
                 }
                 else if (contentVal is FrameworkElement contentFe)
                 {
-                    var contentVar = SerializeElement(contentFe, ref varCounter, declaredNames, sb, indentLevel);
+                    var contentVar = SerializeElement(contentFe, ref varCounter, declaredNames, sb, indentLevel, isResponsiveMode);
                     sb.AppendLine($"{indent}{varName}.Content = {contentVar};");
                 }
                 else if (contentVal != null)
@@ -482,7 +485,7 @@ public static class DesignerSerializer
             var childVal = childProp.GetValue(element);
             if (childVal is FrameworkElement childFe)
             {
-                var childVar = SerializeElement(childFe, ref varCounter, declaredNames, sb, indentLevel);
+                var childVar = SerializeElement(childFe, ref varCounter, declaredNames, sb, indentLevel, isResponsiveMode);
                 sb.AppendLine($"{indent}{varName}.Child = {childVar};");
             }
         }
@@ -494,7 +497,7 @@ public static class DesignerSerializer
             {
                 if (childNode is FrameworkElement childFe)
                 {
-                    var childVar = SerializeElement(childFe, ref varCounter, declaredNames, sb, indentLevel);
+                    var childVar = SerializeElement(childFe, ref varCounter, declaredNames, sb, indentLevel, isResponsiveMode);
                     sb.AppendLine($"{indent}{varName}.Children.Add({childVar});");
                 }
             }
