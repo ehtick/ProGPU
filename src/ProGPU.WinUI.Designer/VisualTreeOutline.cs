@@ -49,8 +49,12 @@ public class VisualTreeOutlineItem : Border
 
         var indentPanel = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         
-        // Expansion arrow prefix if element has visual children
-        if (element is ContainerVisual container && container.Children.Count > 0)
+        // Expansion arrow prefix if element has visual or logical children
+        bool hasChildren = parentOutline.IsLogicalMode 
+            ? System.Linq.Enumerable.Any(VisualTreeOutline.GetLogicalChildren(element))
+            : (element is ContainerVisual container && container.Children.Count > 0);
+
+        if (hasChildren)
         {
             bool isCollapsed = parentOutline.IsCollapsed(element);
             var toggleText = new RichTextBlock { FontSize = 8f, Foreground = new ThemeResourceBrush("TextSecondary") };
@@ -504,6 +508,136 @@ public class VisualTreeOutline : Border
     private ProGPU.Text.TtfFont? _font;
     private readonly HashSet<FrameworkElement> _collapsedElements = new();
 
+    private bool _isLogicalMode = true;
+    public bool IsLogicalMode
+    {
+        get => _isLogicalMode;
+        set
+        {
+            if (_isLogicalMode != value)
+            {
+                _isLogicalMode = value;
+                ModeChanged?.Invoke(value);
+                RefreshTree();
+            }
+        }
+    }
+    public event Action<bool>? ModeChanged;
+
+    public static IEnumerable<FrameworkElement> GetLogicalChildren(FrameworkElement? parent)
+    {
+        if (parent == null) yield break;
+
+        if (parent is Panel panel)
+        {
+            foreach (var child in panel.Children)
+            {
+                if (child is FrameworkElement fe)
+                {
+                    yield return fe;
+                }
+            }
+        }
+        else if (parent is Border border)
+        {
+            if (border.Child is FrameworkElement childFe)
+            {
+                yield return childFe;
+            }
+        }
+        else if (parent is ContentControl contentControl)
+        {
+            if (contentControl.Content is FrameworkElement contentFe)
+            {
+                yield return contentFe;
+            }
+        }
+        else
+        {
+            var type = parent.GetType();
+            var contentProp = GetPropertySafe(type, "Content");
+            if (contentProp != null && typeof(FrameworkElement).IsAssignableFrom(contentProp.PropertyType))
+            {
+                if (contentProp.GetValue(parent) is FrameworkElement fe)
+                {
+                    yield return fe;
+                }
+            }
+            else
+            {
+                var childProp = GetPropertySafe(type, "Child");
+                if (childProp != null && typeof(FrameworkElement).IsAssignableFrom(childProp.PropertyType))
+                {
+                    if (childProp.GetValue(parent) is FrameworkElement fe)
+                    {
+                        yield return fe;
+                    }
+                }
+            }
+        }
+    }
+
+    public static FrameworkElement? GetLogicalAncestor(FrameworkElement? element, FrameworkElement designSurface)
+    {
+        if (element == null) return null;
+        if (element == designSurface) return designSurface;
+
+        var current = element;
+        while (current != null && current != designSurface)
+        {
+            if (IsLogicalElement(current, designSurface))
+            {
+                return current;
+            }
+            current = current.Parent as FrameworkElement;
+        }
+        return null;
+    }
+
+    public static bool IsLogicalElement(FrameworkElement? element, FrameworkElement designSurface)
+    {
+        if (element == null) return false;
+        if (element == designSurface) return true;
+
+        var parent = element.Parent as FrameworkElement;
+        if (parent == null) return false;
+
+        bool isLogicalChild = false;
+        if (parent is Panel panel)
+        {
+            isLogicalChild = panel.Children.Contains(element);
+        }
+        else if (parent is Border border)
+        {
+            isLogicalChild = border.Child == element;
+        }
+        else if (parent is ContentControl contentControl)
+        {
+            isLogicalChild = contentControl.Content == element;
+        }
+        else
+        {
+            var type = parent.GetType();
+            var contentProp = GetPropertySafe(type, "Content");
+            if (contentProp != null && typeof(FrameworkElement).IsAssignableFrom(contentProp.PropertyType))
+            {
+                isLogicalChild = contentProp.GetValue(parent) == element;
+            }
+            if (!isLogicalChild)
+            {
+                var childProp = GetPropertySafe(type, "Child");
+                if (childProp != null && typeof(FrameworkElement).IsAssignableFrom(childProp.PropertyType))
+                {
+                    isLogicalChild = childProp.GetValue(parent) == element;
+                }
+            }
+        }
+
+        if (!isLogicalChild) return false;
+
+        return IsLogicalElement(parent, designSurface);
+    }
+
     public event Action<FrameworkElement?>? SelectionChanged;
     public event Action? CanvasModified;
     public event Action? CanvasModifying;
@@ -642,15 +776,36 @@ public class VisualTreeOutline : Border
             HorizontalAlignment = HorizontalAlignment.Stretch
         };
 
+        var headerGrid = new Grid { HorizontalAlignment = HorizontalAlignment.Stretch, Margin = new Thickness(4, 4, 4, 12) };
+        headerGrid.ColumnDefinitions.Add(new GridLength(1, GridUnitType.Star));
+        headerGrid.ColumnDefinitions.Add(new GridLength(110f, GridUnitType.Absolute));
+
         var titleText = new RichTextBlock
         {
             Font = font,
             FontSize = 14f,
-            Margin = new Thickness(4, 4, 4, 12),
-            HorizontalAlignment = HorizontalAlignment.Left
+            VerticalAlignment = VerticalAlignment.Center
         };
-        titleText.Inlines.Add(new Bold(new Run("Visual Tree Outline")));
-        _treeStack.AddChild(titleText);
+        titleText.Inlines.Add(new Bold(new Run("Tree Outline")));
+        headerGrid.AddChild(titleText);
+        Grid.SetColumn(titleText, 0);
+
+        var toggleMode = new CheckBox
+        {
+            IsChecked = true,
+            Margin = new Thickness(0),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var toggleLabel = new RichTextBlock { Font = font, FontSize = 10f, VerticalAlignment = VerticalAlignment.Center };
+        toggleLabel.Inlines.Add(new Run("Logical Tree"));
+        toggleMode.Content = toggleLabel;
+        toggleMode.CheckedChanged += (s, e) => {
+            IsLogicalMode = toggleMode.IsChecked;
+        };
+        headerGrid.AddChild(toggleMode);
+        Grid.SetColumn(toggleMode, 1);
+
+        _treeStack.AddChild(headerGrid);
 
         _scrollViewer = new ScrollViewer
         {
@@ -735,13 +890,26 @@ public class VisualTreeOutline : Border
         var row = new VisualTreeOutlineItem(element, depth, isSelected, _font, this);
         _treeStack.AddChild(row);
 
-        if (element is ContainerVisual container && !IsCollapsed(element))
+        if (!IsCollapsed(element))
         {
-            foreach (var child in container.Children)
+            if (IsLogicalMode)
             {
-                if (child is FrameworkElement fe)
+                foreach (var child in GetLogicalChildren(element))
                 {
-                    BuildTreeRecursively(fe, depth + 1);
+                    BuildTreeRecursively(child, depth + 1);
+                }
+            }
+            else
+            {
+                if (element is ContainerVisual container)
+                {
+                    foreach (var child in container.Children)
+                    {
+                        if (child is FrameworkElement fe)
+                        {
+                            BuildTreeRecursively(fe, depth + 1);
+                        }
+                    }
                 }
             }
         }
