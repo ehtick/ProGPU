@@ -194,14 +194,14 @@ public class GridPanel : LayoutNode
                 {
                     GridUnitType.Absolute => colWidths[c],
                     GridUnitType.Star => (cols[c].Value / starColsWeight) * remainingWidth,
-                    _ => availableSize.X
+                    _ => float.PositiveInfinity
                 };
 
                 float childAvailH = rows[r].UnitType switch
                 {
                     GridUnitType.Absolute => rowHeights[r],
                     GridUnitType.Star => (rows[r].Value / starRowsWeight) * remainingHeight,
-                    _ => availableSize.Y
+                    _ => float.PositiveInfinity
                 };
 
                 node.Measure(new Vector2(childAvailW, childAvailH));

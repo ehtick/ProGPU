@@ -173,14 +173,14 @@ public class Grid : Panel
                 {
                     GridUnitType.Absolute => colWidths[c],
                     GridUnitType.Star => starColsWeight > 0 && !float.IsInfinity(remainingWidth) ? (cols[c].Value / starColsWeight) * remainingWidth : float.PositiveInfinity,
-                    _ => availableSize.X
+                    _ => float.PositiveInfinity
                 };
 
                 float childAvailH = rows[r].UnitType switch
                 {
                     GridUnitType.Absolute => rowHeights[r],
                     GridUnitType.Star => starRowsWeight > 0 && !float.IsInfinity(remainingHeight) ? (rows[r].Value / starRowsWeight) * remainingHeight : float.PositiveInfinity,
-                    _ => availableSize.Y
+                    _ => float.PositiveInfinity
                 };
 
                 node.Measure(new Vector2(childAvailW, childAvailH));
