@@ -547,6 +547,11 @@ public class VisualTreeOutline : Border
         }
         else if (parent is ContentControl contentControl)
         {
+            if (parent is Button || parent is CheckBox || parent is RadioButton || parent is ToggleSwitch || parent is ComboBox)
+            {
+                yield break;
+            }
+
             if (contentControl.Content is FrameworkElement contentFe)
             {
                 yield return contentFe;
