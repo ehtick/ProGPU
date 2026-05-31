@@ -13,6 +13,8 @@ namespace ProGPU.Backend
         public GpuBuffer? FsUniformBuffer { get; set; }
         public nint LineBindGroup { get; set; }
         public nint ScatterBindGroup { get; set; }
+        public nint LineBindGroupOffscreen { get; set; }
+        public nint ScatterBindGroupOffscreen { get; set; }
         public float[]? CachedInterleaved { get; set; }
         public object? AssociatedData { get; set; }
         public int AssociatedDataVersion { get; set; }
@@ -69,6 +71,16 @@ namespace ProGPU.Backend
             {
                 context.Wgpu.BindGroupRelease((BindGroup*)ScatterBindGroup);
                 ScatterBindGroup = 0;
+            }
+            if (LineBindGroupOffscreen != 0)
+            {
+                context.Wgpu.BindGroupRelease((BindGroup*)LineBindGroupOffscreen);
+                LineBindGroupOffscreen = 0;
+            }
+            if (ScatterBindGroupOffscreen != 0)
+            {
+                context.Wgpu.BindGroupRelease((BindGroup*)ScatterBindGroupOffscreen);
+                ScatterBindGroupOffscreen = 0;
             }
         }
 
