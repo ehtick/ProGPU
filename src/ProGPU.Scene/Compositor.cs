@@ -1673,7 +1673,7 @@ public unsafe class Compositor : IDisposable
                         {
                             CommitPendingDrawCalls();
                             var localCmd = cmd;
-                            pipeline.Compile(this, parentContext, activeTransform, ref localCmd);
+                            pipeline.Compile(this, picture, activeTransform, ref localCmd);
                             var cmdTransform = localCmd.Transform;
                             if (cmdTransform == default || cmdTransform == new Matrix4x4())
                             {

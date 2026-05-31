@@ -105,6 +105,9 @@ namespace Microsoft.UI.Xaml.Controls
         private double _cachedActiveXMax = 0.0;
         private string? _cachedActiveYAxisId = null;
         private int _cachedActiveVersionHash = -1;
+        private double? _cachedActiveAxisMinConfig = null;
+        private double? _cachedActiveAxisMaxConfig = null;
+        private string? _cachedActiveAxisAutoBoundsConfig = null;
         private bool _hasCachedActiveBounds = false;
 
         public ChartControl()
@@ -728,11 +731,20 @@ namespace Microsoft.UI.Xaml.Controls
                 }
             }
 
+            bool matchY2 = yAxisId != null && yAxisId.Equals("y2", StringComparison.OrdinalIgnoreCase);
+            var currentAxisConfig = (matchY2 && Options.YAxes != null && Options.YAxes.Count > 1) ? Options.YAxes[1] : Options.YAxis;
+            double? axisMin = currentAxisConfig?.Min;
+            double? axisMax = currentAxisConfig?.Max;
+            string? axisAutoBounds = currentAxisConfig?.AutoBounds;
+
             if (_hasCachedActiveBounds && 
                 _cachedActiveXMin == currentXMin && 
                 _cachedActiveXMax == currentXMax && 
                 _cachedActiveYAxisId == yAxisId && 
-                _cachedActiveVersionHash == versionHash)
+                _cachedActiveVersionHash == versionHash &&
+                _cachedActiveAxisMinConfig == axisMin &&
+                _cachedActiveAxisMaxConfig == axisMax &&
+                _cachedActiveAxisAutoBoundsConfig == axisAutoBounds)
             {
                 return new ChartBounds(0.0, 1.0, _cachedActiveYMin, _cachedActiveYMax);
             }
@@ -747,10 +759,8 @@ namespace Microsoft.UI.Xaml.Controls
 
                 // Match Y-axis ID: If s.YAxis == "y2", it is bound to right. Match accordingly.
                 bool isY2 = s.YAxis != null && s.YAxis.Equals("y2", StringComparison.OrdinalIgnoreCase);
-                bool matchY2 = yAxisId != null && yAxisId.Equals("y2", StringComparison.OrdinalIgnoreCase);
                 if (isY2 != matchY2) continue;
 
-                var currentAxisConfig = matchY2 ? Options.YAxes?[1] : Options.YAxis;
                 bool autoBoundsVisible = currentAxisConfig == null || 
                                          currentAxisConfig.AutoBounds.Equals("visible", StringComparison.OrdinalIgnoreCase);
 
@@ -850,6 +860,9 @@ namespace Microsoft.UI.Xaml.Controls
                 _cachedActiveXMax = currentXMax;
                 _cachedActiveYAxisId = yAxisId;
                 _cachedActiveVersionHash = versionHash;
+                _cachedActiveAxisMinConfig = axisMin;
+                _cachedActiveAxisMaxConfig = axisMax;
+                _cachedActiveAxisAutoBoundsConfig = axisAutoBounds;
                 _hasCachedActiveBounds = true;
 
                 return new ChartBounds(0.0, 1.0, fallbackMin, fallbackMax);
@@ -869,6 +882,9 @@ namespace Microsoft.UI.Xaml.Controls
             _cachedActiveXMax = currentXMax;
             _cachedActiveYAxisId = yAxisId;
             _cachedActiveVersionHash = versionHash;
+            _cachedActiveAxisMinConfig = axisMin;
+            _cachedActiveAxisMaxConfig = axisMax;
+            _cachedActiveAxisAutoBoundsConfig = axisAutoBounds;
             _hasCachedActiveBounds = true;
 
             return new ChartBounds(0.0, 1.0, yMin, yMax);
