@@ -21,6 +21,10 @@ public unsafe class DxfStaticBuffer : IDisposable
     public uint TextIndexCount { get; private set; }
     public VectorVertex[] TextVertices { get; }
     
+    private GpuBuffer? _textVertexBufferBack;
+    private GpuBuffer? _textIndexBufferBack;
+    private uint _textIndexCountBack;
+    
     public GpuBuffer? BrushesBuffer { get; private set; }
     
     private readonly Dictionary<int, object> _extensionStates = new();
@@ -101,20 +105,33 @@ public unsafe class DxfStaticBuffer : IDisposable
     {
         if (textVertices.Length > 0 && textIndices.Length > 0)
         {
-            if (TextVertexBuffer == null || TextVertexBuffer.Size < textVertices.Length * Marshal.SizeOf<VectorVertex>())
+            if (_textVertexBufferBack == null || _textVertexBufferBack.Size < textVertices.Length * Marshal.SizeOf<VectorVertex>())
             {
-                TextVertexBuffer?.Dispose();
-                TextVertexBuffer = new GpuBuffer(_context, (uint)textVertices.Length * (uint)Marshal.SizeOf<VectorVertex>(), BufferUsage.Vertex | BufferUsage.CopyDst, "Static DXF Text Vertex Buffer");
+                _textVertexBufferBack?.Dispose();
+                _textVertexBufferBack = new GpuBuffer(_context, (uint)textVertices.Length * (uint)Marshal.SizeOf<VectorVertex>(), BufferUsage.Vertex | BufferUsage.CopyDst, "Static DXF Text Vertex Back Buffer");
             }
-            TextVertexBuffer.Write(new ReadOnlySpan<VectorVertex>(textVertices));
+            _textVertexBufferBack.Write(new ReadOnlySpan<VectorVertex>(textVertices));
             
-            if (TextIndexBuffer == null || TextIndexBuffer.Size < textIndices.Length * 4)
+            if (_textIndexBufferBack == null || _textIndexBufferBack.Size < textIndices.Length * 4)
             {
-                TextIndexBuffer?.Dispose();
-                TextIndexBuffer = new GpuBuffer(_context, (uint)textIndices.Length * 4, BufferUsage.Index | BufferUsage.CopyDst, "Static DXF Text Index Buffer");
+                _textIndexBufferBack?.Dispose();
+                _textIndexBufferBack = new GpuBuffer(_context, (uint)textIndices.Length * 4, BufferUsage.Index | BufferUsage.CopyDst, "Static DXF Text Index Back Buffer");
             }
-            TextIndexBuffer.Write(new ReadOnlySpan<uint>(textIndices));
-            TextIndexCount = (uint)textIndices.Length;
+            _textIndexBufferBack.Write(new ReadOnlySpan<uint>(textIndices));
+            _textIndexCountBack = (uint)textIndices.Length;
+
+            // Swap front and back buffer references
+            var tempVertexBuffer = TextVertexBuffer;
+            TextVertexBuffer = _textVertexBufferBack;
+            _textVertexBufferBack = tempVertexBuffer;
+
+            var tempIndexBuffer = TextIndexBuffer;
+            TextIndexBuffer = _textIndexBufferBack;
+            _textIndexBufferBack = tempIndexBuffer;
+
+            var tempIndexCount = TextIndexCount;
+            TextIndexCount = _textIndexCountBack;
+            _textIndexCountBack = tempIndexCount;
         }
         else
         {
@@ -228,6 +245,8 @@ public unsafe class DxfStaticBuffer : IDisposable
         IndexBuffer?.Dispose();
         TextVertexBuffer?.Dispose();
         TextIndexBuffer?.Dispose();
+        _textVertexBufferBack?.Dispose();
+        _textIndexBufferBack?.Dispose();
         BrushesBuffer?.Dispose();
         UniformBuffer?.Dispose();
         
