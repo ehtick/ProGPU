@@ -1489,6 +1489,11 @@ public unsafe class Compositor : IDisposable
                             CommitPendingDrawCalls();
                             var localCmd = cmd;
                             pipeline.Compile(this, ctx, activeTransform, ref localCmd);
+                            var cmdTransform = localCmd.Transform;
+                            if (cmdTransform == default || cmdTransform == new Matrix4x4())
+                            {
+                                cmdTransform = Matrix4x4.Identity;
+                            }
                             _drawCalls.Add(new CompositorDrawCall
                             {
                                 Type = DrawCallType.Extension,
@@ -1508,7 +1513,7 @@ public unsafe class Compositor : IDisposable
                                 Brush = localCmd.Brush,
                                 Pen = localCmd.Pen,
                                 Path = localCmd.Path,
-                                Transform = activeTransform * localCmd.Transform,
+                                Transform = activeTransform * cmdTransform,
                                 LineThicknessOrRadius = localCmd.RadiusX,
                                 Scale = localCmd.Scale,
                                 Translate = localCmd.Translate,
@@ -1660,6 +1665,50 @@ public unsafe class Compositor : IDisposable
                     break;
                 case RenderCommandType.FillQuad:
                     CompileFillQuadCommand(cmd, activeTransform);
+                    break;
+                case RenderCommandType.DrawExtension:
+                    {
+                        var pipeline = GetExtension(cmd.ExtensionId);
+                        if (pipeline != null)
+                        {
+                            CommitPendingDrawCalls();
+                            var localCmd = cmd;
+                            pipeline.Compile(this, parentContext, activeTransform, ref localCmd);
+                            var cmdTransform = localCmd.Transform;
+                            if (cmdTransform == default || cmdTransform == new Matrix4x4())
+                            {
+                                cmdTransform = Matrix4x4.Identity;
+                            }
+                            _drawCalls.Add(new CompositorDrawCall
+                            {
+                                Type = DrawCallType.Extension,
+                                ExtensionId = localCmd.ExtensionId,
+                                IntParam = localCmd.IntParam,
+                                FloatParam = localCmd.FloatParam,
+                                DataParam = localCmd.DataParam,
+                                PointBufferOffset = (int)_pendingVectorStart,
+                                PointBufferCount = (int)((uint)_vectorIndicesList.Count - _pendingVectorStart),
+                                DoubleBufferOffset = localCmd.DoubleBufferOffset,
+                                DoubleBufferCount = localCmd.DoubleBufferCount,
+                                WeightBufferOffset = localCmd.WeightBufferOffset,
+                                WeightBufferCount = localCmd.WeightBufferCount,
+                                FloatBufferOffset = localCmd.FloatBufferOffset,
+                                FloatBufferCount = localCmd.FloatBufferCount,
+                                StaticBuffer = localCmd.StaticBuffer,
+                                Brush = localCmd.Brush,
+                                Pen = localCmd.Pen,
+                                Path = localCmd.Path,
+                                Transform = activeTransform * cmdTransform,
+                                LineThicknessOrRadius = localCmd.RadiusX,
+                                Scale = localCmd.Scale,
+                                Translate = localCmd.Translate,
+                                Color = (localCmd.Brush is SolidColorBrush solid) ? solid.Color : new Vector4(1f, 1f, 1f, 1f),
+                                ClipRect = _activeClipRect
+                            });
+                            _pendingVectorStart = (uint)_vectorIndicesList.Count;
+                            _pendingTextStart = (uint)_textIndicesList.Count;
+                        }
+                    }
                     break;
                 case RenderCommandType.DrawGpuLineSeries:
                     CompileGpuLineSeriesCommand(picture, cmd, activeTransform);
@@ -4128,6 +4177,11 @@ public unsafe class Compositor : IDisposable
                                 CommitStaticDrawCalls();
                                 var localCmd = cmd;
                                 pipeline.Compile(this, null, Matrix4x4.Identity, ref localCmd);
+                                var cmdTransform = localCmd.Transform;
+                                if (cmdTransform == default || cmdTransform == new Matrix4x4())
+                                {
+                                    cmdTransform = Matrix4x4.Identity;
+                                }
                                 staticDrawCalls.Add(new CompositorDrawCall
                                 {
                                     Type = DrawCallType.Extension,
@@ -4147,6 +4201,12 @@ public unsafe class Compositor : IDisposable
                                     Brush = localCmd.Brush,
                                     Pen = localCmd.Pen,
                                     Path = localCmd.Path,
+                                    Transform = Matrix4x4.Identity * cmdTransform,
+                                    LineThicknessOrRadius = localCmd.RadiusX,
+                                    Scale = localCmd.Scale,
+                                    Translate = localCmd.Translate,
+                                    Color = (localCmd.Brush is SolidColorBrush solid) ? solid.Color : new Vector4(1f, 1f, 1f, 1f),
+                                    ClipRect = _activeClipRect
                                 });
                                 pendingVectorStart = (uint)_vectorIndicesList.Count;
                                 pendingTextStart = (uint)_textIndicesList.Count;
@@ -4432,6 +4492,11 @@ public unsafe class Compositor : IDisposable
                                 CommitStaticDrawCalls();
                                 var localCmd = cmd;
                                 pipeline.Compile(this, context, Matrix4x4.Identity, ref localCmd);
+                                var cmdTransform = localCmd.Transform;
+                                if (cmdTransform == default || cmdTransform == new Matrix4x4())
+                                {
+                                    cmdTransform = Matrix4x4.Identity;
+                                }
                                 staticDrawCalls.Add(new CompositorDrawCall
                                 {
                                     Type = DrawCallType.Extension,
@@ -4451,6 +4516,12 @@ public unsafe class Compositor : IDisposable
                                     Brush = localCmd.Brush,
                                     Pen = localCmd.Pen,
                                     Path = localCmd.Path,
+                                    Transform = Matrix4x4.Identity * cmdTransform,
+                                    LineThicknessOrRadius = localCmd.RadiusX,
+                                    Scale = localCmd.Scale,
+                                    Translate = localCmd.Translate,
+                                    Color = (localCmd.Brush is SolidColorBrush solid) ? solid.Color : new Vector4(1f, 1f, 1f, 1f),
+                                    ClipRect = _activeClipRect
                                 });
                                 pendingVectorStart = (uint)_vectorIndicesList.Count;
                                 pendingTextStart = (uint)_textIndicesList.Count;
@@ -4471,6 +4542,11 @@ public unsafe class Compositor : IDisposable
                             {
                                 var localCmd = cmd;
                                 pipeline.Compile(this, context, Matrix4x4.Identity, ref localCmd);
+                                var cmdTransform = localCmd.Transform;
+                                if (cmdTransform == default || cmdTransform == new Matrix4x4())
+                                {
+                                    cmdTransform = Matrix4x4.Identity;
+                                }
                                 staticDrawCalls.Add(new CompositorDrawCall
                                 {
                                     Type = DrawCallType.Extension,
@@ -4481,7 +4557,10 @@ public unsafe class Compositor : IDisposable
                                     Translate = cmd.Translate,
                                     StaticBuffer = localCmd.StaticBuffer,
                                     PointBufferOffset = (int)pendingVectorStart,
-                                    PointBufferCount = (int)((uint)_vectorIndicesList.Count - pendingVectorStart)
+                                    PointBufferCount = (int)((uint)_vectorIndicesList.Count - pendingVectorStart),
+                                    Transform = Matrix4x4.Identity * cmdTransform,
+                                    Color = (localCmd.Brush is SolidColorBrush solid) ? solid.Color : new Vector4(1f, 1f, 1f, 1f),
+                                    ClipRect = _activeClipRect
                                 });
                             }
                         }
@@ -4496,6 +4575,11 @@ public unsafe class Compositor : IDisposable
                             {
                                 var localCmd = cmd;
                                 pipeline.Compile(this, context, Matrix4x4.Identity, ref localCmd);
+                                var cmdTransform = localCmd.Transform;
+                                if (cmdTransform == default || cmdTransform == new Matrix4x4())
+                                {
+                                    cmdTransform = Matrix4x4.Identity;
+                                }
                                 staticDrawCalls.Add(new CompositorDrawCall
                                 {
                                     Type = DrawCallType.Extension,
@@ -4506,7 +4590,10 @@ public unsafe class Compositor : IDisposable
                                     Translate = cmd.Translate,
                                     StaticBuffer = localCmd.StaticBuffer,
                                     PointBufferOffset = (int)pendingVectorStart,
-                                    PointBufferCount = (int)((uint)_vectorIndicesList.Count - pendingVectorStart)
+                                    PointBufferCount = (int)((uint)_vectorIndicesList.Count - pendingVectorStart),
+                                    Transform = Matrix4x4.Identity * cmdTransform,
+                                    Color = (localCmd.Brush is SolidColorBrush solid) ? solid.Color : new Vector4(1f, 1f, 1f, 1f),
+                                    ClipRect = _activeClipRect
                                 });
                             }
                         }

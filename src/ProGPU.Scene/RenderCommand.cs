@@ -616,7 +616,8 @@ public class DrawingContext : IRenderDataProvider
             GpuPointsCount = pointsCount,
             RadiusX = thickness,
             Brush = brush,
-            SeriesCacheKey = new object()
+            SeriesCacheKey = new object(),
+            Transform = Matrix4x4.Identity
         });
     }
 
@@ -639,7 +640,8 @@ public class DrawingContext : IRenderDataProvider
             GpuPointsCount = pointsCount,
             RadiusX = radius,
             Brush = brush,
-            SeriesCacheKey = new object()
+            SeriesCacheKey = new object(),
+            Transform = Matrix4x4.Identity
         });
     }
 
@@ -737,7 +739,8 @@ public class DrawingContext : IRenderDataProvider
             RadiusX = thickness,
             Brush = brush,
             Scale = scale,
-            Translate = translate
+            Translate = translate,
+            Transform = Matrix4x4.Identity
         });
     }
 
@@ -761,7 +764,8 @@ public class DrawingContext : IRenderDataProvider
             RadiusX = radius,
             Brush = brush,
             Scale = scale,
-            Translate = translate
+            Translate = translate,
+            Transform = Matrix4x4.Identity
         });
     }
 
