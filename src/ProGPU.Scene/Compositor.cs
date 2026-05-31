@@ -1154,10 +1154,36 @@ public unsafe class Compositor : IDisposable
                 var pipeline = GetExtension(dc.ExtensionId);
                 if (pipeline != null)
                 {
-                    var localDc = dc;
-                    pipeline.Render(this, pass, isOffscreen: false, in localDc);
+                    if (pipeline is ProGPU.Scene.Extensions.SplineExtensionPipeline)
+                    {
+                        if (currentType != DrawCallType.Vector)
+                        {
+                            _context.Wgpu.RenderPassEncoderSetPipeline(pass, _vectorPipeline);
+                            fixed (BindGroup** pGrp = &_vectorUniformBindGroup)
+                            {
+                                _context.Wgpu.RenderPassEncoderSetBindGroup(pass, 0, *pGrp, 0, null);
+                            }
+                            fixed (BindGroup** pPathAtlas = &_pathAtlasBindGroup)
+                            {
+                                _context.Wgpu.RenderPassEncoderSetBindGroup(pass, 1, *pPathAtlas, 0, null);
+                            }
+                            var buffer = _vectorVertexBuffer.BufferPtr;
+                            _context.Wgpu.RenderPassEncoderSetVertexBuffer(pass, 0, buffer, 0, _vectorVertexBuffer.Size);
+                            _context.Wgpu.RenderPassEncoderSetIndexBuffer(pass, _vectorIndexBuffer.BufferPtr, IndexFormat.Uint32, 0, _vectorIndexBuffer.Size);
+                            currentType = DrawCallType.Vector;
+                        }
+                        if (dc.PointBufferCount > 0)
+                        {
+                            _context.Wgpu.RenderPassEncoderDrawIndexed(pass, (uint)dc.PointBufferCount, 1, (uint)dc.PointBufferOffset, 0, 0);
+                        }
+                    }
+                    else
+                    {
+                        var localDc = dc;
+                        pipeline.Render(this, pass, isOffscreen: false, in localDc);
+                        currentType = DrawCallType.Extension;
+                    }
                 }
-                currentType = DrawCallType.Extension;
             }
         }
 
@@ -3917,10 +3943,36 @@ public unsafe class Compositor : IDisposable
                 var pipeline = GetExtension(dc.ExtensionId);
                 if (pipeline != null)
                 {
-                    var localDc = dc;
-                    pipeline.Render(this, pass, isOffscreen: true, in localDc);
+                    if (pipeline is ProGPU.Scene.Extensions.SplineExtensionPipeline)
+                    {
+                        if (currentType != DrawCallType.Vector)
+                        {
+                            _context.Wgpu.RenderPassEncoderSetPipeline(pass, _vectorPipelineOffscreen);
+                            fixed (BindGroup** pGrp = &_vectorUniformBindGroupOffscreen)
+                            {
+                                _context.Wgpu.RenderPassEncoderSetBindGroup(pass, 0, *pGrp, 0, null);
+                            }
+                            fixed (BindGroup** pPathAtlas = &_pathAtlasBindGroupOffscreen)
+                            {
+                                _context.Wgpu.RenderPassEncoderSetBindGroup(pass, 1, *pPathAtlas, 0, null);
+                            }
+                            var buffer = _vectorVertexBuffer.BufferPtr;
+                            _context.Wgpu.RenderPassEncoderSetVertexBuffer(pass, 0, buffer, 0, _vectorVertexBuffer.Size);
+                            _context.Wgpu.RenderPassEncoderSetIndexBuffer(pass, _vectorIndexBuffer.BufferPtr, IndexFormat.Uint32, 0, _vectorIndexBuffer.Size);
+                            currentType = DrawCallType.Vector;
+                        }
+                        if (dc.PointBufferCount > 0)
+                        {
+                            _context.Wgpu.RenderPassEncoderDrawIndexed(pass, (uint)dc.PointBufferCount, 1, (uint)dc.PointBufferOffset, 0, 0);
+                        }
+                    }
+                    else
+                    {
+                        var localDc = dc;
+                        pipeline.Render(this, pass, isOffscreen: true, in localDc);
+                        currentType = DrawCallType.Extension;
+                    }
                 }
-                currentType = DrawCallType.Extension;
             }
         }
 
@@ -4726,11 +4778,39 @@ public unsafe class Compositor : IDisposable
                 var pipeline = GetExtension(dc.ExtensionId);
                 if (pipeline != null)
                 {
-                    var localDc = dc;
-                    localDc.StaticBuffer = sb;
-                    pipeline.Render(this, pass, isOffscreen, in localDc);
+                    if (pipeline is ProGPU.Scene.Extensions.SplineExtensionPipeline)
+                    {
+                        if (currentType != DrawCallType.Vector)
+                        {
+                            var vectorPipeline = isOffscreen ? _vectorPipelineOffscreen : _vectorPipeline;
+                            var uniformBg = isOffscreen ? sb.UniformBindGroupOffscreen : sb.UniformBindGroup;
+                            var pathAtlasBg = isOffscreen ? _pathAtlasBindGroupOffscreen : _pathAtlasBindGroup;
+                            
+                            _context.Wgpu.RenderPassEncoderSetPipeline(pass, vectorPipeline);
+                            _context.Wgpu.RenderPassEncoderSetBindGroup(pass, 0, uniformBg, 0, null);
+                            _context.Wgpu.RenderPassEncoderSetBindGroup(pass, 1, pathAtlasBg, 0, null);
+                            
+                            if (sb.VertexBuffer != null)
+                            {
+                                var buffer = sb.VertexBuffer.BufferPtr;
+                                _context.Wgpu.RenderPassEncoderSetVertexBuffer(pass, 0, buffer, 0, sb.VertexBuffer.Size);
+                                _context.Wgpu.RenderPassEncoderSetIndexBuffer(pass, sb.IndexBuffer.BufferPtr, IndexFormat.Uint32, 0, sb.IndexBuffer.Size);
+                            }
+                            currentType = DrawCallType.Vector;
+                        }
+                        if (dc.PointBufferCount > 0)
+                        {
+                            _context.Wgpu.RenderPassEncoderDrawIndexed(pass, (uint)dc.PointBufferCount, 1, (uint)dc.PointBufferOffset, 0, 0);
+                        }
+                    }
+                    else
+                    {
+                        var localDc = dc;
+                        localDc.StaticBuffer = sb;
+                        pipeline.Render(this, pass, isOffscreen, in localDc);
+                        currentType = DrawCallType.Extension;
+                    }
                 }
-                currentType = DrawCallType.Extension;
             }
         }
     }
