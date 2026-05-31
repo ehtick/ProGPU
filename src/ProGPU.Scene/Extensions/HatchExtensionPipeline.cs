@@ -694,7 +694,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                     shaderModule,
                     vertexBufferLayouts: layouts,
                     topology: PrimitiveTopology.TriangleList,
-                    targetFormat: isOffscreen ? TextureFormat.Rgba8Unorm : compositor.Context.SwapChainFormat
+                    targetFormat: isOffscreen ? TextureFormat.Rgba8Unorm : compositor.Context.SwapChainFormat,
+                    sampleCount: isOffscreen ? 1u : 4u
                 );
 
                 Marshal.FreeHGlobal((IntPtr)layouts[0].Attributes);
