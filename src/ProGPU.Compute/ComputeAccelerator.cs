@@ -109,6 +109,8 @@ public unsafe class ComputeAccelerator : IDisposable
     {
         if (_isDisposed) throw new ObjectDisposedException(nameof(ComputeAccelerator));
 
+        float snappedRadius = MathF.Round(radius * 2f) / 2f;
+
         uint width = source.Width;
         uint height = source.Height;
 
@@ -117,7 +119,7 @@ public unsafe class ComputeAccelerator : IDisposable
         destination.Resize(width, height);
 
         // Clamp iterations based on blur radius to yield high quality result
-        int iterations = Math.Clamp((int)Math.Round(radius / 2.5f), 1, 8);
+        int iterations = Math.Clamp((int)Math.Round(snappedRadius / 2.5f), 1, 8);
 
         var encoderDesc = new CommandEncoderDescriptor { Label = (byte*)SilkMarshal.StringToPtr("Compute Blur Encoder") };
         var encoder = _context.Wgpu.DeviceCreateCommandEncoder(_context.Device, &encoderDesc);
@@ -243,19 +245,21 @@ public unsafe class ComputeAccelerator : IDisposable
     {
         if (_isDisposed) throw new ObjectDisposedException(nameof(ComputeAccelerator));
 
+        float snappedBlurRadius = MathF.Round(blurRadius * 2f) / 2f;
+
         uint width = source.Width;
         uint height = source.Height;
 
         temp.Resize(width, height);
         destination.Resize(width, height);
 
-        if (blurRadius <= 0.01f)
+        if (snappedBlurRadius <= 0.01f)
         {
-            RunSharpDropShadow(source, destination, offset, shadowColor, blurRadius);
+            RunSharpDropShadow(source, destination, offset, shadowColor, snappedBlurRadius);
             return;
         }
 
-        int iterations = Math.Clamp((int)Math.Round(blurRadius / 2.5f), 1, 8);
+        int iterations = Math.Clamp((int)Math.Round(snappedBlurRadius / 2.5f), 1, 8);
 
         var encoderDesc = new CommandEncoderDescriptor { Label = (byte*)SilkMarshal.StringToPtr("Compute Shadow Encoder") };
         var encoder = _context.Wgpu.DeviceCreateCommandEncoder(_context.Device, &encoderDesc);
@@ -267,7 +271,7 @@ public unsafe class ComputeAccelerator : IDisposable
             BufferUsage.Uniform | BufferUsage.CopyDst,
             "Shadow Params Buffer"
         );
-        paramsBuffer.WriteSingle(new ShadowParams(offset, shadowColor, blurRadius));
+        paramsBuffer.WriteSingle(new ShadowParams(offset, shadowColor, snappedBlurRadius));
 
         var shadowHLayout = _context.Wgpu.ComputePipelineGetBindGroupLayout(_shadowBlurHorizPipeline, 0);
         var blurHLayout = _context.Wgpu.ComputePipelineGetBindGroupLayout(_blurHorizPipeline, 0);
