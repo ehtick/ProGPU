@@ -619,6 +619,54 @@ To support instantaneous zoom transitions on massive CAD models containing thous
 
 ---
 
+### 17. Pre-Allocated Ring Uniform Buffers (Glyph & Path Atlases)
+
+To eliminate the continuous CPU memory allocation overhead of creating small, temporary GPU uniform buffers on every render pass, we implemented a **Pre-allocated Ring Uniform Buffer** pattern in both `GlyphAtlas` and `PathAtlas`:
+* **Single Bulk Pre-allocation**: Allocates a single large `GpuBuffer` of `256KB` once at system startup. This pre-allocated ring buffer acts as the backing storage for up to 4,000 active glyph or vector path dispatches.
+* **256-Byte Alignment Compliance**: Follows the WebGPU standard (`minUniformBufferOffsetAlignment` boundary constraint of 256 bytes) by rounding up structural uniform offsets with a fast bitwise operation:
+  $$\text{alignedSize} = (\text{SizeOf<Uniforms>} + 255) \& \sim 255$$
+* **Fast Queue Copy-on-Write**: Inside batch rasterization and pending path loops, parameters are written directly to the pre-allocated ring buffer at the current `_ringOffset` using `QueueWriteBuffer`, completely avoiding buffer creation/destruction:
+  ```csharp
+  _context.Wgpu.QueueWriteBuffer(_context.Queue, _uniformRingBuffer.BufferPtr, _ringOffset, &uniforms, (uint)Marshal.SizeOf<GlyphUniforms>());
+  ```
+* **Binding Slice Offsets**: Dynamic bind groups are configured pointing to the exact slice within the ring buffer using `Offset = _ringOffset` and `Size = Marshal.SizeOf<Uniforms>()`. On each batch completion, `_ringOffset` is incremented by `alignedSize`, and it resets to `0` at the start of a new batch loop. This achieves **zero CPU allocations** inside dynamic rasterization loops.
+
+---
+
+### 18. Double-Buffered Geometry Swapchains (DxfStaticBuffer)
+
+Updating dense vector meshes and text quads during snapped zoom events can cause severe CPU-GPU hardware execution stalls. If the CPU disposes and recreates vertex/index buffers while the GPU command queue is actively reading from them, the graphics driver is forced to block CPU execution to synchronize hardware lifecycles.
+
+To prevent these stalls and achieve perfectly fluid rendering, we implemented a **Double-Buffering Swapchain** pattern:
+* **Asynchronous Back-Buffering**: Maintains dual buffer sets in `DxfStaticBuffer`:
+  - Front-Buffers (`TextVertexBuffer`, `TextIndexBuffer`, `TextIndexCount`) currently being drawn by the compositor.
+  - Back-Buffers (`_textVertexBufferBack`, `_textIndexBufferBack`, `_textIndexCountBack`) dedicated to accommodating the next camera layout recalculation.
+* **Non-Blocking Dynamic Copy**: When `UpdateTextBuffer` is invoked during snapped zooms, it resizes and writes to the back-buffers asynchronously.
+* **Zero-Allocation Swapping**: Swaps the front and back buffer references instantly using cheap variable re-assignment on the CPU:
+  ```csharp
+  var tempVertexBuffer = TextVertexBuffer;
+  TextVertexBuffer = _textVertexBufferBack;
+  _textVertexBufferBack = tempVertexBuffer;
+  ```
+* **Static Bind-Group Stability**: Because vertex and index buffer mappings are bound directly via render encoder draw commands rather than static composition bind groups, swapping front/back buffers bypasses bind-group recreation or layout invalidations entirely, ensuring **stutter-free, instant zoom actions**.
+
+---
+
+### 19. Snapped Blur Radii & Stable Effect Pipelines
+
+Offscreen Gaussian blur and drop shadow dispatches are highly sensitive to parameter fluctuations during keyframe animations or hover transitions. Smooth float radius adjustments (e.g. transitioning from `1.0f` to `3.0f`) dynamically modify the computed iteration count:
+$$\text{iterations} = \text{Clamp}(\text{Round}(\text{radius} / 2.5), 1, 8)$$
+This causes the rendering loop to alter command-buffer layouts and recreate dynamic bind groups frame-by-frame, creating noticeable micro-stutters.
+
+To stabilize effect execution, we implemented a **Snapped Radii Pipeline**:
+* **Discrete Increments**: Symmetrically snaps incoming `radius` and `blurRadius` parameters to discrete `0.5f` pixel boundaries at the entry points of `ApplyGaussianBlur` and `ApplyDropShadow`:
+  ```csharp
+  float snappedRadius = MathF.Round(radius * 2f) / 2f;
+  ```
+* **Pipeline and Bind-Group Lock**: Snapping ensures that the computed iteration count remains perfectly locked and stable during intermediate keyframes. WGSL shader binding entries, textures, and command layouts remain identical across frame transitions, delivering extremely fluid hover animations and eliminating transient render delays.
+
+---
+
 
 ## Module & Project Architecture Breakdown
 
