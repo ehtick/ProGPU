@@ -40,6 +40,8 @@ public unsafe class DxfStaticBuffer : IDisposable
     
     public Compositor.CompositorDrawCall[] DrawCalls { get; }
     
+    public Compositor.StaticTextRecord[] TextRecords { get; set; } = Array.Empty<Compositor.StaticTextRecord>();
+    
     private bool _isDisposed;
     
     public DxfStaticBuffer(
@@ -93,6 +95,41 @@ public unsafe class DxfStaticBuffer : IDisposable
         
         // 4. Custom uniforms buffer (needs custom model-to-screen matrix)
         UniformBuffer = new GpuBuffer(context, (uint)Marshal.SizeOf<GpuUniforms>(), BufferUsage.Uniform | BufferUsage.CopyDst, "Static DXF Viewport Uniform Buffer");
+    }
+    
+    public void UpdateTextBuffer(VectorVertex[] textVertices, uint[] textIndices)
+    {
+        if (textVertices.Length > 0 && textIndices.Length > 0)
+        {
+            if (TextVertexBuffer == null || TextVertexBuffer.Size < textVertices.Length * Marshal.SizeOf<VectorVertex>())
+            {
+                TextVertexBuffer?.Dispose();
+                TextVertexBuffer = new GpuBuffer(_context, (uint)textVertices.Length * (uint)Marshal.SizeOf<VectorVertex>(), BufferUsage.Vertex | BufferUsage.CopyDst, "Static DXF Text Vertex Buffer");
+            }
+            TextVertexBuffer.Write(new ReadOnlySpan<VectorVertex>(textVertices));
+            
+            if (TextIndexBuffer == null || TextIndexBuffer.Size < textIndices.Length * 4)
+            {
+                TextIndexBuffer?.Dispose();
+                TextIndexBuffer = new GpuBuffer(_context, (uint)textIndices.Length * 4, BufferUsage.Index | BufferUsage.CopyDst, "Static DXF Text Index Buffer");
+            }
+            TextIndexBuffer.Write(new ReadOnlySpan<uint>(textIndices));
+            TextIndexCount = (uint)textIndices.Length;
+        }
+        else
+        {
+            TextIndexCount = 0;
+        }
+        
+        for (int i = 0; i < DrawCalls.Length; i++)
+        {
+            if (DrawCalls[i].Type == Compositor.DrawCallType.Text)
+            {
+                var dc = DrawCalls[i];
+                dc.IndexCount = TextIndexCount;
+                DrawCalls[i] = dc;
+            }
+        }
     }
     
     public void InitializeBindGroups(BindGroupLayout* layout, BindGroupLayout* layoutOffscreen, BindGroupLayout* textLayout, BindGroupLayout* textLayoutOffscreen)
