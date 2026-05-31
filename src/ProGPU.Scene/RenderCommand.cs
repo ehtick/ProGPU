@@ -61,6 +61,11 @@ public struct Rect
     public Vector2 Position => new Vector2(X, Y);
     public Vector2 Size => new Vector2(Width, Height);
 
+    public float Right => X + Width;
+    public float Bottom => Y + Height;
+    public bool IsEmpty => Width <= 0f || Height <= 0f;
+    public static Rect Empty => new Rect(0f, 0f, 0f, 0f);
+
     public Rect(float x, float y, float width, float height)
     {
         X = x;
