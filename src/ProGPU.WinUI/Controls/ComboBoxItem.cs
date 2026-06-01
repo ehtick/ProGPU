@@ -19,7 +19,7 @@ public class ComboBoxItem : ContentControl
             "IsSelected",
             typeof(bool),
             typeof(ComboBoxItem),
-            new PropertyMetadata(false));
+            new PropertyMetadata(false) { AffectsRender = true });
 
     private string _text = string.Empty;
 

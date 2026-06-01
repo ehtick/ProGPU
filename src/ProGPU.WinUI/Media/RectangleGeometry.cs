@@ -52,15 +52,17 @@ public class RectangleGeometry : Geometry
         Rect rect = Rect;
         if (rect.IsEmpty) return Rect.Empty;
 
-        Vector2 topLeft = TransformPoint(new Vector2(rect.X, rect.Y));
-        Vector2 bottomRight = TransformPoint(new Vector2(rect.Right, rect.Bottom));
+        Vector2 p1 = TransformPoint(new Vector2(rect.X, rect.Y));
+        Vector2 p2 = TransformPoint(new Vector2(rect.Right, rect.Y));
+        Vector2 p3 = TransformPoint(new Vector2(rect.X, rect.Bottom));
+        Vector2 p4 = TransformPoint(new Vector2(rect.Right, rect.Bottom));
 
-        float x = Math.Min(topLeft.X, bottomRight.X);
-        float y = Math.Min(topLeft.Y, bottomRight.Y);
-        float w = Math.Abs(bottomRight.X - topLeft.X);
-        float h = Math.Abs(bottomRight.Y - topLeft.Y);
+        float minX = Math.Min(Math.Min(p1.X, p2.X), Math.Min(p3.X, p4.X));
+        float maxX = Math.Max(Math.Max(p1.X, p2.X), Math.Max(p3.X, p4.X));
+        float minY = Math.Min(Math.Min(p1.Y, p2.Y), Math.Min(p3.Y, p4.Y));
+        float maxY = Math.Max(Math.Max(p1.Y, p2.Y), Math.Max(p3.Y, p4.Y));
 
-        return new Rect(x, y, w, h);
+        return new Rect(minX, minY, maxX - minX, maxY - minY);
     }
 
     public override void Draw(DrawingContext context, Brush? fill, Pen? pen)
