@@ -43,6 +43,15 @@ public static class InputSystem
         set => _currentState = value;
     }
 
+    // Public event injection entry points for external host containers (e.g. Avalonia)
+    public static void InjectMouseMove(Vector2 screenPos) => OnMouseMove(screenPos);
+    public static void InjectMouseDown(MouseButton button) => OnMouseDown(button);
+    public static void InjectMouseUp(MouseButton button) => OnMouseUp(button);
+    public static void InjectMouseScroll(Vector2 scroll) => OnMouseScroll(scroll);
+    public static void InjectKeyDown(Key key) => OnKeyDown(key);
+    public static void InjectKeyUp(Key key) => OnKeyUp(key);
+    public static void InjectKeyChar(char c) => OnKeyChar(c);
+
     public static Action<Action>? DispatcherQueue { get; set; }
 
     private static FrameworkElement? _root { get => Current.Root; set => Current.Root = value; }
