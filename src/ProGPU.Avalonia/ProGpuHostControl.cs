@@ -342,6 +342,12 @@ public unsafe class ProGpuHostControl : Control
             WinuiRoot, renderWidth, renderHeight, dpi
         ));
     }
+
+    public override void Render(AvaloniaDrawingContext context)
+    {
+        base.Render(context);
+        QueueRenderUpdate();
+    }
 }
 
 public unsafe class ProGpuCustomVisualHandler : CompositionCustomVisualHandler, IDisposable
@@ -399,7 +405,7 @@ public unsafe class ProGpuCustomVisualHandler : CompositionCustomVisualHandler, 
                     _resourcesDirty = true;
                 }
             }
-            RegisterForNextAnimationFrameUpdate();
+            Invalidate();
         }
     }
 
