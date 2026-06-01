@@ -22,7 +22,10 @@ public class ListBoxItem : ContentControl
             new PropertyMetadata(false, (d, e) => {
                 var item = (ListBoxItem)d;
                 item.Invalidate();
-                item.Selected?.Invoke(item, EventArgs.Empty);
+                if (e.NewValue is bool isSelected && isSelected)
+                {
+                    item.Selected?.Invoke(item, EventArgs.Empty);
+                }
             }));
 
     private string _text = string.Empty;
@@ -93,7 +96,7 @@ public class ListBoxItem : ContentControl
     {
         if (IsEnabled && IsPointerPressed && IsPointerOver)
         {
-            Selected?.Invoke(this, EventArgs.Empty);
+            IsSelected = true;
         }
         base.OnPointerReleased(e);
     }
@@ -124,8 +127,8 @@ public class ListBoxItem : ContentControl
         }
 
         return new Vector2(
-            Math.Max(64f - paddingH, contentDesired.X + borderH),
-            HeightConstraint ?? Math.Max(32f - paddingV, contentDesired.Y + borderV)
+            Math.Max(64f, contentDesired.X + inset.X),
+            HeightConstraint ?? Math.Max(32f, contentDesired.Y + inset.Y)
         );
     }
 
@@ -134,10 +137,10 @@ public class ListBoxItem : ContentControl
         var contentVisual = ContentVisual;
         if (contentVisual != null)
         {
-            float leftInset = BorderThickness.Left;
-            float topInset = BorderThickness.Top;
-            float rightInset = BorderThickness.Right;
-            float bottomInset = BorderThickness.Bottom;
+            float leftInset = BorderThickness.Left + Padding.Left;
+            float topInset = BorderThickness.Top + Padding.Top;
+            float rightInset = BorderThickness.Right + Padding.Right;
+            float bottomInset = BorderThickness.Bottom + Padding.Bottom;
 
             float childW = Math.Min(arrangeRect.Width - (leftInset + rightInset), contentVisual.DesiredSize.X);
             float childH = Math.Min(arrangeRect.Height - (topInset + bottomInset), contentVisual.DesiredSize.Y);

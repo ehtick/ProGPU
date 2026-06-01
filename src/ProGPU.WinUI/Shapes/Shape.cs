@@ -70,7 +70,11 @@ public abstract class Shape : FrameworkElement
         if (geom == null) return Vector2.Zero;
 
         Rect bounds = geom.Bounds;
-        if (bounds.IsEmpty) return Vector2.Zero;
+        // A vertical or horizontal line has width or height equal to 0, which is still a valid measurable shape
+        if (bounds.Width < 0f || bounds.Height < 0f || (bounds.Width == 0f && bounds.Height == 0f))
+        {
+            return Vector2.Zero;
+        }
 
         float thickness = Stroke != null ? StrokeThickness : 0f;
         float w = bounds.Width + thickness;
