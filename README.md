@@ -781,3 +781,93 @@ Located in `tools/DxfDiag/`, this is a standalone command-line utility to inspec
   dotnet run --project tools/DxfDiag -- <path-to-dxf-file> --layout A0
   ```
 * **Output**: Generates a detailed audit of entity counts, viewport settings, block trees, and coordinates, saving the report to `outliers.txt` and logging a summary to the console.
+
+---
+
+## Platform Integration & Host Control Embedding (Avalonia & Uno Platform)
+
+ProGPU is designed to act as an embedded high-performance graphics substrate inside standard host XAML frameworks. We provide native integration packages for both **Avalonia** (`ProGPU.Avalonia`) and **Uno Platform** (`ProGPU.Uno`), allowing developers to overlay low-allocation WebGPU rendering canvases directly inside standard desktop applications.
+
+### 1. Hybrid Rendering Architecture
+
+The integration layer hosts a headless, offscreen `WgpuContext` and `Compositor` instance inside a custom control subclass (`Control` in Avalonia, `ContentControl` in Uno). WebGPU renders all visual tree and CAD vectors offscreen, which are then blitted directly to the host's screen.
+
+```mermaid
+graph TD
+    subgraph UIThread ["Host UI Thread (Input & Sizing)"]
+        Size[Sizing Negotiation: Measure & Arrange] --> Input[Pointer Event Capture & Translation]
+    end
+    
+    subgraph GPUThread ["GPU & WebGPU Staging Loop"]
+        Input -->|InputSystem.Inject| WG[WebGPU Core Offscreen Render]
+        Size -->|Logical Bounds| WG
+        WG -->|CommandEncoderCopy| ST[Staging Buffer VRAM]
+        ST -->|Sync MapRead| MP[Mapped CPU Pointer]
+        MP -->|Direct Pointer Blit| WB[WriteableBitmap 96 DPI]
+        WB -->|Invalidate / DrawImage| SCR[High-DPI Retina Screen]
+    end
+```
+
+---
+
+### 2. High-Performance Direct Bitmap Blitting Pipeline
+
+Due to standard platform-agnostic FFI limitations in `wgpu-native`, raw `WGPUTexture` pointers cannot be shared directly with the compositor's graphics context (Metal/D3D) as `IOSurfaceRef` or `id<MTLTexture>` handles without writing custom native Rust/C++ bridging wrappers. 
+
+To bypass these FFI opaque struct constraints and deliver **100% stable, platform-independent rendering**, ProGPU implements a highly optimized **Direct Bitmap Blitting pipeline**:
+
+*   **Aligned GPU Staging Buffers**: WebGPU allocates a staging buffer backed by `BufferUsage.MapRead | BufferUsage.CopyDst`. The row pitch (`BytesPerRow`) is aligned to the nearest **256 bytes** per WebGPU specifications to satisfy FFI layout requirements:
+    $$\text{BytesPerRow} = (\text{width} \cdot \text{bytesPerPixel} + 255) \ \& \ \sim 255$$
+*   **Synchronous MapRead Polling**: Each frame, a command encoder executes `CopyTextureToBuffer` from the offscreen target to the staging buffer. The buffer is mapped via `BufferMapAsync`, and the UI thread polls `wgpuDevicePoll` in a light spin loop until mapping completes.
+*   **Direct Row Pointer Blitting**: Once mapped, the raw VRAM memory address is extracted. The control performs a high-speed pointer-based copy utilizing native **`System.Buffer.MemoryCopy`** straight into the locked buffer address of the host's high-DPI `WriteableBitmap`:
+    ```csharp
+    using (var locked = _writeableBitmap.Lock())
+    {
+        byte* srcBytes = (byte*)mappedPtr;
+        byte* dstBytes = (byte*)locked.Address;
+        uint rowBytes = _renderWidth * bytesPerPixel;
+        
+        for (uint y = 0; y < _renderHeight; y++)
+        {
+            byte* srcRow = srcBytes + (y * _bytesPerRow);
+            byte* dstRow = dstBytes + (y * (uint)locked.RowBytes);
+            System.Buffer.MemoryCopy(srcRow, dstRow, rowBytes, rowBytes);
+        }
+    }
+    ```
+    This row-by-row blitting executes in microseconds on the CPU, achieving near-zero visual overhead and bypassing bilinear filtering blur.
+
+---
+
+### 3. High-DPI Retina Calibration & Anti-Double-Scaling
+
+On macOS Retina displays (e.g. `DpiScale = 2.0`), standard platform-specific graphics renderers often apply the display's scaling factor twice when drawing a high-DPI bitmap, blowing up the layout and creating blurry graphics.
+
+ProGPU resolves this double-scaling bug through strict physical-to-logical coordination:
+*   **96 DPI Isolation**: The host `WriteableBitmap` is instantiated at a constant **96 DPI** (`new Vector(96, 96)`), making its logical size match its physical size.
+*   **Logical-Bounds Offscreen Rendering**: Viewport dimensions passed to `Compositor.RenderOffscreen` are strictly mapped in **logical coordinates**, while the internal WebGPU pipeline multiplies them by `DpiScale` to align the physical viewport.
+*   **Clean Down-Scaling**: During the draw pass, the physical staging bitmap is scaled down into the host control's logical bounds using a standard 1-to-1 stretch layout (`Stretch.Fill` in Uno, `context.DrawImage` in Avalonia). The physical pixels map precisely 1:1 with screen hardware coordinates, yielding absolute razor-sharp text and graphics.
+
+---
+
+### 4. Symmetrical Input Routing & Event Translation
+
+The integration libraries bridge the event-handling loop symmetrically:
+*   **Coordinate Translation**: Pointer event handlers (`OnPointerMoved`, `OnPointerPressed`, etc.) intercept native positions, translate them into logical `Vector2` boundaries, and route them to ProGPU's input engine:
+    ```csharp
+    InputSystem.InjectMouseMove(new Vector2((float)pos.X, (float)pos.Y));
+    ```
+*   **Input State Invalidation**: Input events mark the active WinUI input state dirty, forcing immediate layouts hit-testing and scheduling dynamic repaint requests to update hover overlays and cursors instantly.
+
+---
+
+### 5. locked High-Refresh Rate VSync Loops (120 FPS+)
+
+To allow embedded graphics and animation benches to run at their physical display limit, standard timer loops are replaced by self-scheduling graphics dispatchers:
+*   **Avalonia**: Hooks directly into the system's VSync loop using:
+    ```csharp
+    TopLevel.RequestAnimationFrame(OnAnimationTick);
+    ```
+    This self-scheduling tick fires callbacks exactly aligned with the physical monitor's refresh rate, unlocking **120 FPS / 144 FPS** rendering without frame tearing.
+*   **Uno Platform**: Subscribes directly to `CompositionTarget.Rendering` to drive the WebGPU command submissions and refresh statistics exactly aligned with each compositor pass.
+
