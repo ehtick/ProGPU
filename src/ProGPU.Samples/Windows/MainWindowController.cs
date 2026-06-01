@@ -99,6 +99,73 @@ public static unsafe class MainWindowController
         window.Closed += (s, e) => Cleanup();
     }
 
+    public static void StartEmbedded(WgpuContext context, Compositor compositor)
+    {
+        AppState._wgpuContext = context;
+        AppState._screenCompositor = compositor;
+        if (AppState._screenCompositor != null)
+        {
+            AppState._screenCompositor.ClearColor = ThemeManager.GetColor("PageBackground");
+        }
+
+        AppState._offscreenCompositor = new Compositor(AppState._wgpuContext!, TextureFormat.Rgba8Unorm);
+        AppState._compute = new ComputeAccelerator(AppState._wgpuContext!);
+
+        string fontPath = "/System/Library/Fonts/Supplemental/Arial.ttf";
+        if (!File.Exists(fontPath))
+        {
+            fontPath = "Arial.ttf";
+        }
+
+        if (File.Exists(fontPath))
+        {
+            Console.WriteLine($"[ProGPU.Samples] Loading Embedded System Font: {fontPath}");
+            AppState._font = new TtfFont(fontPath);
+            Microsoft.UI.Xaml.Controls.PopupService.DefaultFont = AppState._font;
+        }
+        else
+        {
+            throw new FileNotFoundException("Arial.ttf is required to execute typography.");
+        }
+
+        string timesPath = "/System/Library/Fonts/Supplemental/Times New Roman.ttf";
+        if (File.Exists(timesPath)) AppState._fontTimes = new TtfFont(timesPath);
+        else AppState._fontTimes = AppState._font;
+
+        string courierPath = "/System/Library/Fonts/Supplemental/Courier New.ttf";
+        if (File.Exists(courierPath)) AppState._fontCourier = new TtfFont(courierPath);
+        else AppState._fontCourier = AppState._font;
+
+        string georgiaPath = "/System/Library/Fonts/Supplemental/Georgia.ttf";
+        if (File.Exists(georgiaPath)) AppState._fontGeorgia = new TtfFont(georgiaPath);
+        else AppState._fontGeorgia = AppState._font;
+
+        string comicPath = "/System/Library/Fonts/Supplemental/Comic Sans MS.ttf";
+        if (File.Exists(comicPath)) AppState._fontComic = new TtfFont(comicPath);
+        else AppState._fontComic = AppState._font;
+
+        AppState._canvasSourceTexture = new GpuTexture(AppState._wgpuContext!, 600, 600, TextureFormat.Rgba8Unorm, 
+            TextureUsage.RenderAttachment | TextureUsage.TextureBinding | TextureUsage.StorageBinding | TextureUsage.CopySrc);
+        AppState._canvasTempTexture = new GpuTexture(AppState._wgpuContext!, 600, 600, TextureFormat.Rgba8Unorm, 
+            TextureUsage.TextureBinding | TextureUsage.StorageBinding);
+        AppState._canvasBlurTexture = new GpuTexture(AppState._wgpuContext!, 600, 600, TextureFormat.Rgba8Unorm, 
+            TextureUsage.TextureBinding | TextureUsage.StorageBinding);
+        AppState._canvasShadowTexture = new GpuTexture(AppState._wgpuContext!, 600, 600, TextureFormat.Rgba8Unorm, 
+            TextureUsage.TextureBinding | TextureUsage.StorageBinding);
+
+        AppState.GenerateLogItems();
+
+        BuildSceneGraph();
+
+        if (AppState._topLevelGrid != null)
+        {
+            AppState._topLevelGrid.PointerMoved += (sender, args) =>
+            {
+                AppState._mousePos = args.Position;
+            };
+        }
+    }
+
     private static void BuildSceneGraph()
     {
         if (AppState._wgpuContext == null || AppState._font == null) return;
@@ -456,9 +523,9 @@ public static unsafe class MainWindowController
         }
     }
 
-    private static void OnWindowRender(double delta)
+    public static void OnWindowRender(double delta)
     {
-        if (AppState._rootGrid == null || AppState._topLevelGrid == null || AppState._wgpuContext == null || AppState._window == null) return;
+        if (AppState._rootGrid == null || AppState._topLevelGrid == null || AppState._wgpuContext == null) return;
         if (AppState._screenCompositor == null || AppState._offscreenCompositor == null || AppState._compute == null) return;
 
         OnWindowUpdate(delta);
@@ -481,8 +548,11 @@ public static unsafe class MainWindowController
         // Update animated cogs if currently in Compute FX Showcase View
         if (AppState._activeCategory == "Compute FX" && AppState._gearCanvasVisual != null)
         {
-            AppState._gearCanvasVisual.Measure(new Vector2(AppState._window.Size.X - 300f, AppState._window.Size.Y - 140f));
-            AppState._gearCanvasVisual.Arrange(new Rect(0, 0, AppState._window.Size.X - 300f, AppState._window.Size.Y - 140f));
+            float winX = AppState._window?.Size.X ?? AppState._topLevelGrid.Size.X;
+            float winY = AppState._window?.Size.Y ?? AppState._topLevelGrid.Size.Y;
+
+            AppState._gearCanvasVisual.Measure(new Vector2(winX - 300f, winY - 140f));
+            AppState._gearCanvasVisual.Arrange(new Rect(0, 0, winX - 300f, winY - 140f));
             AppState._gearCanvasVisual.UpdateRotation(AppState._gearRotation);
 
             uint canvasW = (uint)Math.Max(1f, AppState._gearCanvasVisual.Size.X);
