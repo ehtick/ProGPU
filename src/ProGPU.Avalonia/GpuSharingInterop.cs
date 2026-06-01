@@ -39,6 +39,18 @@ public static unsafe class GpuSharingInterop
 
     [DllImport("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")]
     public static extern void CFRelease(IntPtr cf);
+
+    [DllImport(IOSurfaceLib)]
+    public static extern int IOSurfaceLock(IntPtr buffer, uint options, uint* seed);
+
+    [DllImport(IOSurfaceLib)]
+    public static extern int IOSurfaceUnlock(IntPtr buffer, uint options, uint* seed);
+
+    [DllImport(IOSurfaceLib)]
+    public static extern void* IOSurfaceGetBaseAddress(IntPtr buffer);
+
+    [DllImport(IOSurfaceLib)]
+    public static extern nuint IOSurfaceGetBytesPerRow(IntPtr buffer);
     
     public static IntPtr CreateMacSharedSurface(uint width, uint height)
     {
@@ -193,6 +205,35 @@ public static unsafe class GpuSharingInterop
             return getSharedHandle(resource, out sharedHandle);
         }
         
+        public static void CallGetImmediateContext(IntPtr device, out IntPtr context)
+        {
+            IntPtr* vtbl = *(IntPtr**)device;
+            IntPtr funcPtr = vtbl[40]; // GetImmediateContext is index 40
+            
+            delegate* unmanaged[Stdcall]<IntPtr, out IntPtr, void> getImmediateContext = 
+                (delegate* unmanaged[Stdcall]<IntPtr, out IntPtr, void>)funcPtr;
+                
+            getImmediateContext(device, out context);
+        }
+
+        public static void CallUpdateSubresource(
+            IntPtr context,
+            IntPtr resource,
+            uint dstSubresource,
+            IntPtr dstBox,
+            void* srcData,
+            uint srcRowPitch,
+            uint srcDepthPitch)
+        {
+            IntPtr* vtbl = *(IntPtr**)context;
+            IntPtr funcPtr = vtbl[49]; // UpdateSubresource is index 49
+            
+            delegate* unmanaged[Stdcall]<IntPtr, IntPtr, uint, IntPtr, void*, uint, uint, void> updateSubresource = 
+                (delegate* unmanaged[Stdcall]<IntPtr, IntPtr, uint, IntPtr, void*, uint, uint, void>)funcPtr;
+                
+            updateSubresource(context, resource, dstSubresource, dstBox, srcData, srcRowPitch, srcDepthPitch);
+        }
+
         public static uint CallRelease(IntPtr obj)
         {
             if (obj == IntPtr.Zero) return 0;

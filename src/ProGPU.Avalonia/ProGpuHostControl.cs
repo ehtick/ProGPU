@@ -2,6 +2,8 @@ using System;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Numerics;
+using System.Threading.Tasks;
+using System.Diagnostics;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -30,6 +32,68 @@ namespace ProGPU.Avalonia;
 
 public class ProGpuHostControl : Control
 {
+    [DllImport("wgpu_native", EntryPoint = "wgpuDevicePoll")]
+    private static extern unsafe bool wgpuDevicePoll(Device* device, bool wait, void* wrappedSubmissionIndex);
+
+    private class SwapchainImage : IDisposable
+    {
+        public IntPtr SharedHandle = IntPtr.Zero;
+        public ICompositionImportedGpuImage? ImportedImage;
+        public GpuTexture? WgpuTexture;
+        public IntPtr StagingBuffer = IntPtr.Zero;
+        public uint StagingBufferSize;
+        public uint BytesPerRow;
+        public bool IsReady = true;
+
+        // Windows specific
+        public IntPtr WinD3DDevice = IntPtr.Zero;
+        public IntPtr WinTexture2D = IntPtr.Zero;
+
+        private readonly WgpuContext _context;
+
+        public SwapchainImage(WgpuContext context)
+        {
+            _context = context;
+        }
+
+        public unsafe void Dispose()
+        {
+            if (ImportedImage != null)
+            {
+                _ = ImportedImage.DisposeAsync();
+                ImportedImage = null;
+            }
+
+            if (SharedHandle != IntPtr.Zero)
+            {
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+                {
+                    GpuSharingInterop.ReleaseMacSharedSurface(SharedHandle);
+                }
+                else if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
+                    GpuSharingInterop.ReleaseWindowsSharedTexture(WinD3DDevice, WinTexture2D);
+                }
+                SharedHandle = IntPtr.Zero;
+                WinD3DDevice = IntPtr.Zero;
+                WinTexture2D = IntPtr.Zero;
+            }
+
+            if (WgpuTexture != null)
+            {
+                WgpuTexture.Dispose();
+                WgpuTexture = null;
+            }
+
+            if (StagingBuffer != IntPtr.Zero)
+            {
+                _context.Wgpu.BufferDestroy((GpuBuffer*)StagingBuffer);
+                _context.Wgpu.BufferRelease((GpuBuffer*)StagingBuffer);
+                StagingBuffer = IntPtr.Zero;
+            }
+        }
+    }
+
     // Dependency properties
     public static readonly StyledProperty<FrameworkElement?> WinuiRootProperty =
         AvaloniaProperty.Register<ProGpuHostControl, FrameworkElement?>(nameof(WinuiRoot));
@@ -60,15 +124,82 @@ public class ProGpuHostControl : Control
     private string _gpuHandleType = "";
     private CompositionSurfaceVisual? _surfaceVisual;
     private CompositionDrawingSurface? _drawingSurface;
-    private ICompositionImportedGpuImage? _importedGpuImage;
-    private IntPtr _sharedHandle = IntPtr.Zero;
     private uint _lastSharedWidth;
     private uint _lastSharedHeight;
-    private GpuTexture? _sharedWgpuTextureWrapper;
+    private SwapchainImage[]? _swapchainImages;
+    private int _currentWriteImageIndex = 0;
 
-    // Windows specific shared D3D11 resource holders
-    private IntPtr _winD3DDevice = IntPtr.Zero;
-    private IntPtr _winTexture2D = IntPtr.Zero;
+    // Background Device Polling Thread and Mapping
+    private Thread? _pollingThread;
+    private CancellationTokenSource? _pollingCts;
+    private static readonly PfnBufferMapCallback s_mapCallback;
+    private bool _isRendering = false;
+    private bool _renderRequested = false;
+
+    private static unsafe void OnMapCallback(BufferMapAsyncStatus status, void* userData)
+    {
+        var handle = GCHandle.FromIntPtr((IntPtr)userData);
+        if (handle.IsAllocated)
+        {
+            var tcs = (TaskCompletionSource<bool>)handle.Target!;
+            handle.Free();
+            if (status == BufferMapAsyncStatus.Success)
+            {
+                tcs.TrySetResult(true);
+            }
+            else
+            {
+                tcs.TrySetException(new Exception($"Buffer map failed: {status}"));
+            }
+        }
+    }
+
+    private Task MapBufferAsync(IntPtr buffer, MapMode mode, nuint size)
+    {
+        unsafe
+        {
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var handle = GCHandle.Alloc(tcs);
+            var userData = (void*)GCHandle.ToIntPtr(handle);
+            _wgpuContext!.Wgpu.BufferMapAsync((GpuBuffer*)buffer, mode, 0, size, s_mapCallback, userData);
+            return tcs.Task;
+        }
+    }
+
+    private void StartPolling()
+    {
+        if (_pollingThread != null) return;
+        _pollingCts = new CancellationTokenSource();
+        var token = _pollingCts.Token;
+
+        _pollingThread = new Thread(() =>
+        {
+            unsafe
+            {
+                while (!token.IsCancellationRequested)
+                {
+                    if (_wgpuContext != null && _wgpuContext.Device != null)
+                    {
+                        wgpuDevicePoll(_wgpuContext.Device, false, null);
+                    }
+                    Thread.Sleep(2);
+                }
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "ProGpuDevicePolling"
+        };
+        _pollingThread.Start();
+    }
+
+    private void StopPolling()
+    {
+        _pollingCts?.Cancel();
+        _pollingThread?.Join(500);
+        _pollingThread = null;
+        _pollingCts = null;
+    }
 
     // State tracking
     private bool _isInitialized;
@@ -76,11 +207,12 @@ public class ProGpuHostControl : Control
     private uint _renderWidth;
     private uint _renderHeight;
 
-    static ProGpuHostControl()
+    static unsafe ProGpuHostControl()
     {
         // Enable focus by default
         FocusableProperty.OverrideDefaultValue<ProGpuHostControl>(true);
         AffectsRender<ProGpuHostControl>(WinuiRootProperty);
+        s_mapCallback = PfnBufferMapCallback.From(OnMapCallback);
     }
 
     public ProGpuHostControl()
@@ -138,6 +270,7 @@ public class ProGpuHostControl : Control
         // 1. Initialize Headless/Offscreen WebGPU Context
         _wgpuContext = new WgpuContext();
         _wgpuContext.Initialize(null); // No Silk window; direct offscreen render target
+        StartPolling();
 
         // 2. Initialize Compositor targeting BGRA8Unorm texture formats
         _compositor = new WinuiCompositor(_wgpuContext, TextureFormat.Bgra8Unorm);
@@ -232,6 +365,8 @@ public class ProGpuHostControl : Control
     {
         if (!_isInitialized) return;
 
+        StopPolling();
+
         ThemeManager.ThemeChanged -= OnThemeChanged;
 
         if (_customVisual != null)
@@ -261,7 +396,7 @@ public class ProGpuHostControl : Control
 
     private void ResizeSharedResources(uint width, uint height)
     {
-        if (width == _lastSharedWidth && height == _lastSharedHeight && _importedGpuImage != null)
+        if (width == _lastSharedWidth && height == _lastSharedHeight && _swapchainImages != null)
             return;
 
         ReleaseSharedResources();
@@ -269,91 +404,226 @@ public class ProGpuHostControl : Control
         _lastSharedWidth = width;
         _lastSharedHeight = height;
 
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+        _swapchainImages = new SwapchainImage[2];
+        for (int i = 0; i < 2; i++)
         {
-            _sharedHandle = GpuSharingInterop.CreateMacSharedSurface(width, height);
-        }
-        else if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            _sharedHandle = GpuSharingInterop.CreateWindowsSharedTexture(width, height, out _winD3DDevice, out _winTexture2D);
-        }
-
-        if (_sharedHandle != IntPtr.Zero && _gpuInterop != null)
-        {
-            var props = new PlatformGraphicsExternalImageProperties
-            {
-                Width = (int)width,
-                Height = (int)height,
-                Format = PlatformGraphicsExternalImageFormat.B8G8R8A8UNorm,
-                TopLeftOrigin = true
-            };
+            var image = new SwapchainImage(_wgpuContext!);
             
-            var platformHandle = new PlatformHandle(_sharedHandle, _gpuHandleType);
-            _importedGpuImage = _gpuInterop.ImportImage(platformHandle, props);
-        }
-    }
-
-    private void ReleaseSharedResources()
-    {
-        if (_importedGpuImage != null)
-        {
-            _ = _importedGpuImage.DisposeAsync();
-            _importedGpuImage = null;
-        }
-
-        if (_sharedHandle != IntPtr.Zero)
-        {
             if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
             {
-                GpuSharingInterop.ReleaseMacSharedSurface(_sharedHandle);
+                image.SharedHandle = GpuSharingInterop.CreateMacSharedSurface(width, height);
             }
             else if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
-                GpuSharingInterop.ReleaseWindowsSharedTexture(_winD3DDevice, _winTexture2D);
-                _winD3DDevice = IntPtr.Zero;
-                _winTexture2D = IntPtr.Zero;
+                image.SharedHandle = GpuSharingInterop.CreateWindowsSharedTexture(width, height, out image.WinD3DDevice, out image.WinTexture2D);
             }
-            _sharedHandle = IntPtr.Zero;
-        }
 
-        if (_sharedWgpuTextureWrapper != null)
-        {
-            _sharedWgpuTextureWrapper.Dispose();
-            _sharedWgpuTextureWrapper = null;
-        }
-    }
+            if (image.SharedHandle != IntPtr.Zero && _gpuInterop != null)
+            {
+                var props = new PlatformGraphicsExternalImageProperties
+                {
+                    Width = (int)width,
+                    Height = (int)height,
+                    Format = PlatformGraphicsExternalImageFormat.B8G8R8A8UNorm,
+                    TopLeftOrigin = true
+                };
+                
+                var platformHandle = new PlatformHandle(image.SharedHandle, _gpuHandleType);
+                image.ImportedImage = _gpuInterop.ImportImage(platformHandle, props);
+            }
 
-    private void RenderToSharedTexture(uint width, uint height, double dpiScale)
-    {
-        if (_wgpuContext == null || _compositor == null) return;
-
-        float logicalWidth = (float)(width / dpiScale);
-        float logicalHeight = (float)(height / dpiScale);
-
-        if (_sharedWgpuTextureWrapper == null || _sharedWgpuTextureWrapper.Width != width || _sharedWgpuTextureWrapper.Height != height)
-        {
-            _sharedWgpuTextureWrapper?.Dispose();
-            
-            // Allocate our WebGPU representation of the shared texture
-            _sharedWgpuTextureWrapper = new GpuTexture(
-                _wgpuContext,
+            // Allocate WebGPU representation of the shared texture
+            image.WgpuTexture = new GpuTexture(
+                _wgpuContext!,
                 width,
                 height,
                 TextureFormat.Bgra8Unorm,
                 TextureUsage.RenderAttachment | TextureUsage.CopySrc,
-                "Shared Zero-Copy Target"
+                $"Shared Zero-Copy Target {i}"
             );
+
+            // Setup staging buffer
+            uint bytesPerPixel = 4;
+            uint unalignedBytesPerRow = width * bytesPerPixel;
+            image.BytesPerRow = (unalignedBytesPerRow + 255) & ~255u;
+            uint requiredBufferSize = image.BytesPerRow * height;
+            image.StagingBufferSize = requiredBufferSize;
+
+            unsafe
+            {
+                var bufferDesc = new BufferDescriptor
+                {
+                    Usage = BufferUsage.MapRead | BufferUsage.CopyDst,
+                    Size = requiredBufferSize,
+                    MappedAtCreation = false
+                };
+                image.StagingBuffer = (IntPtr)_wgpuContext!.Wgpu.DeviceCreateBuffer(_wgpuContext!.Device, &bufferDesc);
+            }
+
+            _swapchainImages[i] = image;
         }
 
-        // Render directly into the shared texture target - ZERO CPU-copy overhead!
-        _compositor.RenderOffscreen(
-            WinuiRoot,
-            (uint)Math.Max(1, logicalWidth),
-            (uint)Math.Max(1, logicalHeight),
-            _sharedWgpuTextureWrapper,
-            0.0f,
-            (float)dpiScale
-        );
+        _currentWriteImageIndex = 0;
+    }
+
+    private void ReleaseSharedResources()
+    {
+        if (_swapchainImages != null)
+        {
+            foreach (var img in _swapchainImages)
+            {
+                img.Dispose();
+            }
+            _swapchainImages = null;
+        }
+    }
+
+    private unsafe void CopyTextureToStagingBuffer(SwapchainImage image, uint renderWidth, uint renderHeight)
+    {
+        var encoderDesc = new CommandEncoderDescriptor();
+        var encoder = _wgpuContext!.Wgpu.DeviceCreateCommandEncoder(_wgpuContext.Device, &encoderDesc);
+        
+        var copySrc = new ImageCopyTexture
+        {
+            Texture = image.WgpuTexture!.TexturePtr,
+            MipLevel = 0,
+            Origin = new Origin3D { X = 0, Y = 0, Z = 0 },
+            Aspect = TextureAspect.All
+        };
+        
+        var copyDst = new ImageCopyBuffer
+        {
+            Buffer = (GpuBuffer*)image.StagingBuffer,
+            Layout = new TextureDataLayout
+            {
+                Offset = 0,
+                BytesPerRow = image.BytesPerRow,
+                RowsPerImage = renderHeight
+            }
+        };
+        
+        var copySize = new Extent3D
+        {
+            Width = renderWidth,
+            Height = renderHeight,
+            DepthOrArrayLayers = 1
+        };
+        
+        _wgpuContext.Wgpu.CommandEncoderCopyTextureToBuffer(encoder, &copySrc, &copyDst, &copySize);
+        
+        var cmdBufferDesc = new CommandBufferDescriptor();
+        var cmdBuffer = _wgpuContext.Wgpu.CommandEncoderFinish(encoder, &cmdBufferDesc);
+        
+        _wgpuContext.Wgpu.QueueSubmit(_wgpuContext.Queue, 1, &cmdBuffer);
+        _wgpuContext.Wgpu.CommandBufferRelease(cmdBuffer);
+        _wgpuContext.Wgpu.CommandEncoderRelease(encoder);
+    }
+
+    private unsafe void CopyMappedToSharedTexture(SwapchainImage image, uint renderWidth, uint renderHeight)
+    {
+        void* mappedPtr = _wgpuContext!.Wgpu.BufferGetConstMappedRange((GpuBuffer*)image.StagingBuffer, 0, (nuint)image.StagingBufferSize);
+        if (mappedPtr != null)
+        {
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            {
+                GpuSharingInterop.IOSurfaceLock(image.SharedHandle, 0, null);
+                void* destPtr = GpuSharingInterop.IOSurfaceGetBaseAddress(image.SharedHandle);
+                nuint surfaceBytesPerRow = GpuSharingInterop.IOSurfaceGetBytesPerRow(image.SharedHandle);
+
+                byte* srcBytes = (byte*)mappedPtr;
+                byte* destBytes = (byte*)destPtr;
+                uint rowBytes = renderWidth * 4;
+
+                for (uint y = 0; y < renderHeight; y++)
+                {
+                    byte* srcRow = srcBytes + (y * image.BytesPerRow);
+                    byte* destRow = destBytes + (y * (uint)surfaceBytesPerRow);
+                    System.Buffer.MemoryCopy(srcRow, destRow, rowBytes, rowBytes);
+                }
+
+                GpuSharingInterop.IOSurfaceUnlock(image.SharedHandle, 0, null);
+            }
+            else if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                GpuSharingInterop.COMHelper.CallGetImmediateContext(image.WinD3DDevice, out IntPtr context);
+                if (context != IntPtr.Zero)
+                {
+                    GpuSharingInterop.COMHelper.CallUpdateSubresource(
+                        context,
+                        image.WinTexture2D,
+                        0,
+                        IntPtr.Zero,
+                        mappedPtr,
+                        image.BytesPerRow,
+                        0
+                    );
+                    GpuSharingInterop.COMHelper.CallRelease(context);
+                }
+            }
+
+            _wgpuContext.Wgpu.BufferUnmap((GpuBuffer*)image.StagingBuffer);
+        }
+    }
+
+    private async Task RenderFrameAsync()
+    {
+        if (!_isInitialized || WinuiRoot == null || _wgpuContext == null || _compositor == null) return;
+
+        // 1. Force layout and animations updates recursively on WinUI Controls
+        WinuiRoot.UpdateAnimations(0.016f); // Pass baseline delta time
+        WinuiRoot.Measure(new Vector2((float)Bounds.Width, (float)Bounds.Height));
+        WinuiRoot.Arrange(new WinuiRect(0, 0, (float)Bounds.Width, (float)Bounds.Height));
+
+        double dpi = (VisualRoot as TopLevel)?.RenderScaling ?? 1.0;
+        uint renderWidth = (uint)Math.Max(1, Bounds.Width * dpi);
+        uint renderHeight = (uint)Math.Max(1, Bounds.Height * dpi);
+
+        if (_isZeroCopySupported && _gpuInterop != null && _drawingSurface != null)
+        {
+            ResizeSharedResources(renderWidth, renderHeight);
+
+            if (_swapchainImages != null)
+            {
+                var image = _swapchainImages[_currentWriteImageIndex];
+                if (image != null && image.ImportedImage != null && image.WgpuTexture != null)
+                {
+                    // Render directly to WebGPU offscreen target
+                    float logicalWidth = (float)(renderWidth / dpi);
+                    float logicalHeight = (float)(renderHeight / dpi);
+
+                    _compositor.RenderOffscreen(
+                        WinuiRoot,
+                        (uint)Math.Max(1, logicalWidth),
+                        (uint)Math.Max(1, logicalHeight),
+                        image.WgpuTexture,
+                        0.0f,
+                        (float)dpi
+                    );
+
+                    // Copy GPU texture to staging buffer
+                    CopyTextureToStagingBuffer(image, renderWidth, renderHeight);
+
+                    // Asynchronously map buffer - non-blocking!
+                    await MapBufferAsync(image.StagingBuffer, MapMode.Read, (nuint)image.StagingBufferSize);
+
+                    // Copy staging buffer to shared texture and unmap
+                    CopyMappedToSharedTexture(image, renderWidth, renderHeight);
+
+                    // Asynchronously update drawing surface directly from imported GPU image
+                    await _drawingSurface.UpdateAsync(image.ImportedImage);
+
+                    // Swap the write buffer index
+                    _currentWriteImageIndex = (_currentWriteImageIndex + 1) % 2;
+                }
+            }
+        }
+        else if (_customVisual != null)
+        {
+            // Send latest compiled tree and sizes to composition handler
+            _customVisual.SendHandlerMessage(Tuple.Create<Microsoft.UI.Xaml.FrameworkElement?, uint, uint, double>(
+                WinuiRoot, renderWidth, renderHeight, dpi
+            ));
+        }
     }
 
     // --- Sizing Negotiation Lifecycle ---
@@ -508,40 +778,33 @@ public class ProGpuHostControl : Control
 
     // --- Render Update Pipeline ---
 
-    private void QueueRenderUpdate()
+    private async void QueueRenderUpdate()
     {
         if (!_isInitialized || WinuiRoot == null) return;
 
         if (!_isZeroCopySupported && _customVisual == null) return;
         if (_isZeroCopySupported && _drawingSurface == null) return;
 
-        // 1. Force layout and animations updates recursively on WinUI Controls
-        WinuiRoot.UpdateAnimations(0.016f); // Pass baseline delta time
-        WinuiRoot.Measure(new Vector2((float)Bounds.Width, (float)Bounds.Height));
-        WinuiRoot.Arrange(new WinuiRect(0, 0, (float)Bounds.Width, (float)Bounds.Height));
+        _renderRequested = true;
 
-        double dpi = (VisualRoot as TopLevel)?.RenderScaling ?? 1.0;
-        uint renderWidth = (uint)Math.Max(1, Bounds.Width * dpi);
-        uint renderHeight = (uint)Math.Max(1, Bounds.Height * dpi);
+        if (_isRendering) return;
+        _isRendering = true;
 
-        if (_isZeroCopySupported && _gpuInterop != null && _drawingSurface != null)
+        try
         {
-            ResizeSharedResources(renderWidth, renderHeight);
-
-            if (_importedGpuImage != null)
+            while (_renderRequested)
             {
-                RenderToSharedTexture(renderWidth, renderHeight, dpi);
-                
-                // Asynchronously update drawing surface directly from imported GPU image
-                _ = _drawingSurface.UpdateAsync(_importedGpuImage);
+                _renderRequested = false;
+                await RenderFrameAsync();
             }
         }
-        else if (_customVisual != null)
+        catch (Exception ex)
         {
-            // 2. Send latest compiled tree and sizes to composition handler
-            _customVisual.SendHandlerMessage(Tuple.Create<Microsoft.UI.Xaml.FrameworkElement?, uint, uint, double>(
-                WinuiRoot, renderWidth, renderHeight, dpi
-            ));
+            Debug.WriteLine($"Error during rendering: {ex}");
+        }
+        finally
+        {
+            _isRendering = false;
         }
     }
 

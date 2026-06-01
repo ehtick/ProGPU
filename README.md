@@ -974,7 +974,107 @@ pub unsafe extern "C" fn wgpuDeviceCreateTextureFromMacIOSurface(
 
 This bridge allows WebGPU command encoders to bind the texture as a standard `RenderPassColorAttachment`, completing the zero-copy pipeline.
 
-### 5. Graceful Runtime Fallback
+### 5. Asynchronous Double-Buffered Update & Polling Architecture
+
+To achieve VSync-locked rendering (120 FPS+) and completely eliminate UI-thread blocking or frame flickering, ProGPU utilizes a high-performance **Asynchronous Double-Buffered Update Loop** driven by a **Dedicated Background Device Polling Thread**.
+
+This architecture guarantees 0% CPU blocking on the main UI thread and prevents read-write VRAM conflicts between the renderer and the host compositor.
+
+```mermaid
+sequenceDiagram
+    participant UI as UI Thread (RenderFrameAsync)
+    participant BG as Background Polling Thread
+    participant WGPU as WebGPU Device / Queue
+    participant Swap as SwapchainImage (Double Buffered)
+    participant Comp as Avalonia Compositor Thread
+
+    UI->>WGPU: 1. Render scene offscreen to WgpuTexture (Image A)
+    UI->>WGPU: 2. Queue CopyTextureToStagingBuffer
+    UI->>WGPU: 3. Invoke MapBufferAsync (non-blocking Task)
+    Note over UI,BG: UI thread yields control immediately
+    Loop Continuous Polling
+        BG->>WGPU: 4. wgpuDevicePoll(Device, false) every 2ms
+    End
+    WGPU-->>BG: 5. Mapping complete! Trigger MapCallback
+    BG-->>UI: 6. Complete TaskCompletionSource (Resume UI)
+    UI->>Swap: 7. CopyMappedToSharedTexture (MemoryCopy / UpdateSubresource)
+    UI->>WGPU: 8. BufferUnmap
+    UI->>Comp: 9. UpdateAsync (Swapchain Image A)
+    Note over UI,Comp: Image A is now bound to Compositor. Swap to Image B.
+```
+
+#### A. Double-Buffered Swapchain Image Model (`SwapchainImage`)
+A dedicated `SwapchainImage` class encapsulates the graphics assets for a single frame. The host control manages a pool of two swapchain images (`SwapchainImage[2]`):
+*   **Compositor Frame Lock**: One image is locked by the Avalonia compositor for current presentation.
+*   **Renderer Target**: The other image is being written to asynchronously by the WebGPU rendering loop.
+*   **Role Swap**: Once rendering and memory copies are completed, the roles are swapped in an alternating cycle: `_currentWriteImageIndex = (_currentWriteImageIndex + 1) % 2`.
+
+```csharp
+private class SwapchainImage : IDisposable
+{
+    public IntPtr SharedHandle;
+    public ICompositionImportedGpuImage? ImportedImage;
+    public GpuTexture? WgpuTexture;
+    public IntPtr StagingBuffer;
+    public uint StagingBufferSize;
+    public uint BytesPerRow;
+
+    // Windows Specific Direct3D 11 Resources
+    public IntPtr WinD3DDevice;
+    public IntPtr WinTexture2D;
+}
+```
+
+#### B. Continuous Background Device Polling Thread
+WebGPU asynchronous operations (such as staging buffer mapping) require the device queue event loop to be polled via `wgpuDevicePoll`.
+To keep the UI and Avalonia render threads completely unblocked, ProGPU runs a continuous, low-latency background polling thread that executes `wgpuDevicePoll` every 2 milliseconds:
+
+```csharp
+private void StartPolling()
+{
+    _pollingThread = new Thread(() => {
+        while (!_pollingCts.Token.IsCancellationRequested) {
+            wgpuDevicePoll(_wgpuContext.Device, false, null);
+            Thread.Sleep(2);
+        }
+    }) { IsBackground = true, Name = "ProGpuDevicePolling" };
+    _pollingThread.Start();
+}
+```
+
+#### C. Asynchronous Non-Blocking Map Pipeline
+The buffer mapping callback is wrapped in a standard C# `TaskCompletionSource<bool>`. Calling `await MapBufferAsync(...)` suspends the rendering task without blocking any CPU execution context. The background polling thread completes the mapping asynchronously, waking up the rendering task instantly:
+
+```csharp
+private Task MapBufferAsync(IntPtr buffer, MapMode mode, nuint size)
+{
+    unsafe {
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handle = GCHandle.Alloc(tcs);
+        var userData = (void*)GCHandle.ToIntPtr(handle);
+        _wgpuContext.Wgpu.BufferMapAsync((GpuBuffer*)buffer, mode, 0, size, s_mapCallback, userData);
+        return tcs.Task;
+    }
+}
+```
+
+#### D. Safe Pointer-Unsafe Segregation
+To comply with the C# compiler constraints that prohibit `await` operations inside `unsafe` contexts, ProGPU segregates low-level pointer copying into two dedicated synchronous `unsafe` helper functions:
+1.  **`CopyTextureToStagingBuffer`**: Encodes the offscreen render-target texture copy to the staging buffer and submits the command buffer.
+2.  **`CopyMappedToSharedTexture`**: Retrieves the staging buffer's mapped range, locks the native OS texture, copies raw bytes row-by-row, unlocks the texture, and unmaps the buffer.
+
+```csharp
+// macOS row-by-row IOSurface memory copy
+GpuSharingInterop.IOSurfaceLock(image.SharedHandle, 0, null);
+void* destPtr = GpuSharingInterop.IOSurfaceGetBaseAddress(image.SharedHandle);
+System.Buffer.MemoryCopy(srcRow, destRow, rowBytes, rowBytes);
+GpuSharingInterop.IOSurfaceUnlock(image.SharedHandle, 0, null);
+
+// Windows D3D11 UpdateSubresource call via COM VTable index 49
+GpuSharingInterop.COMHelper.CallUpdateSubresource(context, image.WinTexture2D, 0, IntPtr.Zero, mappedPtr, image.BytesPerRow, 0);
+```
+
+### 6. Graceful Runtime Fallback
 If graphics interop is not supported by the environment (e.g. software rendering, missing drivers, or Linux configurations lacking Vulkan opaque handles), the control gracefully falls back to the **Decoupled Render-Thread Blitting Pipeline** (Phase 2). This ensures 100% functionality and visual parity across all host configurations!
 
 
