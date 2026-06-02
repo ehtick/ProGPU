@@ -15,14 +15,44 @@ namespace Microsoft.UI.Xaml.Media.Media3D
 {
     public abstract class Geometry3D
     {
+        public int Version { get; set; }
+
+        public void Invalidate()
+        {
+            Version++;
+        }
     }
 
     public class MeshGeometry3D : Geometry3D
     {
-        public Vector3[] Positions { get; set; } = Array.Empty<Vector3>();
-        public Vector3[] Normals { get; set; } = Array.Empty<Vector3>();
-        public Vector2[] TextureCoordinates { get; set; } = Array.Empty<Vector2>();
-        public int[] TriangleIndices { get; set; } = Array.Empty<int>();
+        private Vector3[] _positions = Array.Empty<Vector3>();
+        private Vector3[] _normals = Array.Empty<Vector3>();
+        private Vector2[] _textureCoordinates = Array.Empty<Vector2>();
+        private int[] _triangleIndices = Array.Empty<int>();
+
+        public Vector3[] Positions
+        {
+            get => _positions;
+            set { _positions = value; Invalidate(); }
+        }
+
+        public Vector3[] Normals
+        {
+            get => _normals;
+            set { _normals = value; Invalidate(); }
+        }
+
+        public Vector2[] TextureCoordinates
+        {
+            get => _textureCoordinates;
+            set { _textureCoordinates = value; Invalidate(); }
+        }
+
+        public int[] TriangleIndices
+        {
+            get => _triangleIndices;
+            set { _triangleIndices = value; Invalidate(); }
+        }
 
         public Vector3[] GetNormalsOrCompute()
         {
@@ -441,6 +471,7 @@ namespace Microsoft.UI.Xaml.Controls
                                 payload.Meshes.Add(new MeshCompilationEntry
                                 {
                                     Geometry = mesh,
+                                    GeometryVersion = mesh.Version,
                                     Positions = positions,
                                     Normals = normals,
                                     Indices = indices,

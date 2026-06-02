@@ -356,10 +356,11 @@ fn fs_main(input: VertexOutputWireframe) -> @location(0) vec4<f32> {
 }
 ";
 
-        private struct CachedGeometry
+        private class CachedGeometry
         {
             public GpuBuffer VertexBuffer;
             public uint VertexCount;
+            public int Version;
         }
 
         private class ViewportResource
@@ -669,7 +670,21 @@ fn fs_main(input: VertexOutputWireframe) -> @location(0) vec4<f32> {
                 var entry = payload.Meshes[i];
                 if (entry.Geometry == null) continue;
 
-                if (!_geometryCache.TryGetValue(entry.Geometry, out var cache))
+                bool needsRebuild = false;
+                if (_geometryCache.TryGetValue(entry.Geometry, out var cache))
+                {
+                    if (cache.Version != entry.GeometryVersion)
+                    {
+                        cache.VertexBuffer.Dispose();
+                        needsRebuild = true;
+                    }
+                }
+                else
+                {
+                    needsRebuild = true;
+                }
+
+                if (needsRebuild)
                 {
                     // Create De-indexed (non-indexed) Vertex Buffer
                     var cpuVertices = new GpuVertex3D[entry.Indices.Length];
@@ -688,7 +703,8 @@ fn fs_main(input: VertexOutputWireframe) -> @location(0) vec4<f32> {
                     cache = new CachedGeometry
                     {
                         VertexBuffer = vBuffer,
-                        VertexCount = (uint)entry.Indices.Length
+                        VertexCount = (uint)entry.Indices.Length,
+                        Version = entry.GeometryVersion
                     };
                     _geometryCache[entry.Geometry] = cache;
                 }
@@ -802,6 +818,7 @@ fn fs_main(input: VertexOutputWireframe) -> @location(0) vec4<f32> {
     public class MeshCompilationEntry
     {
         public object? Geometry { get; set; }
+        public int GeometryVersion { get; set; }
         public Vector3[] Positions { get; set; } = Array.Empty<Vector3>();
         public Vector3[] Normals { get; set; } = Array.Empty<Vector3>();
         public int[] Indices { get; set; } = Array.Empty<int>();
