@@ -298,7 +298,10 @@ fn vs_main(input: VertexInput, @builtin(instance_index) instanceIdx: u32) -> Ver
  
 @fragment
 fn fs_main(input: VertexOutput, @builtin(front_facing) is_front: bool) -> @location(0) vec4<f32> {
-    let normal = if (is_front) { input.worldNormal } else { -input.worldNormal };
+    var normal = input.worldNormal;
+    if (!is_front) {
+        normal = -input.worldNormal;
+    }
     return ComputeLighting(input.instanceIdx, input.worldPosition, normal);
 }
 ";
@@ -333,7 +336,10 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vertexIdx: u32, @builtin(i
 @fragment
 fn fs_main(input: VertexOutputWireframe, @builtin(front_facing) is_front: bool) -> @location(0) vec4<f32> {
     let mode = u32(input.renderMode + 0.5);
-    let normal = if (is_front) { input.worldNormal } else { -input.worldNormal };
+    var normal = input.worldNormal;
+    if (!is_front) {
+        normal = -input.worldNormal;
+    }
     let solidColor = ComputeLighting(input.instanceIdx, input.worldPosition, normal);
  
     let dFdx = dpdx(input.barycentric);
