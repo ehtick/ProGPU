@@ -237,6 +237,7 @@ public static class Mesh3DViewerPage
 
     private static string _selectedMeshType = "Torus";
     private static MeshGeometry3D? _activeMeshGeometry;
+    private static LoadedObjModel? _activeLoadedModel;
     private static MeshGeometry3D? _lastMeshGeometry;
 
     private static Vector4 _activeModelColor = new Vector4(0.70f, 0.70f, 0.72f, 1.0f); // Default premium clay warm gray
@@ -376,7 +377,8 @@ public static class Mesh3DViewerPage
                     _customObjPath = pathTextBox.Text;
                     shapeCombo.SelectedItem = shapeCombo.Items[6]; // OBJ: Custom Path
                     _selectedMeshType = "OBJ: Custom Path";
-                    _activeMeshGeometry = ObjReader.Load(_customObjPath);
+                    _activeLoadedModel = ObjReader.LoadObj(_customObjPath);
+                    _activeMeshGeometry = ObjReader.MergeParts(_activeLoadedModel);
                     UpdateViewportModels();
                 }
                 catch (Exception ex)
@@ -434,7 +436,8 @@ public static class Mesh3DViewerPage
                     shapeCombo.SelectedItem = shapeCombo.Items[6]; // OBJ: Custom Path
                     _selectedMeshType = "OBJ: Custom Path";
                     
-                    _activeMeshGeometry = ObjReader.Load(file.Path);
+                    _activeLoadedModel = ObjReader.LoadObj(file.Path);
+                    _activeMeshGeometry = ObjReader.MergeParts(_activeLoadedModel);
                     UpdateViewportModels();
                 }
             }
@@ -817,6 +820,8 @@ public static class Mesh3DViewerPage
 
     private static void RegenerateMeshGeometry()
     {
+        _activeLoadedModel = null;
+
         if (_selectedMeshType == "Cube")
         {
             _activeMeshGeometry = MeshBuilder.CreateCube();
@@ -837,7 +842,9 @@ public static class Mesh3DViewerPage
         {
             try
             {
-                _activeMeshGeometry = ObjReader.Load(Path.Combine("models", "spacecraft.obj"));
+                var path = Path.Combine("models", "spacecraft.obj");
+                _activeLoadedModel = ObjReader.LoadObj(path);
+                _activeMeshGeometry = ObjReader.MergeParts(_activeLoadedModel);
             }
             catch (Exception ex)
             {
@@ -849,7 +856,9 @@ public static class Mesh3DViewerPage
         {
             try
             {
-                _activeMeshGeometry = ObjReader.Load(Path.Combine("models", "jewel.obj"));
+                var path = Path.Combine("models", "jewel.obj");
+                _activeLoadedModel = ObjReader.LoadObj(path);
+                _activeMeshGeometry = ObjReader.MergeParts(_activeLoadedModel);
             }
             catch (Exception ex)
             {
@@ -924,21 +933,44 @@ public static class Mesh3DViewerPage
         _viewport3.RenderMode = _selectedRenderMode;
         _viewport4.RenderMode = _selectedRenderMode;
 
-        // Visual 1 setup
+        // Clear all model children
         _model1.Children.Clear();
-        _model1.Children.Add(new ModelVisual3D { Content = new GeometryModel3D { Geometry = _activeMeshGeometry, Material = new DiffuseMaterial(new SolidColorBrush(_activeModelColor)) } });
-
-        // Visual 2 setup
         _model2.Children.Clear();
-        _model2.Children.Add(new ModelVisual3D { Content = new GeometryModel3D { Geometry = _activeMeshGeometry, Material = new DiffuseMaterial(new SolidColorBrush(_activeModelColor)) } });
-
-        // Visual 3 setup
         _model3.Children.Clear();
-        _model3.Children.Add(new ModelVisual3D { Content = new GeometryModel3D { Geometry = _activeMeshGeometry, Material = new DiffuseMaterial(new SolidColorBrush(_activeModelColor)) } });
-
-        // Visual 4 setup
         _model4.Children.Clear();
-        _model4.Children.Add(new ModelVisual3D { Content = new GeometryModel3D { Geometry = _activeMeshGeometry, Material = new DiffuseMaterial(new SolidColorBrush(_activeModelColor)) } });
+
+        if (_activeLoadedModel != null && _activeLoadedModel.Parts.Count > 0)
+        {
+            bool isDefaultClayColor = _activeModelColor == new Vector4(0.70f, 0.70f, 0.72f, 1.0f);
+
+            foreach (var part in _activeLoadedModel.Parts)
+            {
+                Vector4 color = part.Color;
+                if (!isDefaultClayColor)
+                {
+                    // Multiply custom picked color to act as a tint overlay
+                    color = color * _activeModelColor;
+                }
+
+                var brush = new SolidColorBrush(color) { Opacity = part.Opacity };
+                var material = new DiffuseMaterial(brush);
+
+                _model1.Children.Add(new ModelVisual3D { Content = new GeometryModel3D { Geometry = part.Geometry, Material = material } });
+                _model2.Children.Add(new ModelVisual3D { Content = new GeometryModel3D { Geometry = part.Geometry, Material = material } });
+                _model3.Children.Add(new ModelVisual3D { Content = new GeometryModel3D { Geometry = part.Geometry, Material = material } });
+                _model4.Children.Add(new ModelVisual3D { Content = new GeometryModel3D { Geometry = part.Geometry, Material = material } });
+            }
+        }
+        else
+        {
+            var brush = new SolidColorBrush(_activeModelColor);
+            var material = new DiffuseMaterial(brush);
+
+            _model1.Children.Add(new ModelVisual3D { Content = new GeometryModel3D { Geometry = _activeMeshGeometry, Material = material } });
+            _model2.Children.Add(new ModelVisual3D { Content = new GeometryModel3D { Geometry = _activeMeshGeometry, Material = material } });
+            _model3.Children.Add(new ModelVisual3D { Content = new GeometryModel3D { Geometry = _activeMeshGeometry, Material = material } });
+            _model4.Children.Add(new ModelVisual3D { Content = new GeometryModel3D { Geometry = _activeMeshGeometry, Material = material } });
+        }
 
         _viewport1.Invalidate();
         _viewport2.Invalidate();
