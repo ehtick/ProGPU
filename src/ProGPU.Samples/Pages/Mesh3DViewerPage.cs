@@ -760,27 +760,34 @@ public static class Mesh3DViewerPage
         _viewport1.Children.Add(_model1);
         viewportStack1.AddChild(_viewport1);
 
-        var overlayText1 = new RichTextBlock { Font = AppState.GetFont(), FontSize = 12f, Margin = new Thickness(12f), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
+        var headerStack1 = new Microsoft.UI.Xaml.Controls.StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(12f)
+        };
+        var overlayText1 = new RichTextBlock { Font = AppState.GetFont(), FontSize = 12f, VerticalAlignment = VerticalAlignment.Center };
         overlayText1.Inlines.Add(new Bold(new Run("Top View (Orthographic)")));
-        viewportStack1.AddChild(overlayText1);
+        headerStack1.AddChild(overlayText1);
 
         _maxBtn1 = new Button
         {
-            HeightConstraint = 24f,
-            WidthConstraint = 80f,
+            HeightConstraint = 22f,
+            WidthConstraint = 22f,
             CornerRadius = 4f,
-            Margin = new Thickness(8f),
-            HorizontalAlignment = HorizontalAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(8f, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
             Background = new ThemeResourceBrush("ControlBackgroundHover")
         };
-        var maxRun1 = new Run("↗ Maximize") { FontSize = 10f, Foreground = new ThemeResourceBrush("TextPrimary") };
-        _maxBtn1.Content = new RichTextBlock { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { maxRun1 } };
+        var maxIcon1 = new Run("↗") { FontSize = 11f, Foreground = new ThemeResourceBrush("TextPrimary") };
+        _maxBtn1.Content = new RichTextBlock { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { new Bold(maxIcon1) } };
         _maxBtn1.Click += (s, e) =>
         {
             SetLayoutMode(_currentLayoutMode == LayoutMode3D.Top ? LayoutMode3D.Quad : LayoutMode3D.Top);
         };
-        viewportStack1.AddChild(_maxBtn1);
+        headerStack1.AddChild(_maxBtn1);
+        viewportStack1.AddChild(headerStack1);
 
         _leftGrid.AddChild(_card1);
         Grid.SetRow(_card1, 0);
@@ -812,27 +819,34 @@ public static class Mesh3DViewerPage
         _viewport2.Children.Add(_model2);
         viewportStack2.AddChild(_viewport2);
 
-        var overlayText2 = new RichTextBlock { Font = AppState.GetFont(), FontSize = 12f, Margin = new Thickness(12f), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
+        var headerStack2 = new Microsoft.UI.Xaml.Controls.StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(12f)
+        };
+        var overlayText2 = new RichTextBlock { Font = AppState.GetFont(), FontSize = 12f, VerticalAlignment = VerticalAlignment.Center };
         overlayText2.Inlines.Add(new Bold(new Run("Front View (Orthographic)")));
-        viewportStack2.AddChild(overlayText2);
+        headerStack2.AddChild(overlayText2);
 
         _maxBtn2 = new Button
         {
-            HeightConstraint = 24f,
-            WidthConstraint = 80f,
+            HeightConstraint = 22f,
+            WidthConstraint = 22f,
             CornerRadius = 4f,
-            Margin = new Thickness(8f),
-            HorizontalAlignment = HorizontalAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(8f, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
             Background = new ThemeResourceBrush("ControlBackgroundHover")
         };
-        var maxRun2 = new Run("↗ Maximize") { FontSize = 10f, Foreground = new ThemeResourceBrush("TextPrimary") };
-        _maxBtn2.Content = new RichTextBlock { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { maxRun2 } };
+        var maxIcon2 = new Run("↗") { FontSize = 11f, Foreground = new ThemeResourceBrush("TextPrimary") };
+        _maxBtn2.Content = new RichTextBlock { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { new Bold(maxIcon2) } };
         _maxBtn2.Click += (s, e) =>
         {
             SetLayoutMode(_currentLayoutMode == LayoutMode3D.Front ? LayoutMode3D.Quad : LayoutMode3D.Front);
         };
-        viewportStack2.AddChild(_maxBtn2);
+        headerStack2.AddChild(_maxBtn2);
+        viewportStack2.AddChild(headerStack2);
 
         _rightGrid.AddChild(_card2);
         Grid.SetRow(_card2, 0);
@@ -864,27 +878,34 @@ public static class Mesh3DViewerPage
         _viewport3.Children.Add(_model3);
         viewportStack3.AddChild(_viewport3);
 
-        var overlayText3 = new RichTextBlock { Font = AppState.GetFont(), FontSize = 12f, Margin = new Thickness(12f), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
+        var headerStack3 = new Microsoft.UI.Xaml.Controls.StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(12f)
+        };
+        var overlayText3 = new RichTextBlock { Font = AppState.GetFont(), FontSize = 12f, VerticalAlignment = VerticalAlignment.Center };
         overlayText3.Inlines.Add(new Bold(new Run("Right View (Orthographic)")));
-        viewportStack3.AddChild(overlayText3);
+        headerStack3.AddChild(overlayText3);
 
         _maxBtn3 = new Button
         {
-            HeightConstraint = 24f,
-            WidthConstraint = 80f,
+            HeightConstraint = 22f,
+            WidthConstraint = 22f,
             CornerRadius = 4f,
-            Margin = new Thickness(8f),
-            HorizontalAlignment = HorizontalAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(8f, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
             Background = new ThemeResourceBrush("ControlBackgroundHover")
         };
-        var maxRun3 = new Run("↗ Maximize") { FontSize = 10f, Foreground = new ThemeResourceBrush("TextPrimary") };
-        _maxBtn3.Content = new RichTextBlock { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { maxRun3 } };
+        var maxIcon3 = new Run("↗") { FontSize = 11f, Foreground = new ThemeResourceBrush("TextPrimary") };
+        _maxBtn3.Content = new RichTextBlock { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { new Bold(maxIcon3) } };
         _maxBtn3.Click += (s, e) =>
         {
             SetLayoutMode(_currentLayoutMode == LayoutMode3D.Right ? LayoutMode3D.Quad : LayoutMode3D.Right);
         };
-        viewportStack3.AddChild(_maxBtn3);
+        headerStack3.AddChild(_maxBtn3);
+        viewportStack3.AddChild(headerStack3);
 
         _leftGrid.AddChild(_card3);
         Grid.SetRow(_card3, 2);
@@ -915,27 +936,34 @@ public static class Mesh3DViewerPage
         _viewport4.Children.Add(_model4);
         viewportStack4.AddChild(_viewport4);
 
-        var overlayText4 = new RichTextBlock { Font = AppState.GetFont(), FontSize = 12f, Margin = new Thickness(12f), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
+        var headerStack4 = new Microsoft.UI.Xaml.Controls.StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(12f)
+        };
+        var overlayText4 = new RichTextBlock { Font = AppState.GetFont(), FontSize = 12f, VerticalAlignment = VerticalAlignment.Center };
         overlayText4.Inlines.Add(new Bold(new Run("3D Perspective View")));
-        viewportStack4.AddChild(overlayText4);
+        headerStack4.AddChild(overlayText4);
 
         _maxBtn4 = new Button
         {
-            HeightConstraint = 24f,
-            WidthConstraint = 80f,
+            HeightConstraint = 22f,
+            WidthConstraint = 22f,
             CornerRadius = 4f,
-            Margin = new Thickness(8f),
-            HorizontalAlignment = HorizontalAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(8f, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
             Background = new ThemeResourceBrush("ControlBackgroundHover")
         };
-        var maxRun4 = new Run("↗ Maximize") { FontSize = 10f, Foreground = new ThemeResourceBrush("TextPrimary") };
-        _maxBtn4.Content = new RichTextBlock { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { maxRun4 } };
+        var maxIcon4 = new Run("↗") { FontSize = 11f, Foreground = new ThemeResourceBrush("TextPrimary") };
+        _maxBtn4.Content = new RichTextBlock { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { new Bold(maxIcon4) } };
         _maxBtn4.Click += (s, e) =>
         {
             SetLayoutMode(_currentLayoutMode == LayoutMode3D.Perspective ? LayoutMode3D.Quad : LayoutMode3D.Perspective);
         };
-        viewportStack4.AddChild(_maxBtn4);
+        headerStack4.AddChild(_maxBtn4);
+        viewportStack4.AddChild(headerStack4);
 
         _rightGrid.AddChild(_card4);
         Grid.SetRow(_card4, 2);
