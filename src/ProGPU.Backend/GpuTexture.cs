@@ -21,10 +21,11 @@ public unsafe class GpuTexture : IDisposable
     public uint Height { get; private set; }
     public TextureFormat Format { get; private set; }
     public TextureUsage Usage { get; private set; }
+    public uint SampleCount { get; private set; } = 1;
 
     private bool _isDisposed;
 
-    public GpuTexture(WgpuContext context, uint width, uint height, TextureFormat format, TextureUsage usage, string label = "GpuTexture")
+    public GpuTexture(WgpuContext context, uint width, uint height, TextureFormat format, TextureUsage usage, string label = "GpuTexture", uint sampleCount = 1)
     {
         Id = (ulong)Interlocked.Increment(ref s_idCounter);
         _context = context;
@@ -33,6 +34,7 @@ public unsafe class GpuTexture : IDisposable
         Format = format;
         Usage = usage;
         _label = label;
+        SampleCount = sampleCount;
 
         Allocate();
     }
@@ -50,7 +52,7 @@ public unsafe class GpuTexture : IDisposable
             Size = new Extent3D { Width = Width, Height = Height, DepthOrArrayLayers = 1 },
             Format = Format,
             MipLevelCount = 1,
-            SampleCount = 1,
+            SampleCount = SampleCount,
             ViewFormatCount = 0,
             ViewFormats = null
         };

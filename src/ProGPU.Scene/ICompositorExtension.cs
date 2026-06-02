@@ -22,6 +22,7 @@ namespace ProGPU.Scene
 
         // Optional lifecycle hooks for custom resource management
         void BeginFrame(Compositor compositor) { }
+        void EndFrame(Compositor compositor) { }
         void BeginStaticCompile(Compositor compositor, StaticCompilationContext context) { }
         void EndStaticCompile(Compositor compositor, StaticCompilationContext context, DxfStaticBuffer staticBuffer) { }
     }

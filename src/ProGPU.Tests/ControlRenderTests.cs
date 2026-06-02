@@ -597,5 +597,64 @@ public class ControlRenderTests
         }
         Assert.Equal(pointCountInput, target);
     }
+
+    public struct TestEdge : IEquatable<TestEdge>
+    {
+        public uint U;
+        public uint V;
+
+        public TestEdge(uint u, uint v)
+        {
+            if (u < v) { U = u; V = v; }
+            else { U = v; V = u; }
+        }
+
+        public bool Equals(TestEdge other) => U == other.U && V == other.V;
+        public override bool Equals(object? obj) => obj is TestEdge other && Equals(other);
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                uint hash = 17;
+                hash = hash * 31 + U;
+                hash = hash * 31 + V;
+                return (int)hash;
+            }
+        }
+    }
+
+    [Fact]
+    public void Test_EdgeDeduplication()
+    {
+        // Define a simple quad with two triangles sharing an edge (1, 2)
+        // Triangle 1: (0, 1, 2)
+        // Triangle 2: (2, 1, 3)
+        uint[] indices = new uint[] { 0, 1, 2, 2, 1, 3 };
+
+        var uniqueEdges = new HashSet<TestEdge>();
+        for (int t = 0; t < indices.Length; t += 3)
+        {
+            uint i0 = indices[t];
+            uint i1 = indices[t + 1];
+            uint i2 = indices[t + 2];
+
+            uniqueEdges.Add(new TestEdge(i0, i1));
+            uniqueEdges.Add(new TestEdge(i1, i2));
+            uniqueEdges.Add(new TestEdge(i2, i0));
+        }
+
+        // Expected edges:
+        // (0, 1), (1, 2), (2, 0)
+        // (2, 1) -> duplicate of (1, 2)
+        // (1, 3), (3, 2)
+        // Total expected: 5 unique edges: (0,1), (1,2), (0,2), (1,3), (2,3)
+        Assert.Equal(5, uniqueEdges.Count);
+
+        Assert.Contains(new TestEdge(0, 1), uniqueEdges);
+        Assert.Contains(new TestEdge(1, 2), uniqueEdges);
+        Assert.Contains(new TestEdge(0, 2), uniqueEdges);
+        Assert.Contains(new TestEdge(1, 3), uniqueEdges);
+        Assert.Contains(new TestEdge(2, 3), uniqueEdges);
+    }
 }
 

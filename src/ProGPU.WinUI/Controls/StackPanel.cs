@@ -34,20 +34,25 @@ public class StackPanel : Panel
         float totalWidth = 0f;
         float totalHeight = 0f;
 
+        float paddingH = Padding.Horizontal;
+        float paddingV = Padding.Vertical;
+
         foreach (var child in Children)
         {
             if (child is LayoutNode node)
             {
                 if (Orientation == Orientation.Vertical)
                 {
-                    node.Measure(new Vector2(availableSize.X, float.PositiveInfinity));
+                    float availW = float.IsInfinity(availableSize.X) ? availableSize.X : Math.Max(0f, availableSize.X - paddingH);
+                    node.Measure(new Vector2(availW, float.PositiveInfinity));
                     var desired = node.DesiredSize;
                     totalWidth = Math.Max(totalWidth, desired.X);
                     totalHeight += desired.Y;
                 }
                 else
                 {
-                    node.Measure(new Vector2(float.PositiveInfinity, availableSize.Y));
+                    float availH = float.IsInfinity(availableSize.Y) ? availableSize.Y : Math.Max(0f, availableSize.Y - paddingV);
+                    node.Measure(new Vector2(float.PositiveInfinity, availH));
                     var desired = node.DesiredSize;
                     totalWidth += desired.X;
                     totalHeight = Math.Max(totalHeight, desired.Y);

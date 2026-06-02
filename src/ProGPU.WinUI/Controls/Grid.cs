@@ -127,6 +127,15 @@ public class Grid : Panel
         float remainingWidth = availableSize.X;
         float remainingHeight = availableSize.Y;
 
+        if (!float.IsInfinity(remainingWidth))
+        {
+            remainingWidth = Math.Max(0f, remainingWidth - Padding.Horizontal);
+        }
+        if (!float.IsInfinity(remainingHeight))
+        {
+            remainingHeight = Math.Max(0f, remainingHeight - Padding.Vertical);
+        }
+
         float starColsWeight = 0f;
         float starRowsWeight = 0f;
 

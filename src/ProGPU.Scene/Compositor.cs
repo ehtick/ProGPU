@@ -418,6 +418,7 @@ public unsafe class Compositor : IDisposable
         RegisterExtension(CompositorBuiltInExtensions.GpuLineSeries, new GpuLineSeriesExtensionPipeline());
         RegisterExtension(CompositorBuiltInExtensions.GpuScatterSeries, new GpuScatterSeriesExtensionPipeline());
         RegisterExtension(CompositorBuiltInExtensions.CustomGrid, new CustomGridExtensionPipeline());
+        RegisterExtension(CompositorBuiltInExtensions.Mesh3D, new Mesh3DExtensionPipeline());
 
         InitializePipelinesAndBindGroups();
     }
@@ -1198,6 +1199,14 @@ public unsafe class Compositor : IDisposable
         _context.Wgpu.RenderPassEncoderEnd(pass);
         _context.Wgpu.RenderPassEncoderRelease(pass);
 
+        lock (_registeredExtensions)
+        {
+            foreach (var ext in _registeredExtensions)
+            {
+                ext.EndFrame(this);
+            }
+        }
+
         // Submit to queue
         var cmdDesc = new CommandBufferDescriptor { Label = (byte*)SilkMarshal.StringToPtr("Compositor Command Buffer") };
         var cmdBuffer = _context.Wgpu.CommandEncoderFinish(encoder, &cmdDesc);
@@ -1382,7 +1391,7 @@ public unsafe class Compositor : IDisposable
 
     private void CompileVisualTree(Visual node, Matrix4x4 parentTransform)
     {
-        if (node.Opacity <= 0.0001f || _activeOpacity <= 0.0001f)
+        if (!node.IsVisible || node.Opacity <= 0.0001f || _activeOpacity <= 0.0001f)
         {
             node.IsDirty = false;
             return;
