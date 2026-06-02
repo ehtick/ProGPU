@@ -55,7 +55,87 @@ namespace ProGPU.Scene.Extensions
 
     public class Mesh3DExtensionPipeline : ICompositorExtension
     {
-        private const string Mesh3DShaderCode = @"
+        private const string Mesh3DSolidShaderCode = @"
+struct VSUniforms {
+    projection: mat4x4<f32>,
+    view: mat4x4<f32>,
+    cameraPosition: vec3<f32>,
+    _pad: f32,
+};
+
+struct GpuMesh3DRecord {
+    modelTransform: mat4x4<f32>,
+    color: vec4<f32>,
+    lightDirection: vec4<f32>,
+    ambientColor: vec4<f32>,
+    specularColor: vec4<f32>,
+    materialAmbient: vec4<f32>,
+    opacity: f32,
+    renderMode: f32,
+    _pad1: f32,
+    _pad2: f32,
+};
+
+@group(0) @binding(0) var<uniform> uniforms: VSUniforms;
+@group(0) @binding(1) var<storage, read> meshRecords: array<GpuMesh3DRecord>;
+
+struct VertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+};
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) worldPosition: vec3<f32>,
+    @location(1) worldNormal: vec3<f32>,
+    @location(2) @interpolate(flat) instanceIdx: u32,
+};
+
+@vertex
+fn vs_main(input: VertexInput, @builtin(instance_index) instanceIdx: u32) -> VertexOutput {
+    var output: VertexOutput;
+    let record = meshRecords[instanceIdx];
+
+    let worldPos = record.modelTransform * vec4<f32>(input.position, 1.0);
+    let worldNormal = normalize((record.modelTransform * vec4<f32>(input.normal, 0.0)).xyz);
+
+    output.position = uniforms.projection * uniforms.view * worldPos;
+    output.worldPosition = worldPos.xyz;
+    output.worldNormal = worldNormal;
+    output.instanceIdx = instanceIdx;
+
+    return output;
+}
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    let record = meshRecords[input.instanceIdx];
+
+    let N = normalize(input.worldNormal);
+    let L = normalize(record.lightDirection.xyz);
+    let V = normalize(uniforms.cameraPosition - input.worldPosition);
+    let H = normalize(L + V);
+
+    let ambientLight = record.ambientColor.rgb * record.ambientColor.w;
+    let ambient = ambientLight * record.materialAmbient.rgb;
+
+    let diffuseIntensity = max(dot(N, L), 0.0);
+    let diffuse = diffuseIntensity * record.lightDirection.w * record.color.rgb;
+
+    let shininess = record.specularColor.w;
+    let specularIntensity = pow(max(dot(N, H), 0.0), shininess);
+    
+    var specular = vec3<f32>(0.0);
+    if (diffuseIntensity > 0.0 && shininess > 0.0) {
+        specular = specularIntensity * record.lightDirection.w * record.specularColor.rgb;
+    }
+
+    let litColor = (ambient + diffuse + specular) * record.opacity;
+    return vec4<f32>(litColor, record.opacity);
+}
+";
+
+        private const string Mesh3DWireframeShaderCode = @"
 struct VSUniforms {
     projection: mat4x4<f32>,
     view: mat4x4<f32>,
@@ -145,10 +225,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     let litColor = (ambient + diffuse + specular) * record.opacity;
     let solidColor = vec4<f32>(litColor, record.opacity);
-
-    if (mode == 0u) {
-        return solidColor;
-    }
 
     let dFdx = dpdx(input.barycentric);
     let dFdy = dpdy(input.barycentric);
@@ -322,7 +398,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             // 4. Create solid pipeline if needed
             if (_cachedPipeline == null)
             {
-                var shaderModule = compositor.PipelineCache.GetOrCreateShader("Mesh3DShader_3D", Mesh3DShaderCode, "Mesh3D WGSL 3D Shader");
+                var shaderModule = compositor.PipelineCache.GetOrCreateShader("Mesh3DSolidShader_3D", Mesh3DSolidShaderCode, "Mesh3D WGSL 3D Solid Shader");
 
                 var layouts = new VertexBufferLayout[]
                 {
@@ -359,7 +435,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             // Create wireframe pipeline if needed (TriangleList with double sided rendering)
             if (_cachedWireframePipeline == null)
             {
-                var shaderModule = compositor.PipelineCache.GetOrCreateShader("Mesh3DShader_3D", Mesh3DShaderCode, "Mesh3D WGSL 3D Shader");
+                var shaderModule = compositor.PipelineCache.GetOrCreateShader("Mesh3DWireframeShader_3D", Mesh3DWireframeShaderCode, "Mesh3D WGSL 3D Wireframe Shader");
 
                 var layouts = new VertexBufferLayout[]
                 {
@@ -514,8 +590,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             // Draw Passes
             var mode = payload.RenderMode;
 
-            // Pass A: Draw Solid Shaded Triangles or Solid + Wireframe
-            if (mode == RenderMode3D.Solid || mode == RenderMode3D.SolidWireframe)
+            if (mode == RenderMode3D.Solid)
             {
                 wgpu.RenderPassEncoderSetPipeline(pass, _cachedPipeline);
                 wgpu.RenderPassEncoderSetBindGroup(pass, 0, res.SolidBindGroup, 0, null);
@@ -530,9 +605,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                     wgpu.RenderPassEncoderDraw(pass, cache.VertexCount, 1, 0, (uint)i);
                 }
             }
-
-            // Pass B: Draw Wireframe Only
-            if (mode == RenderMode3D.Wireframe)
+            else if (mode == RenderMode3D.Wireframe || mode == RenderMode3D.SolidWireframe)
             {
                 wgpu.RenderPassEncoderSetPipeline(pass, _cachedWireframePipeline);
                 wgpu.RenderPassEncoderSetBindGroup(pass, 0, res.WireframeBindGroup, 0, null);
