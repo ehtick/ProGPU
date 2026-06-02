@@ -209,7 +209,7 @@ namespace Microsoft.UI.Xaml.Controls
         public float AmbientIntensity { get; set; } = 0.25f;
 
         public RenderMode3D RenderMode { get; set; } = RenderMode3D.Solid;
-        public ShadingMode3D ShadingMode { get; set; } = ShadingMode3D.Shaded;
+        public ShadingMode3D ShadingMode { get; set; } = ShadingMode3D.Realistic;
 
         private GpuTexture? _colorTexture;
         private GpuTexture? _msaaColorTexture;

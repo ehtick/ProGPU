@@ -18,9 +18,13 @@ namespace ProGPU.Scene.Extensions
 
     public enum ShadingMode3D
     {
-        Shaded = 0,
-        Flat = 1,
-        Normals = 2
+        Realistic = 0,
+        Conceptual = 1,
+        Flat = 2,
+        HiddenLine = 3,
+        ShadesOfGray = 4,
+        XRay = 5,
+        Normals = 6
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
@@ -47,7 +51,7 @@ namespace ProGPU.Scene.Extensions
         public Vector4 MaterialAmbient;       // rgb = Material Ka, w = unused
         public float Opacity;
         public float RenderMode;              // 0.0f = Solid, 1.0f = Wireframe, 2.0f = SolidWireframe
-        public float ShadingMode;             // 0.0f = Shaded, 1.0f = Flat, 2.0f = Normals
+        public float ShadingMode;             // AutoCAD Shading Mode (0=Realistic, 1=Conceptual, 2=Flat, 3=HiddenLine, 4=ShadesOfGray, 5=XRay, 6=Normals)
         private float _pad2;
     }
 
@@ -62,7 +66,7 @@ namespace ProGPU.Scene.Extensions
 
     public class Mesh3DExtensionPipeline : ICompositorExtension
     {
-        private const string Mesh3DSolidShaderCode = @"
+        private const string CommonShaderHelpers = @"
 struct VSUniforms {
     projection: mat4x4<f32>,
     view: mat4x4<f32>,
@@ -98,179 +102,7 @@ struct VertexOutput {
     @location(2) @interpolate(flat) instanceIdx: u32,
 };
 
-@vertex
-fn vs_main(input: VertexInput, @builtin(instance_index) instanceIdx: u32) -> VertexOutput {
-    var output: VertexOutput;
-    let record = meshRecords[instanceIdx];
-
-    let worldPos = record.modelTransform * vec4<f32>(input.position, 1.0);
-    let worldNormal = normalize((record.modelTransform * vec4<f32>(input.normal, 0.0)).xyz);
-
-    output.position = uniforms.projection * uniforms.view * worldPos;
-    output.worldPosition = worldPos.xyz;
-    output.worldNormal = worldNormal;
-    output.instanceIdx = instanceIdx;
-
-    return output;
-}
-
-fn DistributionGGX(N: vec3<f32>, H: vec3<f32>, roughness: f32) -> f32 {
-    let alpha = roughness * roughness;
-    let alpha2 = alpha * alpha;
-    let NdotH = max(dot(N, H), 0.0);
-    let NdotH2 = NdotH * NdotH;
-    
-    let denom = (NdotH2 * (alpha2 - 1.0) + 1.0);
-    return alpha2 / (3.1415926535 * denom * denom);
-}
-
-fn VisibilitySchlickGGX(NdotV: f32, NdotL: f32, roughness: f32) -> f32 {
-    let r = (roughness + 1.0);
-    let k = (r * r) / 8.0;
-    let denom = (NdotV * (1.0 - k) + k) * (NdotL * (1.0 - k) + k) * 4.0;
-    return 1.0 / max(denom, 0.0001);
-}
-
-fn FresnelSchlick(cosTheta: f32, F0: vec3<f32>) -> vec3<f32> {
-    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
-}
-
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let record = meshRecords[input.instanceIdx];
-    let shading = u32(record.shadingMode + 0.5);
-
-    let N = normalize(input.worldNormal);
-
-    if (shading == 2u) { // Normals diagnostic view
-        let normalColor = N * 0.5 + 0.5;
-        return vec4<f32>(normalColor, record.opacity);
-    }
-
-    if (shading == 1u) { // Flat / Unlit view
-        return vec4<f32>(record.color.rgb * record.opacity, record.opacity);
-    }
-
-    let V = normalize(uniforms.cameraPosition - input.worldPosition);
-
-    let shininess = record.specularColor.w;
-    let roughness = clamp(sqrt(2.0 / (max(shininess, 0.001) + 2.0)), 0.04, 1.0);
-    let F0 = mix(vec3<f32>(0.04), record.color.rgb, 0.1);
-
-    // Three-Point Studio Lighting vectors and intensities
-    let keyDir = normalize(record.lightDirection.xyz);
-    let keyIntensity = record.lightDirection.w;
-
-    let fillDir = normalize(vec3<f32>(-keyDir.x, 0.5, -keyDir.z));
-    let fillIntensity = keyIntensity * 0.35;
-    let fillCol = vec3<f32>(0.8, 0.88, 1.0); // cool fill
-
-    let backDir = normalize(vec3<f32>(-keyDir.x, -keyDir.y, -keyDir.z));
-    let backIntensity = keyIntensity * 0.45;
-    let backCol = vec3<f32>(1.0, 0.95, 0.9); // warm back light
-
-    var diffuseOut = vec3<f32>(0.0);
-    var specularOut = vec3<f32>(0.0);
-
-    // 1. KEY LIGHT
-    {
-        let L = keyDir;
-        let H = normalize(L + V);
-        let NdotL = max(dot(N, L), 0.0);
-        let NdotV = max(dot(N, V), 0.0);
-        if (NdotL > 0.0) {
-            let D = DistributionGGX(N, H, roughness);
-            let V_joint = VisibilitySchlickGGX(NdotV, NdotL, roughness);
-            let F = FresnelSchlick(max(dot(H, V), 0.0), F0);
-            let spec = D * V_joint * F;
-            let kS = F;
-            let kD = (vec3<f32>(1.0) - kS);
-            diffuseOut += (kD * record.color.rgb / 3.1415926535) * NdotL * keyIntensity;
-            specularOut += spec * NdotL * keyIntensity;
-        }
-    }
-
-    // 2. FILL LIGHT
-    {
-        let L = fillDir;
-        let H = normalize(L + V);
-        let NdotL = max(dot(N, L), 0.0);
-        let NdotV = max(dot(N, V), 0.0);
-        if (NdotL > 0.0) {
-            let D = DistributionGGX(N, H, roughness);
-            let V_joint = VisibilitySchlickGGX(NdotV, NdotL, roughness);
-            let F = FresnelSchlick(max(dot(H, V), 0.0), F0);
-            let spec = D * V_joint * F;
-            let kS = F;
-            let kD = (vec3<f32>(1.0) - kS);
-            diffuseOut += (kD * record.color.rgb / 3.1415926535) * NdotL * fillIntensity * fillCol;
-            specularOut += spec * NdotL * fillIntensity * fillCol;
-        }
-    }
-
-    // 3. BACK LIGHT
-    {
-        let L = backDir;
-        let H = normalize(L + V);
-        let NdotL = max(dot(N, L), 0.0);
-        let NdotV = max(dot(N, V), 0.0);
-        if (NdotL > 0.0) {
-            let D = DistributionGGX(N, H, roughness);
-            let V_joint = VisibilitySchlickGGX(NdotV, NdotL, roughness);
-            let F = FresnelSchlick(max(dot(H, V), 0.0), F0);
-            let spec = D * V_joint * F;
-            let kS = F;
-            let kD = (vec3<f32>(1.0) - kS);
-            diffuseOut += (kD * record.color.rgb / 3.1415926535) * NdotL * backIntensity * backCol;
-            specularOut += spec * NdotL * backIntensity * backCol;
-        }
-    }
-
-    // Hemispherical sky-ground ambient
-    let skyFactor = N.y * 0.5 + 0.5;
-    let skyAmbient = record.ambientColor.rgb * record.ambientColor.w;
-    let groundAmbient = record.ambientColor.rgb * record.ambientColor.w * 0.4;
-    let ambient = mix(groundAmbient, skyAmbient, skyFactor) * record.materialAmbient.rgb;
-
-    // Premium rim glow
-    let F_rim = pow(1.0 - max(dot(N, V), 0.0), 4.0);
-    let rimColor = vec3<f32>(0.85, 0.90, 1.0) * F_rim * 0.25 * keyIntensity;
-
-    let litColor = (ambient + diffuseOut + specularOut + rimColor) * record.opacity;
-    return vec4<f32>(litColor, record.opacity);
-}
-";
-
-        private const string Mesh3DWireframeShaderCode = @"
-struct VSUniforms {
-    projection: mat4x4<f32>,
-    view: mat4x4<f32>,
-    cameraPosition: vec3<f32>,
-    _pad: f32,
-};
-
-struct GpuMesh3DRecord {
-    modelTransform: mat4x4<f32>,
-    color: vec4<f32>,
-    lightDirection: vec4<f32>,
-    ambientColor: vec4<f32>,
-    specularColor: vec4<f32>,
-    materialAmbient: vec4<f32>,
-    opacity: f32,
-    renderMode: f32,
-    shadingMode: f32,
-    _pad2: f32,
-};
-
-@group(0) @binding(0) var<uniform> uniforms: VSUniforms;
-@group(0) @binding(1) var<storage, read> meshRecords: array<GpuMesh3DRecord>;
-
-struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) normal: vec3<f32>,
-};
-
-struct VertexOutput {
+struct VertexOutputWireframe {
     @builtin(position) position: vec4<f32>,
     @location(0) worldPosition: vec3<f32>,
     @location(1) worldNormal: vec3<f32>,
@@ -279,32 +111,6 @@ struct VertexOutput {
     @location(4) @interpolate(flat) instanceIdx: u32,
 };
 
-@vertex
-fn vs_main(input: VertexInput, @builtin(vertex_index) vertexIdx: u32, @builtin(instance_index) instanceIdx: u32) -> VertexOutput {
-    var output: VertexOutput;
-    let record = meshRecords[instanceIdx];
-
-    let worldPos = record.modelTransform * vec4<f32>(input.position, 1.0);
-    let worldNormal = normalize((record.modelTransform * vec4<f32>(input.normal, 0.0)).xyz);
-
-    output.position = uniforms.projection * uniforms.view * worldPos;
-    output.worldPosition = worldPos.xyz;
-    output.worldNormal = worldNormal;
-    output.renderMode = record.renderMode;
-    output.instanceIdx = instanceIdx;
-
-    let triVertexIdx = vertexIdx % 3u;
-    if (triVertexIdx == 0u) {
-        output.barycentric = vec3<f32>(1.0, 0.0, 0.0);
-    } else if (triVertexIdx == 1u) {
-        output.barycentric = vec3<f32>(0.0, 1.0, 0.0);
-    } else {
-        output.barycentric = vec3<f32>(0.0, 0.0, 1.0);
-    }
-
-    return output;
-}
-
 fn DistributionGGX(N: vec3<f32>, H: vec3<f32>, roughness: f32) -> f32 {
     let alpha = roughness * roughness;
     let alpha2 = alpha * alpha;
@@ -326,42 +132,72 @@ fn FresnelSchlick(cosTheta: f32, F0: vec3<f32>) -> vec3<f32> {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let record = meshRecords[input.instanceIdx];
-    let mode = u32(input.renderMode + 0.5);
+fn GoochShading(N: vec3<f32>, L: vec3<f32>, diffuseColor: vec3<f32>) -> vec3<f32> {
+    let NdotL = dot(N, L);
+    let t = NdotL * 0.5 + 0.5;
+    let coolCol = vec3<f32>(0.0, 0.0, 0.55) + 0.25 * diffuseColor;
+    let warmCol = vec3<f32>(0.3, 0.3, 0.0) + 0.25 * diffuseColor;
+    return mix(coolCol, warmCol, t);
+}
+
+fn ComputeLighting(
+    instanceIdx: u32,
+    worldPos: vec3<f32>,
+    worldNormal: vec3<f32>
+) -> vec4<f32> {
+    let record = meshRecords[instanceIdx];
     let shading = u32(record.shadingMode + 0.5);
 
-    let N = normalize(input.worldNormal);
+    let N = normalize(worldNormal);
 
-    var solidColor = vec4<f32>(0.0);
-    if (shading == 2u) { // Normals diagnostic view
-        solidColor = vec4<f32>(N * 0.5 + 0.5, record.opacity);
-    } else if (shading == 1u) { // Flat / Unlit view
-        solidColor = vec4<f32>(record.color.rgb * record.opacity, record.opacity);
-    } else {
-        // Shaded mode (PBR GGX)
-        let V = normalize(uniforms.cameraPosition - input.worldPosition);
+    if (shading == 6u) { // Normals Diagnostic
+        let normalColor = N * 0.5 + 0.5;
+        return vec4<f32>(normalColor, record.opacity);
+    }
 
-        let shininess = record.specularColor.w;
-        let roughness = clamp(sqrt(2.0 / (max(shininess, 0.001) + 2.0)), 0.04, 1.0);
-        let F0 = mix(vec3<f32>(0.04), record.color.rgb, 0.1);
+    if (shading == 2u) { // Flat / Unlit
+        return vec4<f32>(record.color.rgb * record.opacity, record.opacity);
+    }
 
-        // Three-Point Studio Lighting vectors and intensities
-        let keyDir = normalize(record.lightDirection.xyz);
-        let keyIntensity = record.lightDirection.w;
+    if (shading == 3u) { // Hidden Line
+        return vec4<f32>(0.05, 0.05, 0.06, record.opacity); // background solid fill
+    }
 
-        let fillDir = normalize(vec3<f32>(-keyDir.x, 0.5, -keyDir.z));
-        let fillIntensity = keyIntensity * 0.35;
-        let fillCol = vec3<f32>(0.8, 0.88, 1.0); // cool fill
+    let V = normalize(uniforms.cameraPosition - worldPos);
 
-        let backDir = normalize(vec3<f32>(-keyDir.x, -keyDir.y, -keyDir.z));
-        let backIntensity = keyIntensity * 0.45;
-        let backCol = vec3<f32>(1.0, 0.95, 0.9); // warm back light
+    let shininess = record.specularColor.w;
+    let roughness = clamp(sqrt(2.0 / (max(shininess, 0.001) + 2.0)), 0.04, 1.0);
+    let F0 = mix(vec3<f32>(0.04), record.color.rgb, 0.1);
 
-        var diffuseOut = vec3<f32>(0.0);
-        var specularOut = vec3<f32>(0.0);
+    let keyDir = normalize(record.lightDirection.xyz);
+    let keyIntensity = record.lightDirection.w;
 
+    let fillDir = normalize(vec3<f32>(-keyDir.x, 0.5, -keyDir.z));
+    let fillIntensity = keyIntensity * 0.35;
+    let fillCol = vec3<f32>(0.8, 0.88, 1.0);
+
+    let backDir = normalize(vec3<f32>(-keyDir.x, -keyDir.y, -keyDir.z));
+    let backIntensity = keyIntensity * 0.45;
+    let backCol = vec3<f32>(1.0, 0.95, 0.9);
+
+    var diffuseOut = vec3<f32>(0.0);
+    var specularOut = vec3<f32>(0.0);
+
+    if (shading == 1u) { // Conceptual (Gooch Shading)
+        diffuseOut += GoochShading(N, keyDir, record.color.rgb) * keyIntensity;
+        diffuseOut += GoochShading(N, fillDir, record.color.rgb) * fillIntensity * fillCol;
+        diffuseOut += GoochShading(N, backDir, record.color.rgb) * backIntensity * backCol;
+
+        let H = normalize(keyDir + V);
+        let NdotL = max(dot(N, keyDir), 0.0);
+        let NdotV = max(dot(N, V), 0.0);
+        if (NdotL > 0.0) {
+            let D = DistributionGGX(N, H, roughness);
+            let V_joint = VisibilitySchlickGGX(NdotV, NdotL, roughness);
+            let F = FresnelSchlick(max(dot(H, V), 0.0), F0);
+            specularOut += D * V_joint * F * NdotL * keyIntensity;
+        }
+    } else { // Realistic (PBR GGX) or ShadesOfGray or XRay
         // 1. KEY LIGHT
         {
             let L = keyDir;
@@ -415,20 +251,87 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                 specularOut += spec * NdotL * backIntensity * backCol;
             }
         }
-
-        // Hemispherical sky-ground ambient
-        let skyFactor = N.y * 0.5 + 0.5;
-        let skyAmbient = record.ambientColor.rgb * record.ambientColor.w;
-        let groundAmbient = record.ambientColor.rgb * record.ambientColor.w * 0.4;
-        let ambient = mix(groundAmbient, skyAmbient, skyFactor) * record.materialAmbient.rgb;
-
-        // Premium rim glow
-        let F_rim = pow(1.0 - max(dot(N, V), 0.0), 4.0);
-        let rimColor = vec3<f32>(0.85, 0.90, 1.0) * F_rim * 0.25 * keyIntensity;
-
-        let litColor = (ambient + diffuseOut + specularOut + rimColor) * record.opacity;
-        solidColor = vec4<f32>(litColor, record.opacity);
     }
+
+    let skyFactor = N.y * 0.5 + 0.5;
+    let skyAmbient = record.ambientColor.rgb * record.ambientColor.w;
+    let groundAmbient = record.ambientColor.rgb * record.ambientColor.w * 0.4;
+    let ambient = mix(groundAmbient, skyAmbient, skyFactor) * record.materialAmbient.rgb;
+
+    let F_rim = pow(1.0 - max(dot(N, V), 0.0), 4.0);
+    let rimColor = vec3<f32>(0.85, 0.90, 1.0) * F_rim * 0.25 * keyIntensity;
+
+    var resultColor = ambient + diffuseOut + specularOut + rimColor;
+
+    if (shading == 4u) { // Shades of Gray
+        let gray = dot(resultColor, vec3<f32>(0.2126, 0.7152, 0.0722));
+        resultColor = vec3<f32>(gray);
+    }
+
+    var opacity = record.opacity;
+    if (shading == 5u) { // X-Ray Mode
+        opacity = clamp(0.15 + 0.55 * pow(1.0 - max(dot(N, V), 0.0), 3.0), 0.0, 1.0) * record.opacity;
+    }
+
+    return vec4<f32>(resultColor * opacity, opacity);
+}
+";
+
+        private const string Mesh3DSolidShaderCode = CommonShaderHelpers + @"
+@vertex
+fn vs_main(input: VertexInput, @builtin(instance_index) instanceIdx: u32) -> VertexOutput {
+    var output: VertexOutput;
+    let record = meshRecords[instanceIdx];
+
+    let worldPos = record.modelTransform * vec4<f32>(input.position, 1.0);
+    let worldNormal = normalize((record.modelTransform * vec4<f32>(input.normal, 0.0)).xyz);
+
+    output.position = uniforms.projection * uniforms.view * worldPos;
+    output.worldPosition = worldPos.xyz;
+    output.worldNormal = worldNormal;
+    output.instanceIdx = instanceIdx;
+
+    return output;
+}
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    return ComputeLighting(input.instanceIdx, input.worldPosition, input.worldNormal);
+}
+";
+
+        private const string Mesh3DWireframeShaderCode = CommonShaderHelpers + @"
+@vertex
+fn vs_main(input: VertexInput, @builtin(vertex_index) vertexIdx: u32, @builtin(instance_index) instanceIdx: u32) -> VertexOutputWireframe {
+    var output: VertexOutputWireframe;
+    let record = meshRecords[instanceIdx];
+
+    let worldPos = record.modelTransform * vec4<f32>(input.position, 1.0);
+    let worldNormal = normalize((record.modelTransform * vec4<f32>(input.normal, 0.0)).xyz);
+
+    output.position = uniforms.projection * uniforms.view * worldPos;
+    output.worldPosition = worldPos.xyz;
+    output.worldNormal = worldNormal;
+    output.renderMode = record.renderMode;
+    output.instanceIdx = instanceIdx;
+
+    let triVertexIdx = vertexIdx % 3u;
+    if (triVertexIdx == 0u) {
+        output.barycentric = vec3<f32>(1.0, 0.0, 0.0);
+    } else if (triVertexIdx == 1u) {
+        output.barycentric = vec3<f32>(0.0, 1.0, 0.0);
+    } else {
+        output.barycentric = vec3<f32>(0.0, 0.0, 1.0);
+    }
+
+    return output;
+}
+
+@fragment
+fn fs_main(input: VertexOutputWireframe) -> @location(0) vec4<f32> {
+    let mode = u32(input.renderMode + 0.5);
+    let solidColor = ComputeLighting(input.instanceIdx, input.worldPosition, input.worldNormal);
+
     let dFdx = dpdx(input.barycentric);
     let dFdy = dpdy(input.barycentric);
     let g = max(sqrt(dFdx * dFdx + dFdy * dFdy), vec3<f32>(0.00001));
@@ -438,10 +341,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let lineWidth = 1.0; 
     let edge = smoothstep(lineWidth - 0.5, lineWidth + 0.5, minDist);
 
-    let wireframeColor = vec4<f32>(0.85, 0.85, 0.9, record.opacity);
+    let wireframeColor = vec4<f32>(0.85, 0.85, 0.9, solidColor.a);
 
     if (mode == 1u) {
-        let alpha = (1.0 - edge) * record.opacity;
+        let alpha = (1.0 - edge) * solidColor.a;
         if (alpha < 0.01) {
             discard;
         }
@@ -449,7 +352,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     let finalColor = mix(wireframeColor.rgb, solidColor.rgb, edge);
-    return vec4<f32>(finalColor, record.opacity);
+    return vec4<f32>(finalColor, solidColor.a);
 }
 ";
 
@@ -602,7 +505,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             // 4. Create solid pipeline if needed
             if (_cachedPipeline == null)
             {
-                var shaderModule = compositor.PipelineCache.GetOrCreateShader("Mesh3DSolidShader_3D", Mesh3DSolidShaderCode, "Mesh3D WGSL 3D Solid Shader");
+                var shaderModule = compositor.PipelineCache.GetOrCreateShader("Mesh3DSolidShader_3D_v3", Mesh3DSolidShaderCode, "Mesh3D WGSL 3D Solid Shader");
 
                 var layouts = new VertexBufferLayout[]
                 {
@@ -620,7 +523,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                 attrs[1] = new VertexAttribute { Format = VertexFormat.Float32x3, Offset = 12, ShaderLocation = 1 }; // Normal
 
                 _cachedPipeline = compositor.PipelineCache.GetOrCreateRenderPipeline(
-                    "Mesh3DPipeline_3D",
+                    "Mesh3DPipeline_3D_v3",
                     shaderModule,
                     vertexBufferLayouts: layouts,
                     topology: PrimitiveTopology.TriangleList,
@@ -639,7 +542,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             // Create wireframe pipeline if needed (TriangleList with double sided rendering)
             if (_cachedWireframePipeline == null)
             {
-                var shaderModule = compositor.PipelineCache.GetOrCreateShader("Mesh3DWireframeShader_3D", Mesh3DWireframeShaderCode, "Mesh3D WGSL 3D Wireframe Shader");
+                var shaderModule = compositor.PipelineCache.GetOrCreateShader("Mesh3DWireframeShader_3D_v3", Mesh3DWireframeShaderCode, "Mesh3D WGSL 3D Wireframe Shader");
 
                 var layouts = new VertexBufferLayout[]
                 {
@@ -657,7 +560,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                 attrs[1] = new VertexAttribute { Format = VertexFormat.Float32x3, Offset = 12, ShaderLocation = 1 }; // Normal
 
                 _cachedWireframePipeline = compositor.PipelineCache.GetOrCreateRenderPipeline(
-                    "Mesh3DWireframePipeline_3D",
+                    "Mesh3DWireframePipeline_3D_v3",
                     shaderModule,
                     vertexBufferLayouts: layouts,
                     topology: PrimitiveTopology.TriangleList,
@@ -893,7 +796,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         public GpuTexture? DepthTexture { get; set; }
         
         public RenderMode3D RenderMode { get; set; } = RenderMode3D.Solid;
-        public ShadingMode3D ShadingMode { get; set; } = ShadingMode3D.Shaded;
+        public ShadingMode3D ShadingMode { get; set; } = ShadingMode3D.Realistic;
     }
 
     public class MeshCompilationEntry

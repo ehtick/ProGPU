@@ -243,7 +243,7 @@ public static class Mesh3DViewerPage
     private static Vector4 _activeModelColor = new Vector4(0.70f, 0.70f, 0.72f, 1.0f); // Default premium clay warm gray
     private static Border? _pickerPopup;
     private static RenderMode3D _selectedRenderMode = RenderMode3D.SolidWireframe;
-    private static ShadingMode3D _selectedShadingMode = ShadingMode3D.Shaded;
+    private static ShadingMode3D _selectedShadingMode = ShadingMode3D.Realistic;
 
     private static Run? _statsNameRun;
     private static Run? _statsVerticesRun;
@@ -348,10 +348,14 @@ public static class Mesh3DViewerPage
             WidthConstraint = 268f,
             Margin = new Thickness(0, 0, 0, 16f)
         };
-        shadingModeCombo.Items.Add(new ComboBoxItem { Text = "PBR GGX Shaded" });
+        shadingModeCombo.Items.Add(new ComboBoxItem { Text = "Realistic (PBR GGX)" });
+        shadingModeCombo.Items.Add(new ComboBoxItem { Text = "Conceptual (Gooch)" });
         shadingModeCombo.Items.Add(new ComboBoxItem { Text = "Flat / Unlit" });
+        shadingModeCombo.Items.Add(new ComboBoxItem { Text = "Hidden Line" });
+        shadingModeCombo.Items.Add(new ComboBoxItem { Text = "Shades of Gray" });
+        shadingModeCombo.Items.Add(new ComboBoxItem { Text = "X-Ray Mode" });
         shadingModeCombo.Items.Add(new ComboBoxItem { Text = "Normals Diagnostic" });
-        shadingModeCombo.SelectedItem = shadingModeCombo.Items[0]; // Default to Shaded
+        shadingModeCombo.SelectedItem = shadingModeCombo.Items[0]; // Default to Realistic
 
         shadingModeCombo.SelectionChanged += (s, e) =>
         {
@@ -359,10 +363,14 @@ public static class Mesh3DViewerPage
             {
                 _selectedShadingMode = shadingModeCombo.SelectedItem.Text switch
                 {
-                    "PBR GGX Shaded" => ShadingMode3D.Shaded,
+                    "Realistic (PBR GGX)" => ShadingMode3D.Realistic,
+                    "Conceptual (Gooch)" => ShadingMode3D.Conceptual,
                     "Flat / Unlit" => ShadingMode3D.Flat,
+                    "Hidden Line" => ShadingMode3D.HiddenLine,
+                    "Shades of Gray" => ShadingMode3D.ShadesOfGray,
+                    "X-Ray Mode" => ShadingMode3D.XRay,
                     "Normals Diagnostic" => ShadingMode3D.Normals,
-                    _ => ShadingMode3D.Shaded
+                    _ => ShadingMode3D.Realistic
                 };
                 UpdateViewportModels();
             }
