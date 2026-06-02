@@ -22,5 +22,6 @@ namespace ProGPU.Scene
         public const int GpuLineSeries = 5;
         public const int GpuScatterSeries = 6;
         public const int CustomGrid = 7;
+        public const int Mesh3D = 8;
     }
 }
