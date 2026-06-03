@@ -323,9 +323,4 @@ public unsafe class ComputeAccelerator : IDisposable
         _isDisposed = true;
         GC.SuppressFinalize(this);
     }
-
-    ~ComputeAccelerator()
-    {
-        Dispose();
-    }
 }

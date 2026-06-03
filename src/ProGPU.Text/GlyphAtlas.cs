@@ -479,9 +479,4 @@ public unsafe class GlyphAtlas : IDisposable
         _isDisposed = true;
         GC.SuppressFinalize(this);
     }
-
-    ~GlyphAtlas()
-    {
-        Dispose();
-    }
 }
