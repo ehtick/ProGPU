@@ -186,9 +186,82 @@ public unsafe class PathAtlas : IDisposable
                     hash.Add(cubic.Point.X);
                     hash.Add(cubic.Point.Y);
                 }
+                else if (segment is ArcSegment arc)
+                {
+                    hash.Add(3); // Segment type: Arc
+                    hash.Add(arc.Point.X);
+                    hash.Add(arc.Point.Y);
+                    hash.Add(arc.Size.X);
+                    hash.Add(arc.Size.Y);
+                    hash.Add(arc.RotationAngle);
+                    hash.Add(arc.IsLargeArc);
+                    hash.Add((int)arc.SweepDirection);
+                }
             }
         }
         return hash.ToHashCode();
+    }
+
+    private static void CalculateArcCenter(
+        Vector2 start, Vector2 end, Vector2 radii, float rotationAngleDegrees, bool isLargeArc, SweepDirection sweepDirection,
+        out Vector2 center, out float theta1, out float deltaTheta, out float rx, out float ry)
+    {
+        rx = MathF.Abs(radii.X);
+        ry = MathF.Abs(radii.Y);
+        
+        float phi = rotationAngleDegrees * MathF.PI / 180.0f;
+        float cosPhi = MathF.Cos(phi);
+        float sinPhi = MathF.Sin(phi);
+        
+        float dx = (start.X - end.X) * 0.5f;
+        float dy = (start.Y - end.Y) * 0.5f;
+        float x1p = cosPhi * dx + sinPhi * dy;
+        float y1p = -sinPhi * dx + cosPhi * dy;
+        
+        float prx = rx * rx;
+        float pry = ry * ry;
+        float px1p = x1p * x1p;
+        float py1p = y1p * y1p;
+        
+        float radiiCheck = px1p / prx + py1p / pry;
+        if (radiiCheck > 1.0f)
+        {
+            float sq = MathF.Sqrt(radiiCheck);
+            rx *= sq;
+            ry *= sq;
+            prx = rx * rx;
+            pry = ry * ry;
+        }
+        
+        float sign = (isLargeArc == (sweepDirection == SweepDirection.Clockwise)) ? -1.0f : 1.0f;
+        float sqTerm = (prx * pry - prx * py1p - pry * px1p) / (prx * py1p + pry * px1p);
+        if (sqTerm < 0.0f) sqTerm = 0.0f;
+        float coef = sign * MathF.Sqrt(sqTerm);
+        float cxp = coef * ((rx * y1p) / ry);
+        float cyp = coef * -((ry * x1p) / rx);
+        
+        center = new Vector2(
+            cosPhi * cxp - sinPhi * cyp + (start.X + end.X) * 0.5f,
+            sinPhi * cxp + cosPhi * cyp + (start.Y + end.Y) * 0.5f
+        );
+        
+        float ux = (x1p - cxp) / rx;
+        float uy = (y1p - cyp) / ry;
+        float vx = (-x1p - cxp) / rx;
+        float vy = (-y1p - cyp) / ry;
+        
+        theta1 = MathF.Atan2(uy, ux);
+        float theta2 = MathF.Atan2(vy, vx);
+        
+        deltaTheta = theta2 - theta1;
+        if (sweepDirection == SweepDirection.Clockwise)
+        {
+            if (deltaTheta < 0) deltaTheta += 2.0f * MathF.PI;
+        }
+        else
+        {
+            if (deltaTheta > 0) deltaTheta -= 2.0f * MathF.PI;
+        }
     }
 
     public (GpuPathRecord[] Records, GpuPathSegment[] Segments) CompilePath(PathGeometry path, out float localMinX, out float localMinY, out float localMaxX, out float localMaxY)
@@ -254,6 +327,46 @@ public unsafe class PathAtlas : IDisposable
                     UpdateBounds(cubic.ControlPoint2);
                     UpdateBounds(cubic.Point);
                     currentPoint = cubic.Point;
+                }
+                else if (segment is ArcSegment arc)
+                {
+                    CalculateArcCenter(
+                        currentPoint, arc.Point, arc.Size, arc.RotationAngle, arc.IsLargeArc, arc.SweepDirection,
+                        out Vector2 center, out float theta1, out float deltaTheta, out float rx, out float ry
+                    );
+                    
+                    segments.Add(new GpuPathSegment
+                    {
+                        P0 = currentPoint,
+                        P1 = arc.Point,
+                        P2 = center,
+                        P3 = new Vector2(rx, ry),
+                        SegmentType = 3,
+                        Pad0 = BitConverter.SingleToUInt32Bits(theta1),
+                        Pad1 = BitConverter.SingleToUInt32Bits(deltaTheta),
+                        Pad2 = BitConverter.SingleToUInt32Bits(arc.RotationAngle * MathF.PI / 180.0f)
+                    });
+                    
+                    // Sample 8 points to get tight bounding box
+                    UpdateBounds(currentPoint);
+                    UpdateBounds(arc.Point);
+                    float phi = arc.RotationAngle * MathF.PI / 180.0f;
+                    float cosPhi = MathF.Cos(phi);
+                    float sinPhi = MathF.Sin(phi);
+                    for (int step = 1; step < 8; step++)
+                    {
+                        float t = (float)step / 8.0f;
+                        float theta = theta1 + t * deltaTheta;
+                        float cosT = MathF.Cos(theta);
+                        float sinT = MathF.Sin(theta);
+                        var p = new Vector2(
+                            rx * cosT * cosPhi - ry * sinT * sinPhi + center.X,
+                            rx * cosT * sinPhi + ry * sinT * cosPhi + center.Y
+                        );
+                        UpdateBounds(p);
+                    }
+                    
+                    currentPoint = arc.Point;
                 }
             }
 
@@ -669,10 +782,5 @@ public unsafe class PathAtlas : IDisposable
 
         _isDisposed = true;
         GC.SuppressFinalize(this);
-    }
-
-    ~PathAtlas()
-    {
-        Dispose();
     }
 }

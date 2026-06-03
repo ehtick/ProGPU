@@ -45,6 +45,30 @@ public class CubicBezierSegment : PathSegment
     }
 }
 
+public enum SweepDirection
+{
+    Counterclockwise = 0,
+    Clockwise = 1
+}
+
+public class ArcSegment : PathSegment
+{
+    public Vector2 Point { get; set; }
+    public Vector2 Size { get; set; }
+    public float RotationAngle { get; set; }
+    public bool IsLargeArc { get; set; }
+    public SweepDirection SweepDirection { get; set; }
+
+    public ArcSegment(Vector2 point, Vector2 size, float rotationAngle, bool isLargeArc, SweepDirection sweepDirection)
+    {
+        Point = point;
+        Size = size;
+        RotationAngle = rotationAngle;
+        IsLargeArc = isLargeArc;
+        SweepDirection = sweepDirection;
+    }
+}
+
 public class PathFigure
 {
     public Vector2 StartPoint { get; set; }
@@ -206,6 +230,28 @@ public class PathGeometry
                         currentFigure.Segments.Add(new CubicBezierSegment(ctrl1, ctrl2, to));
                         lastControlPoint = ctrl2;
                         currentPoint = to;
+                    }
+                    break;
+
+                case 'A': // Elliptical Arc
+                    {
+                        float rx = ReadFloat(tokens, ref index);
+                        float ry = ReadFloat(tokens, ref index);
+                        float xAxisRotation = ReadFloat(tokens, ref index);
+                        float largeArcFlagVal = ReadFloat(tokens, ref index);
+                        float sweepFlagVal = ReadFloat(tokens, ref index);
+                        var pt = ReadVector2(tokens, ref index);
+                        if (isRelative) pt += currentPoint;
+
+                        if (currentFigure == null)
+                        {
+                            currentFigure = new PathFigure(currentPoint);
+                            geometry.Figures.Add(currentFigure);
+                        }
+                        bool isLargeArc = largeArcFlagVal != 0f;
+                        SweepDirection sweepDirection = sweepFlagVal != 0f ? SweepDirection.Clockwise : SweepDirection.Counterclockwise;
+                        currentFigure.Segments.Add(new ArcSegment(pt, new Vector2(rx, ry), xAxisRotation, isLargeArc, sweepDirection));
+                        currentPoint = pt;
                     }
                     break;
 
