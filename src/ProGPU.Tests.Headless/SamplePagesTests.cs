@@ -328,6 +328,12 @@ public class SamplePagesTests
     }
 
     [Fact]
+    public void Test_ImageEffectsPage_Renders()
+    {
+        RunPageTest(ImageEffectsPage.Create(), "Image Effects");
+    }
+
+    [Fact]
     public void Test_TypographyScriptsPage_Renders()
     {
         RunPageTest(SamplePagePresenter.CreateTypographyScriptsView(), "Typography & Scripts");

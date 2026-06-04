@@ -335,6 +335,7 @@ public static unsafe class MainWindowController
         var dataItem = new NavigationViewItem("Data Virtualization", "📊", DataVirtualizationPage.Create());
         var virtualizationControlsItem = new NavigationViewItem("Virtualization Controls", "🎛️", VirtualizationControlsPage.Create());
         var frameworkEffectsItem = new NavigationViewItem("Framework Effects", "✨", FrameworkEffectsPage.Create());
+        var imageEffectsItem = new NavigationViewItem("Image Effects", "🖼️", ImageEffectsPage.Create());
 
         var computeItem = new NavigationViewItem("Compute FX", "⚙", ComputeFxPage.Create());
         var motionAnimationsItem = new NavigationViewItem("Motion & Animations", "🎬", MotionAnimationsPage.Create());
@@ -384,6 +385,7 @@ public static unsafe class MainWindowController
         AppState._navigationView.MenuItems.Add(dataItem);
         AppState._navigationView.MenuItems.Add(virtualizationControlsItem);
         AppState._navigationView.MenuItems.Add(frameworkEffectsItem);
+        AppState._navigationView.MenuItems.Add(imageEffectsItem);
         AppState._navigationView.MenuItems.Add(computeItem);
         AppState._navigationView.MenuItems.Add(motionAnimationsItem);
         AppState._navigationView.MenuItems.Add(advancedItem);

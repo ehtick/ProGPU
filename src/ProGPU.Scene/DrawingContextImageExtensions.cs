@@ -1,0 +1,44 @@
+using System;
+using System.Numerics;
+using ProGPU.Backend;
+
+namespace ProGPU.Scene
+{
+    public static class DrawingContextImageExtensions
+    {
+        public static void DrawImageWithEffect(
+            this DrawingContext context,
+            GpuTexture texture,
+            Rect rect,
+            float brightness = 0f,
+            float contrast = 1f,
+            float saturation = 1f,
+            float grayscale = 0f,
+            float sepia = 0f,
+            float invert = 0f,
+            float blurSigma = 0f,
+            GpuTexture? maskTexture = null)
+        {
+            if (texture == null) return;
+
+            var p = new ImageEffectParams
+            {
+                Texture = texture,
+                Rect = rect,
+                Brightness = brightness,
+                Contrast = contrast,
+                Saturation = saturation,
+                Grayscale = grayscale,
+                Sepia = sepia,
+                Invert = invert,
+                BlurSigma = blurSigma,
+                MaskTexture = maskTexture
+            };
+
+            context.DrawExtension(
+                CompositorBuiltInExtensions.ImageEffect,
+                dataParam: p
+            );
+        }
+    }
+}

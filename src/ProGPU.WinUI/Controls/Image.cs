@@ -27,6 +27,56 @@ public class Image : FrameworkElement
     private GpuTexture? _loadedTexture;
     private Stretch _stretch = Stretch.Uniform;
 
+    private float _brightness = 0f;
+    private float _contrast = 1f;
+    private float _saturation = 1f;
+    private float _grayscale = 0f;
+    private float _sepia = 0f;
+    private float _invert = 0f;
+    private float _blurSigma = 0f;
+
+    public float Brightness
+    {
+        get => _brightness;
+        set { if (_brightness != value) { _brightness = value; Invalidate(); } }
+    }
+
+    public float Contrast
+    {
+        get => _contrast;
+        set { if (_contrast != value) { _contrast = value; Invalidate(); } }
+    }
+
+    public float Saturation
+    {
+        get => _saturation;
+        set { if (_saturation != value) { _saturation = value; Invalidate(); } }
+    }
+
+    public float Grayscale
+    {
+        get => _grayscale;
+        set { if (_grayscale != value) { _grayscale = value; Invalidate(); } }
+    }
+
+    public float Sepia
+    {
+        get => _sepia;
+        set { if (_sepia != value) { _sepia = value; Invalidate(); } }
+    }
+
+    public float Invert
+    {
+        get => _invert;
+        set { if (_invert != value) { _invert = value; Invalidate(); } }
+    }
+
+    public float BlurSigma
+    {
+        get => _blurSigma;
+        set { if (_blurSigma != value) { _blurSigma = value; Invalidate(); } }
+    }
+
     public object? Source
     {
         get => _source;
@@ -205,7 +255,14 @@ public class Image : FrameworkElement
             context.PushClip(new Rect(Vector2.Zero, Size));
         }
 
-        context.DrawTexture(texture, destRect);
+        if (Brightness != 0f || Contrast != 1f || Saturation != 1f || Grayscale != 0f || Sepia != 0f || Invert != 0f || BlurSigma > 0.01f)
+        {
+            context.DrawImageWithEffect(texture, destRect, Brightness, Contrast, Saturation, Grayscale, Sepia, Invert, BlurSigma);
+        }
+        else
+        {
+            context.DrawTexture(texture, destRect);
+        }
 
         if (clip)
         {
