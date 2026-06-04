@@ -39,6 +39,8 @@ public struct GpuUniforms
     [FieldOffset(64)] public Matrix4x4 Mvp;
     [FieldOffset(128)] public Matrix4x4 View;
     [FieldOffset(192)] public Vector2 CanvasSize;
+    [FieldOffset(200)] public float DpiScale;
+    [FieldOffset(204)] public float Pad0;
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 16)]
@@ -210,7 +212,6 @@ public unsafe class Compositor : IDisposable
     private GpuBuffer _vectorVertexBuffer;
     private GpuBuffer _vectorIndexBuffer;
     private GpuBuffer _textVertexBuffer;
-    private GpuBuffer _textIndexBuffer;
     private GpuBuffer _textureVertexBuffer;
     private GpuBuffer _textureIndexBuffer;
 
@@ -289,8 +290,7 @@ public unsafe class Compositor : IDisposable
 
     private readonly List<VectorVertex> _vectorVerticesList = new();
     private readonly List<uint> _vectorIndicesList = new();
-    private readonly List<VectorVertex> _textVerticesList = new();
-    private readonly List<uint> _textIndicesList = new();
+    private readonly List<GlyphInstance> _textVerticesList = new();
     private readonly List<VectorVertex> _textureVerticesList = new();
     private readonly List<uint> _textureIndicesList = new();
     public readonly struct TextureCacheKey : IEquatable<TextureCacheKey>
@@ -370,7 +370,7 @@ public unsafe class Compositor : IDisposable
     internal GpuBuffer BrushesStorageBuffer => _brushesStorageBuffer;
     internal uint CurrentWidth => _currentWidth;
     internal uint CurrentHeight => _currentHeight;
-    internal float CurrentDpiScale => _currentDpiScale;
+    public float CurrentDpiScale => _currentDpiScale;
     internal Matrix4x4 CurrentProjection => _currentProjection;
     internal System.Runtime.CompilerServices.ConditionalWeakTable<object, GpuSeriesBuffer> DynamicGpuBufferCache => _dynamicGpuBufferCache;
     internal List<CompositorDrawCall> DrawCalls => _drawCalls;
@@ -380,11 +380,13 @@ public unsafe class Compositor : IDisposable
     internal uint PendingTextStart { get => _pendingTextStart; set => _pendingTextStart = value; }
     internal BindGroup* VectorUniformBindGroup => _vectorUniformBindGroup;
     internal BindGroup* VectorUniformBindGroupOffscreen => _vectorUniformBindGroupOffscreen;
+    internal Sampler* AtlasSampler => _atlasSampler;
+    internal ulong FrameNumber => _frameNumber;
     
     internal void CompilePolyline(IRenderDataProvider? provider, RenderCommand cmd, in Matrix4x4 transform) => CompilePolylineCommand(provider, cmd, transform);
     public int VectorIndexCount => _vectorIndicesList.Count;
-    public int TextVertexCount => _textVerticesList.Count;
-    public int TextIndexCount => _textIndicesList.Count;
+    public int TextVertexCount => _textVerticesList.Count * 6;
+    public int TextIndexCount => _textVerticesList.Count * 6;
     public int TextureVertexCount => _textureVerticesList.Count;
     public int TextureIndexCount => _textureIndicesList.Count;
     public int TextureDrawCallCount
@@ -440,8 +442,7 @@ public unsafe class Compositor : IDisposable
         _vectorVertexBuffer = new GpuBuffer(_context, initialVertexCount * vertexStride, BufferUsage.Vertex | BufferUsage.CopyDst, "Vector Vertex Buffer");
         _vectorIndexBuffer = new GpuBuffer(_context, initialIndexCount * 4, BufferUsage.Index | BufferUsage.CopyDst, "Vector Index Buffer");
 
-        _textVertexBuffer = new GpuBuffer(_context, initialVertexCount * vertexStride, BufferUsage.Vertex | BufferUsage.CopyDst, "Text Vertex Buffer");
-        _textIndexBuffer = new GpuBuffer(_context, initialIndexCount * 4, BufferUsage.Index | BufferUsage.CopyDst, "Text Index Buffer");
+        _textVertexBuffer = new GpuBuffer(_context, initialVertexCount * (uint)Marshal.SizeOf<GlyphInstance>(), BufferUsage.Vertex | BufferUsage.CopyDst, "Text Vertex Buffer");
 
         _textureVertexBuffer = new GpuBuffer(_context, initialVertexCount * vertexStride, BufferUsage.Vertex | BufferUsage.CopyDst, "Texture Vertex Buffer");
         _textureIndexBuffer = new GpuBuffer(_context, initialIndexCount * 4, BufferUsage.Index | BufferUsage.CopyDst, "Texture Index Buffer");
@@ -455,6 +456,7 @@ public unsafe class Compositor : IDisposable
         RegisterExtension(CompositorBuiltInExtensions.GpuScatterSeries, new GpuScatterSeriesExtensionPipeline());
         RegisterExtension(CompositorBuiltInExtensions.CustomGrid, new CustomGridExtensionPipeline());
         RegisterExtension(CompositorBuiltInExtensions.Mesh3D, new Mesh3DExtensionPipeline());
+        RegisterExtension(CompositorBuiltInExtensions.ImageEffect, new ImageEffectExtensionPipeline());
 
         InitializePipelinesAndBindGroups();
         GpuTexture.OnDisposedWithId += HandleTextureDisposed;
@@ -946,7 +948,6 @@ public unsafe class Compositor : IDisposable
         _vectorVerticesList.Clear();
         _vectorIndicesList.Clear();
         _textVerticesList.Clear();
-        _textIndicesList.Clear();
         _textureVerticesList.Clear();
         _textureIndicesList.Clear();
         _drawCalls.Clear();
@@ -980,7 +981,7 @@ public unsafe class Compositor : IDisposable
 
         // 3. Compile Layer 0: Root Visual Scene
         _pendingVectorStart = (uint)_vectorIndicesList.Count;
-        _pendingTextStart = (uint)_textIndicesList.Count;
+        _pendingTextStart = (uint)_textVerticesList.Count;
         CompileVisualTree(root, Matrix4x4.Identity);
         CommitPendingDrawCalls();
 
@@ -1002,7 +1003,7 @@ public unsafe class Compositor : IDisposable
 
                 var layer = externalLayers[i];
                 _pendingVectorStart = (uint)_vectorIndicesList.Count;
-                _pendingTextStart = (uint)_textIndicesList.Count;
+                _pendingTextStart = (uint)_textVerticesList.Count;
                 
                 CompileVisualTree(layer, Matrix4x4.Identity);
                 CommitPendingDrawCalls();
@@ -1037,7 +1038,7 @@ public unsafe class Compositor : IDisposable
             _opacityStack.Clear();
 
             _pendingVectorStart = (uint)_vectorIndicesList.Count;
-            _pendingTextStart = (uint)_textIndicesList.Count;
+            _pendingTextStart = (uint)_textVerticesList.Count;
             
             CompileVisualTree(activeToolTip, Matrix4x4.Identity);
             CommitPendingDrawCalls();
@@ -1070,7 +1071,7 @@ public unsafe class Compositor : IDisposable
             _opacityStack.Clear();
 
             _pendingVectorStart = (uint)_vectorIndicesList.Count;
-            _pendingTextStart = (uint)_textIndicesList.Count;
+            _pendingTextStart = (uint)_textVerticesList.Count;
 
             var diagContext = new DrawingContext();
             RenderDiagnostics(diagContext, width, height);
@@ -1151,7 +1152,7 @@ public unsafe class Compositor : IDisposable
                             ClipRect = _activeClipRect
                         });
                         _pendingVectorStart = (uint)_vectorIndicesList.Count;
-                        _pendingTextStart = (uint)_textIndicesList.Count;
+                        _pendingTextStart = (uint)_textVerticesList.Count;
                         break;
                 }
             }
@@ -1190,13 +1191,8 @@ public unsafe class Compositor : IDisposable
 
         if (_textVerticesList.Count > 0)
         {
-            EnsureBufferSize(ref _textVertexBuffer, (uint)_textVerticesList.Count * (uint)Marshal.SizeOf<VectorVertex>(), BufferUsage.Vertex);
+            EnsureBufferSize(ref _textVertexBuffer, (uint)_textVerticesList.Count * (uint)Marshal.SizeOf<GlyphInstance>(), BufferUsage.Vertex);
             _textVertexBuffer.Write(CollectionsMarshal.AsSpan(_textVerticesList));
-        }
-        if (_textIndicesList.Count > 0)
-        {
-            EnsureBufferSize(ref _textIndexBuffer, (uint)_textIndicesList.Count * 4, BufferUsage.Index);
-            _textIndexBuffer.Write(CollectionsMarshal.AsSpan(_textIndicesList));
         }
 
         if (_textureVerticesList.Count > 0)
@@ -1216,7 +1212,8 @@ public unsafe class Compositor : IDisposable
             Projection = projection,
             Mvp = _hasGpuTransformsInFrame ? Matrix4x4.Identity : projection,
             View = _hasGpuTransformsInFrame ? _gpuTransformsCameraView : Matrix4x4.Identity,
-            CanvasSize = new Vector2(width, height)
+            CanvasSize = new Vector2(width, height),
+            DpiScale = _currentDpiScale
         };
         _uniformBuffer.WriteSingle(uniformsData);
 
@@ -1347,8 +1344,7 @@ public unsafe class Compositor : IDisposable
 
                 var buffer = _textVertexBuffer.BufferPtr;
                 _context.Wgpu.RenderPassEncoderSetVertexBuffer(pass, 0, buffer, 0, _textVertexBuffer.Size);
-                _context.Wgpu.RenderPassEncoderSetIndexBuffer(pass, _textIndexBuffer.BufferPtr, IndexFormat.Uint32, 0, _textIndexBuffer.Size);
-                _context.Wgpu.RenderPassEncoderDrawIndexed(pass, dc.IndexCount, 1, dc.IndexStart, 0, 0);
+                _context.Wgpu.RenderPassEncoderDraw(pass, 6, dc.IndexCount, 0, dc.IndexStart);
             }
             else if (dc.Type == DrawCallType.Texture && dc.Texture != null)
             {
@@ -1908,7 +1904,7 @@ public unsafe class Compositor : IDisposable
                         ClipRect = _activeClipRect
                     });
                     _pendingVectorStart = (uint)_vectorIndicesList.Count;
-                    _pendingTextStart = (uint)_textIndicesList.Count;
+                    _pendingTextStart = (uint)_textVerticesList.Count;
                     break;
                 case RenderCommandType.DrawExtension:
                     {
@@ -1947,10 +1943,12 @@ public unsafe class Compositor : IDisposable
                                 Scale = localCmd.Scale,
                                 Translate = localCmd.Translate,
                                 Color = (localCmd.Brush is SolidColorBrush solid) ? solid.Color : new Vector4(1f, 1f, 1f, 1f),
-                                ClipRect = _activeClipRect
+                                ClipRect = _activeClipRect,
+                                MaskTexture = _maskStack.Count > 0 ? _maskStack.Peek() : null,
+                                BlendMode = _activeBlendMode
                             });
                             _pendingVectorStart = (uint)_vectorIndicesList.Count;
-                            _pendingTextStart = (uint)_textIndicesList.Count;
+                            _pendingTextStart = (uint)_textVerticesList.Count;
                         }
                     }
                     break;
@@ -1979,7 +1977,7 @@ public unsafe class Compositor : IDisposable
                 for (int i = textStart; i < _textVerticesList.Count; i++)
                 {
                     var v = _textVerticesList[i];
-                    v.ShapeType += 100f;
+                    v.ScaleBoldItalicUseMvp.W = 1.0f;
                     _textVerticesList[i] = v;
                 }
             }
@@ -2164,10 +2162,12 @@ public unsafe class Compositor : IDisposable
                                 Scale = localCmd.Scale,
                                 Translate = localCmd.Translate,
                                 Color = (localCmd.Brush is SolidColorBrush solid) ? solid.Color : new Vector4(1f, 1f, 1f, 1f),
-                                ClipRect = _activeClipRect
+                                ClipRect = _activeClipRect,
+                                MaskTexture = _maskStack.Count > 0 ? _maskStack.Peek() : null,
+                                BlendMode = _activeBlendMode
                             });
                             _pendingVectorStart = (uint)_vectorIndicesList.Count;
-                            _pendingTextStart = (uint)_textIndicesList.Count;
+                            _pendingTextStart = (uint)_textVerticesList.Count;
                         }
                     }
                     break;
@@ -2196,7 +2196,7 @@ public unsafe class Compositor : IDisposable
                 for (int i = textStart; i < _textVerticesList.Count; i++)
                 {
                     var v = _textVerticesList[i];
-                    v.ShapeType += 100f;
+                    v.ScaleBoldItalicUseMvp.W = 1.0f;
                     _textVerticesList[i] = v;
                 }
             }
@@ -3327,20 +3327,15 @@ public unsafe class Compositor : IDisposable
 
         int maxGlyphs = layout.Glyphs.Count;
         int maxPassCount = cmd.IsBold ? 2 : 1;
-        int maxVertices = maxGlyphs * maxPassCount * 4;
-        int maxIndices = maxGlyphs * maxPassCount * 6;
+        int maxVertices = maxGlyphs * maxPassCount;
 
         int vertexStart = _textVerticesList.Count;
-        int indexStart = _textIndicesList.Count;
 
         CollectionsMarshal.SetCount(_textVerticesList, vertexStart + maxVertices);
-        CollectionsMarshal.SetCount(_textIndicesList, indexStart + maxIndices);
 
         var textVerticesSpan = CollectionsMarshal.AsSpan(_textVerticesList);
-        var textIndicesSpan = CollectionsMarshal.AsSpan(_textIndicesList);
 
         int currentVertexCount = vertexStart;
-        int currentIndexCount = indexStart;
 
         foreach (var runGlyph in layout.Glyphs)
         {
@@ -3400,11 +3395,9 @@ public unsafe class Compositor : IDisposable
                 continue;
             }
 
-            // Retrieve baseline coordinate from layout position by subtracting dummy Bear offset
             float baseCursorX = runGlyph.Position.X - runGlyph.Glyph.BearX;
             float baseCursorY = runGlyph.Position.Y - runGlyph.Glyph.BearY;
 
-            // Compute high-DPI scaling factor dynamically from the compositor target context
             float dpiScale = _currentDpiScale;
             if (ActiveCompilationContext != null && ActiveCompilationContext.StaticZoom > 0.0001f)
             {
@@ -3412,9 +3405,6 @@ public unsafe class Compositor : IDisposable
             }
 
             float physicalFontSize = cmd.FontSize * dpiScale;
-
-            // Cap the physical font size rasterized into the atlas to prevent blowout on huge zoom levels.
-            // Snap to discrete font sizes (0.5px steps below 24px, 2px steps above 24px) for perfect cache hit ratios.
             float rasterFontSize = Math.Clamp(physicalFontSize, 4f, 64f);
             if (rasterFontSize <= 24f)
             {
@@ -3430,18 +3420,15 @@ public unsafe class Compositor : IDisposable
                              activeTransform.M11 < 0.0f ||
                              activeTransform.M22 < 0.0f;
 
-            // Compute subpixel positioning and snap vertices to integer pixels to avoid bilinear blur.
             Vector2 transPos = Vector2.Transform(new Vector2(baseCursorX + cmd.Position.X, baseCursorY + cmd.Position.Y), activeTransform);
             Vector2 transPosPhysical = transPos * dpiScale;
-
-            float scaleX = new Vector2(activeTransform.M11, activeTransform.M12).Length();
-            float scaleY = new Vector2(activeTransform.M21, activeTransform.M22).Length();
 
             byte subpixelX = 0;
             float ipartX = 0f;
             float snappedY = 0f;
+            Vector2 snappedLogicalPos;
 
-            if (!isRotated && rasterFontSize <= 24f) // Only use subpixel positioning for small text to avoid atlas bloating
+            if (!isRotated && rasterFontSize <= 24f)
             {
                 float screenX = transPosPhysical.X;
                 float screenY = transPosPhysical.Y;
@@ -3457,11 +3444,17 @@ public unsafe class Compositor : IDisposable
                 subpixelX = (byte)subIdx;
                 ipartX = ipartX_temp;
                 snappedY = MathF.Round(screenY);
+                snappedLogicalPos = new Vector2(ipartX, snappedY) / dpiScale;
             }
             else if (!isRotated)
             {
                 ipartX = MathF.Round(transPosPhysical.X);
                 snappedY = MathF.Round(transPosPhysical.Y);
+                snappedLogicalPos = new Vector2(ipartX, snappedY) / dpiScale;
+            }
+            else
+            {
+                snappedLogicalPos = transPos;
             }
 
             float scaleRatio = physicalFontSize / rasterFontSize;
@@ -3475,71 +3468,14 @@ public unsafe class Compositor : IDisposable
             for (int pass = 0; pass < passCount; pass++)
             {
                 float xOffset = pass * boldOffset;
-                Vector2 v0, v1, v2, v3;
-
-                if (!isRotated)
-                {
-                    // Position the quad in physical screen pixels scaled by scaleRatio
-                    float rx0 = ipartX + info.BearX * scaleX * scaleRatio + xOffset * scaleX * dpiScale;
-                    float ry0 = snappedY + info.BearY * scaleY * scaleRatio;
-                    float rx1 = rx0 + info.Width * scaleX * scaleRatio;
-                    float ry1 = ry0 + info.Height * scaleY * scaleRatio;
-
-                    float skewFactor = cmd.IsItalic ? 0.22f : 0f;
-                    float yBase = snappedY; // Baseline is snappedY
-
-                    float sx0 = rx0 - (ry0 - yBase) * skewFactor;
-                    float sx1 = rx1 - (ry0 - yBase) * skewFactor;
-                    float sx2 = rx1 - (ry1 - yBase) * skewFactor;
-                    float sx3 = rx0 - (ry1 - yBase) * skewFactor;
-
-                    // Divide by dpiScale to map the physical coordinates back to logical compositor projection space
-                    v0 = new Vector2(sx0, ry0) / dpiScale;
-                    v1 = new Vector2(sx1, ry0) / dpiScale;
-                    v2 = new Vector2(sx2, ry1) / dpiScale;
-                    v3 = new Vector2(sx3, ry1) / dpiScale;
-                }
-                else
-                {
-                    // Rotated text: transform each vertex individually on the CPU scaled by scaleRatio
-                    float lx0 = info.BearX / dpiScale * scaleRatio + xOffset;
-                    float ly0 = info.BearY / dpiScale * scaleRatio;
-                    float lx1 = lx0 + info.Width / dpiScale * scaleRatio;
-                    float ly1 = ly0 + info.Height / dpiScale * scaleRatio;
-
-                    float skewFactor = cmd.IsItalic ? 0.22f : 0f;
-                    float yBase = 0f;
-
-                    float lsx0 = lx0 - (ly0 - yBase) * skewFactor;
-                    float lsx1 = lx1 - (ly0 - yBase) * skewFactor;
-                    float lsx2 = lx1 - (ly1 - yBase) * skewFactor;
-                    float lsx3 = lx0 - (ly1 - yBase) * skewFactor;
-
-                    Vector2 localP0 = new Vector2(baseCursorX + cmd.Position.X + lsx0, baseCursorY + cmd.Position.Y + ly0);
-                    Vector2 localP1 = new Vector2(baseCursorX + cmd.Position.X + lsx1, baseCursorY + cmd.Position.Y + ly0);
-                    Vector2 localP2 = new Vector2(baseCursorX + cmd.Position.X + lsx2, baseCursorY + cmd.Position.Y + ly1);
-                    Vector2 localP3 = new Vector2(baseCursorX + cmd.Position.X + lsx3, baseCursorY + cmd.Position.Y + ly1);
-
-                    v0 = Vector2.Transform(localP0, activeTransform);
-                    v1 = Vector2.Transform(localP1, activeTransform);
-                    v2 = Vector2.Transform(localP2, activeTransform);
-                    v3 = Vector2.Transform(localP3, activeTransform);
-                }
-
-                uint idxStart = (uint)currentVertexCount;
-
-                // Set dynamic UV texture mappings
-                var uv0 = new Vector2(info.TexCoordMin.X, info.TexCoordMin.Y);
-                var uv1 = new Vector2(info.TexCoordMax.X, info.TexCoordMin.Y);
-                var uv2 = new Vector2(info.TexCoordMax.X, info.TexCoordMax.Y);
-                var uv3 = new Vector2(info.TexCoordMin.X, info.TexCoordMax.Y);
 
                 if (_activeClipRect.HasValue && !_useGpuTransformsActive)
                 {
-                    float minX = MathF.Min(MathF.Min(v0.X, v1.X), MathF.Min(v2.X, v3.X));
-                    float maxX = MathF.Max(MathF.Max(v0.X, v1.X), MathF.Max(v2.X, v3.X));
-                    float minY = MathF.Min(MathF.Min(v0.Y, v1.Y), MathF.Min(v2.Y, v3.Y));
-                    float maxY = MathF.Max(MathF.Max(v0.Y, v1.Y), MathF.Max(v2.Y, v3.Y));
+                    float halfSize = cmd.FontSize * 2f;
+                    float minX = snappedLogicalPos.X - halfSize;
+                    float maxX = snappedLogicalPos.X + halfSize;
+                    float minY = snappedLogicalPos.Y - halfSize;
+                    float maxY = snappedLogicalPos.Y + halfSize;
 
                     float clipLeft = _activeClipRect.Value.X;
                     float clipTop = _activeClipRect.Value.Y;
@@ -3548,28 +3484,29 @@ public unsafe class Compositor : IDisposable
 
                     if (maxX <= clipLeft || minX >= clipRight || maxY <= clipTop || minY >= clipBottom)
                     {
-                        continue; // Completely clipped!
+                        continue;
                     }
                 }
 
-                textVerticesSpan[currentVertexCount++] = new VectorVertex(v0, color, uv0, bIdx, cornerRadius: DefaultTextGamma, strokeThickness: DefaultTextContrast);
-                textVerticesSpan[currentVertexCount++] = new VectorVertex(v1, color, uv1, bIdx, cornerRadius: DefaultTextGamma, strokeThickness: DefaultTextContrast);
-                textVerticesSpan[currentVertexCount++] = new VectorVertex(v2, color, uv2, bIdx, cornerRadius: DefaultTextGamma, strokeThickness: DefaultTextContrast);
-                textVerticesSpan[currentVertexCount++] = new VectorVertex(v3, color, uv3, bIdx, cornerRadius: DefaultTextGamma, strokeThickness: DefaultTextContrast);
+                Vector2 basisX = new Vector2(activeTransform.M11, activeTransform.M12);
+                Vector2 basisY = new Vector2(activeTransform.M21, activeTransform.M22);
 
-                // Quads Triangle Indices
-                textIndicesSpan[currentIndexCount++] = idxStart;
-                textIndicesSpan[currentIndexCount++] = idxStart + 1;
-                textIndicesSpan[currentIndexCount++] = idxStart + 2;
-
-                textIndicesSpan[currentIndexCount++] = idxStart;
-                textIndicesSpan[currentIndexCount++] = idxStart + 2;
-                textIndicesSpan[currentIndexCount++] = idxStart + 3;
+                textVerticesSpan[currentVertexCount++] = new GlyphInstance
+                {
+                    SnappedLogicalPos = snappedLogicalPos,
+                    BasisX = basisX,
+                    BasisY = basisY,
+                    BearSize = new Vector4(info.BearX, info.BearY, info.Width, info.Height),
+                    TexCoords = new Vector4(info.TexCoordMin.X, info.TexCoordMin.Y, info.TexCoordMax.X, info.TexCoordMax.Y),
+                    Color = color,
+                    ScaleBoldItalicUseMvp = new Vector4(scaleRatio, xOffset, cmd.IsItalic ? 0.22f : 0f, (ActiveCompilationContext != null) ? 1f : 0f),
+                    BrushIndex = bIdx,
+                    Padding = 0f
+                };
             }
         }
 
         CollectionsMarshal.SetCount(_textVerticesList, currentVertexCount);
-        CollectionsMarshal.SetCount(_textIndicesList, currentIndexCount);
     }
 
     private void CompileGlyphRunCommand(RenderCommand cmd, Matrix4x4 transform)
@@ -3599,20 +3536,15 @@ public unsafe class Compositor : IDisposable
 
         int maxGlyphs = cmd.GlyphIndices.Length;
         int maxPassCount = cmd.IsBold ? 2 : 1;
-        int maxVertices = maxGlyphs * maxPassCount * 4;
-        int maxIndices = maxGlyphs * maxPassCount * 6;
+        int maxVertices = maxGlyphs * maxPassCount;
 
         int vertexStart = _textVerticesList.Count;
-        int indexStart = _textIndicesList.Count;
 
         CollectionsMarshal.SetCount(_textVerticesList, vertexStart + maxVertices);
-        CollectionsMarshal.SetCount(_textIndicesList, indexStart + maxIndices);
 
         var textVerticesSpan = CollectionsMarshal.AsSpan(_textVerticesList);
-        var textIndicesSpan = CollectionsMarshal.AsSpan(_textIndicesList);
 
         int currentVertexCount = vertexStart;
-        int currentIndexCount = indexStart;
 
         float dpiScale = _currentDpiScale;
         if (ActiveCompilationContext != null && ActiveCompilationContext.StaticZoom > 0.0001f)
@@ -3635,9 +3567,6 @@ public unsafe class Compositor : IDisposable
                          MathF.Abs(activeTransform.M21) > 0.0001f ||
                          activeTransform.M11 < 0.0f ||
                          activeTransform.M22 < 0.0f;
-
-        float scaleX = new Vector2(activeTransform.M11, activeTransform.M12).Length();
-        float scaleY = new Vector2(activeTransform.M21, activeTransform.M22).Length();
 
         for (int i = 0; i < maxGlyphs; i++)
         {
@@ -3707,6 +3636,7 @@ public unsafe class Compositor : IDisposable
             byte subpixelX = 0;
             float ipartX = 0f;
             float snappedY = 0f;
+            Vector2 snappedLogicalPos;
 
             if (!isRotated && rasterFontSize <= 24f)
             {
@@ -3724,11 +3654,17 @@ public unsafe class Compositor : IDisposable
                 subpixelX = (byte)subIdx;
                 ipartX = ipartX_temp;
                 snappedY = MathF.Round(screenY);
+                snappedLogicalPos = new Vector2(ipartX, snappedY) / dpiScale;
             }
             else if (!isRotated)
             {
                 ipartX = MathF.Round(transPosPhysical.X);
                 snappedY = MathF.Round(transPosPhysical.Y);
+                snappedLogicalPos = new Vector2(ipartX, snappedY) / dpiScale;
+            }
+            else
+            {
+                snappedLogicalPos = transPos;
             }
 
             float scaleRatio = physicalFontSize / rasterFontSize;
@@ -3742,67 +3678,14 @@ public unsafe class Compositor : IDisposable
             for (int pass = 0; pass < passCount; pass++)
             {
                 float xOffset = pass * boldOffset;
-                Vector2 v0, v1, v2, v3;
-
-                if (!isRotated)
-                {
-                    float rx0 = ipartX + info.BearX * scaleX * scaleRatio + xOffset * scaleX * dpiScale;
-                    float ry0 = snappedY + info.BearY * scaleY * scaleRatio;
-                    float rx1 = rx0 + info.Width * scaleX * scaleRatio;
-                    float ry1 = ry0 + info.Height * scaleY * scaleRatio;
-
-                    float skewFactor = cmd.IsItalic ? 0.22f : 0f;
-                    float yBase = snappedY;
-
-                    float sx0 = rx0 - (ry0 - yBase) * skewFactor;
-                    float sx1 = rx1 - (ry0 - yBase) * skewFactor;
-                    float sx2 = rx1 - (ry1 - yBase) * skewFactor;
-                    float sx3 = rx0 - (ry1 - yBase) * skewFactor;
-
-                    v0 = new Vector2(sx0, ry0) / dpiScale;
-                    v1 = new Vector2(sx1, ry0) / dpiScale;
-                    v2 = new Vector2(sx2, ry1) / dpiScale;
-                    v3 = new Vector2(sx3, ry1) / dpiScale;
-                }
-                else
-                {
-                    float lx0 = info.BearX / dpiScale * scaleRatio + xOffset;
-                    float ly0 = info.BearY / dpiScale * scaleRatio;
-                    float lx1 = lx0 + info.Width / dpiScale * scaleRatio;
-                    float ly1 = ly0 + info.Height / dpiScale * scaleRatio;
-
-                    float skewFactor = cmd.IsItalic ? 0.22f : 0f;
-                    float yBase = 0f;
-
-                    float lsx0 = lx0 - (ly0 - yBase) * skewFactor;
-                    float lsx1 = lx1 - (ly0 - yBase) * skewFactor;
-                    float lsx2 = lx1 - (ly1 - yBase) * skewFactor;
-                    float lsx3 = lx0 - (ly1 - yBase) * skewFactor;
-
-                    Vector2 localP0 = new Vector2(baseCursorX + cmd.Position.X + lsx0, baseCursorY + cmd.Position.Y + ly0);
-                    Vector2 localP1 = new Vector2(baseCursorX + cmd.Position.X + lsx1, baseCursorY + cmd.Position.Y + ly0);
-                    Vector2 localP2 = new Vector2(baseCursorX + cmd.Position.X + lsx2, baseCursorY + cmd.Position.Y + ly1);
-                    Vector2 localP3 = new Vector2(baseCursorX + cmd.Position.X + lsx3, baseCursorY + cmd.Position.Y + ly1);
-
-                    v0 = Vector2.Transform(localP0, activeTransform);
-                    v1 = Vector2.Transform(localP1, activeTransform);
-                    v2 = Vector2.Transform(localP2, activeTransform);
-                    v3 = Vector2.Transform(localP3, activeTransform);
-                }
-
-                uint idxStart = (uint)currentVertexCount;
-
-                var uv0 = new Vector2(info.TexCoordMin.X, info.TexCoordMin.Y);
-                var uv1 = new Vector2(info.TexCoordMax.X, info.TexCoordMin.Y);
-                var uv2 = new Vector2(info.TexCoordMax.X, info.TexCoordMax.Y);
-                var uv3 = new Vector2(info.TexCoordMin.X, info.TexCoordMax.Y);
 
                 if (_activeClipRect.HasValue && !_useGpuTransformsActive)
                 {
-                    float minX = MathF.Min(MathF.Min(v0.X, v1.X), MathF.Min(v2.X, v3.X));
-                    float maxX = MathF.Max(MathF.Max(v0.X, v1.X), MathF.Max(v2.X, v3.X));
-                    float minY = MathF.Min(MathF.Min(v0.Y, v1.Y), MathF.Min(v2.Y, v3.Y));
-                    float maxY = MathF.Max(MathF.Max(v0.Y, v1.Y), MathF.Max(v2.Y, v3.Y));
+                    float halfSize = cmd.FontSize * 2f;
+                    float minX = snappedLogicalPos.X - halfSize;
+                    float maxX = snappedLogicalPos.X + halfSize;
+                    float minY = snappedLogicalPos.Y - halfSize;
+                    float maxY = snappedLogicalPos.Y + halfSize;
 
                     float clipLeft = _activeClipRect.Value.X;
                     float clipTop = _activeClipRect.Value.Y;
@@ -3815,23 +3698,25 @@ public unsafe class Compositor : IDisposable
                     }
                 }
 
-                textVerticesSpan[currentVertexCount++] = new VectorVertex(v0, color, uv0, bIdx, cornerRadius: DefaultTextGamma, strokeThickness: DefaultTextContrast);
-                textVerticesSpan[currentVertexCount++] = new VectorVertex(v1, color, uv1, bIdx, cornerRadius: DefaultTextGamma, strokeThickness: DefaultTextContrast);
-                textVerticesSpan[currentVertexCount++] = new VectorVertex(v2, color, uv2, bIdx, cornerRadius: DefaultTextGamma, strokeThickness: DefaultTextContrast);
-                textVerticesSpan[currentVertexCount++] = new VectorVertex(v3, color, uv3, bIdx, cornerRadius: DefaultTextGamma, strokeThickness: DefaultTextContrast);
+                Vector2 basisX = new Vector2(activeTransform.M11, activeTransform.M12);
+                Vector2 basisY = new Vector2(activeTransform.M21, activeTransform.M22);
 
-                textIndicesSpan[currentIndexCount++] = idxStart;
-                textIndicesSpan[currentIndexCount++] = idxStart + 1;
-                textIndicesSpan[currentIndexCount++] = idxStart + 2;
-
-                textIndicesSpan[currentIndexCount++] = idxStart;
-                textIndicesSpan[currentIndexCount++] = idxStart + 2;
-                textIndicesSpan[currentIndexCount++] = idxStart + 3;
+                textVerticesSpan[currentVertexCount++] = new GlyphInstance
+                {
+                    SnappedLogicalPos = snappedLogicalPos,
+                    BasisX = basisX,
+                    BasisY = basisY,
+                    BearSize = new Vector4(info.BearX, info.BearY, info.Width, info.Height),
+                    TexCoords = new Vector4(info.TexCoordMin.X, info.TexCoordMin.Y, info.TexCoordMax.X, info.TexCoordMax.Y),
+                    Color = color,
+                    ScaleBoldItalicUseMvp = new Vector4(scaleRatio, xOffset, cmd.IsItalic ? 0.22f : 0f, (ActiveCompilationContext != null) ? 1f : 0f),
+                    BrushIndex = bIdx,
+                    Padding = 0f
+                };
             }
         }
 
         CollectionsMarshal.SetCount(_textVerticesList, currentVertexCount);
-        CollectionsMarshal.SetCount(_textIndicesList, currentIndexCount);
     }
 
     private void CompileTextureCommand(RenderCommand cmd, Matrix4x4 transform)
@@ -3929,7 +3814,7 @@ public unsafe class Compositor : IDisposable
 
     private void CommitPendingTextDrawCall()
     {
-        uint textCount = (uint)_textIndicesList.Count - _pendingTextStart;
+        uint textCount = (uint)_textVerticesList.Count - _pendingTextStart;
         if (textCount > 0)
         {
             _drawCalls.Add(new CompositorDrawCall 
@@ -3941,7 +3826,7 @@ public unsafe class Compositor : IDisposable
                 MaskTexture = _maskStack.Count > 0 ? _maskStack.Peek() : null,
                 BlendMode = _activeBlendMode
             });
-            _pendingTextStart = (uint)_textIndicesList.Count;
+            _pendingTextStart = (uint)_textVerticesList.Count;
         }
     }
 
@@ -4003,7 +3888,6 @@ public unsafe class Compositor : IDisposable
             _vectorVertexBuffer.Dispose();
             _vectorIndexBuffer.Dispose();
             _textVertexBuffer.Dispose();
-            _textIndexBuffer.Dispose();
             _textureVertexBuffer.Dispose();
             _textureIndexBuffer.Dispose();
             
@@ -4431,7 +4315,6 @@ public unsafe class Compositor : IDisposable
         var savedVectorVertices = _vectorVerticesList.ToArray();
         var savedVectorIndices = _vectorIndicesList.ToArray();
         var savedTextVertices = _textVerticesList.ToArray();
-        var savedTextIndices = _textIndicesList.ToArray();
         var savedTextureVertices = _textureVerticesList.ToArray();
         var savedTextureIndices = _textureIndicesList.ToArray();
         var savedDrawCalls = _drawCalls.ToArray();
@@ -4457,7 +4340,6 @@ public unsafe class Compositor : IDisposable
         _vectorVerticesList.Clear();
         _vectorIndicesList.Clear();
         _textVerticesList.Clear();
-        _textIndicesList.Clear();
         _textureVerticesList.Clear();
         _textureIndicesList.Clear();
         _drawCalls.Clear();
@@ -4501,13 +4383,8 @@ public unsafe class Compositor : IDisposable
 
         if (_textVerticesList.Count > 0)
         {
-            EnsureBufferSize(ref _textVertexBuffer, (uint)_textVerticesList.Count * (uint)Marshal.SizeOf<VectorVertex>(), BufferUsage.Vertex);
+            EnsureBufferSize(ref _textVertexBuffer, (uint)_textVerticesList.Count * (uint)Marshal.SizeOf<GlyphInstance>(), BufferUsage.Vertex);
             _textVertexBuffer.Write(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_textVerticesList));
-        }
-        if (_textIndicesList.Count > 0)
-        {
-            EnsureBufferSize(ref _textIndexBuffer, (uint)_textIndicesList.Count * 4, BufferUsage.Index);
-            _textIndexBuffer.Write(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_textIndicesList));
         }
 
         if (_textureVerticesList.Count > 0)
@@ -4526,7 +4403,8 @@ public unsafe class Compositor : IDisposable
             Projection = projection,
             Mvp = _hasGpuTransformsInFrame ? Matrix4x4.Identity : projection,
             View = _hasGpuTransformsInFrame ? _gpuTransformsCameraView : Matrix4x4.Identity,
-            CanvasSize = new Vector2(width, height)
+            CanvasSize = new Vector2(width, height),
+            DpiScale = _currentDpiScale
         };
         _uniformBuffer.WriteSingle(uniformsData);
         if (_activeBrushes.Count > 0)
@@ -4641,8 +4519,7 @@ public unsafe class Compositor : IDisposable
 
                 var buffer = _textVertexBuffer.BufferPtr;
                 _context.Wgpu.RenderPassEncoderSetVertexBuffer(pass, 0, buffer, 0, _textVertexBuffer.Size);
-                _context.Wgpu.RenderPassEncoderSetIndexBuffer(pass, _textIndexBuffer.BufferPtr, IndexFormat.Uint32, 0, _textIndexBuffer.Size);
-                _context.Wgpu.RenderPassEncoderDrawIndexed(pass, dc.IndexCount, 1, dc.IndexStart, 0, 0);
+                _context.Wgpu.RenderPassEncoderDraw(pass, 6, dc.IndexCount, 0, dc.IndexStart);
             }
             else if (dc.Type == DrawCallType.Texture && dc.Texture != null)
             {
@@ -4779,7 +4656,6 @@ public unsafe class Compositor : IDisposable
         _vectorVerticesList.Clear(); _vectorVerticesList.AddRange(savedVectorVertices);
         _vectorIndicesList.Clear(); _vectorIndicesList.AddRange(savedVectorIndices);
         _textVerticesList.Clear(); _textVerticesList.AddRange(savedTextVertices);
-        _textIndicesList.Clear(); _textIndicesList.AddRange(savedTextIndices);
         _textureVerticesList.Clear(); _textureVerticesList.AddRange(savedTextureVertices);
         _textureIndicesList.Clear(); _textureIndicesList.AddRange(savedTextureIndices);
         _drawCalls.Clear(); _drawCalls.AddRange(savedDrawCalls);
@@ -4814,7 +4690,6 @@ public unsafe class Compositor : IDisposable
         var savedVectorVertices = _vectorVerticesList.ToArray();
         var savedVectorIndices = _vectorIndicesList.ToArray();
         var savedTextVertices = _textVerticesList.ToArray();
-        var savedTextIndices = _textIndicesList.ToArray();
         var savedActiveBrushes = _activeBrushes.ToArray();
 
         var savedActiveClipRect = _activeClipRect;
@@ -4827,7 +4702,6 @@ public unsafe class Compositor : IDisposable
         _vectorVerticesList.Clear();
         _vectorIndicesList.Clear();
         _textVerticesList.Clear();
-        _textIndicesList.Clear();
         _activeBrushes.Clear();
         _compiledTextRecords.Clear();
 
@@ -4861,7 +4735,7 @@ public unsafe class Compositor : IDisposable
                     pendingVectorStart = (uint)_vectorIndicesList.Count;
                 }
 
-                uint textCount = (uint)_textIndicesList.Count - pendingTextStart;
+                uint textCount = (uint)_textVerticesList.Count - pendingTextStart;
                 if (textCount > 0)
                 {
                     staticDrawCalls.Add(new CompositorDrawCall 
@@ -4870,7 +4744,7 @@ public unsafe class Compositor : IDisposable
                         IndexStart = pendingTextStart, 
                         IndexCount = textCount,
                     });
-                    pendingTextStart = (uint)_textIndicesList.Count;
+                    pendingTextStart = (uint)_textVerticesList.Count;
                 }
             }
 
@@ -4910,7 +4784,7 @@ public unsafe class Compositor : IDisposable
                             }
                         }
                         pendingVectorStart = (uint)_vectorIndicesList.Count;
-                        pendingTextStart = (uint)_textIndicesList.Count;
+                        pendingTextStart = (uint)_textVerticesList.Count;
                         break;
                     case RenderCommandType.DrawAcisSolid:
                         CommitStaticDrawCalls();
@@ -4932,7 +4806,7 @@ public unsafe class Compositor : IDisposable
                             }
                         }
                         pendingVectorStart = (uint)_vectorIndicesList.Count;
-                        pendingTextStart = (uint)_textIndicesList.Count;
+                        pendingTextStart = (uint)_textVerticesList.Count;
                         break;
                     case RenderCommandType.DrawText:
                         CompileTextCommand(cmd, null, Matrix4x4.Identity);
@@ -4968,7 +4842,7 @@ public unsafe class Compositor : IDisposable
                             }
                         }
                         pendingVectorStart = (uint)_vectorIndicesList.Count;
-                        pendingTextStart = (uint)_textIndicesList.Count;
+                        pendingTextStart = (uint)_textVerticesList.Count;
                         break;
                     case RenderCommandType.DrawEllipse:
                         CompileEllipseCommand(cmd, Matrix4x4.Identity);
@@ -5007,7 +4881,7 @@ public unsafe class Compositor : IDisposable
                             }
                         }
                         pendingVectorStart = (uint)_vectorIndicesList.Count;
-                        pendingTextStart = (uint)_textIndicesList.Count;
+                        pendingTextStart = (uint)_textVerticesList.Count;
                         break;
                     case RenderCommandType.DrawExtension:
                         {
@@ -5046,10 +4920,12 @@ public unsafe class Compositor : IDisposable
                                     Scale = localCmd.Scale,
                                     Translate = localCmd.Translate,
                                     Color = (localCmd.Brush is SolidColorBrush solid) ? solid.Color : new Vector4(1f, 1f, 1f, 1f),
-                                    ClipRect = _activeClipRect
+                                    ClipRect = _activeClipRect,
+                                    MaskTexture = _maskStack.Count > 0 ? _maskStack.Peek() : null,
+                                    BlendMode = _activeBlendMode
                                 });
                                 pendingVectorStart = (uint)_vectorIndicesList.Count;
-                                pendingTextStart = (uint)_textIndicesList.Count;
+                                pendingTextStart = (uint)_textVerticesList.Count;
                             }
                         }
                         break;
@@ -5072,7 +4948,7 @@ public unsafe class Compositor : IDisposable
             for (int i = 0; i < _textVerticesList.Count; i++)
             {
                 var v = _textVerticesList[i];
-                v.ShapeType += 200f;
+                v.ScaleBoldItalicUseMvp.W = 1.0f;
                 _textVerticesList[i] = v;
             }
 
@@ -5083,7 +4959,6 @@ public unsafe class Compositor : IDisposable
                 _vectorVerticesList.ToArray(),
                 _vectorIndicesList.ToArray(),
                 _textVerticesList.ToArray(),
-                _textIndicesList.ToArray(),
                 _activeBrushes.ToArray(),
                 staticDrawCalls.ToArray()
             );
@@ -5116,7 +4991,6 @@ public unsafe class Compositor : IDisposable
             _vectorVerticesList.Clear(); _vectorVerticesList.AddRange(savedVectorVertices);
             _vectorIndicesList.Clear(); _vectorIndicesList.AddRange(savedVectorIndices);
             _textVerticesList.Clear(); _textVerticesList.AddRange(savedTextVertices);
-            _textIndicesList.Clear(); _textIndicesList.AddRange(savedTextIndices);
             _activeBrushes.Clear(); _activeBrushes.AddRange(savedActiveBrushes);
             
             _activeClipRect = savedActiveClipRect;
@@ -5134,7 +5008,6 @@ public unsafe class Compositor : IDisposable
         var savedVectorVertices = _vectorVerticesList.ToArray();
         var savedVectorIndices = _vectorIndicesList.ToArray();
         var savedTextVertices = _textVerticesList.ToArray();
-        var savedTextIndices = _textIndicesList.ToArray();
         var savedActiveBrushes = _activeBrushes.ToArray();
 
         var savedActiveClipRect = _activeClipRect;
@@ -5147,7 +5020,6 @@ public unsafe class Compositor : IDisposable
         _vectorVerticesList.Clear();
         _vectorIndicesList.Clear();
         _textVerticesList.Clear();
-        _textIndicesList.Clear();
         _activeBrushes.Clear();
         _compiledTextRecords.Clear();
 
@@ -5181,7 +5053,7 @@ public unsafe class Compositor : IDisposable
                     pendingVectorStart = (uint)_vectorIndicesList.Count;
                 }
 
-                uint textCount = (uint)_textIndicesList.Count - pendingTextStart;
+                uint textCount = (uint)_textVerticesList.Count - pendingTextStart;
                 if (textCount > 0)
                 {
                     staticDrawCalls.Add(new CompositorDrawCall 
@@ -5190,7 +5062,7 @@ public unsafe class Compositor : IDisposable
                         IndexStart = pendingTextStart, 
                         IndexCount = textCount,
                     });
-                    pendingTextStart = (uint)_textIndicesList.Count;
+                    pendingTextStart = (uint)_textVerticesList.Count;
                 }
             }
             
@@ -5230,7 +5102,7 @@ public unsafe class Compositor : IDisposable
                             }
                         }
                         pendingVectorStart = (uint)_vectorIndicesList.Count;
-                        pendingTextStart = (uint)_textIndicesList.Count;
+                        pendingTextStart = (uint)_textVerticesList.Count;
                         break;
                     case RenderCommandType.DrawAcisSolid:
                         CommitStaticDrawCalls();
@@ -5252,7 +5124,7 @@ public unsafe class Compositor : IDisposable
                             }
                         }
                         pendingVectorStart = (uint)_vectorIndicesList.Count;
-                        pendingTextStart = (uint)_textIndicesList.Count;
+                        pendingTextStart = (uint)_textVerticesList.Count;
                         break;
                     case RenderCommandType.DrawText:
                         CompileTextCommand(cmd, null, Matrix4x4.Identity);
@@ -5288,7 +5160,7 @@ public unsafe class Compositor : IDisposable
                             }
                         }
                         pendingVectorStart = (uint)_vectorIndicesList.Count;
-                        pendingTextStart = (uint)_textIndicesList.Count;
+                        pendingTextStart = (uint)_textVerticesList.Count;
                         break;
                     case RenderCommandType.DrawEllipse:
                         CompileEllipseCommand(cmd, Matrix4x4.Identity);
@@ -5327,7 +5199,7 @@ public unsafe class Compositor : IDisposable
                             }
                         }
                         pendingVectorStart = (uint)_vectorIndicesList.Count;
-                        pendingTextStart = (uint)_textIndicesList.Count;
+                        pendingTextStart = (uint)_textVerticesList.Count;
                         break;
                     case RenderCommandType.DrawExtension:
                         {
@@ -5366,10 +5238,12 @@ public unsafe class Compositor : IDisposable
                                     Scale = localCmd.Scale,
                                     Translate = localCmd.Translate,
                                     Color = (localCmd.Brush is SolidColorBrush solid) ? solid.Color : new Vector4(1f, 1f, 1f, 1f),
-                                    ClipRect = _activeClipRect
+                                    ClipRect = _activeClipRect,
+                                    MaskTexture = _maskStack.Count > 0 ? _maskStack.Peek() : null,
+                                    BlendMode = _activeBlendMode
                                 });
                                 pendingVectorStart = (uint)_vectorIndicesList.Count;
-                                pendingTextStart = (uint)_textIndicesList.Count;
+                                pendingTextStart = (uint)_textVerticesList.Count;
                             }
                         }
                         break;
@@ -5410,7 +5284,7 @@ public unsafe class Compositor : IDisposable
                             }
                         }
                         pendingVectorStart = (uint)_vectorIndicesList.Count;
-                        pendingTextStart = (uint)_textIndicesList.Count;
+                        pendingTextStart = (uint)_textVerticesList.Count;
                         break;
                     case RenderCommandType.DrawGpuScatterSeries:
                         CommitStaticDrawCalls();
@@ -5443,7 +5317,7 @@ public unsafe class Compositor : IDisposable
                             }
                         }
                         pendingVectorStart = (uint)_vectorIndicesList.Count;
-                        pendingTextStart = (uint)_textIndicesList.Count;
+                        pendingTextStart = (uint)_textVerticesList.Count;
                         break;
                     case RenderCommandType.DrawPicture:
                         CompilePicture(context, cmd.Picture, Matrix4x4.Identity);
@@ -5461,7 +5335,7 @@ public unsafe class Compositor : IDisposable
             for (int i = 0; i < _textVerticesList.Count; i++)
             {
                 var v = _textVerticesList[i];
-                v.ShapeType += 200f;
+                v.ScaleBoldItalicUseMvp.W = 1.0f;
                 _textVerticesList[i] = v;
             }
 
@@ -5472,7 +5346,6 @@ public unsafe class Compositor : IDisposable
                 _vectorVerticesList.ToArray(),
                 _vectorIndicesList.ToArray(),
                 _textVerticesList.ToArray(),
-                _textIndicesList.ToArray(),
                 _activeBrushes.ToArray(),
                 staticDrawCalls.ToArray()
             );
@@ -5505,7 +5378,6 @@ public unsafe class Compositor : IDisposable
             _vectorVerticesList.Clear(); _vectorVerticesList.AddRange(savedVectorVertices);
             _vectorIndicesList.Clear(); _vectorIndicesList.AddRange(savedVectorIndices);
             _textVerticesList.Clear(); _textVerticesList.AddRange(savedTextVertices);
-            _textIndicesList.Clear(); _textIndicesList.AddRange(savedTextIndices);
             _activeBrushes.Clear(); _activeBrushes.AddRange(savedActiveBrushes);
             
             _activeClipRect = savedActiveClipRect;
@@ -5520,10 +5392,8 @@ public unsafe class Compositor : IDisposable
     public void RecompileStaticText(DxfStaticBuffer staticBuffer, float staticZoom)
     {
         var savedTextVertices = _textVerticesList.ToArray();
-        var savedTextIndices = _textIndicesList.ToArray();
 
         _textVerticesList.Clear();
-        _textIndicesList.Clear();
 
         ActiveCompilationContext = new StaticCompilationContext { StaticZoom = staticZoom, IsRecompiling = true };
 
@@ -5538,11 +5408,11 @@ public unsafe class Compositor : IDisposable
             for (int i = 0; i < _textVerticesList.Count; i++)
             {
                 var v = _textVerticesList[i];
-                v.ShapeType += 200f; // Static buffers use 200+ shape type
+                v.ScaleBoldItalicUseMvp.W = 1.0f;
                 _textVerticesList[i] = v;
             }
 
-            staticBuffer.UpdateTextBuffer(_textVerticesList.ToArray(), _textIndicesList.ToArray());
+            staticBuffer.UpdateTextBuffer(_textVerticesList.ToArray());
         }
         finally
         {
@@ -5551,8 +5421,6 @@ public unsafe class Compositor : IDisposable
 
             _textVerticesList.Clear();
             _textVerticesList.AddRange(savedTextVertices);
-            _textIndicesList.Clear();
-            _textIndicesList.AddRange(savedTextIndices);
         }
     }
 
@@ -5602,11 +5470,10 @@ public unsafe class Compositor : IDisposable
                     {
                         var buffer = sb.TextVertexBuffer.BufferPtr;
                         _context.Wgpu.RenderPassEncoderSetVertexBuffer(pass, 0, buffer, 0, sb.TextVertexBuffer.Size);
-                        _context.Wgpu.RenderPassEncoderSetIndexBuffer(pass, sb.TextIndexBuffer.BufferPtr, IndexFormat.Uint32, 0, sb.TextIndexBuffer.Size);
                     }
                     currentType = DrawCallType.Text;
                 }
-                _context.Wgpu.RenderPassEncoderDrawIndexed(pass, dc.IndexCount, 1, dc.IndexStart, 0, 0);
+                _context.Wgpu.RenderPassEncoderDraw(pass, 6, dc.IndexCount, 0, dc.IndexStart);
             }
             else if (dc.Type == DrawCallType.Extension)
             {
@@ -5773,7 +5640,7 @@ public unsafe class Compositor : IDisposable
             ClipRect = _activeClipRect
         });
         _pendingVectorStart = (uint)_vectorIndicesList.Count;
-        _pendingTextStart = (uint)_textIndicesList.Count;
+        _pendingTextStart = (uint)_textVerticesList.Count;
     }
 
     private void CompileGpuScatterSeriesCommand(IRenderDataProvider? provider, RenderCommand cmd, Matrix4x4 transform)
@@ -5928,7 +5795,7 @@ public unsafe class Compositor : IDisposable
             ClipRect = _activeClipRect
         });
         _pendingVectorStart = (uint)_vectorIndicesList.Count;
-        _pendingTextStart = (uint)_textIndicesList.Count;
+        _pendingTextStart = (uint)_textVerticesList.Count;
     }
 
     private unsafe void RenderChartLine(RenderPassEncoder* pass, CompositorDrawCall dc, bool isOffscreen)
@@ -6115,7 +5982,7 @@ public unsafe class Compositor : IDisposable
         );
     }
 
-    private BindGroup* GetMaskBindGroup(GpuTexture? maskTexture, bool isOffscreen)
+    internal BindGroup* GetMaskBindGroup(GpuTexture? maskTexture, bool isOffscreen)
     {
         if (maskTexture == null)
         {
@@ -6191,6 +6058,48 @@ public unsafe class Compositor : IDisposable
                 baseName = isOffscreen ? "Text_Offscreen" : "Text";
                 shaderModule = _pipelineCache.GetOrCreateShader("Text", Shaders.TextShader, "TextShader");
                 pipelineLayout = isOffscreen ? _textPipelineLayoutOffscreen : _textPipelineLayout;
+
+                var textVertexAttribs = new VertexAttribute[]
+                {
+                    new() { Format = VertexFormat.Float32x2, Offset = 0, ShaderLocation = 0 }, // SnappedLogicalPos
+                    new() { Format = VertexFormat.Float32x2, Offset = 8, ShaderLocation = 1 }, // BasisX
+                    new() { Format = VertexFormat.Float32x2, Offset = 16, ShaderLocation = 2 }, // BasisY
+                    new() { Format = VertexFormat.Float32x4, Offset = 24, ShaderLocation = 3 }, // BearSize
+                    new() { Format = VertexFormat.Float32x4, Offset = 40, ShaderLocation = 4 }, // TexCoords
+                    new() { Format = VertexFormat.Float32x4, Offset = 56, ShaderLocation = 5 }, // Color
+                    new() { Format = VertexFormat.Float32x4, Offset = 72, ShaderLocation = 6 }, // ScaleBoldItalicUseMvp
+                    new() { Format = VertexFormat.Float32, Offset = 88, ShaderLocation = 7 }    // BrushIndex
+                };
+
+                fixed (VertexAttribute* textAttribsPtr = textVertexAttribs)
+                {
+                    var textLayoutDesc = new VertexBufferLayout
+                    {
+                        ArrayStride = (uint)Marshal.SizeOf<GlyphInstance>(),
+                        StepMode = VertexStepMode.Instance,
+                        AttributeCount = 8,
+                        Attributes = textAttribsPtr
+                    };
+
+                    string textPipelineKey = overrideFormat.HasValue
+                        ? $"{baseName}_{blendMode}_{overrideFormat.Value}"
+                        : $"{baseName}_{blendMode}";
+
+                    return _pipelineCache.GetOrCreateRenderPipeline(
+                        textPipelineKey,
+                        shaderModule,
+                        "vs_main",
+                        "fs_main",
+                        overrideFormat ?? RenderFormat,
+                        PrimitiveTopology.TriangleList,
+                        new[] { textLayoutDesc },
+                        enableBlend: true,
+                        enableDepthStencil: false,
+                        sampleCount: sampleCount,
+                        blendMode: blendMode,
+                        pipelineLayout: pipelineLayout
+                    );
+                }
             }
             else if (type == DrawCallType.Texture)
             {
@@ -6388,10 +6297,9 @@ public unsafe class Compositor : IDisposable
 
                         var buffer = _textVertexBuffer.BufferPtr;
                         _context.Wgpu.RenderPassEncoderSetVertexBuffer(pass, 0, buffer, 0, _textVertexBuffer.Size);
-                        _context.Wgpu.RenderPassEncoderSetIndexBuffer(pass, _textIndexBuffer.BufferPtr, IndexFormat.Uint32, 0, _textIndexBuffer.Size);
                         currentType = DrawCallType.Text;
                     }
-                    _context.Wgpu.RenderPassEncoderDrawIndexed(pass, dc.IndexCount, 1, dc.IndexStart, 0, 0);
+                    _context.Wgpu.RenderPassEncoderDraw(pass, 6, dc.IndexCount, 0, dc.IndexStart);
                 }
                 else if (dc.Type == DrawCallType.Texture && dc.Texture != null)
                 {

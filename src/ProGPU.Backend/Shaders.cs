@@ -439,14 +439,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     public const string TextShader = @"
 struct VertexInput {
-    @location(0) position: vec2<f32>,
-    @location(1) color: vec4<f32>,
-    @location(2) texCoord: vec2<f32>,
-    @location(3) brushIndex: f32,
-    @location(4) shapeSize: vec2<f32>,
-    @location(5) cornerRadius: f32,
-    @location(6) strokeThickness: f32,
-    @location(7) shapeType: f32,
+    @builtin(vertex_index) vertexIndex: u32,
+    @location(0) snappedLogicalPos: vec2<f32>,
+    @location(1) basisX: vec2<f32>,
+    @location(2) basisY: vec2<f32>,
+    @location(3) bearSize: vec4<f32>,
+    @location(4) texCoords: vec4<f32>,
+    @location(5) color: vec4<f32>,
+    @location(6) scaleBoldItalicUseMvp: vec4<f32>,
+    @location(7) brushIndex: f32,
 };
 
 struct VertexOutput {
@@ -462,6 +463,8 @@ struct Uniforms {
     mvp: mat4x4<f32>,
     view: mat4x4<f32>,
     canvasSize: vec2<f32>,
+    dpiScale: f32,
+    pad0: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -469,17 +472,66 @@ struct Uniforms {
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
-    var pos = input.position;
-    if (input.shapeType >= 195.0) {
-        pos = (uniforms.mvp * vec4<f32>(input.position, 0.0, 1.0)).xy;
-    } else if (input.shapeType >= 95.0) {
-        pos = (uniforms.view * vec4<f32>(input.position, 0.0, 1.0)).xy;
+
+    var local_uv = vec2<f32>(0.0, 0.0);
+    var corner = 0u;
+    if (input.vertexIndex == 1u) {
+        local_uv = vec2<f32>(1.0, 0.0);
+        corner = 1u;
+    } else if (input.vertexIndex == 2u) {
+        local_uv = vec2<f32>(1.0, 1.0);
+        corner = 2u;
+    } else if (input.vertexIndex == 4u) {
+        local_uv = vec2<f32>(1.0, 1.0);
+        corner = 2u;
+    } else if (input.vertexIndex == 5u) {
+        local_uv = vec2<f32>(0.0, 1.0);
+        corner = 3u;
     }
-    output.position = uniforms.projection * vec4<f32>(pos, 0.0, 1.0);
+
+    let bear = input.bearSize.xy;
+    let size = input.bearSize.zw;
+    let texCoordMin = input.texCoords.xy;
+    let texCoordMax = input.texCoords.zw;
+
+    let scaleRatio = input.scaleBoldItalicUseMvp.x;
+    let boldOffset = input.scaleBoldItalicUseMvp.y;
+    let italicSkew = input.scaleBoldItalicUseMvp.z;
+    let useMvp = input.scaleBoldItalicUseMvp.w;
+
+    let lx0 = bear.x * scaleRatio + boldOffset;
+    let ly0 = bear.y * scaleRatio;
+    let lx1 = lx0 + size.x * scaleRatio;
+    let ly1 = ly0 + size.y * scaleRatio;
+
+    let lsx0 = lx0 - ly0 * italicSkew;
+    let lsx1 = lx1 - ly0 * italicSkew;
+    let lsx2 = lx1 - ly1 * italicSkew;
+    let lsx3 = lx0 - ly1 * italicSkew;
+
+    var localOffset = vec2<f32>(0.0, 0.0);
+    if (corner == 0u) {
+        localOffset = vec2<f32>(lsx0, ly0);
+    } else if (corner == 1u) {
+        localOffset = vec2<f32>(lsx1, ly0);
+    } else if (corner == 2u) {
+        localOffset = vec2<f32>(lsx2, ly1);
+    } else {
+        localOffset = vec2<f32>(lsx3, ly1);
+    }
+
+    let physicalOffset = localOffset.x * input.basisX + localOffset.y * input.basisY;
+    var finalPosLogical = input.snappedLogicalPos + physicalOffset;
+
+    if (useMvp > 0.5) {
+        finalPosLogical = (uniforms.mvp * vec4<f32>(finalPosLogical, 0.0, 1.0)).xy;
+    }
+
+    output.position = uniforms.projection * vec4<f32>(finalPosLogical, 0.0, 1.0);
     output.color = input.color;
-    output.texCoord = input.texCoord;
-    output.cornerRadius = input.cornerRadius;
-    output.strokeThickness = input.strokeThickness;
+    output.texCoord = mix(texCoordMin, texCoordMax, local_uv);
+    output.cornerRadius = 1.43; // DefaultTextGamma
+    output.strokeThickness = 1.15; // DefaultTextContrast
     return output;
 }
 
