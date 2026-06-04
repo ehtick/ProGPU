@@ -211,26 +211,21 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
             if (activePipeline == null)
             {
-                bool hasError = false;
-                Action<ErrorType, string> errorHandler = (type, msg) => {
-                    hasError = true;
-                };
-
-                WgpuContext.OnWebGpuError += errorHandler;
-
                 try
                 {
                     // Build full shader code
                     string fullShaderCode = VertexAndHeaderShader + "\n" + p.ShaderSource + "\n" + FragmentWrapperShader;
                     var shaderModule = compositor.PipelineCache.GetOrCreateShader(p.ShaderKey, fullShaderCode, $"ShaderToy_{p.ShaderKey}");
 
-                    // Force dispatching of queued validation errors
-                    compositor.Context.WaitIdle();
-
-                    if (hasError || shaderModule == null)
+                    string errors = "";
+                    if (shaderModule == null || !compositor.Context.VerifyShaderModule(shaderModule, out errors))
                     {
-                        Console.WriteLine("[ShaderToy Render] Shader module creation failed, skipping pipeline creation.");
+                        Console.WriteLine($"[ShaderToy Render] Shader module creation failed:\n{errors}");
                         p.IsFailed = true;
+                        if (!string.IsNullOrEmpty(errors))
+                        {
+                            WgpuContext.RaiseWebGpuError(ErrorType.Validation, errors);
+                        }
                         compositor.PipelineCache.ReleaseShader(p.ShaderKey);
                         return;
                     }
@@ -251,6 +246,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                     attrs[1] = new VertexAttribute { Format = VertexFormat.Float32x4, Offset = 8, ShaderLocation = 1 }; // Color
                     attrs[2] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 24, ShaderLocation = 2 }; // TexCoord
 
+                    bool pipelineFailed = false;
+                    Action<ErrorType, string> pipelineErrorHandler = (type, msg) => {
+                        pipelineFailed = true;
+                    };
+                    WgpuContext.OnWebGpuError += pipelineErrorHandler;
+
                     try
                     {
                         activePipeline = compositor.PipelineCache.GetOrCreateRenderPipeline(
@@ -265,12 +266,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                     finally
                     {
                         Marshal.FreeHGlobal((IntPtr)layouts[0].Attributes);
+                        WgpuContext.OnWebGpuError -= pipelineErrorHandler;
                     }
 
                     // Force dispatching of pipeline creation validation errors
                     compositor.Context.WaitIdle();
 
-                    if (hasError || activePipeline == null)
+                    if (pipelineFailed || activePipeline == null)
                     {
                         Console.WriteLine("[ShaderToy Render] Pipeline creation failed, aborting.");
                         p.IsFailed = true;
@@ -286,10 +288,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                     Console.WriteLine($"[ShaderToy Render] Error compiling shader or pipeline: {ex.Message}");
                     p.IsFailed = true;
                     return;
-                }
-                finally
-                {
-                    WgpuContext.OnWebGpuError -= errorHandler;
                 }
             }
 
