@@ -489,8 +489,8 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         corner = 3u;
     }
 
-    let bear = input.bearSize.xy;
-    let size = input.bearSize.zw;
+    let bear = input.bearSize.xy / uniforms.dpiScale;
+    let size = input.bearSize.zw / uniforms.dpiScale;
     let texCoordMin = input.texCoords.xy;
     let texCoordMax = input.texCoords.zw;
 
