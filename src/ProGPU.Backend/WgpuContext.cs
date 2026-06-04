@@ -590,11 +590,18 @@ public unsafe class WgpuContext : IDisposable
         Wgpu.ShaderModuleGetCompilationInfo(module, callback, null);
 
         int attempts = 0;
-        while (!completed && attempts < 1000)
+        while (!completed && attempts < 5000)
         {
+            Wgpu.InstanceProcessEvents(Instance);
             wgpuDevicePoll(Device, false, null);
             Thread.Sleep(1);
             attempts++;
+        }
+
+        if (!completed)
+        {
+            hasError = true;
+            errorDetails = "Shader compilation timed out.";
         }
 
         GC.KeepAlive(callback);
