@@ -1,5 +1,6 @@
 <Solution>
   <Project Path="SkiaSharp/SkiaSharp.csproj" />
+  <Project Path="ProGPU.Transpiler/ProGPU.Transpiler.csproj" />
   <Project Path="ProGPU.Backend/ProGPU.Backend.csproj" />
   <Project Path="ProGPU.Vector/ProGPU.Vector.csproj" />
   <Project Path="ProGPU.Text/ProGPU.Text.csproj" />

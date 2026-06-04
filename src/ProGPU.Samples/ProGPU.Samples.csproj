@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\ProGPU.Backend\ProGPU.Backend.csproj" />
+    <ProjectReference Include="..\ProGPU.Transpiler\ProGPU.Transpiler.csproj" />
     <ProjectReference Include="..\ProGPU.Vector\ProGPU.Vector.csproj" />
     <ProjectReference Include="..\ProGPU.Text\ProGPU.Text.csproj" />
     <ProjectReference Include="..\ProGPU.Compute\ProGPU.Compute.csproj" />
