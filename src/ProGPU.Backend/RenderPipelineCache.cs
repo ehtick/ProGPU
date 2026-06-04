@@ -282,6 +282,11 @@ public unsafe class RenderPipelineCache : IDisposable
         return pipeline;
     }
 
+    public bool HasRenderPipeline(string key)
+    {
+        return _renderPipelines.ContainsKey(key);
+    }
+
     public void ReleaseShader(string key)
     {
         lock (_context.RenderLock)

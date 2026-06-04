@@ -139,6 +139,9 @@ public unsafe class Compositor : IDisposable
     public Action<DrawingContext, uint, uint>? RenderDiagnostics { get; set; }
     public Vector4 ClearColor { get; set; } = new Vector4(0.08f, 0.08f, 0.12f, 1.0f);
 
+    public unsafe BindGroupLayout* VectorUniformBindGroupLayout => _vectorUniformBindGroupLayout;
+    public unsafe BindGroupLayout* VectorUniformBindGroupLayoutOffscreen => _vectorUniformBindGroupLayoutOffscreen;
+
     private readonly WgpuContext _context;
     private readonly RenderPipelineCache _pipelineCache;
     private readonly GlyphAtlas _atlas;

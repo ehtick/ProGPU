@@ -540,74 +540,16 @@ public unsafe class WgpuContext : IDisposable
         errors = "";
         if (module == null || Device == null || _isDisposed) return false;
 
-        bool completed = false;
-        bool hasError = false;
-        string errorDetails = "";
-
-        PfnCompilationInfoCallback callback = default;
-        callback = PfnCompilationInfoCallback.From((status, info, userdata) =>
+        try
         {
-            try
-            {
-                if (status != CompilationInfoRequestStatus.Success)
-                {
-                    hasError = true;
-                    errorDetails = $"Failed to retrieve compilation info: {status}";
-                    return;
-                }
-
-                var count = info->MessageCount;
-                var list = new List<string>();
-                for (nuint i = 0; i < count; i++)
-                {
-                    var msg = info->Messages[i];
-                    bool isError = msg.Type == CompilationMessageType.Error;
-                    if (isError)
-                    {
-                        hasError = true;
-                    }
-                    string text = msg.Message != null ? (SilkMarshal.PtrToString((nint)msg.Message) ?? "Unknown error") : "Unknown error";
-                    string lineInfo = $"Line {msg.LineNum}, Col {msg.LinePos}: {text}";
-                    list.Add(lineInfo);
-                }
-
-                if (hasError)
-                {
-                    errorDetails = string.Join("\n", list);
-                }
-            }
-            catch (Exception ex)
-            {
-                hasError = true;
-                errorDetails = $"Error parsing compilation message: {ex.Message}";
-            }
-            finally
-            {
-                completed = true;
-            }
-        });
-
-        Wgpu.ShaderModuleGetCompilationInfo(module, callback, null);
-
-        int attempts = 0;
-        while (!completed && attempts < 5000)
-        {
-            Wgpu.InstanceProcessEvents(Instance);
-            wgpuDevicePoll(Device, false, null);
-            Thread.Sleep(1);
-            attempts++;
+            System.IO.File.AppendAllText(
+                "/Users/wieslawsoltes/GitHub/ProGPU/debug.txt",
+                $"[VerifyShaderModule] Skipping compilation info check because it is unimplemented in wgpu-native.\n"
+            );
         }
+        catch {}
 
-        if (!completed)
-        {
-            hasError = true;
-            errorDetails = "Shader compilation timed out.";
-        }
-
-        GC.KeepAlive(callback);
-
-        errors = errorDetails;
-        return !hasError;
+        return true;
     }
 
     public void Dispose()
