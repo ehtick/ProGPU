@@ -607,18 +607,54 @@ public unsafe class Compositor : IDisposable
                 pipelineLayout: _vectorPipelineLayout
             );
 
-            _textPipeline = _pipelineCache.GetOrCreateRenderPipeline(
-                "Text", 
-                textShaderModule, 
-                "vs_main", 
-                "fs_main", 
-                RenderFormat, 
-                PrimitiveTopology.TriangleList, 
-                new[] { layoutDesc },
-                enableBlend: true,
-                sampleCount: 4,
-                pipelineLayout: _textPipelineLayout
-            );
+            var textVertexAttribs = new VertexAttribute[]
+            {
+                new() { Format = VertexFormat.Float32x2, Offset = 0, ShaderLocation = 0 }, // SnappedLogicalPos
+                new() { Format = VertexFormat.Float32x2, Offset = 8, ShaderLocation = 1 }, // BasisX
+                new() { Format = VertexFormat.Float32x2, Offset = 16, ShaderLocation = 2 }, // BasisY
+                new() { Format = VertexFormat.Float32x4, Offset = 24, ShaderLocation = 3 }, // BearSize
+                new() { Format = VertexFormat.Float32x4, Offset = 40, ShaderLocation = 4 }, // TexCoords
+                new() { Format = VertexFormat.Float32x4, Offset = 56, ShaderLocation = 5 }, // Color
+                new() { Format = VertexFormat.Float32x4, Offset = 72, ShaderLocation = 6 }, // ScaleBoldItalicUseMvp
+                new() { Format = VertexFormat.Float32, Offset = 88, ShaderLocation = 7 }    // BrushIndex
+            };
+
+            fixed (VertexAttribute* textAttribsPtr = textVertexAttribs)
+            {
+                var textLayoutDesc = new VertexBufferLayout
+                {
+                    ArrayStride = (uint)Marshal.SizeOf<GlyphInstance>(),
+                    StepMode = VertexStepMode.Instance,
+                    AttributeCount = 8,
+                    Attributes = textAttribsPtr
+                };
+
+                _textPipeline = _pipelineCache.GetOrCreateRenderPipeline(
+                    "Text", 
+                    textShaderModule, 
+                    "vs_main", 
+                    "fs_main", 
+                    RenderFormat, 
+                    PrimitiveTopology.TriangleList, 
+                    new[] { textLayoutDesc },
+                    enableBlend: true,
+                    sampleCount: 4,
+                    pipelineLayout: _textPipelineLayout
+                );
+
+                _textPipelineOffscreen = _pipelineCache.GetOrCreateRenderPipeline(
+                    "Text_Offscreen", 
+                    textShaderModule, 
+                    "vs_main", 
+                    "fs_main", 
+                    RenderFormat, 
+                    PrimitiveTopology.TriangleList, 
+                    new[] { textLayoutDesc },
+                    enableBlend: true,
+                    sampleCount: 1,
+                    pipelineLayout: _textPipelineLayoutOffscreen
+                );
+            }
 
             _texturePipeline = _pipelineCache.GetOrCreateRenderPipeline(
                 "Texture", 
@@ -644,19 +680,6 @@ public unsafe class Compositor : IDisposable
                 enableBlend: true,
                 sampleCount: 1,
                 pipelineLayout: _vectorPipelineLayoutOffscreen
-            );
-
-            _textPipelineOffscreen = _pipelineCache.GetOrCreateRenderPipeline(
-                "Text_Offscreen", 
-                textShaderModule, 
-                "vs_main", 
-                "fs_main", 
-                RenderFormat, 
-                PrimitiveTopology.TriangleList, 
-                new[] { layoutDesc },
-                enableBlend: true,
-                sampleCount: 1,
-                pipelineLayout: _textPipelineLayoutOffscreen
             );
 
             _texturePipelineOffscreen = _pipelineCache.GetOrCreateRenderPipeline(
