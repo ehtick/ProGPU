@@ -428,9 +428,6 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
             {
                 CompileNow();
             }
-
-            // 3. Propagate animation ticks to children
-            this.UpdateSampleAnimations(delta);
         }
     }
 
