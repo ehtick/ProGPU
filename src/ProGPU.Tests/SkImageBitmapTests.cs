@@ -108,6 +108,26 @@ public sealed class SkImageBitmapTests
     }
 
     [Fact]
+    public void ScalePixelsWritesScaledDestinationPixmap()
+    {
+        using var bitmap = new SKBitmap(new SKImageInfo(2, 2, SKColorType.Rgba8888, SKAlphaType.Premul));
+        WriteBytes(bitmap.GetPixels(), new byte[]
+        {
+            255, 0, 0, 255, 0, 255, 0, 255,
+            0, 0, 255, 255, 255, 255, 255, 255
+        });
+        using var image = SKImage.FromBitmap(bitmap);
+        using var destination = new SKBitmap(new SKImageInfo(1, 1, SKColorType.Bgra8888, SKAlphaType.Premul));
+        WriteBytes(destination.GetPixels(), new byte[] { 9, 9, 9, 9 });
+
+        image.ScalePixels(
+            destination.PeekPixels(),
+            new SKSamplingOptions(SKFilterMode.Nearest, SKMipmapMode.None));
+
+        Assert.Equal(new byte[] { 0, 0, 255, 255 }, ReadBytes(destination.GetPixels(), 4));
+    }
+
+    [Fact]
     public void DecodeCodecCopiesEncodedPixelsIntoBitmap()
     {
         using var codec = SKCodec.Create(new SKData(TwoPixelPngBytes()));

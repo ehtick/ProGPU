@@ -58,7 +58,80 @@ public class SKImage : IDisposable
 
     public void ScalePixels(SKPixmap dst, SKSamplingOptions sampling)
     {
-        // Scale pixel helper (stub or read back and scale)
+        ArgumentNullException.ThrowIfNull(dst);
+        if (dst.Pixels == IntPtr.Zero)
+        {
+            throw new ArgumentException("Destination pixmap must provide a pixel buffer.", nameof(dst));
+        }
+
+        if (dst.Info.Width <= 0 || dst.Info.Height <= 0 || Width <= 0 || Height <= 0)
+        {
+            return;
+        }
+
+        int dstRowBytes = dst.RowBytes > 0 ? dst.RowBytes : dst.Info.RowBytes;
+        int minDstRowBytes = dst.Info.Width * 4;
+        if (dstRowBytes < minDstRowBytes)
+        {
+            throw new ArgumentException("Destination row bytes must be large enough for one row.", nameof(dst));
+        }
+
+        byte[] src = Texture.ReadPixels();
+        bool sourcePremultiplied = Texture.AlphaMode == GpuTextureAlphaMode.Premultiplied;
+        bool targetPremultiplied = dst.Info.AlphaType == SKAlphaType.Premul;
+
+        unsafe
+        {
+            fixed (byte* srcBase = src)
+            {
+                byte* dstBase = (byte*)dst.Pixels;
+                for (int y = 0; y < dst.Info.Height; y++)
+                {
+                    int srcY = Math.Clamp((int)((long)y * Height / dst.Info.Height), 0, Height - 1);
+                    byte* dstRow = dstBase + y * dstRowBytes;
+
+                    for (int x = 0; x < dst.Info.Width; x++)
+                    {
+                        int srcX = Math.Clamp((int)((long)x * Width / dst.Info.Width), 0, Width - 1);
+                        byte* srcPixel = srcBase + (srcY * Width + srcX) * 4;
+                        byte* dstPixel = dstRow + x * 4;
+
+                        byte alpha = srcPixel[3];
+                        byte red = srcPixel[0];
+                        byte green = srcPixel[1];
+                        byte blue = srcPixel[2];
+
+                        if (sourcePremultiplied && !targetPremultiplied)
+                        {
+                            red = UnpremultiplyChannel(red, alpha);
+                            green = UnpremultiplyChannel(green, alpha);
+                            blue = UnpremultiplyChannel(blue, alpha);
+                        }
+                        else if (!sourcePremultiplied && targetPremultiplied)
+                        {
+                            red = PremultiplyChannel(red, alpha);
+                            green = PremultiplyChannel(green, alpha);
+                            blue = PremultiplyChannel(blue, alpha);
+                        }
+
+                        if (dst.Info.ColorType == SKColorType.Bgra8888)
+                        {
+                            dstPixel[0] = blue;
+                            dstPixel[1] = green;
+                            dstPixel[2] = red;
+                            dstPixel[3] = alpha;
+                        }
+                        else
+                        {
+                            dstPixel[0] = red;
+                            dstPixel[1] = green;
+                            dstPixel[2] = blue;
+                            dstPixel[3] = alpha;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     public void ReadPixels(SKImageInfo dstInfo, IntPtr dstPixels, int dstRowBytes, int srcX, int srcY, SKImageCachingHint cachingHint)
@@ -166,7 +239,17 @@ public class SKImage : IDisposable
 
     private static byte UnpremultiplyChannel(byte value, int alpha)
     {
+        if (alpha == 0)
+        {
+            return 0;
+        }
+
         return (byte)Math.Min(255, (value * 255 + alpha / 2) / alpha);
+    }
+
+    private static byte PremultiplyChannel(byte value, int alpha)
+    {
+        return (byte)((value * alpha + 127) / 255);
     }
 
     public void Dispose()
