@@ -12,8 +12,6 @@ namespace ProGPU.Scene.Extensions;
 
 public sealed unsafe class WpfShaderEffectExtensionPipeline : ICompositorExtension, IDisposable
 {
-    private static readonly string VertexAndHeaderShader = CreateVertexAndHeaderShader();
-
     private const string VertexAndHeaderShaderPrefix = @"
 struct VSUniforms {
     projection: mat4x4<f32>,
@@ -58,34 +56,42 @@ fn wpf_constant(index: u32) -> vec4<f32> {
 }
 ";
 
-    private static string CreateVertexAndHeaderShader()
+    private static string CreateVertexAndHeaderShader(ReadOnlySpan<int> activeSamplerRegisters, bool includeMask)
     {
         var builder = new StringBuilder(VertexAndHeaderShaderPrefix);
 
-        for (var i = 0; i < WpfShaderEffectParams.MaxSamplerRegisterCount; i++)
+        for (var slot = 0; slot < activeSamplerRegisters.Length; slot++)
         {
+            var register = activeSamplerRegisters[slot];
             builder.Append("@group(2) @binding(")
-                .Append(i * 2)
+                .Append(slot * 2)
                 .Append(") var sourceSampler")
-                .Append(i)
+                .Append(register)
                 .AppendLine(": sampler;");
             builder.Append("@group(2) @binding(")
-                .Append(i * 2 + 1)
+                .Append(slot * 2 + 1)
                 .Append(") var sourceTexture")
-                .Append(i)
+                .Append(register)
                 .AppendLine(": texture_2d<f32>;");
+        }
+
+        if (includeMask)
+        {
+            builder.AppendLine("@group(3) @binding(0) var activeMaskSampler: sampler;");
+            builder.AppendLine("@group(3) @binding(1) var activeMaskTexture: texture_2d<f32>;");
         }
 
         builder.AppendLine();
         builder.AppendLine("fn wpf_sample_register(index: u32, uv: vec2<f32>) -> vec4<f32> {");
-        for (var i = 0; i < WpfShaderEffectParams.MaxSamplerRegisterCount; i++)
+        for (var slot = 0; slot < activeSamplerRegisters.Length; slot++)
         {
+            var register = activeSamplerRegisters[slot];
             builder.Append("    if (index == ")
-                .Append(i)
+                .Append(register)
                 .Append("u) { return textureSample(sourceTexture")
-                .Append(i)
+                .Append(register)
                 .Append(", sourceSampler")
-                .Append(i)
+                .Append(register)
                 .AppendLine(", uv); }");
         }
 
@@ -99,6 +105,23 @@ fn wpf_constant(index: u32) -> vec4<f32> {
         builder.AppendLine("fn wpf_sample_source(uv: vec2<f32>) -> vec4<f32> {");
         builder.AppendLine("    return wpf_sample_register(wpf_source_register(), uv);");
         builder.AppendLine("}");
+        builder.AppendLine();
+        builder.AppendLine("fn wpf_has_active_mask() -> bool {");
+        builder.AppendLine(includeMask ? "    return effect.metadata.w > 0.5;" : "    return false;");
+        builder.AppendLine("}");
+        builder.AppendLine();
+        builder.AppendLine("fn wpf_active_mask_alpha(screenPosition: vec4<f32>) -> f32 {");
+        if (includeMask)
+        {
+            builder.AppendLine("    let canvasSize = max(effect.metadata.yz, vec2<f32>(1.0));");
+            builder.AppendLine("    let screenUv = screenPosition.xy / canvasSize;");
+            builder.AppendLine("    return textureSample(activeMaskTexture, activeMaskSampler, screenUv).r;");
+        }
+        else
+        {
+            builder.AppendLine("    return 1.0;");
+        }
+        builder.AppendLine("}");
 
         return builder.ToString();
     }
@@ -108,7 +131,11 @@ fn wpf_constant(index: u32) -> vec4<f32> {
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let inputColor = wpf_sample_source(input.texCoord);
     let shaded = wpf_effect_main(input.texCoord, inputColor);
-    return clamp(shaded, vec4<f32>(0.0), vec4<f32>(1.0)) * input.color;
+    var color = clamp(shaded, vec4<f32>(0.0), vec4<f32>(1.0)) * input.color;
+    if (wpf_has_active_mask()) {
+        color = color * wpf_active_mask_alpha(input.position);
+    }
+    return color;
 }
 ";
 
@@ -118,15 +145,23 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         public nint BindGroupPtr;
     }
 
+    private sealed class SourceLayoutResources
+    {
+        public required string LayoutKey { get; init; }
+        public required int[] Registers { get; init; }
+        public required bool IncludeMask { get; init; }
+        public BindGroupLayout* SourceBindGroupLayout;
+        public PipelineLayout* OnscreenPipelineLayout;
+        public PipelineLayout* OffscreenPipelineLayout;
+    }
+
     private readonly List<EffectGpuResources> _pool = new();
     private readonly Dictionary<string, Compositor.CachedBindGroup> _textureBindGroups = new();
+    private readonly Dictionary<string, SourceLayoutResources> _sourceLayouts = new();
     private int _usedCount;
     private WgpuContext? _contextRef;
     private GpuTexture? _fallbackTexture;
     private BindGroupLayout* _effectBindGroupLayout;
-    private BindGroupLayout* _sourceBindGroupLayout;
-    private PipelineLayout* _onscreenPipelineLayout;
-    private PipelineLayout* _offscreenPipelineLayout;
 
     private void EnsureLayouts(Compositor compositor)
     {
@@ -158,39 +193,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         };
         _effectBindGroupLayout = wgpu.DeviceCreateBindGroupLayout(device, &effectLayoutDesc);
 
-        const int sourceEntryCount = WpfShaderEffectParams.MaxSamplerRegisterCount * 2;
-        var sourceEntries = stackalloc BindGroupLayoutEntry[sourceEntryCount];
-        for (var i = 0; i < WpfShaderEffectParams.MaxSamplerRegisterCount; i++)
-        {
-            sourceEntries[i * 2] = new BindGroupLayoutEntry
-            {
-                Binding = (uint)(i * 2),
-                Visibility = ShaderStage.Fragment,
-                Sampler = new SamplerBindingLayout
-                {
-                    Type = SamplerBindingType.Filtering
-                }
-            };
-            sourceEntries[i * 2 + 1] = new BindGroupLayoutEntry
-            {
-                Binding = (uint)(i * 2 + 1),
-                Visibility = ShaderStage.Fragment,
-                Texture = new TextureBindingLayout
-                {
-                    SampleType = TextureSampleType.Float,
-                    ViewDimension = TextureViewDimension.Dimension2D,
-                    Multisampled = false
-                }
-            };
-        }
-
-        var sourceLayoutDesc = new BindGroupLayoutDescriptor
-        {
-            EntryCount = sourceEntryCount,
-            Entries = sourceEntries
-        };
-        _sourceBindGroupLayout = wgpu.DeviceCreateBindGroupLayout(device, &sourceLayoutDesc);
-
         _fallbackTexture = new GpuTexture(
             context,
             1,
@@ -199,28 +201,103 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             TextureUsage.TextureBinding | TextureUsage.CopyDst,
             "WPF Shader Effect Transparent Fallback");
         _fallbackTexture.WritePixels(new byte[] { 0, 0, 0, 0 });
+    }
 
-        var onscreenLayouts = stackalloc BindGroupLayout*[3];
-        onscreenLayouts[0] = compositor.VectorUniformBindGroupLayout;
-        onscreenLayouts[1] = _effectBindGroupLayout;
-        onscreenLayouts[2] = _sourceBindGroupLayout;
-        var onscreenDesc = new PipelineLayoutDescriptor
-        {
-            BindGroupLayoutCount = 3,
-            BindGroupLayouts = onscreenLayouts
-        };
-        _onscreenPipelineLayout = wgpu.DeviceCreatePipelineLayout(device, &onscreenDesc);
+    private SourceLayoutResources GetOrCreateSourceLayout(Compositor compositor, int[] activeRegisters)
+    {
+        var includeMask = activeRegisters.Length < WpfShaderEffectParams.MaxSamplerRegisterCount;
+        var layoutKey = BuildSourceLayoutKey(activeRegisters, includeMask);
 
-        var offscreenLayouts = stackalloc BindGroupLayout*[3];
-        offscreenLayouts[0] = compositor.VectorUniformBindGroupLayoutOffscreen;
-        offscreenLayouts[1] = _effectBindGroupLayout;
-        offscreenLayouts[2] = _sourceBindGroupLayout;
-        var offscreenDesc = new PipelineLayoutDescriptor
+        lock (_sourceLayouts)
         {
-            BindGroupLayoutCount = 3,
-            BindGroupLayouts = offscreenLayouts
-        };
-        _offscreenPipelineLayout = wgpu.DeviceCreatePipelineLayout(device, &offscreenDesc);
+            if (_sourceLayouts.TryGetValue(layoutKey, out var cached))
+            {
+                return cached;
+            }
+
+            var context = compositor.Context;
+            var wgpu = context.Wgpu;
+            var device = context.Device;
+            var entryCount = activeRegisters.Length * 2;
+            var sourceEntries = stackalloc BindGroupLayoutEntry[entryCount];
+
+            for (var slot = 0; slot < activeRegisters.Length; slot++)
+            {
+                sourceEntries[slot * 2] = new BindGroupLayoutEntry
+                {
+                    Binding = (uint)(slot * 2),
+                    Visibility = ShaderStage.Fragment,
+                    Sampler = new SamplerBindingLayout
+                    {
+                        Type = SamplerBindingType.Filtering
+                    }
+                };
+                sourceEntries[slot * 2 + 1] = new BindGroupLayoutEntry
+                {
+                    Binding = (uint)(slot * 2 + 1),
+                    Visibility = ShaderStage.Fragment,
+                    Texture = new TextureBindingLayout
+                    {
+                        SampleType = TextureSampleType.Float,
+                        ViewDimension = TextureViewDimension.Dimension2D,
+                        Multisampled = false
+                    }
+                };
+            }
+
+            var sourceLayoutDesc = new BindGroupLayoutDescriptor
+            {
+                EntryCount = (uint)entryCount,
+                Entries = sourceEntries
+            };
+            var sourceBindGroupLayout = wgpu.DeviceCreateBindGroupLayout(device, &sourceLayoutDesc);
+
+            var onscreenLayoutCount = includeMask ? 4 : 3;
+            var onscreenLayouts = stackalloc BindGroupLayout*[onscreenLayoutCount];
+            onscreenLayouts[0] = compositor.VectorUniformBindGroupLayout;
+            onscreenLayouts[1] = _effectBindGroupLayout;
+            onscreenLayouts[2] = sourceBindGroupLayout;
+            if (includeMask)
+            {
+                onscreenLayouts[3] = compositor.MaskBindGroupLayout;
+            }
+
+            var onscreenDesc = new PipelineLayoutDescriptor
+            {
+                BindGroupLayoutCount = (uint)onscreenLayoutCount,
+                BindGroupLayouts = onscreenLayouts
+            };
+            var onscreenPipelineLayout = wgpu.DeviceCreatePipelineLayout(device, &onscreenDesc);
+
+            var offscreenLayoutCount = includeMask ? 4 : 3;
+            var offscreenLayouts = stackalloc BindGroupLayout*[offscreenLayoutCount];
+            offscreenLayouts[0] = compositor.VectorUniformBindGroupLayoutOffscreen;
+            offscreenLayouts[1] = _effectBindGroupLayout;
+            offscreenLayouts[2] = sourceBindGroupLayout;
+            if (includeMask)
+            {
+                offscreenLayouts[3] = compositor.MaskBindGroupLayoutOffscreen;
+            }
+
+            var offscreenDesc = new PipelineLayoutDescriptor
+            {
+                BindGroupLayoutCount = (uint)offscreenLayoutCount,
+                BindGroupLayouts = offscreenLayouts
+            };
+            var offscreenPipelineLayout = wgpu.DeviceCreatePipelineLayout(device, &offscreenDesc);
+
+            var resources = new SourceLayoutResources
+            {
+                LayoutKey = layoutKey,
+                Registers = activeRegisters,
+                IncludeMask = includeMask,
+                SourceBindGroupLayout = sourceBindGroupLayout,
+                OnscreenPipelineLayout = onscreenPipelineLayout,
+                OffscreenPipelineLayout = offscreenPipelineLayout
+            };
+            _sourceLayouts[layoutKey] = resources;
+            return resources;
+        }
     }
 
     public void Compile(
@@ -330,7 +407,21 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
         EnsureLayouts(compositor);
 
-        var shaderKey = p.GetStableShaderKey();
+        var activeRegisters = CollectActiveSamplerRegisters(p);
+        if (activeRegisters.Length == 0)
+        {
+            return;
+        }
+
+        var sourceLayout = GetOrCreateSourceLayout(compositor, activeRegisters);
+        if (dc.MaskTexture != null && !sourceLayout.IncludeMask)
+        {
+            p.IsFailed = true;
+            p.LastError = "WPF shader effects that use all 16 sampler registers cannot also bind an active mask on this WebGPU device.";
+            return;
+        }
+
+        var shaderKey = p.GetStableShaderKey() + "_" + sourceLayout.LayoutKey;
         var pipelineKey = isOffscreen
             ? shaderKey + "_wpf_effect_offscreen"
             : shaderKey + "_wpf_effect_onscreen";
@@ -351,7 +442,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
         if (activePipeline == null)
         {
-            activePipeline = CreatePipeline(compositor, p, shaderKey, pipelineKey, isOffscreen);
+            activePipeline = CreatePipeline(compositor, p, sourceLayout, shaderKey, pipelineKey, isOffscreen);
             if (activePipeline == null)
             {
                 return;
@@ -401,9 +492,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         }
 
         p.CopyUniformFloats(uniformFloats, primaryTexture.Width, primaryTexture.Height);
+        uniformFloats[WpfShaderEffectParams.CanvasWidthMetadataIndex] = compositor.CurrentWidth;
+        uniformFloats[WpfShaderEffectParams.CanvasHeightMetadataIndex] = compositor.CurrentHeight;
+        uniformFloats[WpfShaderEffectParams.HasMaskMetadataIndex] = dc.MaskTexture != null && sourceLayout.IncludeMask ? 1f : 0f;
         gpuRes.UniformBuffer.Write<float>(uniformFloats);
 
-        var textureBindGroup = GetTextureBindGroup(compositor, activePipeline, p, isOffscreen);
+        var textureBindGroup = GetTextureBindGroup(compositor, sourceLayout, p, isOffscreen);
         if (textureBindGroup == null)
         {
             return;
@@ -416,6 +510,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         wgpu.RenderPassEncoderSetBindGroup(pass, 0, group0, 0, null);
         wgpu.RenderPassEncoderSetBindGroup(pass, 1, (BindGroup*)gpuRes.BindGroupPtr, 0, null);
         wgpu.RenderPassEncoderSetBindGroup(pass, 2, textureBindGroup, 0, null);
+        if (sourceLayout.IncludeMask)
+        {
+            wgpu.RenderPassEncoderSetBindGroup(pass, 3, compositor.GetMaskBindGroup(dc.MaskTexture, isOffscreen), 0, null);
+        }
+
         wgpu.RenderPassEncoderSetPipeline(pass, activePipeline);
         wgpu.RenderPassEncoderDrawIndexed(pass, (uint)dc.PointBufferCount, 1, (uint)dc.PointBufferOffset, 0, 0);
     }
@@ -426,6 +525,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         {
             _pool.Clear();
             _textureBindGroups.Clear();
+            _sourceLayouts.Clear();
             _fallbackTexture = null;
             return;
         }
@@ -447,22 +547,25 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             _effectBindGroupLayout = null;
         }
 
-        if (_sourceBindGroupLayout != null)
+        foreach (var layout in _sourceLayouts.Values)
         {
-            wgpu.BindGroupLayoutRelease(_sourceBindGroupLayout);
-            _sourceBindGroupLayout = null;
-        }
+            if (layout.SourceBindGroupLayout != null)
+            {
+                wgpu.BindGroupLayoutRelease(layout.SourceBindGroupLayout);
+                layout.SourceBindGroupLayout = null;
+            }
 
-        if (_onscreenPipelineLayout != null)
-        {
-            wgpu.PipelineLayoutRelease(_onscreenPipelineLayout);
-            _onscreenPipelineLayout = null;
-        }
+            if (layout.OnscreenPipelineLayout != null)
+            {
+                wgpu.PipelineLayoutRelease(layout.OnscreenPipelineLayout);
+                layout.OnscreenPipelineLayout = null;
+            }
 
-        if (_offscreenPipelineLayout != null)
-        {
-            wgpu.PipelineLayoutRelease(_offscreenPipelineLayout);
-            _offscreenPipelineLayout = null;
+            if (layout.OffscreenPipelineLayout != null)
+            {
+                wgpu.PipelineLayoutRelease(layout.OffscreenPipelineLayout);
+                layout.OffscreenPipelineLayout = null;
+            }
         }
 
         foreach (var cached in _textureBindGroups.Values)
@@ -475,6 +578,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
         _pool.Clear();
         _textureBindGroups.Clear();
+        _sourceLayouts.Clear();
         _fallbackTexture?.Dispose();
         _fallbackTexture = null;
     }
@@ -482,13 +586,14 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     private RenderPipeline* CreatePipeline(
         Compositor compositor,
         WpfShaderEffectParams parameters,
+        SourceLayoutResources sourceLayout,
         string shaderKey,
         string pipelineKey,
         bool isOffscreen)
     {
         try
         {
-            var fullShaderCode = VertexAndHeaderShader
+            var fullShaderCode = CreateVertexAndHeaderShader(sourceLayout.Registers, sourceLayout.IncludeMask)
                 + "\n"
                 + parameters.GetShaderSourceOrDefault()
                 + "\n"
@@ -531,7 +636,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                     topology: PrimitiveTopology.TriangleList,
                     targetFormat: compositor.RenderFormat,
                     sampleCount: isOffscreen ? 1u : 4u,
-                    pipelineLayout: isOffscreen ? _offscreenPipelineLayout : _onscreenPipelineLayout);
+                    pipelineLayout: isOffscreen ? sourceLayout.OffscreenPipelineLayout : sourceLayout.OnscreenPipelineLayout);
             }
             finally
             {
@@ -550,7 +655,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     private BindGroup* GetTextureBindGroup(
         Compositor compositor,
-        RenderPipeline* pipeline,
+        SourceLayoutResources sourceLayout,
         WpfShaderEffectParams parameters,
         bool isOffscreen)
     {
@@ -559,7 +664,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             return null;
         }
 
-        var key = BuildTextureBindGroupKey(parameters, isOffscreen);
+        var key = BuildTextureBindGroupKey(parameters, sourceLayout, isOffscreen);
 
         lock (_textureBindGroups)
         {
@@ -570,34 +675,35 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             }
 
             var wgpu = compositor.Context.Wgpu;
-            const int entryCount = WpfShaderEffectParams.MaxSamplerRegisterCount * 2;
+            var entryCount = sourceLayout.Registers.Length * 2;
             var textureEntries = stackalloc BindGroupEntry[entryCount];
-            for (var i = 0; i < WpfShaderEffectParams.MaxSamplerRegisterCount; i++)
+            for (var slot = 0; slot < sourceLayout.Registers.Length; slot++)
             {
+                var register = sourceLayout.Registers[slot];
                 var texture = _fallbackTexture;
                 var samplingMode = TextureSamplingMode.Linear;
-                if (parameters.TryGetSampler(i, out var registeredTexture, out var registeredSamplingMode))
+                if (parameters.TryGetSampler(register, out var registeredTexture, out var registeredSamplingMode))
                 {
                     texture = registeredTexture;
                     samplingMode = registeredSamplingMode;
                 }
 
-                textureEntries[i * 2] = new BindGroupEntry
+                textureEntries[slot * 2] = new BindGroupEntry
                 {
-                    Binding = (uint)(i * 2),
+                    Binding = (uint)(slot * 2),
                     Sampler = compositor.GetTextureSampler(samplingMode)
                 };
-                textureEntries[i * 2 + 1] = new BindGroupEntry
+                textureEntries[slot * 2 + 1] = new BindGroupEntry
                 {
-                    Binding = (uint)(i * 2 + 1),
+                    Binding = (uint)(slot * 2 + 1),
                     TextureView = texture.ViewPtr
                 };
             }
 
             var bgDesc = new BindGroupDescriptor
             {
-                Layout = _sourceBindGroupLayout,
-                EntryCount = entryCount,
+                Layout = sourceLayout.SourceBindGroupLayout,
+                EntryCount = (nuint)entryCount,
                 Entries = textureEntries,
                 Label = (byte*)SilkMarshal.StringToPtr("WPF Shader Effect Texture BG")
             };
@@ -610,15 +716,19 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    private static string BuildTextureBindGroupKey(WpfShaderEffectParams parameters, bool isOffscreen)
+    private static string BuildTextureBindGroupKey(
+        WpfShaderEffectParams parameters,
+        SourceLayoutResources sourceLayout,
+        bool isOffscreen)
     {
         var builder = new StringBuilder(isOffscreen ? "off" : "on");
-        for (var i = 0; i < WpfShaderEffectParams.MaxSamplerRegisterCount; i++)
+        builder.Append('|').Append(sourceLayout.LayoutKey);
+        foreach (var register in sourceLayout.Registers)
         {
-            if (parameters.TryGetSampler(i, out var texture, out var samplingMode))
+            if (parameters.TryGetSampler(register, out var texture, out var samplingMode))
             {
                 builder.Append('|')
-                    .Append(i)
+                    .Append(register)
                     .Append(':')
                     .Append(texture.Id)
                     .Append(':')
@@ -629,9 +739,36 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             else
             {
                 builder.Append('|')
-                    .Append(i)
+                    .Append(register)
                     .Append(":0:0:0");
             }
+        }
+
+        return builder.ToString();
+    }
+
+    private static int[] CollectActiveSamplerRegisters(WpfShaderEffectParams parameters)
+    {
+        Span<int> registers = stackalloc int[WpfShaderEffectParams.MaxSamplerRegisterCount];
+        var count = 0;
+
+        for (var register = 0; register < WpfShaderEffectParams.MaxSamplerRegisterCount; register++)
+        {
+            if (parameters.TryGetSampler(register, out _, out _))
+            {
+                registers[count++] = register;
+            }
+        }
+
+        return registers[..count].ToArray();
+    }
+
+    private static string BuildSourceLayoutKey(ReadOnlySpan<int> activeRegisters, bool includeMask)
+    {
+        var builder = new StringBuilder(includeMask ? "m" : "n");
+        foreach (var register in activeRegisters)
+        {
+            builder.Append('_').Append(register);
         }
 
         return builder.ToString();

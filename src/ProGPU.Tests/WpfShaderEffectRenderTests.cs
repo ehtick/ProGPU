@@ -126,6 +126,64 @@ fn wpf_effect_main(uv: vec2<f32>, inputColor: vec4<f32>) -> vec4<f32> {
     }
 
     [Fact]
+    public void WpfShaderEffect_HonorsActiveOpacityMask()
+    {
+        var window = HeadlessWindow.Shared;
+        window.Resize(160, 90);
+
+        using var texture = new GpuTexture(
+            window.Context,
+            1,
+            1,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.TextureBinding | TextureUsage.CopyDst,
+            "WPF Shader Effect Mask Source");
+        texture.WritePixels(new byte[] { 255, 0, 0, 255 });
+
+        var unmasked = new WpfShaderEffectParams
+        {
+            Texture = texture,
+            Rect = new Rect(20, 25, 40, 40),
+            ShaderKey = "test_wpf_native_shader_effect_unmasked",
+            SamplingMode = TextureSamplingMode.Nearest
+        };
+
+        var masked = new WpfShaderEffectParams
+        {
+            Texture = texture,
+            Rect = new Rect(90, 25, 40, 40),
+            ShaderKey = "test_wpf_native_shader_effect_masked",
+            SamplingMode = TextureSamplingMode.Nearest
+        };
+
+        window.Content = new MaskedShaderEffectVisual(unmasked, masked);
+
+        try
+        {
+            window.Render();
+
+            Assert.False(unmasked.IsFailed, unmasked.LastError);
+            Assert.False(masked.IsFailed, masked.LastError);
+
+            var pixels = window.ReadPixels();
+            var background = ReadPixel(pixels, window.Width, x: 10, y: 10);
+            var visible = ReadPixel(pixels, window.Width, x: 40, y: 45);
+            var hidden = ReadPixel(pixels, window.Width, x: 110, y: 45);
+
+            Assert.True(visible.R >= 220, $"Expected unmasked shader effect to render red, found {visible}.");
+            Assert.True(visible.G <= 35, $"Expected unmasked shader effect to keep green low, found {visible}.");
+            Assert.True(visible.B <= 35, $"Expected unmasked shader effect to keep blue low, found {visible}.");
+            Assert.Equal(255, visible.A);
+
+            AssertColorNear(background, hidden, tolerance: 12);
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
+    [Fact]
     public void WpfShaderEffectVisual_RendersVisualSourceThroughNativeGpuPipeline()
     {
         var window = HeadlessWindow.Shared;
@@ -225,6 +283,50 @@ fn wpf_effect_main(uv: vec2<f32>, inputColor: vec4<f32>) -> vec4<f32> {
         public override void OnRender(DrawingContext context)
         {
             context.DrawWpfShaderEffect(_effect);
+        }
+    }
+
+    private static RgbaPixel ReadPixel(byte[] pixels, uint width, int x, int y)
+    {
+        var index = ((y * (int)width) + x) * 4;
+        return new RgbaPixel(
+            pixels[index + 0],
+            pixels[index + 1],
+            pixels[index + 2],
+            pixels[index + 3]);
+    }
+
+    private static void AssertColorNear(RgbaPixel expected, RgbaPixel actual, int tolerance)
+    {
+        Assert.InRange(Math.Abs(expected.R - actual.R), 0, tolerance);
+        Assert.InRange(Math.Abs(expected.G - actual.G), 0, tolerance);
+        Assert.InRange(Math.Abs(expected.B - actual.B), 0, tolerance);
+        Assert.InRange(Math.Abs(expected.A - actual.A), 0, tolerance);
+    }
+
+    private readonly record struct RgbaPixel(byte R, byte G, byte B, byte A);
+
+    private sealed class MaskedShaderEffectVisual : FrameworkElement
+    {
+        private readonly WpfShaderEffectParams _unmasked;
+        private readonly WpfShaderEffectParams _masked;
+
+        public MaskedShaderEffectVisual(WpfShaderEffectParams unmasked, WpfShaderEffectParams masked)
+        {
+            _unmasked = unmasked;
+            _masked = masked;
+            Width = 160f;
+            Height = 90f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            context.DrawWpfShaderEffect(_unmasked);
+            context.PushOpacityMask(
+                new SolidColorBrush(new Vector4(0f, 0f, 0f, 1f)),
+                new Rect(90f, 25f, 40f, 40f));
+            context.DrawWpfShaderEffect(_masked);
+            context.PopOpacityMask();
         }
     }
 

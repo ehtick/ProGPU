@@ -11,6 +11,10 @@ public sealed class WpfShaderEffectParams
     public const int UniformFloatCount = ConstantFloatCount + 12;
     public const int UniformByteCount = UniformFloatCount * sizeof(float);
     public const int MaxSamplerRegisterCount = 16;
+    internal const int SourceTextureRegisterMetadataIndex = ConstantFloatCount + 8;
+    internal const int CanvasWidthMetadataIndex = ConstantFloatCount + 9;
+    internal const int CanvasHeightMetadataIndex = ConstantFloatCount + 10;
+    internal const int HasMaskMetadataIndex = ConstantFloatCount + 11;
 
     public GpuTexture? Texture { get; set; }
     public Rect Rect { get; set; }
@@ -76,7 +80,7 @@ public sealed class WpfShaderEffectParams
         destination[ConstantFloatCount + 5] = textureHeight;
         destination[ConstantFloatCount + 6] = textureWidth > 0 ? 1f / textureWidth : 0f;
         destination[ConstantFloatCount + 7] = textureHeight > 0 ? 1f / textureHeight : 0f;
-        destination[ConstantFloatCount + 8] = SourceTextureRegisterIndex;
+        destination[SourceTextureRegisterMetadataIndex] = SourceTextureRegisterIndex;
     }
 
     public bool HasAnyTexture()
