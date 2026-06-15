@@ -50,7 +50,7 @@ public class SKSurface : IDisposable
         _colorType = colorType;
 
         _drawingContext = new DrawingContext();
-        Canvas = new SKCanvas(_drawingContext, width, height);
+        Canvas = new SKCanvas(_drawingContext, width, height, context);
         _hasTextureContents = _gpuTexture != null && !_ownsTexture;
 
         if (_pixels != IntPtr.Zero && _gpuTexture != null)

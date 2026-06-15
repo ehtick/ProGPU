@@ -64,8 +64,9 @@ public sealed class SkCanvasStateTests
             },
             draw =>
             {
-                Assert.Equal(RenderCommandType.DrawRect, draw.Type);
-                Assert.Equal(new Rect(10f, 10f, 30f, 30f), draw.Rect);
+                Assert.Equal(RenderCommandType.DrawTexture, draw.Type);
+                Assert.Equal(new Rect(0f, 0f, 100f, 100f), draw.Rect);
+                Assert.NotNull(draw.Texture);
             },
             pop => Assert.Equal(RenderCommandType.PopOpacity, pop.Type));
     }
@@ -92,7 +93,11 @@ public sealed class SkCanvasStateTests
                 Assert.Equal(RenderCommandType.PushBlendMode, push.Type);
                 Assert.Equal((int)GpuBlendMode.Src, push.IntParam);
             },
-            draw => Assert.Equal(RenderCommandType.DrawRect, draw.Type),
+            draw =>
+            {
+                Assert.Equal(RenderCommandType.DrawTexture, draw.Type);
+                Assert.NotNull(draw.Texture);
+            },
             pop => Assert.Equal(RenderCommandType.PopBlendMode, pop.Type));
     }
 

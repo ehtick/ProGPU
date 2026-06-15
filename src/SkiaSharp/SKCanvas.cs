@@ -4,6 +4,7 @@ using System.Numerics;
 using ProGPU.Backend;
 using ProGPU.Scene;
 using ProGPU.Vector;
+using Silk.NET.WebGPU;
 
 namespace SkiaSharp;
 
@@ -12,8 +13,11 @@ public class SKCanvas : IDisposable
     private DrawingContext _context;
     private readonly float _width;
     private readonly float _height;
+    private readonly WgpuContext? _gpuContext;
     private SKMatrix _currentMatrix = SKMatrix.Identity;
     private float _currentOpacity = 1f;
+    private readonly List<GpuTexture> _ownedLayerTextures = new();
+    private static readonly Dictionary<WgpuContext, Compositor> s_compositorCache = new();
 
     public enum PushKind
     {
@@ -48,11 +52,12 @@ public class SKCanvas : IDisposable
         set => SetMatrix(value);
     }
 
-    public SKCanvas(DrawingContext context, float width, float height)
+    public SKCanvas(DrawingContext context, float width, float height, WgpuContext? gpuContext = null)
     {
         _context = context;
         _width = width;
         _height = height;
+        _gpuContext = gpuContext;
     }
 
     public void Clear(SKColor color)
@@ -141,23 +146,107 @@ public class SKCanvas : IDisposable
     private void RestoreLayer(LayerFrame layerFrame)
     {
         _context = layerFrame.ParentContext;
+        if (layerFrame.LayerContext.Commands.Count == 0)
+        {
+            return;
+        }
 
         var pushedBlendMode = PushPaintBlendMode(layerFrame.Paint);
-
         var opacity = layerFrame.Paint?.Color.A / 255f ?? 1f;
-        if (opacity < 1f)
+
+        try
         {
-            _context.PushOpacity(opacity);
+            if (RequiresLayerIsolation(layerFrame.Paint))
+            {
+                var pushedOpacity = false;
+                if (opacity < 1f)
+                {
+                    _context.PushOpacity(opacity);
+                    pushedOpacity = true;
+                }
+
+                try
+                {
+                    _context.Commands.Add(new RenderCommand
+                    {
+                        Type = RenderCommandType.DrawTexture,
+                        Texture = RenderLayerToTexture(layerFrame.LayerContext),
+                        Rect = new Rect(0f, 0f, _width, _height),
+                        Transform = Matrix4x4.Identity,
+                        TextureSamplingMode = TextureSamplingMode.Linear
+                    });
+                }
+                finally
+                {
+                    if (pushedOpacity)
+                    {
+                        _context.PopOpacity();
+                    }
+                }
+
+
+                return;
+            }
+
+            _context.Append(layerFrame.LayerContext);
+        }
+        finally
+        {
+            PopPaintBlendMode(pushedBlendMode);
+        }
+    }
+
+    private static bool RequiresLayerIsolation(SKPaint? paint)
+    {
+        if (paint == null)
+        {
+            return false;
         }
 
-        _context.Append(layerFrame.LayerContext);
+        return paint.Color.A < 255 || MapBlendMode(paint.BlendMode) != GpuBlendMode.SrcOver;
+    }
 
-        if (opacity < 1f)
+    private GpuTexture RenderLayerToTexture(DrawingContext layerContext)
+    {
+        var context = _gpuContext != null && !_gpuContext.IsDisposed
+            ? _gpuContext
+            : SKContextHelper.GetContext();
+        var texture = new GpuTexture(
+            context,
+            (uint)_width,
+            (uint)_height,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.RenderAttachment | TextureUsage.CopySrc | TextureUsage.CopyDst | TextureUsage.TextureBinding,
+            "SKCanvas SaveLayer Texture",
+            alphaMode: GpuTextureAlphaMode.Premultiplied);
+
+        var visual = new DrawingVisual { Size = new Vector2(_width, _height) };
+        visual.Context.Append(layerContext);
+
+        GetCompositorForContext(context).RenderOffscreen(
+            visual,
+            (uint)_width,
+            (uint)_height,
+            texture,
+            padding: 0f,
+            dpiScale: 1f);
+
+        _ownedLayerTextures.Add(texture);
+        return texture;
+    }
+
+    private static Compositor GetCompositorForContext(WgpuContext context)
+    {
+        lock (s_compositorCache)
         {
-            _context.PopOpacity();
-        }
+            if (!s_compositorCache.TryGetValue(context, out var compositor))
+            {
+                compositor = new Compositor(context, TextureFormat.Rgba8Unorm);
+                s_compositorCache[context] = compositor;
+            }
 
-        PopPaintBlendMode(pushedBlendMode);
+            return compositor;
+        }
     }
 
     private static GpuBlendMode MapBlendMode(SKBlendMode blendMode)
@@ -541,5 +630,13 @@ public class SKCanvas : IDisposable
         }
     }
 
-    public void Dispose() { }
+    public void Dispose()
+    {
+        foreach (var texture in _ownedLayerTextures)
+        {
+            texture.Dispose();
+        }
+
+        _ownedLayerTextures.Clear();
+    }
 }
