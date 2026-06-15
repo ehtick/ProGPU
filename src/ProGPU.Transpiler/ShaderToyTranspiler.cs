@@ -2002,6 +2002,13 @@ namespace ProGPU.Transpiler
                 {
                     return $"{copyBacks}{indent}return {GenerateExpression(r.Expression)};\n";
                 }
+                if (_currentFunction != null && _currentFunction.Name == "mainImage")
+                {
+                    var colorName = _currentFunction.Parameters.Count >= 1
+                        ? ResolveIdentifier(_currentFunction.Parameters[0].Name)
+                        : "fragColor";
+                    return $"{indent}return {colorName};\n";
+                }
                 else
                 {
                     return $"{copyBacks}{indent}return;\n";
