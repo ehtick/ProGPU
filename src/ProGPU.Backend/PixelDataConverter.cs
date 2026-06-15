@@ -410,8 +410,13 @@ public static class PixelDataConverter
         return (byte)((color * alpha + 127) / 255);
     }
 
-    private static int GetMinimumStride(int width, PixelDataFormat format)
+    public static int GetMinimumStride(int width, PixelDataFormat format)
     {
+        if (width <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(width));
+        }
+
         if (!TryGetBitsPerPixel(format, out var bitsPerPixel))
         {
             throw new ArgumentOutOfRangeException(nameof(format), format, "Unsupported pixel format.");
@@ -420,19 +425,54 @@ public static class PixelDataConverter
         return checked((width * bitsPerPixel + 7) / 8);
     }
 
-    private static bool TryGetMinimumStride(int width, PixelDataFormat format, out int stride)
+    public static bool TryGetMinimumStride(int width, PixelDataFormat format, out int stride)
     {
         stride = 0;
-        if (!TryGetBitsPerPixel(format, out var bitsPerPixel))
+        if (width <= 0 || !TryGetBitsPerPixel(format, out var bitsPerPixel))
         {
             return false;
         }
 
-        stride = checked((width * bitsPerPixel + 7) / 8);
-        return true;
+        try
+        {
+            stride = checked((width * bitsPerPixel + 7) / 8);
+            return true;
+        }
+        catch (OverflowException)
+        {
+            stride = 0;
+            return false;
+        }
     }
 
-    private static bool TryGetBitsPerPixel(PixelDataFormat format, out int bitsPerPixel)
+    public static bool TryGetSourceByteLength(
+        int width,
+        int height,
+        int sourceStride,
+        PixelDataFormat format,
+        out int byteLength)
+    {
+        byteLength = 0;
+        if (height <= 0
+            || !TryGetMinimumStride(width, format, out var minimumStride)
+            || sourceStride < minimumStride)
+        {
+            return false;
+        }
+
+        try
+        {
+            byteLength = checked(sourceStride * height);
+            return true;
+        }
+        catch (OverflowException)
+        {
+            byteLength = 0;
+            return false;
+        }
+    }
+
+    public static bool TryGetBitsPerPixel(PixelDataFormat format, out int bitsPerPixel)
     {
         bitsPerPixel = format switch
         {

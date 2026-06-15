@@ -161,6 +161,73 @@ public class PixelDataConverterTests
         Assert.Equal(0, invalidFormatStride);
     }
 
+    [Fact]
+    public void PixelDataBufferConvertsToPbgra32UploadBuffer()
+    {
+        var source = new PixelDataBuffer(
+            width: 1,
+            height: 1,
+            stride: 4,
+            PixelDataFormat.Bgra32,
+            new byte[] { 100, 50, 200, 128 });
+
+        Assert.True(source.TryConvertToPbgra32(out var upload));
+
+        Assert.Equal(1, upload.Width);
+        Assert.Equal(1, upload.Height);
+        Assert.Equal(4, upload.Stride);
+        Assert.True(upload.IsValid);
+        Assert.Equal(new byte[] { 50, 25, 100, 128 }, upload.Pixels);
+    }
+
+    [Fact]
+    public void PixelDataBufferRejectsIndexedRowsWithoutPalette()
+    {
+        var source = new PixelDataBuffer(
+            width: 2,
+            height: 1,
+            stride: 1,
+            PixelDataFormat.Indexed4,
+            new byte[] { 0x12 });
+
+        Assert.False(source.TryConvertToPbgra32(out var upload));
+        Assert.False(upload.IsValid);
+    }
+
+    [Fact]
+    public void ComputesSourceByteLengthFromFormatStride()
+    {
+        Assert.True(PixelDataConverter.TryGetMinimumStride(
+            width: 9,
+            PixelDataFormat.Indexed1,
+            out var stride));
+        Assert.Equal(2, stride);
+
+        Assert.True(PixelDataConverter.TryGetSourceByteLength(
+            width: 9,
+            height: 3,
+            sourceStride: stride,
+            PixelDataFormat.Indexed1,
+            out var byteLength));
+        Assert.Equal(6, byteLength);
+
+        Assert.False(PixelDataConverter.TryGetSourceByteLength(
+            width: 9,
+            height: 3,
+            sourceStride: 1,
+            PixelDataFormat.Indexed1,
+            out var invalidByteLength));
+        Assert.Equal(0, invalidByteLength);
+
+        Assert.False(PixelDataConverter.TryGetSourceByteLength(
+            width: int.MaxValue,
+            height: int.MaxValue,
+            sourceStride: int.MaxValue,
+            PixelDataFormat.Pbgra32,
+            out var overflowByteLength));
+        Assert.Equal(0, overflowByteLength);
+    }
+
     private static byte[] FloatPixels(params float[] values)
     {
         var bytes = new byte[values.Length * sizeof(float)];
