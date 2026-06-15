@@ -53,6 +53,13 @@ public enum TextureSamplingMode
     Cubic
 }
 
+public enum TextRenderingMode
+{
+    Grayscale,
+    Aliased,
+    ClearType
+}
+
 public struct Line3D
 {
     public Vector3 Start;
@@ -151,7 +158,12 @@ public struct RenderCommand
     public bool IsBold;
     public bool IsItalic;
     public float Rotation;
-    public bool IsTextAliased;
+    public TextRenderingMode TextRenderingMode;
+    public bool IsTextAliased
+    {
+        readonly get => TextRenderingMode == TextRenderingMode.Aliased;
+        set => TextRenderingMode = value ? TextRenderingMode.Aliased : TextRenderingMode.Grayscale;
+    }
 
     // Texture properties
     public GpuTexture? Texture;
@@ -347,7 +359,16 @@ public class DrawingContext : IRenderDataProvider
         });
     }
 
-    public void DrawText(string text, TtfFont font, float fontSize, Brush brush, Vector2 position, bool isBold = false, bool isItalic = false, float rotation = 0f)
+    public void DrawText(
+        string text,
+        TtfFont font,
+        float fontSize,
+        Brush brush,
+        Vector2 position,
+        bool isBold = false,
+        bool isItalic = false,
+        float rotation = 0f,
+        TextRenderingMode textRenderingMode = TextRenderingMode.Grayscale)
     {
         Commands.Add(new RenderCommand
         {
@@ -359,11 +380,22 @@ public class DrawingContext : IRenderDataProvider
             Position = position,
             IsBold = isBold,
             IsItalic = isItalic,
-            Rotation = rotation
+            Rotation = rotation,
+            TextRenderingMode = textRenderingMode
         });
     }
 
-    public void DrawText(string text, TtfFont font, float fontSize, Brush brush, Vector2 position, Matrix4x4 transform, bool isBold = false, bool isItalic = false, float rotation = 0f)
+    public void DrawText(
+        string text,
+        TtfFont font,
+        float fontSize,
+        Brush brush,
+        Vector2 position,
+        Matrix4x4 transform,
+        bool isBold = false,
+        bool isItalic = false,
+        float rotation = 0f,
+        TextRenderingMode textRenderingMode = TextRenderingMode.Grayscale)
     {
         Commands.Add(new RenderCommand
         {
@@ -376,7 +408,8 @@ public class DrawingContext : IRenderDataProvider
             Transform = transform,
             IsBold = isBold,
             IsItalic = isItalic,
-            Rotation = rotation
+            Rotation = rotation,
+            TextRenderingMode = textRenderingMode
         });
     }
 
@@ -389,7 +422,8 @@ public class DrawingContext : IRenderDataProvider
         Vector2 position,
         Matrix4x4 transform = default,
         bool isBold = false,
-        bool isItalic = false)
+        bool isItalic = false,
+        TextRenderingMode textRenderingMode = TextRenderingMode.Grayscale)
     {
         Commands.Add(new RenderCommand
         {
@@ -402,7 +436,8 @@ public class DrawingContext : IRenderDataProvider
             Position = position,
             Transform = transform,
             IsBold = isBold,
-            IsItalic = isItalic
+            IsItalic = isItalic,
+            TextRenderingMode = textRenderingMode
         });
     }
 

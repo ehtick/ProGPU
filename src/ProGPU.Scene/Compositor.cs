@@ -139,19 +139,34 @@ public unsafe class Compositor : IDisposable
         return isEdgeAliased ? shapeType + AliasedShapeTypeOffset : shapeType;
     }
 
-    private static float EncodeTextFlags(bool useMvp, bool isTextAliased)
+    private static float EncodeTextFlags(bool useMvp, TextRenderingMode textRenderingMode)
     {
-        if (!isTextAliased)
+        return textRenderingMode switch
         {
-            return useMvp ? 1f : 0f;
-        }
-
-        return useMvp ? -2f : -1f;
+            TextRenderingMode.Aliased => useMvp ? -2f : -1f,
+            TextRenderingMode.ClearType => useMvp ? 3f : 2f,
+            _ => useMvp ? 1f : 0f
+        };
     }
 
     private static float ForceTextUseMvp(float encodedFlags)
     {
-        return EncodeTextFlags(useMvp: true, isTextAliased: encodedFlags < -0.5f);
+        return EncodeTextFlags(useMvp: true, DecodeTextRenderingMode(encodedFlags));
+    }
+
+    private static TextRenderingMode DecodeTextRenderingMode(float encodedFlags)
+    {
+        if (encodedFlags < -0.5f)
+        {
+            return TextRenderingMode.Aliased;
+        }
+
+        if (encodedFlags > 1.5f)
+        {
+            return TextRenderingMode.ClearType;
+        }
+
+        return TextRenderingMode.Grayscale;
     }
 
     private readonly List<StaticTextRecord> _compiledTextRecords = new();
@@ -4386,7 +4401,7 @@ public unsafe class Compositor : IDisposable
                         Type = RenderCommandType.DrawPath,
                         Path = transformedOutline,
                         Brush = new SolidColorBrush(layer.Color),
-                        IsEdgeAliased = cmd.IsTextAliased
+                        IsEdgeAliased = cmd.TextRenderingMode == TextRenderingMode.Aliased
                     };
                     CompilePathCommand(pathCmd, activeTransform);
                 }
@@ -4497,7 +4512,7 @@ public unsafe class Compositor : IDisposable
                     BearSize = new Vector4(info.BearX, info.BearY, info.Width, info.Height),
                     TexCoords = new Vector4(info.TexCoordMin.X, info.TexCoordMin.Y, info.TexCoordMax.X, info.TexCoordMax.Y),
                     Color = color,
-                    ScaleBoldItalicUseMvp = new Vector4(scaleRatio, xOffset, cmd.IsItalic ? 0.22f : 0f, EncodeTextFlags(ActiveCompilationContext != null, cmd.IsTextAliased)),
+                    ScaleBoldItalicUseMvp = new Vector4(scaleRatio, xOffset, cmd.IsItalic ? 0.22f : 0f, EncodeTextFlags(ActiveCompilationContext != null, cmd.TextRenderingMode)),
                     BrushIndex = bIdx,
                     Padding = 0f
                 };
@@ -4619,7 +4634,7 @@ public unsafe class Compositor : IDisposable
                         Type = RenderCommandType.DrawPath,
                         Path = transformedOutline,
                         Brush = new SolidColorBrush(layer.Color),
-                        IsEdgeAliased = cmd.IsTextAliased
+                        IsEdgeAliased = cmd.TextRenderingMode == TextRenderingMode.Aliased
                     };
                     CompilePathCommand(pathCmd, activeTransform);
                 }
@@ -4708,7 +4723,7 @@ public unsafe class Compositor : IDisposable
                     BearSize = new Vector4(info.BearX, info.BearY, info.Width, info.Height),
                     TexCoords = new Vector4(info.TexCoordMin.X, info.TexCoordMin.Y, info.TexCoordMax.X, info.TexCoordMax.Y),
                     Color = color,
-                    ScaleBoldItalicUseMvp = new Vector4(scaleRatio, xOffset, cmd.IsItalic ? 0.22f : 0f, EncodeTextFlags(ActiveCompilationContext != null, cmd.IsTextAliased)),
+                    ScaleBoldItalicUseMvp = new Vector4(scaleRatio, xOffset, cmd.IsItalic ? 0.22f : 0f, EncodeTextFlags(ActiveCompilationContext != null, cmd.TextRenderingMode)),
                     BrushIndex = bIdx,
                     Padding = 0f
                 };

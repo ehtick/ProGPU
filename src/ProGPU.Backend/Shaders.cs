@@ -697,6 +697,7 @@ struct VertexOutput {
     @location(1) texCoord: vec2<f32>,
     @location(2) cornerRadius: f32,
     @location(3) strokeThickness: f32,
+    @location(4) textMode: f32,
 };
 
 struct Uniforms {
@@ -740,7 +741,11 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let italicSkew = input.scaleBoldItalicUseMvp.z;
     let encodedTextFlags = input.scaleBoldItalicUseMvp.w;
     let aliasedText = encodedTextFlags < -0.5;
-    let useMvp = select(encodedTextFlags, -encodedTextFlags - 1.0, aliasedText);
+    let clearTypeText = encodedTextFlags > 1.5;
+    let useMvp = select(
+        select(encodedTextFlags, encodedTextFlags - 2.0, clearTypeText),
+        -encodedTextFlags - 1.0,
+        aliasedText);
 
     let lx0 = bear.x * scaleRatio + boldOffset;
     let ly0 = bear.y * scaleRatio;
@@ -775,6 +780,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     output.texCoord = mix(texCoordMin, texCoordMax, local_uv);
     output.cornerRadius = select(1.43, -1.43, aliasedText); // DefaultTextGamma, sign encodes aliased text
     output.strokeThickness = 1.15; // DefaultTextContrast
+    output.textMode = select(select(0.0, 2.0, clearTypeText), 1.0, aliasedText);
     return output;
 }
 
@@ -783,15 +789,40 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 @group(2) @binding(0) var maskSampler: sampler;
 @group(2) @binding(1) var maskTexture: texture_2d<f32>;
 
+fn text_coverage_to_alpha(alpha: f32, contrast: f32, gamma: f32, aliasedText: bool) -> f32 {
+    let dilated = clamp(alpha * contrast, 0.0, 1.0);
+    return select(pow(dilated, gamma), select(0.0, 1.0, alpha >= 0.5), aliasedText);
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let alpha = textureSample(atlasTexture, atlasSampler, input.texCoord).r;
-    let dilated = clamp(alpha * input.strokeThickness, 0.0, 1.0);
     let aliasedText = input.cornerRadius < 0.0;
-    let finalAlpha = select(pow(dilated, abs(input.cornerRadius)), select(0.0, 1.0, alpha >= 0.5), aliasedText);
     let screen_uv = input.position.xy / uniforms.canvasSize;
     let maskAlpha = textureSample(maskTexture, maskSampler, screen_uv).r;
-    return vec4<f32>(input.color.rgb, input.color.a * finalAlpha * maskAlpha);
+    let gamma = abs(input.cornerRadius);
+    let grayscaleAlpha = text_coverage_to_alpha(alpha, input.strokeThickness, gamma, aliasedText);
+
+    if (input.textMode > 1.5) {
+        let atlasDims = textureDimensions(atlasTexture);
+        let atlasSize = vec2<f32>(f32(atlasDims.x), f32(atlasDims.y));
+        let subpixelOffset = vec2<f32>(1.0 / max(atlasSize.x * 3.0, 1.0), 0.0);
+        let redCoverage = textureSample(atlasTexture, atlasSampler, input.texCoord - subpixelOffset).r;
+        let greenCoverage = alpha;
+        let blueCoverage = textureSample(atlasTexture, atlasSampler, input.texCoord + subpixelOffset).r;
+        let rgbCoverage = vec3<f32>(
+            text_coverage_to_alpha(redCoverage, input.strokeThickness, gamma, false),
+            text_coverage_to_alpha(greenCoverage, input.strokeThickness, gamma, false),
+            text_coverage_to_alpha(blueCoverage, input.strokeThickness, gamma, false)) * input.color.a * maskAlpha;
+        let finalAlpha = max(max(rgbCoverage.r, rgbCoverage.g), rgbCoverage.b);
+        if (finalAlpha <= 0.0001) {
+            return vec4<f32>(0.0);
+        }
+
+        return vec4<f32>(input.color.rgb * (rgbCoverage / finalAlpha), finalAlpha);
+    }
+
+    return vec4<f32>(input.color.rgb, input.color.a * grayscaleAlpha * maskAlpha);
 }
 ";
 
