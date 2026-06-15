@@ -9,7 +9,7 @@ using ProGPU.Backend;
 
 namespace ProGPU.Scene.Extensions
 {
-    public class ImageEffectExtensionPipeline : ICompositorExtension
+    public unsafe class ImageEffectExtensionPipeline : ICompositorExtension, IDisposable
     {
         private const string ShaderCode = @"
 struct VSUniforms {
@@ -157,10 +157,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             public nint BindGroupPtr; // BindGroup*
         }
 
-        private unsafe RenderPipeline* _cachedPipeline;
-        private unsafe RenderPipeline* _cachedPipelineOffscreen;
-        private unsafe BindGroup* _group0Onscreen;
-        private unsafe BindGroup* _group0Offscreen;
+        private RenderPipeline* _cachedPipeline;
+        private RenderPipeline* _cachedPipelineOffscreen;
+        private WgpuContext? _contextRef;
+        private BindGroupLayout* _effectBindGroupLayout;
+        private BindGroupLayout* _textureBindGroupLayout;
+        private PipelineLayout* _onscreenPipelineLayout;
+        private PipelineLayout* _offscreenPipelineLayout;
 
         // Dynamic pool to recycle uniform buffers and bind groups without frame allocation
         private readonly List<EffectGpuResources> _pool = new();
@@ -168,6 +171,88 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
         // Texture bind groups cache
         private readonly Dictionary<Compositor.TextureCacheKey, Compositor.CachedBindGroup> _textureBindGroups = new();
+
+        private void EnsureLayouts(Compositor compositor)
+        {
+            if (_effectBindGroupLayout != null)
+            {
+                return;
+            }
+
+            _contextRef = compositor.Context;
+            var wgpu = _contextRef.Wgpu;
+            var device = _contextRef.Device;
+
+            var effectEntry = new BindGroupLayoutEntry
+            {
+                Binding = 0,
+                Visibility = ShaderStage.Fragment,
+                Buffer = new BufferBindingLayout
+                {
+                    Type = BufferBindingType.Uniform,
+                    HasDynamicOffset = false,
+                    MinBindingSize = 0
+                }
+            };
+            var effectLayoutDesc = new BindGroupLayoutDescriptor
+            {
+                EntryCount = 1,
+                Entries = &effectEntry
+            };
+            _effectBindGroupLayout = wgpu.DeviceCreateBindGroupLayout(device, &effectLayoutDesc);
+
+            var textureEntries = stackalloc BindGroupLayoutEntry[2];
+            textureEntries[0] = new BindGroupLayoutEntry
+            {
+                Binding = 0,
+                Visibility = ShaderStage.Fragment,
+                Sampler = new SamplerBindingLayout
+                {
+                    Type = SamplerBindingType.Filtering
+                }
+            };
+            textureEntries[1] = new BindGroupLayoutEntry
+            {
+                Binding = 1,
+                Visibility = ShaderStage.Fragment,
+                Texture = new TextureBindingLayout
+                {
+                    SampleType = TextureSampleType.Float,
+                    ViewDimension = TextureViewDimension.Dimension2D,
+                    Multisampled = false
+                }
+            };
+            var textureLayoutDesc = new BindGroupLayoutDescriptor
+            {
+                EntryCount = 2,
+                Entries = textureEntries
+            };
+            _textureBindGroupLayout = wgpu.DeviceCreateBindGroupLayout(device, &textureLayoutDesc);
+
+            var onscreenLayouts = stackalloc BindGroupLayout*[4];
+            onscreenLayouts[0] = compositor.VectorUniformBindGroupLayout;
+            onscreenLayouts[1] = _effectBindGroupLayout;
+            onscreenLayouts[2] = _textureBindGroupLayout;
+            onscreenLayouts[3] = compositor.MaskBindGroupLayout;
+            var onscreenDesc = new PipelineLayoutDescriptor
+            {
+                BindGroupLayoutCount = 4,
+                BindGroupLayouts = onscreenLayouts
+            };
+            _onscreenPipelineLayout = wgpu.DeviceCreatePipelineLayout(device, &onscreenDesc);
+
+            var offscreenLayouts = stackalloc BindGroupLayout*[4];
+            offscreenLayouts[0] = compositor.VectorUniformBindGroupLayoutOffscreen;
+            offscreenLayouts[1] = _effectBindGroupLayout;
+            offscreenLayouts[2] = _textureBindGroupLayout;
+            offscreenLayouts[3] = compositor.MaskBindGroupLayoutOffscreen;
+            var offscreenDesc = new PipelineLayoutDescriptor
+            {
+                BindGroupLayoutCount = 4,
+                BindGroupLayouts = offscreenLayouts
+            };
+            _offscreenPipelineLayout = wgpu.DeviceCreatePipelineLayout(device, &offscreenDesc);
+        }
 
         public void Compile(
             Compositor compositor,
@@ -271,6 +356,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         {
             if (dc.PointBufferCount <= 0 || dc.DataParam is not ImageEffectParams p) return;
 
+            EnsureLayouts(compositor);
+
             var wgpu = compositor.Context.Wgpu;
             var device = compositor.Context.Device;
             var pass = (RenderPassEncoder*)renderPassEncoder;
@@ -302,7 +389,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                     vertexBufferLayouts: layouts,
                     topology: PrimitiveTopology.TriangleList,
                     targetFormat: compositor.RenderFormat,
-                    sampleCount: isOffscreen ? 1u : 4u
+                    sampleCount: isOffscreen ? 1u : 4u,
+                    pipelineLayout: isOffscreen ? _offscreenPipelineLayout : _onscreenPipelineLayout
                 );
 
                 Marshal.FreeHGlobal((IntPtr)layouts[0].Attributes);
@@ -323,7 +411,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             if (_usedCount >= _pool.Count)
             {
                 var buf = new GpuBuffer(compositor.Context, 48, BufferUsage.Uniform | BufferUsage.CopyDst, $"ImageEffect Uniforms {_pool.Count}");
-                var bgl = wgpu.RenderPipelineGetBindGroupLayout(activePipeline, 1);
 
                 var bgEntries = stackalloc BindGroupEntry[1];
                 bgEntries[0] = new BindGroupEntry
@@ -336,7 +423,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
                 var bgDesc = new BindGroupDescriptor
                 {
-                    Layout = bgl,
+                    Layout = _effectBindGroupLayout,
                     EntryCount = 1,
                     Entries = bgEntries,
                     Label = (byte*)SilkMarshal.StringToPtr($"ImageEffect Param BG {_pool.Count}")
@@ -349,6 +436,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             }
 
             var gpuRes = _pool[_usedCount++];
+            var effectiveMaskTexture = p.MaskTexture ?? dc.MaskTexture;
             gpuRes.UniformBuffer.WriteSingle(new EffectUniforms
             {
                 Brightness = p.Brightness,
@@ -358,7 +446,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                 Sepia = p.Sepia,
                 Invert = p.Invert,
                 BlurSigma = p.BlurSigma,
-                HasMask = dc.MaskTexture != null ? 1f : 0f,
+                HasMask = effectiveMaskTexture != null ? 1f : 0f,
                 CanvasWidth = compositor.CurrentWidth,
                 CanvasHeight = compositor.CurrentHeight
             });
@@ -374,14 +462,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             {
                 if (!_textureBindGroups.TryGetValue(textureCacheKey, out cachedBg))
                 {
-                    var texBgl = wgpu.RenderPipelineGetBindGroupLayout(activePipeline, 2);
                     var textureEntries = stackalloc BindGroupEntry[2];
-                    textureEntries[0] = new BindGroupEntry { Binding = 0, Sampler = compositor.AtlasSampler };
+                    textureEntries[0] = new BindGroupEntry { Binding = 0, Sampler = compositor.GetTextureSampler(TextureSamplingMode.Linear) };
                     textureEntries[1] = new BindGroupEntry { Binding = 1, TextureView = p.Texture.ViewPtr };
 
                     var bgDesc = new BindGroupDescriptor
                     {
-                        Layout = texBgl,
+                        Layout = _textureBindGroupLayout,
                         EntryCount = 2,
                         Entries = textureEntries,
                         Label = (byte*)SilkMarshal.StringToPtr("ImageEffect Texture BG")
@@ -399,56 +486,14 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             }
 
             // 3. Mask BindGroup (Group 3)
-            var maskBg = compositor.GetMaskBindGroup(dc.MaskTexture, isOffscreen);
+            var maskBg = compositor.GetMaskBindGroup(effectiveMaskTexture, isOffscreen);
 
             // 4. Set states & draw
             var vertexBuffer = compositor.VectorVertexBuffer.BufferPtr;
             wgpu.RenderPassEncoderSetVertexBuffer(pass, 0, vertexBuffer, 0, compositor.VectorVertexBuffer.Size);
             wgpu.RenderPassEncoderSetIndexBuffer(pass, compositor.VectorIndexBuffer.BufferPtr, IndexFormat.Uint32, 0, compositor.VectorIndexBuffer.Size);
 
-            if (isOffscreen && _group0Offscreen == null)
-            {
-                var bgl0 = wgpu.RenderPipelineGetBindGroupLayout(activePipeline, 0);
-                var bgEntries0 = stackalloc BindGroupEntry[1];
-                bgEntries0[0] = new BindGroupEntry
-                {
-                    Binding = 0,
-                    Buffer = compositor.VectorUniformBuffer.BufferPtr,
-                    Offset = 0,
-                    Size = compositor.VectorUniformBuffer.Size
-                };
-                var bgDesc0 = new BindGroupDescriptor
-                {
-                    Layout = bgl0,
-                    EntryCount = 1,
-                    Entries = bgEntries0,
-                    Label = (byte*)SilkMarshal.StringToPtr("ImageEffect Group0 Offscreen BG")
-                };
-                _group0Offscreen = wgpu.DeviceCreateBindGroup(device, &bgDesc0);
-                SilkMarshal.Free((nint)bgDesc0.Label);
-            }
-            else if (!isOffscreen && _group0Onscreen == null)
-            {
-                var bgl0 = wgpu.RenderPipelineGetBindGroupLayout(activePipeline, 0);
-                var bgEntries0 = stackalloc BindGroupEntry[1];
-                bgEntries0[0] = new BindGroupEntry
-                {
-                    Binding = 0,
-                    Buffer = compositor.VectorUniformBuffer.BufferPtr,
-                    Offset = 0,
-                    Size = compositor.VectorUniformBuffer.Size
-                };
-                var bgDesc0 = new BindGroupDescriptor
-                {
-                    Layout = bgl0,
-                    EntryCount = 1,
-                    Entries = bgEntries0,
-                    Label = (byte*)SilkMarshal.StringToPtr("ImageEffect Group0 Onscreen BG")
-                };
-                _group0Onscreen = wgpu.DeviceCreateBindGroup(device, &bgDesc0);
-                SilkMarshal.Free((nint)bgDesc0.Label);
-            }
-            var group0 = isOffscreen ? _group0Offscreen : _group0Onscreen;
+            var group0 = isOffscreen ? compositor.VectorUniformBindGroupOffscreen : compositor.VectorUniformBindGroup;
             wgpu.RenderPassEncoderSetBindGroup(pass, 0, group0, 0, null);
             wgpu.RenderPassEncoderSetBindGroup(pass, 1, (BindGroup*)gpuRes.BindGroupPtr, 0, null);
             wgpu.RenderPassEncoderSetBindGroup(pass, 2, (BindGroup*)cachedBg.BindGroupPtr, 0, null);
@@ -456,6 +501,59 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
             wgpu.RenderPassEncoderSetPipeline(pass, activePipeline);
             wgpu.RenderPassEncoderDrawIndexed(pass, (uint)dc.PointBufferCount, 1, (uint)dc.PointBufferOffset, 0, 0);
+        }
+
+        public void Dispose()
+        {
+            if (_contextRef != null && !_contextRef.IsDisposed)
+            {
+                var wgpu = _contextRef.Wgpu;
+
+                foreach (var resource in _pool)
+                {
+                    if (resource.BindGroupPtr != 0)
+                    {
+                        wgpu.BindGroupRelease((BindGroup*)resource.BindGroupPtr);
+                    }
+
+                    resource.UniformBuffer.Dispose();
+                }
+
+                foreach (var cached in _textureBindGroups.Values)
+                {
+                    if (cached.BindGroupPtr != 0)
+                    {
+                        wgpu.BindGroupRelease((BindGroup*)cached.BindGroupPtr);
+                    }
+                }
+
+                if (_effectBindGroupLayout != null)
+                {
+                    wgpu.BindGroupLayoutRelease(_effectBindGroupLayout);
+                    _effectBindGroupLayout = null;
+                }
+
+                if (_textureBindGroupLayout != null)
+                {
+                    wgpu.BindGroupLayoutRelease(_textureBindGroupLayout);
+                    _textureBindGroupLayout = null;
+                }
+
+                if (_onscreenPipelineLayout != null)
+                {
+                    wgpu.PipelineLayoutRelease(_onscreenPipelineLayout);
+                    _onscreenPipelineLayout = null;
+                }
+
+                if (_offscreenPipelineLayout != null)
+                {
+                    wgpu.PipelineLayoutRelease(_offscreenPipelineLayout);
+                    _offscreenPipelineLayout = null;
+                }
+            }
+
+            _pool.Clear();
+            _textureBindGroups.Clear();
         }
     }
 }

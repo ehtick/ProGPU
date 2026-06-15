@@ -188,6 +188,8 @@ public unsafe class Compositor : IDisposable
 
     public unsafe BindGroupLayout* VectorUniformBindGroupLayout => _vectorUniformBindGroupLayout;
     public unsafe BindGroupLayout* VectorUniformBindGroupLayoutOffscreen => _vectorUniformBindGroupLayoutOffscreen;
+    internal unsafe BindGroupLayout* MaskBindGroupLayout => _maskBindGroupLayout;
+    internal unsafe BindGroupLayout* MaskBindGroupLayoutOffscreen => _maskBindGroupLayoutOffscreen;
 
     private readonly WgpuContext _context;
     private readonly RenderPipelineCache _pipelineCache;
