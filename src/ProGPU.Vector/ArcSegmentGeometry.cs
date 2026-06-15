@@ -9,6 +9,7 @@ public static class ArcSegmentGeometry
     public const int MaxFlattenSegmentCount = 64;
 
     private const float Epsilon = 0.00001f;
+    private const float TwoPi = 2.0f * MathF.PI;
 
     public static bool TryGetArcCenter(
         Vector2 start,
@@ -139,6 +140,46 @@ public static class ArcSegmentGeometry
         return new Vector2(
             radiusX * cosTheta * cosPhi - radiusY * sinTheta * sinPhi + center.X,
             radiusX * cosTheta * sinPhi + radiusY * sinTheta * cosPhi + center.Y);
+    }
+
+    public static bool TryGetArcBounds(
+        Vector2 start,
+        ArcSegment arc,
+        out Vector2 min,
+        out Vector2 max)
+    {
+        min = default;
+        max = default;
+
+        if (arc == null ||
+            !TryGetArcCenter(
+                start,
+                arc.Point,
+                arc.Size,
+                arc.RotationAngle,
+                arc.IsLargeArc,
+                arc.SweepDirection,
+                out Vector2 center,
+                out float theta1,
+                out float deltaTheta,
+                out float radiusX,
+                out float radiusY))
+        {
+            return false;
+        }
+
+        GetArcBounds(
+            start,
+            arc.Point,
+            center,
+            radiusX,
+            radiusY,
+            arc.RotationAngle,
+            theta1,
+            deltaTheta,
+            out min,
+            out max);
+        return IsFinite(min) && IsFinite(max);
     }
 
     public static bool TryTransformArcSegment(
@@ -303,6 +344,85 @@ public static class ArcSegmentGeometry
 
         int segmentCount = (int)MathF.Ceiling(MathF.Abs(deltaTheta) / maxAngleRadians);
         return Math.Clamp(segmentCount, 1, MaxFlattenSegmentCount);
+    }
+
+    private static void GetArcBounds(
+        Vector2 start,
+        Vector2 end,
+        Vector2 center,
+        float radiusX,
+        float radiusY,
+        float rotationAngleDegrees,
+        float theta1,
+        float deltaTheta,
+        out Vector2 min,
+        out Vector2 max)
+    {
+        var boundsMin = new Vector2(
+            MathF.Min(start.X, end.X),
+            MathF.Min(start.Y, end.Y));
+        var boundsMax = new Vector2(
+            MathF.Max(start.X, end.X),
+            MathF.Max(start.Y, end.Y));
+
+        float phi = rotationAngleDegrees * MathF.PI / 180.0f;
+        float cosPhi = MathF.Cos(phi);
+        float sinPhi = MathF.Sin(phi);
+
+        float xExtrema = MathF.Atan2(-radiusY * sinPhi, radiusX * cosPhi);
+        IncludeExtremumIfInsideSweep(xExtrema);
+        IncludeExtremumIfInsideSweep(xExtrema + MathF.PI);
+
+        float yExtrema = MathF.Atan2(radiusY * cosPhi, radiusX * sinPhi);
+        IncludeExtremumIfInsideSweep(yExtrema);
+        IncludeExtremumIfInsideSweep(yExtrema + MathF.PI);
+
+        min = boundsMin;
+        max = boundsMax;
+
+        void IncludeExtremumIfInsideSweep(float theta)
+        {
+            if (!IsAngleWithinSweep(theta, theta1, deltaTheta))
+            {
+                return;
+            }
+
+            Vector2 point = EvaluatePoint(center, radiusX, radiusY, rotationAngleDegrees, theta);
+            boundsMin = Vector2.Min(boundsMin, point);
+            boundsMax = Vector2.Max(boundsMax, point);
+        }
+    }
+
+    private static bool IsAngleWithinSweep(float theta, float theta1, float deltaTheta)
+    {
+        if (!float.IsFinite(theta) ||
+            !float.IsFinite(theta1) ||
+            !float.IsFinite(deltaTheta) ||
+            MathF.Abs(deltaTheta) <= Epsilon)
+        {
+            return false;
+        }
+
+        if (MathF.Abs(deltaTheta) >= TwoPi - Epsilon)
+        {
+            return true;
+        }
+
+        float distance = deltaTheta > 0.0f
+            ? NormalizeRadians(theta - theta1)
+            : NormalizeRadians(theta1 - theta);
+        return distance <= MathF.Abs(deltaTheta) + Epsilon;
+    }
+
+    private static float NormalizeRadians(float angle)
+    {
+        float normalized = angle % TwoPi;
+        if (normalized < 0.0f)
+        {
+            normalized += TwoPi;
+        }
+
+        return normalized;
     }
 
     private static bool TryGetPositiveSimilarityTransform(Matrix4x4 transform, out float scale, out float rotationDegrees)

@@ -232,7 +232,7 @@ public unsafe class PathAtlas : IDisposable
         return hash.ToHashCode();
     }
 
-    public (GpuPathRecord[] Records, GpuPathSegment[] Segments) CompilePath(PathGeometry path, out float localMinX, out float localMinY, out float localMaxX, out float localMaxY)
+    public static (GpuPathRecord[] Records, GpuPathSegment[] Segments) CompilePath(PathGeometry path, out float localMinX, out float localMinY, out float localMaxX, out float localMaxY)
     {
         var segments = new List<GpuPathSegment>();
         float minX = float.MaxValue;
@@ -330,13 +330,15 @@ public unsafe class PathAtlas : IDisposable
                         Pad2 = BitConverter.SingleToUInt32Bits(arc.RotationAngle * MathF.PI / 180.0f)
                     });
                     
-                    // Sample 8 points to get tight bounding box
-                    UpdateBounds(currentPoint);
-                    UpdateBounds(arc.Point);
-                    for (int step = 1; step < 8; step++)
+                    if (ArcSegmentGeometry.TryGetArcBounds(currentPoint, arc, out Vector2 min, out Vector2 max))
                     {
-                        float t = (float)step / 8.0f;
-                        UpdateBounds(ArcSegmentGeometry.EvaluatePoint(center, rx, ry, arc.RotationAngle, theta1 + t * deltaTheta));
+                        UpdateBounds(min);
+                        UpdateBounds(max);
+                    }
+                    else
+                    {
+                        UpdateBounds(currentPoint);
+                        UpdateBounds(arc.Point);
                     }
                     
                     currentPoint = arc.Point;
