@@ -112,6 +112,70 @@ public sealed class SkCanvasStateTests
     }
 
     [Fact]
+    public void ClipRectDifferenceRecordsNativeDifferenceGeometry()
+    {
+        var context = new DrawingContext();
+        using var canvas = new SKCanvas(context, 100f, 80f);
+
+        canvas.Translate(50f, 10f);
+        canvas.ClipRect(new SKRect(2f, 4f, 22f, 14f), SKClipOperation.Difference);
+
+        var command = Assert.Single(context.Commands);
+        Assert.Equal(RenderCommandType.PushGeometryClip, command.Type);
+        AssertMatrixNear(Matrix4x4.Identity, command.Transform);
+
+        var clip = command.Path!;
+        Assert.True(clip.IsCombined);
+        Assert.Equal((int)SKPathOp.Difference, clip.Op);
+        AssertPathBounds(clip.PathA!, 0f, 0f, 100f, 80f);
+        AssertPathBounds(clip.PathB!, 52f, 14f, 72f, 24f);
+    }
+
+    [Fact]
+    public void ClipPathDifferenceRecordsNativeDifferenceGeometry()
+    {
+        var context = new DrawingContext();
+        using var canvas = new SKCanvas(context, 100f, 80f);
+        using var path = new SKPath { FillType = SKPathFillType.EvenOdd };
+        path.AddRect(new SKRect(0f, 0f, 20f, 20f));
+
+        canvas.Translate(5f, 7f);
+        canvas.ClipPath(path, SKClipOperation.Difference);
+
+        var command = Assert.Single(context.Commands);
+        Assert.Equal(RenderCommandType.PushGeometryClip, command.Type);
+        AssertMatrixNear(Matrix4x4.Identity, command.Transform);
+
+        var clip = command.Path!;
+        Assert.True(clip.IsCombined);
+        Assert.Equal((int)SKPathOp.Difference, clip.Op);
+        AssertPathBounds(clip.PathA!, 0f, 0f, 100f, 80f);
+        AssertPathBounds(clip.PathB!, 5f, 7f, 25f, 27f);
+        Assert.Equal(FillRule.EvenOdd, clip.PathB!.FillRule);
+    }
+
+    [Fact]
+    public void ClipPathInverseFillRecordsNativeDifferenceGeometry()
+    {
+        var context = new DrawingContext();
+        using var canvas = new SKCanvas(context, 100f, 80f);
+        using var path = new SKPath { FillType = SKPathFillType.InverseEvenOdd };
+        path.AddRect(new SKRect(10f, 10f, 30f, 30f));
+
+        canvas.ClipPath(path);
+
+        var command = Assert.Single(context.Commands);
+        Assert.Equal(RenderCommandType.PushGeometryClip, command.Type);
+
+        var clip = command.Path!;
+        Assert.True(clip.IsCombined);
+        Assert.Equal((int)SKPathOp.Difference, clip.Op);
+        AssertPathBounds(clip.PathA!, 0f, 0f, 100f, 80f);
+        AssertPathBounds(clip.PathB!, 10f, 10f, 30f, 30f);
+        Assert.Equal(FillRule.EvenOdd, clip.PathB!.FillRule);
+    }
+
+    [Fact]
     public void DrawRoundRectRecordsBothUniformRadii()
     {
         var context = new DrawingContext();
@@ -156,6 +220,32 @@ public sealed class SkCanvasStateTests
         Assert.Equal(new Vector2(4f, 5f), arcs[1].Size);
         Assert.Equal(new Vector2(2f, 5f), arcs[2].Size);
         Assert.Equal(new Vector2(2f, 3f), arcs[3].Size);
+    }
+
+    [Fact]
+    public void DrawPathInverseFillRecordsNativeDifferenceGeometry()
+    {
+        var context = new DrawingContext();
+        using var canvas = new SKCanvas(context, 100f, 80f);
+        using var paint = new SKPaint { Style = SKPaintStyle.Fill };
+        using var path = new SKPath { FillType = SKPathFillType.InverseEvenOdd };
+        path.AddRect(new SKRect(10f, 10f, 30f, 30f));
+
+        canvas.Translate(5f, 7f);
+        canvas.DrawPath(path, paint);
+
+        var command = Assert.Single(context.Commands);
+        Assert.Equal(RenderCommandType.DrawPath, command.Type);
+        Assert.NotNull(command.Brush);
+        Assert.Null(command.Pen);
+        AssertMatrixNear(Matrix4x4.Identity, command.Transform);
+
+        var drawnPath = command.Path!;
+        Assert.True(drawnPath.IsCombined);
+        Assert.Equal((int)SKPathOp.Difference, drawnPath.Op);
+        AssertPathBounds(drawnPath.PathA!, 0f, 0f, 100f, 80f);
+        AssertPathBounds(drawnPath.PathB!, 15f, 17f, 35f, 37f);
+        Assert.Equal(FillRule.EvenOdd, drawnPath.PathB!.FillRule);
     }
 
     [Fact]
@@ -221,6 +311,15 @@ public sealed class SkCanvasStateTests
         AssertNear(expected.M22, actual.M22);
         AssertNear(expected.M41, actual.M41);
         AssertNear(expected.M42, actual.M42);
+    }
+
+    private static void AssertPathBounds(PathGeometry path, float minX, float minY, float maxX, float maxY)
+    {
+        Assert.True(path.TryGetBounds(out var min, out var max));
+        AssertNear(minX, min.X);
+        AssertNear(minY, min.Y);
+        AssertNear(maxX, max.X);
+        AssertNear(maxY, max.Y);
     }
 
     private static void AssertNear(float expected, float actual)

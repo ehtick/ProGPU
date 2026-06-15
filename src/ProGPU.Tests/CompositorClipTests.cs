@@ -69,6 +69,34 @@ public sealed class CompositorClipTests
     }
 
     [Fact]
+    public void CombinedDifferenceGeometryClipCutsNativeMaskHole()
+    {
+        var window = HeadlessWindow.Shared;
+        window.Resize(160, 90);
+        window.Content = new DifferenceGeometryClipVisual();
+
+        try
+        {
+            window.Render();
+
+            var pixels = window.ReadPixels();
+            var outsideHole = ReadPixel(pixels, window.Width, x: 30, y: 45);
+            var insideHole = ReadPixel(pixels, window.Width, x: 80, y: 45);
+
+            Assert.True(
+                outsideHole.X > 180f && outsideHole.Y < 80f && outsideHole.Z < 80f && outsideHole.W == 255f,
+                $"Expected red outside the difference hole, found RGBA({outsideHole.X}, {outsideHole.Y}, {outsideHole.Z}, {outsideHole.W}).");
+            Assert.True(
+                insideHole.X < 60f && insideHole.Y < 80f && insideHole.Z > 140f && insideHole.W == 255f,
+                $"Expected blue background inside the difference hole, found RGBA({insideHole.X}, {insideHole.Y}, {insideHole.Z}, {insideHole.W}).");
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
+    [Fact]
     public void PopOpacityRestoresAfterZeroOpacityScope()
     {
         var window = HeadlessWindow.Shared;
@@ -223,6 +251,34 @@ public sealed class CompositorClipTests
             context.DrawRectangle(_red, null, new Rect(10f, 10f, 60f, 60f));
             context.PopOpacity();
             context.DrawRectangle(_green, null, new Rect(10f, 10f, 60f, 60f));
+        }
+    }
+
+    private sealed class DifferenceGeometryClipVisual : FrameworkElement
+    {
+        private readonly SolidColorBrush _background = new(new Vector4(0.05f, 0.1f, 0.7f, 1f));
+        private readonly SolidColorBrush _red = new(new Vector4(1f, 0f, 0f, 1f));
+        private readonly PathGeometry _clip = new()
+        {
+            IsCombined = true,
+            PathA = PrimitivePathGeometry.CreateRectangle(0f, 0f, 160f, 90f),
+            PathB = PrimitivePathGeometry.CreateRectangle(60f, 25f, 40f, 40f),
+            Op = 0,
+            FillRule = FillRule.Nonzero
+        };
+
+        public DifferenceGeometryClipVisual()
+        {
+            Width = 160f;
+            Height = 90f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            context.DrawRectangle(_background, null, new Rect(0f, 0f, 160f, 90f));
+            context.PushGeometryClip(_clip);
+            context.DrawRectangle(_red, null, new Rect(0f, 0f, 160f, 90f));
+            context.PopGeometryClip();
         }
     }
 }

@@ -137,6 +137,14 @@ public class SKCanvas : IDisposable
 
     public void ClipRect(SKRect rect, SKClipOperation operation = SKClipOperation.Intersect, bool antialias = true)
     {
+        if (operation == SKClipOperation.Difference)
+        {
+            var excluded = CreateRectGeometry(rect).CreateTransformed(_currentMatrix.ToMatrix4x4());
+            _context.PushGeometryClip(CreateCanvasDifferenceGeometry(excluded), Matrix4x4.Identity);
+            _pushedScopes.Push(PushKind.GeometryClip);
+            return;
+        }
+
         _context.Commands.Add(new RenderCommand
         {
             Type = RenderCommandType.PushClip,
@@ -148,6 +156,30 @@ public class SKCanvas : IDisposable
 
     public void ClipPath(SKPath path, SKClipOperation operation = SKClipOperation.Intersect, bool antialias = true)
     {
+        if (operation == SKClipOperation.Difference)
+        {
+            if (IsInverseFillType(path.FillType))
+            {
+                _context.PushGeometryClip(path.Geometry, _currentMatrix.ToMatrix4x4());
+            }
+            else
+            {
+                var excluded = path.Geometry.CreateTransformed(_currentMatrix.ToMatrix4x4());
+                _context.PushGeometryClip(CreateCanvasDifferenceGeometry(excluded), Matrix4x4.Identity);
+            }
+
+            _pushedScopes.Push(PushKind.GeometryClip);
+            return;
+        }
+
+        if (IsInverseFillType(path.FillType))
+        {
+            var excluded = path.Geometry.CreateTransformed(_currentMatrix.ToMatrix4x4());
+            _context.PushGeometryClip(CreateCanvasDifferenceGeometry(excluded), Matrix4x4.Identity);
+            _pushedScopes.Push(PushKind.GeometryClip);
+            return;
+        }
+
         _context.PushGeometryClip(path.Geometry, _currentMatrix.ToMatrix4x4());
         _pushedScopes.Push(PushKind.GeometryClip);
     }
@@ -248,14 +280,69 @@ public class SKCanvas : IDisposable
     {
         var brush = paint.ToBrush();
         var pen = paint.ToPen();
+
+        if (IsInverseFillType(path.FillType))
+        {
+            if (brush != null)
+            {
+                var excluded = path.Geometry.CreateTransformed(_currentMatrix.ToMatrix4x4());
+                AddDrawPathCommand(CreateCanvasDifferenceGeometry(excluded), brush, null, Matrix4x4.Identity);
+            }
+
+            if (pen != null)
+            {
+                AddDrawPathCommand(path.Geometry, null, pen, _currentMatrix.ToMatrix4x4());
+            }
+
+            return;
+        }
+
+        AddDrawPathCommand(path.Geometry, brush, pen, _currentMatrix.ToMatrix4x4());
+    }
+
+    private void AddDrawPathCommand(PathGeometry path, Brush? brush, Pen? pen, Matrix4x4 transform)
+    {
         _context.Commands.Add(new RenderCommand
         {
             Type = RenderCommandType.DrawPath,
-            Path = path.Geometry,
+            Path = path,
             Brush = brush,
             Pen = pen,
-            Transform = _currentMatrix.ToMatrix4x4()
+            Transform = transform
         });
+    }
+
+    private PathGeometry CreateCanvasDifferenceGeometry(PathGeometry excluded)
+    {
+        return new PathGeometry
+        {
+            IsCombined = true,
+            PathA = CreateCanvasBoundsGeometry(),
+            PathB = excluded,
+            Op = (int)SKPathOp.Difference,
+            FillRule = FillRule.Nonzero
+        };
+    }
+
+    private PathGeometry CreateCanvasBoundsGeometry()
+    {
+        return CreateRectGeometry(new SKRect(0f, 0f, _width, _height));
+    }
+
+    private static PathGeometry CreateRectGeometry(SKRect rect)
+    {
+        var geometry = new PathGeometry();
+        var figure = new PathFigure(new Vector2(rect.Left, rect.Top), isClosed: true);
+        figure.Segments.Add(new LineSegment(new Vector2(rect.Right, rect.Top)));
+        figure.Segments.Add(new LineSegment(new Vector2(rect.Right, rect.Bottom)));
+        figure.Segments.Add(new LineSegment(new Vector2(rect.Left, rect.Bottom)));
+        geometry.Figures.Add(figure);
+        return geometry;
+    }
+
+    private static bool IsInverseFillType(SKPathFillType fillType)
+    {
+        return fillType is SKPathFillType.InverseWinding or SKPathFillType.InverseEvenOdd;
     }
 
     public void DrawImage(SKImage image, SKRect source, SKRect dest, SKPaint paint)

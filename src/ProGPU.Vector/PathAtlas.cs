@@ -180,7 +180,11 @@ public unsafe class PathAtlas : IDisposable
         if (path == null) return 0;
         if (path.IsCombined)
         {
-            return HashCode.Combine(ComputeHash(path.PathA), ComputeHash(path.PathB), path.Op, path.FillRule);
+            return HashCode.Combine(
+                ComputeHash(path.PathA!),
+                ComputeHash(path.PathB!),
+                path.Op,
+                path.FillRule);
         }
         var hash = new HashCode();
         hash.Add(path.FillRule);
@@ -239,6 +243,18 @@ public unsafe class PathAtlas : IDisposable
 
     public static (GpuPathRecord[] Records, GpuPathSegment[] Segments) CompilePath(PathGeometry path, out float localMinX, out float localMinY, out float localMaxX, out float localMaxY)
     {
+        if (path.IsCombined)
+        {
+            if (path.PathA == null || path.PathB == null)
+            {
+                localMinX = localMinY = localMaxX = localMaxY = 0f;
+                return (Array.Empty<GpuPathRecord>(), Array.Empty<GpuPathSegment>());
+            }
+
+            var combined = PathOpGeometrySolver.Combine(path.PathA, path.PathB, path.Op);
+            return CompilePath(combined, out localMinX, out localMinY, out localMaxX, out localMaxY);
+        }
+
         var segments = new List<GpuPathSegment>();
         float minX = float.MaxValue;
         float minY = float.MaxValue;
@@ -477,6 +493,30 @@ public unsafe class PathAtlas : IDisposable
 
         if (path.IsCombined)
         {
+            if (path.PathA == null || path.PathB == null)
+            {
+                info = new PathInfo
+                {
+                    Key = key,
+                    Geometry = path,
+                    UnscaledMinX = 0f,
+                    UnscaledMinY = 0f,
+                    UnscaledMaxX = 0f,
+                    UnscaledMaxY = 0f,
+                    X = 0,
+                    Y = 0,
+                    Width = 0,
+                    Height = 0,
+                    TexCoordMin = Vector2.Zero,
+                    TexCoordMax = Vector2.Zero,
+                    MinX = 0f,
+                    MinY = 0f,
+                    LastUsedFrame = _frameNumber
+                };
+                _paths[key] = info;
+                return info;
+            }
+
             var infoA = GetOrCreatePath(path.PathA, scale);
             var infoB = GetOrCreatePath(path.PathB, scale);
 
