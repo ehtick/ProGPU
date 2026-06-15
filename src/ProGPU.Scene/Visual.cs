@@ -15,6 +15,7 @@ public class Visual
     private float _opacity = 1.0f;
     private Matrix4x4 _transform = Matrix4x4.Identity;
     private bool _isDirty = true;
+    private long _changeVersion;
     private bool _cacheAsLayer;
     public virtual bool HasTemplate => false;
     private Vector3 _scale = Vector3.One;
@@ -126,13 +127,18 @@ public class Visual
         get => _isDirty;
         set
         {
-            _isDirty = value;
-            if (_isDirty && Parent != null)
+            if (value)
             {
-                Parent.Invalidate();
+                Invalidate();
+            }
+            else
+            {
+                _isDirty = false;
             }
         }
     }
+
+    public long ChangeVersion => _changeVersion;
 
     public bool CacheAsLayer
     {
@@ -206,7 +212,17 @@ public class Visual
 
     public void Invalidate()
     {
-        IsDirty = true;
+        unchecked
+        {
+            _changeVersion++;
+            if (_changeVersion < 0)
+            {
+                _changeVersion = 1;
+            }
+        }
+
+        _isDirty = true;
+        Parent?.Invalidate();
     }
 
     public virtual void OnRender(DrawingContext context)
