@@ -89,10 +89,40 @@ public class GRBackendRenderTarget : IDisposable
     public int Height { get; }
     public int SampleCount { get; }
     public int StencilBits { get; }
+    public GpuTexture? BackendTexture { get; }
     
     public GRGlFramebufferInfo GlFramebufferInfo { get; }
     public GRMtlTextureInfo MtlTextureInfo { get; }
     public GRVkImageInfo VkImageInfo { get; }
+
+    public GRBackendRenderTarget(int width, int height, GpuTexture texture)
+        : this(width, height, (int)texture.SampleCount, texture)
+    {
+    }
+
+    public GRBackendRenderTarget(int width, int height, int sampleCount, GpuTexture texture)
+    {
+        ArgumentNullException.ThrowIfNull(texture);
+        if (width <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(width), "Render target width must be positive.");
+        }
+
+        if (height <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(height), "Render target height must be positive.");
+        }
+
+        if (texture.Width != (uint)width || texture.Height != (uint)height)
+        {
+            throw new ArgumentException("Backend texture dimensions must match the render target dimensions.", nameof(texture));
+        }
+
+        Width = width;
+        Height = height;
+        SampleCount = sampleCount;
+        BackendTexture = texture;
+    }
 
     public GRBackendRenderTarget(int width, int height, int sampleCount, int stencilBits, GRGlFramebufferInfo glInfo)
     {

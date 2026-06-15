@@ -133,15 +133,23 @@ public class SKSurface : IDisposable
 
     public static SKSurface Create(GRContext grContext, GRBackendRenderTarget renderTarget, GRSurfaceOrigin origin, SKColorType colorType, SKSurfaceProperties properties)
     {
-        var texture = new GpuTexture(
-            grContext.Context,
-            (uint)renderTarget.Width,
-            (uint)renderTarget.Height,
-            TextureFormat.Rgba8Unorm,
-            TextureUsage.RenderAttachment | TextureUsage.CopySrc | TextureUsage.CopyDst | TextureUsage.TextureBinding,
-            "SKSurface GPU-backed Texture"
-        );
-        return new SKSurface(grContext.Context, renderTarget.Width, renderTarget.Height, texture, true, IntPtr.Zero, 0, colorType);
+        ArgumentNullException.ThrowIfNull(grContext);
+        ArgumentNullException.ThrowIfNull(renderTarget);
+
+        var texture = renderTarget.BackendTexture
+            ?? throw new NotSupportedException("This WebGPU-backed Skia shim can only wrap ProGPU GpuTexture render targets. GL, Vulkan, and Metal backend handles cannot be rendered through this context.");
+
+        if (!ReferenceEquals(texture.Context, grContext.Context))
+        {
+            throw new InvalidOperationException("The backend render target texture belongs to a different ProGPU context.");
+        }
+
+        if ((texture.Usage & TextureUsage.RenderAttachment) == 0)
+        {
+            throw new InvalidOperationException("The backend render target texture must include TextureUsage.RenderAttachment.");
+        }
+
+        return new SKSurface(grContext.Context, renderTarget.Width, renderTarget.Height, texture, false, IntPtr.Zero, 0, colorType);
     }
 
     public static SKSurface Create(GRContext grContext, GRBackendRenderTarget renderTarget, GRSurfaceOrigin origin, SKColorType colorType, SKColorSpace colorSpace)
