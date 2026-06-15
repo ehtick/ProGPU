@@ -40,33 +40,60 @@ public sealed class SkCanvasStateTests
     }
 
     [Fact]
-    public void SaveLayerReturnsRestoreCountAndPushesRelativeOpacity()
+    public void SaveLayerAppliesPaintOpacityWhenLayerIsRestored()
     {
         var context = new DrawingContext();
         using var canvas = new SKCanvas(context, 100f, 100f);
         using var halfAlpha = new SKPaint { Color = new SKColor(0, 0, 0, 128) };
+        using var fill = new SKPaint { Color = SKColors.Red };
 
         var outerRestoreCount = canvas.SaveLayer(halfAlpha);
-        var innerRestoreCount = canvas.SaveLayer(halfAlpha);
+        canvas.DrawRect(new SKRect(10f, 10f, 40f, 40f), fill);
 
         Assert.Equal(0, outerRestoreCount);
-        Assert.Equal(1, innerRestoreCount);
-
-        Assert.Equal(2, context.Commands.Count);
-        Assert.Equal(RenderCommandType.PushOpacity, context.Commands[0].Type);
-        Assert.Equal(RenderCommandType.PushOpacity, context.Commands[1].Type);
-        AssertNear(128f / 255f, context.Commands[0].FontSize);
-        AssertNear(128f / 255f, context.Commands[1].FontSize);
-
-        canvas.RestoreToCount(innerRestoreCount);
-
-        Assert.Equal(3, context.Commands.Count);
-        Assert.Equal(RenderCommandType.PopOpacity, context.Commands[2].Type);
+        Assert.Empty(context.Commands);
 
         canvas.RestoreToCount(outerRestoreCount);
 
-        Assert.Equal(4, context.Commands.Count);
-        Assert.Equal(RenderCommandType.PopOpacity, context.Commands[3].Type);
+        Assert.Collection(
+            context.Commands,
+            push =>
+            {
+                Assert.Equal(RenderCommandType.PushOpacity, push.Type);
+                AssertNear(128f / 255f, push.FontSize);
+            },
+            draw =>
+            {
+                Assert.Equal(RenderCommandType.DrawRect, draw.Type);
+                Assert.Equal(new Rect(10f, 10f, 30f, 30f), draw.Rect);
+            },
+            pop => Assert.Equal(RenderCommandType.PopOpacity, pop.Type));
+    }
+
+    [Fact]
+    public void SaveLayerAppliesPaintBlendModeWhenLayerIsRestored()
+    {
+        var context = new DrawingContext();
+        using var canvas = new SKCanvas(context, 100f, 100f);
+        using var sourcePaint = new SKPaint { BlendMode = SKBlendMode.Src };
+        using var fill = new SKPaint { Color = SKColors.Red };
+
+        var restoreCount = canvas.SaveLayer(sourcePaint);
+        canvas.DrawRect(new SKRect(10f, 10f, 40f, 40f), fill);
+
+        Assert.Empty(context.Commands);
+
+        canvas.RestoreToCount(restoreCount);
+
+        Assert.Collection(
+            context.Commands,
+            push =>
+            {
+                Assert.Equal(RenderCommandType.PushBlendMode, push.Type);
+                Assert.Equal((int)GpuBlendMode.Src, push.IntParam);
+            },
+            draw => Assert.Equal(RenderCommandType.DrawRect, draw.Type),
+            pop => Assert.Equal(RenderCommandType.PopBlendMode, pop.Type));
     }
 
     [Fact]

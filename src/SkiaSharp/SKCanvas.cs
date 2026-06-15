@@ -9,7 +9,7 @@ namespace SkiaSharp;
 
 public class SKCanvas : IDisposable
 {
-    private readonly DrawingContext _context;
+    private DrawingContext _context;
     private readonly float _width;
     private readonly float _height;
     private SKMatrix _currentMatrix = SKMatrix.Identity;
@@ -24,6 +24,23 @@ public class SKCanvas : IDisposable
 
     private readonly Stack<(SKMatrix Matrix, float Opacity, int PushedScopesCount)> _stateStack = new();
     private readonly Stack<PushKind> _pushedScopes = new();
+    private readonly Stack<LayerFrame> _layerStack = new();
+
+    private sealed class LayerFrame
+    {
+        public LayerFrame(DrawingContext parentContext, DrawingContext layerContext, SKPaint? paint, int stateDepth)
+        {
+            ParentContext = parentContext;
+            LayerContext = layerContext;
+            Paint = paint;
+            StateDepth = stateDepth;
+        }
+
+        public DrawingContext ParentContext { get; }
+        public DrawingContext LayerContext { get; }
+        public SKPaint? Paint { get; }
+        public int StateDepth { get; }
+    }
 
     public SKMatrix TotalMatrix
     {
@@ -62,13 +79,12 @@ public class SKCanvas : IDisposable
     {
         var restoreCount = _stateStack.Count;
         Save();
-        if (paint != null)
-        {
-            float opacity = paint.Color.A / 255f;
-            _currentOpacity *= opacity;
-            _context.PushOpacity(opacity);
-            _pushedScopes.Push(PushKind.Opacity);
-        }
+
+        var parentContext = _context;
+        var layerContext = new DrawingContext();
+        _layerStack.Push(new LayerFrame(parentContext, layerContext, paint?.Clone(), _stateStack.Count));
+        _context = layerContext;
+
         return restoreCount;
     }
 
@@ -81,6 +97,10 @@ public class SKCanvas : IDisposable
     {
         if (_stateStack.Count > 0)
         {
+            var layerFrame = _layerStack.Count > 0 && _layerStack.Peek().StateDepth == _stateStack.Count
+                ? _layerStack.Pop()
+                : null;
+
             var state = _stateStack.Pop();
             _currentMatrix = state.Matrix;
             _currentOpacity = state.Opacity;
@@ -102,6 +122,11 @@ public class SKCanvas : IDisposable
                         break;
                 }
             }
+
+            if (layerFrame != null)
+            {
+                RestoreLayer(layerFrame);
+            }
         }
     }
 
@@ -111,6 +136,50 @@ public class SKCanvas : IDisposable
         {
             Restore();
         }
+    }
+
+    private void RestoreLayer(LayerFrame layerFrame)
+    {
+        _context = layerFrame.ParentContext;
+
+        var blendMode = MapBlendMode(layerFrame.Paint?.BlendMode ?? SKBlendMode.SrcOver);
+        if (blendMode != GpuBlendMode.SrcOver)
+        {
+            _context.PushBlendMode(blendMode);
+        }
+
+        var opacity = layerFrame.Paint?.Color.A / 255f ?? 1f;
+        if (opacity < 1f)
+        {
+            _context.PushOpacity(opacity);
+        }
+
+        _context.Append(layerFrame.LayerContext);
+
+        if (opacity < 1f)
+        {
+            _context.PopOpacity();
+        }
+
+        if (blendMode != GpuBlendMode.SrcOver)
+        {
+            _context.PopBlendMode();
+        }
+    }
+
+    private static GpuBlendMode MapBlendMode(SKBlendMode blendMode)
+    {
+        return blendMode switch
+        {
+            SKBlendMode.Clear => GpuBlendMode.Clear,
+            SKBlendMode.Src => GpuBlendMode.Src,
+            SKBlendMode.Dst => GpuBlendMode.Dst,
+            SKBlendMode.DstOver => GpuBlendMode.DstOver,
+            SKBlendMode.Plus => GpuBlendMode.Plus,
+            SKBlendMode.Screen => GpuBlendMode.Screen,
+            SKBlendMode.Multiply => GpuBlendMode.Multiply,
+            _ => GpuBlendMode.SrcOver
+        };
     }
 
     public void Translate(float dx, float dy)

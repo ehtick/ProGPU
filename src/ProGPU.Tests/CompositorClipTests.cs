@@ -11,7 +11,7 @@ namespace ProGPU.Tests;
 public sealed class CompositorClipTests
 {
     [Fact]
-    public void RectangularClipUsesAllTransformedCorners()
+    public void NonAxisAlignedRectangularClipPreservesRotatedEdges()
     {
         var window = HeadlessWindow.Shared;
         window.Resize(220, 180);
@@ -32,12 +32,15 @@ public sealed class CompositorClipTests
             var midY = ClampToPixel((int)MathF.Round(expected.Y + expected.Height * 0.5f), window.Height);
             var leftProbeX = ClampToPixel((int)MathF.Floor(expected.X + 2f), window.Width);
             var rightProbeX = ClampToPixel((int)MathF.Ceiling(expected.Right - 2f), window.Width);
+            var outsideRotatedRectX = ClampToPixel((int)MathF.Floor(expected.X + 2f), window.Width);
+            var outsideRotatedRectY = ClampToPixel((int)MathF.Floor(expected.Y + 4f), window.Height);
 
             Assert.True(leftProbeX < (int)MathF.Round(legacy.X), $"Left probe {leftProbeX} must sit outside legacy clip {legacy}.");
             Assert.True(rightProbeX > (int)MathF.Round(legacy.Right), $"Right probe {rightProbeX} must sit outside legacy clip {legacy}.");
 
             AssertPainted(pixels, window.Width, leftProbeX, midY);
             AssertPainted(pixels, window.Width, rightProbeX, midY);
+            AssertNotPainted(pixels, window.Width, outsideRotatedRectX, outsideRotatedRectY);
         }
         finally
         {
@@ -164,6 +167,19 @@ public sealed class CompositorClipTests
         Assert.True(
             r > 20 && g > 120 && b > 180 && a == 255,
             $"Expected painted clip probe at ({x}, {y}), found RGBA({r}, {g}, {b}, {a}).");
+    }
+
+    private static void AssertNotPainted(byte[] pixels, uint width, int x, int y)
+    {
+        var index = ((y * (int)width) + x) * 4;
+        byte r = pixels[index + 0];
+        byte g = pixels[index + 1];
+        byte b = pixels[index + 2];
+        byte a = pixels[index + 3];
+
+        Assert.False(
+            r > 20 && g > 120 && b > 180,
+            $"Expected rotated clip edge to reject probe at ({x}, {y}), found RGBA({r}, {g}, {b}, {a}).");
     }
 
     private static Vector4 ReadPixel(byte[] pixels, uint width, int x, int y)

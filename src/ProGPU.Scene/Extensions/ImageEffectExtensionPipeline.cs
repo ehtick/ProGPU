@@ -157,8 +157,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             public nint BindGroupPtr; // BindGroup*
         }
 
-        private RenderPipeline* _cachedPipeline;
-        private RenderPipeline* _cachedPipelineOffscreen;
+        private readonly Dictionary<(bool IsOffscreen, GpuTextureAlphaMode SourceAlphaMode), nint> _cachedPipelines = new();
         private WgpuContext? _contextRef;
         private BindGroupLayout* _effectBindGroupLayout;
         private BindGroupLayout* _textureBindGroupLayout;
@@ -373,8 +372,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             var device = compositor.Context.Device;
             var pass = (RenderPassEncoder*)renderPassEncoder;
 
-            var activePipeline = isOffscreen ? _cachedPipelineOffscreen : _cachedPipeline;
-            if (activePipeline == null)
+            var sourceAlphaMode = p.Texture.AlphaMode;
+            var pipelineCacheKey = (isOffscreen, sourceAlphaMode);
+            if (!_cachedPipelines.TryGetValue(pipelineCacheKey, out var activePipelinePtr))
             {
                 var shaderModule = compositor.PipelineCache.GetOrCreateShader("ImageEffectShader", ShaderCode, "ImageEffect WGSL Shader");
                 
@@ -395,28 +395,25 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                 attrs[2] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 24, ShaderLocation = 2 }; // TexCoord
 
                 var pipeline = compositor.PipelineCache.GetOrCreateRenderPipeline(
-                    isOffscreen ? "ImageEffectPipeline_Offscreen" : "ImageEffectPipeline",
+                    isOffscreen
+                        ? $"ImageEffectPipeline_Offscreen_{sourceAlphaMode}"
+                        : $"ImageEffectPipeline_{sourceAlphaMode}",
                     shaderModule,
                     vertexBufferLayouts: layouts,
                     topology: PrimitiveTopology.TriangleList,
                     targetFormat: compositor.RenderFormat,
                     sampleCount: isOffscreen ? 1u : 4u,
-                    pipelineLayout: isOffscreen ? _offscreenPipelineLayout : _onscreenPipelineLayout
+                    pipelineLayout: isOffscreen ? _offscreenPipelineLayout : _onscreenPipelineLayout,
+                    sourceAlphaMode: sourceAlphaMode
                 );
 
                 Marshal.FreeHGlobal((IntPtr)layouts[0].Attributes);
 
-                if (isOffscreen)
-                {
-                    _cachedPipelineOffscreen = pipeline;
-                    activePipeline = _cachedPipelineOffscreen;
-                }
-                else
-                {
-                    _cachedPipeline = pipeline;
-                    activePipeline = _cachedPipeline;
-                }
+                activePipelinePtr = (nint)pipeline;
+                _cachedPipelines[pipelineCacheKey] = activePipelinePtr;
             }
+
+            var activePipeline = (RenderPipeline*)activePipelinePtr;
 
             // 1. Uniform parameters buffer management
             if (_usedCount >= _pool.Count)

@@ -426,6 +426,7 @@ public unsafe class Compositor : IDisposable
     public bool IsDisposed => _isDisposed;
 
     private readonly Stack<Rect> _clipStack = new();
+    private readonly Stack<bool> _clipScopeIsGeometryMask = new();
     private Rect? _activeClipRect;
 
     private readonly Stack<float> _opacityStack = new();
@@ -1088,6 +1089,7 @@ public unsafe class Compositor : IDisposable
         }
 
         _clipStack.Clear();
+        _clipScopeIsGeometryMask.Clear();
         _activeClipRect = null;
 
         _opacityStack.Clear();
@@ -1120,6 +1122,7 @@ public unsafe class Compositor : IDisposable
         {
             var savedActiveClipRect = _activeClipRect;
             var savedClipStack = _clipStack.ToArray();
+            var savedClipScopeIsGeometryMask = _clipScopeIsGeometryMask.ToArray();
             var savedActiveOpacity = _activeOpacity;
             var savedOpacityStack = _opacityStack.ToArray();
 
@@ -1127,6 +1130,7 @@ public unsafe class Compositor : IDisposable
             {
                 _activeClipRect = null;
                 _clipStack.Clear();
+                _clipScopeIsGeometryMask.Clear();
                 _activeOpacity = 1.0f;
                 _opacityStack.Clear();
 
@@ -1144,6 +1148,7 @@ public unsafe class Compositor : IDisposable
             {
                 _clipStack.Push(savedClipStack[j]);
             }
+            RestoreClipScopeStack(savedClipScopeIsGeometryMask);
             _activeOpacity = savedActiveOpacity;
             _opacityStack.Clear();
             for (int j = savedOpacityStack.Length - 1; j >= 0; j--)
@@ -1158,11 +1163,13 @@ public unsafe class Compositor : IDisposable
         {
             var savedActiveClipRect = _activeClipRect;
             var savedClipStack = _clipStack.ToArray();
+            var savedClipScopeIsGeometryMask = _clipScopeIsGeometryMask.ToArray();
             var savedActiveOpacity = _activeOpacity;
             var savedOpacityStack = _opacityStack.ToArray();
 
             _activeClipRect = null;
             _clipStack.Clear();
+            _clipScopeIsGeometryMask.Clear();
             _activeOpacity = 1.0f;
             _opacityStack.Clear();
 
@@ -1178,6 +1185,7 @@ public unsafe class Compositor : IDisposable
             {
                 _clipStack.Push(savedClipStack[j]);
             }
+            RestoreClipScopeStack(savedClipScopeIsGeometryMask);
             _activeOpacity = savedActiveOpacity;
             _opacityStack.Clear();
             for (int j = savedOpacityStack.Length - 1; j >= 0; j--)
@@ -1191,11 +1199,13 @@ public unsafe class Compositor : IDisposable
         {
             var savedActiveClipRect = _activeClipRect;
             var savedClipStack = _clipStack.ToArray();
+            var savedClipScopeIsGeometryMask = _clipScopeIsGeometryMask.ToArray();
             var savedActiveOpacity = _activeOpacity;
             var savedOpacityStack = _opacityStack.ToArray();
 
             _activeClipRect = null;
             _clipStack.Clear();
+            _clipScopeIsGeometryMask.Clear();
             _activeOpacity = 1.0f;
             _opacityStack.Clear();
 
@@ -1295,6 +1305,7 @@ public unsafe class Compositor : IDisposable
             {
                 _clipStack.Push(savedClipStack[j]);
             }
+            RestoreClipScopeStack(savedClipScopeIsGeometryMask);
             _activeOpacity = savedActiveOpacity;
             _opacityStack.Clear();
             for (int j = savedOpacityStack.Length - 1; j >= 0; j--)
@@ -1556,7 +1567,8 @@ public unsafe class Compositor : IDisposable
                     if (pipeline is ProGPU.Scene.Extensions.SplineExtensionPipeline)
                     {
                         var maskBindGroup = GetMaskBindGroup(dc.MaskTexture, isOffscreen: false);
-                        if (currentType != DrawCallType.Vector || currentBlendMode != dc.BlendMode)
+                        var selectedVectorPipeline = currentType != DrawCallType.Vector || currentBlendMode != dc.BlendMode;
+                        if (selectedVectorPipeline)
                         {
                             var splinePipeline = GetPipeline(DrawCallType.Vector, dc.BlendMode, isOffscreen: false);
                             _context.Wgpu.RenderPassEncoderSetPipeline(pass, splinePipeline);
@@ -1572,7 +1584,7 @@ public unsafe class Compositor : IDisposable
                             currentBlendMode = dc.BlendMode;
                         }
 
-                        if (currentMaskTexture != dc.MaskTexture)
+                        if (selectedVectorPipeline || currentMaskTexture != dc.MaskTexture)
                         {
                             _context.Wgpu.RenderPassEncoderSetBindGroup(pass, 2, maskBindGroup, 0, null);
                             currentMaskTexture = dc.MaskTexture;
@@ -1795,6 +1807,15 @@ public unsafe class Compositor : IDisposable
     private void PushClipRect(Rect localClip, Matrix4x4 transform)
     {
         CommitPendingDrawCalls();
+        if (!IsAxisAlignedClipTransform(transform))
+        {
+            PushGeometryMask(
+                PrimitivePathGeometry.CreateRectangle(localClip.X, localClip.Y, localClip.Width, localClip.Height),
+                transform);
+            _clipScopeIsGeometryMask.Push(true);
+            return;
+        }
+
         var p0 = Vector2.Transform(new Vector2(localClip.X, localClip.Y), transform);
         var p1 = Vector2.Transform(new Vector2(localClip.X + localClip.Width, localClip.Y), transform);
         var p2 = Vector2.Transform(new Vector2(localClip.X + localClip.Width, localClip.Y + localClip.Height), transform);
@@ -1820,15 +1841,37 @@ public unsafe class Compositor : IDisposable
             _activeClipRect = screenClip;
         }
         _clipStack.Push(_activeClipRect.Value);
+        _clipScopeIsGeometryMask.Push(false);
     }
 
     private void PopClipRect()
     {
         CommitPendingDrawCalls();
+        if (_clipScopeIsGeometryMask.Count > 0 && _clipScopeIsGeometryMask.Pop())
+        {
+            PopGeometryMask();
+            return;
+        }
+
         if (_clipStack.Count > 0)
         {
             _clipStack.Pop();
             _activeClipRect = _clipStack.Count > 0 ? _clipStack.Peek() : null;
+        }
+    }
+
+    private static bool IsAxisAlignedClipTransform(Matrix4x4 transform)
+    {
+        const float epsilon = 0.0001f;
+        return MathF.Abs(transform.M12) <= epsilon && MathF.Abs(transform.M21) <= epsilon;
+    }
+
+    private void RestoreClipScopeStack(bool[] savedClipScopeIsGeometryMask)
+    {
+        _clipScopeIsGeometryMask.Clear();
+        for (int i = savedClipScopeIsGeometryMask.Length - 1; i >= 0; i--)
+        {
+            _clipScopeIsGeometryMask.Push(savedClipScopeIsGeometryMask[i]);
         }
     }
 
@@ -5468,6 +5511,7 @@ public unsafe class Compositor : IDisposable
         var savedActiveBrushes = _activeBrushes.ToArray();
         var savedActiveGradientStops = _activeGradientStops.ToArray();
         var savedClipStack = _clipStack.ToArray();
+        var savedClipScopeIsGeometryMask = _clipScopeIsGeometryMask.ToArray();
         var savedActiveClipRect = _activeClipRect;
         var savedOpacityStack = _opacityStack.ToArray();
         var savedActiveOpacity = _activeOpacity;
@@ -5500,6 +5544,7 @@ public unsafe class Compositor : IDisposable
         _activeBrushes.Clear();
         _activeGradientStops.Clear();
         _clipStack.Clear();
+        _clipScopeIsGeometryMask.Clear();
         _activeClipRect = null;
         _opacityStack.Clear();
         _activeOpacity = 1.0f;
@@ -5749,7 +5794,8 @@ public unsafe class Compositor : IDisposable
                     if (pipeline is ProGPU.Scene.Extensions.SplineExtensionPipeline)
                     {
                         var maskBindGroup = GetMaskBindGroup(dc.MaskTexture, isOffscreen: true);
-                        if (currentType != DrawCallType.Vector || currentBlendMode != dc.BlendMode)
+                        var selectedVectorPipeline = currentType != DrawCallType.Vector || currentBlendMode != dc.BlendMode;
+                        if (selectedVectorPipeline)
                         {
                             var splinePipeline = GetPipeline(DrawCallType.Vector, dc.BlendMode, isOffscreen: true);
                             _context.Wgpu.RenderPassEncoderSetPipeline(pass, splinePipeline);
@@ -5765,7 +5811,7 @@ public unsafe class Compositor : IDisposable
                             currentBlendMode = dc.BlendMode;
                         }
 
-                        if (currentMaskTexture != dc.MaskTexture)
+                        if (selectedVectorPipeline || currentMaskTexture != dc.MaskTexture)
                         {
                             _context.Wgpu.RenderPassEncoderSetBindGroup(pass, 2, maskBindGroup, 0, null);
                             currentMaskTexture = dc.MaskTexture;
@@ -5824,6 +5870,7 @@ public unsafe class Compositor : IDisposable
         {
             _clipStack.Push(savedClipStack[i]);
         }
+        RestoreClipScopeStack(savedClipScopeIsGeometryMask);
         _activeClipRect = savedActiveClipRect;
         
         _opacityStack.Clear();
@@ -5882,6 +5929,7 @@ public unsafe class Compositor : IDisposable
 
         var dxfSavedActiveClipRect = _activeClipRect;
         var dxfSavedClipStack = _clipStack.ToArray();
+        var dxfSavedClipScopeIsGeometryMask = _clipScopeIsGeometryMask.ToArray();
 
         var dxfSavedOpacityStack = _opacityStack.ToArray();
         var dxfSavedActiveOpacity = _activeOpacity;
@@ -5914,6 +5962,7 @@ public unsafe class Compositor : IDisposable
 
         _activeClipRect = null;
         _clipStack.Clear();
+        _clipScopeIsGeometryMask.Clear();
 
         _opacityStack.Clear();
         _activeOpacity = 1.0f;
@@ -6236,6 +6285,7 @@ public unsafe class Compositor : IDisposable
             {
                 _clipStack.Push(dxfSavedClipStack[i]);
             }
+            RestoreClipScopeStack(dxfSavedClipScopeIsGeometryMask);
 
             _opacityStack.Clear();
             for (int i = dxfSavedOpacityStack.Length - 1; i >= 0; i--)
@@ -6289,6 +6339,7 @@ public unsafe class Compositor : IDisposable
 
         var dxfSavedActiveClipRect = _activeClipRect;
         var dxfSavedClipStack = _clipStack.ToArray();
+        var dxfSavedClipScopeIsGeometryMask = _clipScopeIsGeometryMask.ToArray();
 
         var dxfSavedOpacityStack = _opacityStack.ToArray();
         var dxfSavedActiveOpacity = _activeOpacity;
@@ -6321,6 +6372,7 @@ public unsafe class Compositor : IDisposable
 
         _activeClipRect = null;
         _clipStack.Clear();
+        _clipScopeIsGeometryMask.Clear();
 
         _opacityStack.Clear();
         _activeOpacity = 1.0f;
@@ -6712,6 +6764,7 @@ public unsafe class Compositor : IDisposable
             {
                 _clipStack.Push(dxfSavedClipStack[i]);
             }
+            RestoreClipScopeStack(dxfSavedClipScopeIsGeometryMask);
 
             _opacityStack.Clear();
             for (int i = dxfSavedOpacityStack.Length - 1; i >= 0; i--)
