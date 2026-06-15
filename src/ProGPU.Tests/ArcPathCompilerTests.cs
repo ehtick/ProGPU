@@ -32,6 +32,59 @@ public class ArcPathCompilerTests
     }
 
     [Fact]
+    public void SubArcSegmentPreservesOriginalEllipseAndSweep()
+    {
+        var start = new Vector2(10f, 0f);
+        var arc = new ArcSegment(
+            new Vector2(-10f, 0f),
+            new Vector2(10f, 10f),
+            rotationAngle: 0f,
+            isLargeArc: false,
+            SweepDirection.Clockwise);
+
+        Assert.True(ArcSegmentGeometry.TryCreateSubArcSegment(
+            start,
+            arc,
+            0.5f,
+            1.0f,
+            out var subStart,
+            out var subArc));
+
+        AssertClose(0f, subStart.X);
+        AssertClose(10f, subStart.Y);
+        AssertClose(-10f, subArc.Point.X);
+        AssertClose(0f, subArc.Point.Y);
+        AssertClose(10f, subArc.Size.X);
+        AssertClose(10f, subArc.Size.Y);
+        Assert.False(subArc.IsLargeArc);
+        Assert.Equal(SweepDirection.Clockwise, subArc.SweepDirection);
+    }
+
+    [Fact]
+    public void SubArcSegmentSetsLargeArcForLongSpans()
+    {
+        var start = new Vector2(10f, 0f);
+        var arc = new ArcSegment(
+            new Vector2(0f, 10f),
+            new Vector2(10f, 10f),
+            rotationAngle: 0f,
+            isLargeArc: true,
+            SweepDirection.Clockwise);
+
+        Assert.True(ArcSegmentGeometry.TryCreateSubArcSegment(
+            start,
+            arc,
+            0.0f,
+            0.75f,
+            out var subStart,
+            out var subArc));
+
+        AssertClose(start, subStart);
+        Assert.True(subArc.IsLargeArc);
+        Assert.Equal(SweepDirection.Clockwise, subArc.SweepDirection);
+    }
+
+    [Fact]
     public void PathAtlasCompilerPreservesNativeArcSegmentAndExactBounds()
     {
         var (records, segments) = PathAtlas.CompilePath(
@@ -111,5 +164,11 @@ public class ArcPathCompilerTests
     private static void AssertClose(float expected, float actual)
     {
         Assert.InRange(actual, expected - 0.001f, expected + 0.001f);
+    }
+
+    private static void AssertClose(Vector2 expected, Vector2 actual)
+    {
+        AssertClose(expected.X, actual.X);
+        AssertClose(expected.Y, actual.Y);
     }
 }

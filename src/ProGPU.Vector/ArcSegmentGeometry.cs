@@ -335,6 +335,76 @@ public static class ArcSegmentGeometry
         return points;
     }
 
+    public static bool TryCreateSubArcSegment(
+        Vector2 start,
+        ArcSegment arc,
+        float startParameter,
+        float endParameter,
+        out Vector2 subStart,
+        out ArcSegment subArc)
+    {
+        subStart = default;
+        subArc = null!;
+
+        if (arc == null ||
+            !float.IsFinite(startParameter) ||
+            !float.IsFinite(endParameter) ||
+            endParameter <= startParameter)
+        {
+            return false;
+        }
+
+        startParameter = Math.Clamp(startParameter, 0.0f, 1.0f);
+        endParameter = Math.Clamp(endParameter, 0.0f, 1.0f);
+        if (endParameter <= startParameter + Epsilon)
+        {
+            return false;
+        }
+
+        if (!TryGetArcCenter(
+                start,
+                arc.Point,
+                arc.Size,
+                arc.RotationAngle,
+                arc.IsLargeArc,
+                arc.SweepDirection,
+                out Vector2 center,
+                out float theta1,
+                out float deltaTheta,
+                out float radiusX,
+                out float radiusY))
+        {
+            return false;
+        }
+
+        float subStartTheta = theta1 + deltaTheta * startParameter;
+        float subEndTheta = theta1 + deltaTheta * endParameter;
+        float subDeltaTheta = subEndTheta - subStartTheta;
+
+        subStart = startParameter <= Epsilon
+            ? start
+            : EvaluatePoint(center, radiusX, radiusY, arc.RotationAngle, subStartTheta);
+        Vector2 subEnd = endParameter >= 1.0f - Epsilon
+            ? arc.Point
+            : EvaluatePoint(center, radiusX, radiusY, arc.RotationAngle, subEndTheta);
+
+        if (!IsFinite(subStart) ||
+            !IsFinite(subEnd) ||
+            Vector2.DistanceSquared(subStart, subEnd) <= Epsilon * Epsilon)
+        {
+            return false;
+        }
+
+        subArc = new ArcSegment(
+            subEnd,
+            new Vector2(radiusX, radiusY),
+            arc.RotationAngle,
+            MathF.Abs(subDeltaTheta) > MathF.PI,
+            arc.SweepDirection,
+            arc.IsSmoothJoin);
+        return true;
+    }
+
     private static int CountArcSegments(float deltaTheta, float maxAngleRadians)
     {
         if (!float.IsFinite(maxAngleRadians) || maxAngleRadians <= Epsilon)
