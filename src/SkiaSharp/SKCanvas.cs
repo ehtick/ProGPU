@@ -58,15 +58,16 @@ public class SKCanvas : IDisposable
 
     public int SaveLayer(SKRect bounds, SKPaint paint)
     {
+        var restoreCount = _stateStack.Count;
         Save();
         if (paint != null)
         {
             float opacity = paint.Color.A / 255f;
             _currentOpacity *= opacity;
-            _context.PushOpacity(_currentOpacity);
+            _context.PushOpacity(opacity);
             _pushedScopes.Push(PushKind.Opacity);
         }
-        return _stateStack.Count;
+        return restoreCount;
     }
 
     public int SaveLayer(SKPaint paint)
@@ -112,8 +113,8 @@ public class SKCanvas : IDisposable
 
     public void Translate(float dx, float dy)
     {
-        _currentMatrix.TransX += dx * _currentMatrix.ScaleX;
-        _currentMatrix.TransY += dy * _currentMatrix.ScaleY;
+        _currentMatrix.TransX += dx * _currentMatrix.ScaleX + dy * _currentMatrix.SkewX;
+        _currentMatrix.TransY += dx * _currentMatrix.SkewY + dy * _currentMatrix.ScaleY;
     }
 
     public void Scale(float sx, float sy)
@@ -134,13 +135,18 @@ public class SKCanvas : IDisposable
 
     public void ClipRect(SKRect rect, SKClipOperation operation = SKClipOperation.Intersect, bool antialias = true)
     {
-        _context.PushClip(new Rect(rect.Left, rect.Top, rect.Width, rect.Height));
+        _context.Commands.Add(new RenderCommand
+        {
+            Type = RenderCommandType.PushClip,
+            Rect = new Rect(rect.Left, rect.Top, rect.Width, rect.Height),
+            Transform = _currentMatrix.ToMatrix4x4()
+        });
         _pushedScopes.Push(PushKind.RectClip);
     }
 
     public void ClipPath(SKPath path, SKClipOperation operation = SKClipOperation.Intersect, bool antialias = true)
     {
-        _context.PushGeometryClip(path.Geometry);
+        _context.PushGeometryClip(path.Geometry, _currentMatrix.ToMatrix4x4());
         _pushedScopes.Push(PushKind.GeometryClip);
     }
 

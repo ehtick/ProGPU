@@ -1978,7 +1978,7 @@ public unsafe class Compositor : IDisposable
                     else _activeBlendMode = GpuBlendMode.SrcOver;
                     break;
                 case RenderCommandType.PushClip:
-                    PushClipRect(cmd.Rect, globalTransform);
+                    PushClipRect(cmd.Rect, activeTransform);
                     break;
                 case RenderCommandType.PopClip:
                     PopClipRect();
@@ -2210,7 +2210,7 @@ public unsafe class Compositor : IDisposable
                     else _activeBlendMode = GpuBlendMode.SrcOver;
                     break;
                 case RenderCommandType.PushClip:
-                    PushClipRect(cmd.Rect, globalTransform);
+                    PushClipRect(cmd.Rect, activeTransform);
                     break;
                 case RenderCommandType.PopClip:
                     PopClipRect();
