@@ -1766,14 +1766,16 @@ public unsafe class Compositor : IDisposable
     private void PushClipRect(Rect localClip, Matrix4x4 transform)
     {
         CommitPendingDrawCalls();
-        var vTopLeft = Vector2.Transform(new Vector2(localClip.X, localClip.Y), transform);
-        var vBottomRight = Vector2.Transform(new Vector2(localClip.X + localClip.Width, localClip.Y + localClip.Height), transform);
-        
-        float x1 = Math.Min(vTopLeft.X, vBottomRight.X);
-        float y1 = Math.Min(vTopLeft.Y, vBottomRight.Y);
-        float x2 = Math.Max(vTopLeft.X, vBottomRight.X);
-        float y2 = Math.Max(vTopLeft.Y, vBottomRight.Y);
-        
+        var p0 = Vector2.Transform(new Vector2(localClip.X, localClip.Y), transform);
+        var p1 = Vector2.Transform(new Vector2(localClip.X + localClip.Width, localClip.Y), transform);
+        var p2 = Vector2.Transform(new Vector2(localClip.X + localClip.Width, localClip.Y + localClip.Height), transform);
+        var p3 = Vector2.Transform(new Vector2(localClip.X, localClip.Y + localClip.Height), transform);
+
+        float x1 = MathF.Min(MathF.Min(p0.X, p1.X), MathF.Min(p2.X, p3.X));
+        float y1 = MathF.Min(MathF.Min(p0.Y, p1.Y), MathF.Min(p2.Y, p3.Y));
+        float x2 = MathF.Max(MathF.Max(p0.X, p1.X), MathF.Max(p2.X, p3.X));
+        float y2 = MathF.Max(MathF.Max(p0.Y, p1.Y), MathF.Max(p2.Y, p3.Y));
+
         var screenClip = new Rect(x1, y1, x2 - x1, y2 - y1);
 
         if (_activeClipRect.HasValue)
