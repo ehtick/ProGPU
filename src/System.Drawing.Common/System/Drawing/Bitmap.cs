@@ -117,6 +117,7 @@ public class Bitmap : Image
     private byte[]? _lockedBytes;
     private GCHandle _lockedHandle;
     private Rectangle _lockedRect;
+    private bool _lockedWriteBack;
 
     public BitmapData LockBits(Rectangle rect, ImageLockMode flags, PixelFormat format)
     {
@@ -129,6 +130,7 @@ public class Bitmap : Image
         int subHeight = rect.Height;
         _lockedBytes = new byte[subWidth * subHeight * 4];
         _lockedRect = rect;
+        _lockedWriteBack = flags != ImageLockMode.ReadOnly;
         
         unsafe
         {
@@ -190,37 +192,58 @@ public class Bitmap : Image
                 _lockedHandle.Free();
             }
 
-            unsafe
+            if (_lockedWriteBack)
             {
-                fixed (byte* pBytes = _lockedBytes)
+                unsafe
                 {
-                    int totalPixels = _lockedRect.Width * _lockedRect.Height;
-                    for (int i = 0; i < totalPixels; i++)
+                    fixed (byte* pBytes = _lockedBytes)
                     {
-                        int idx = i * 4;
-                        byte b = pBytes[idx];
-                        pBytes[idx] = pBytes[idx + 2];     // R
-                        pBytes[idx + 2] = b;               // B
+                        int totalPixels = _lockedRect.Width * _lockedRect.Height;
+                        for (int i = 0; i < totalPixels; i++)
+                        {
+                            int idx = i * 4;
+                            byte b = pBytes[idx];
+                            pBytes[idx] = pBytes[idx + 2];     // R
+                            pBytes[idx + 2] = b;               // B
+                        }
                     }
                 }
+
+                _texture.WritePixelsSubRect(new ReadOnlySpan<byte>(_lockedBytes), (uint)_lockedRect.X, (uint)_lockedRect.Y, (uint)_lockedRect.Width, (uint)_lockedRect.Height);
             }
 
-            _texture.WritePixelsSubRect(new ReadOnlySpan<byte>(_lockedBytes), (uint)_lockedRect.X, (uint)_lockedRect.Y, (uint)_lockedRect.Width, (uint)_lockedRect.Height);
             _lockedBytes = null;
+            _lockedWriteBack = false;
         }
     }
 
     public override void Dispose()
     {
+        Dispose(disposing: true);
+        GC.SuppressFinalize(this);
+    }
+
+    private void Dispose(bool disposing)
+    {
         if (_isDisposed) return;
-        Flush();
+        if (disposing)
+        {
+            Flush();
+        }
+
+        if (_lockedHandle.IsAllocated)
+        {
+            _lockedHandle.Free();
+        }
+
+        _lockedBytes = null;
+        _lockedWriteBack = false;
         _texture.Dispose();
         _isDisposed = true;
-        GC.SuppressFinalize(this);
     }
 
     ~Bitmap()
     {
-        Dispose();
+        Dispose(disposing: false);
     }
 }

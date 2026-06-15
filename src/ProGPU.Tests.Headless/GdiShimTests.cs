@@ -3,6 +3,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Runtime.InteropServices;
 using ProGPU.Scene;
 using Xunit;
 
@@ -114,6 +115,52 @@ public class GdiShimTests
     }
 
     [Fact]
+    public void UnlockBitsDoesNotWriteBackReadOnlyBuffer()
+    {
+        using var bitmap = new Bitmap(2, 2);
+        bitmap.SetPixel(0, 0, Color.Red);
+
+        BitmapData data = bitmap.LockBits(
+            new Rectangle(0, 0, 1, 1),
+            ImageLockMode.ReadOnly,
+            PixelFormat.Format32bppArgb);
+
+        try
+        {
+            WriteBgra(data.Scan0, Color.Blue);
+        }
+        finally
+        {
+            bitmap.UnlockBits(data);
+        }
+
+        Assert.Equal(Color.Red.ToArgb(), bitmap.GetPixel(0, 0).ToArgb());
+    }
+
+    [Fact]
+    public void UnlockBitsWritesBackReadWriteBuffer()
+    {
+        using var bitmap = new Bitmap(2, 2);
+        bitmap.SetPixel(0, 0, Color.Red);
+
+        BitmapData data = bitmap.LockBits(
+            new Rectangle(0, 0, 1, 1),
+            ImageLockMode.ReadWrite,
+            PixelFormat.Format32bppArgb);
+
+        try
+        {
+            WriteBgra(data.Scan0, Color.Blue);
+        }
+        finally
+        {
+            bitmap.UnlockBits(data);
+        }
+
+        Assert.Equal(Color.Blue.ToArgb(), bitmap.GetPixel(0, 0).ToArgb());
+    }
+
+    [Fact]
     public void DrawImageRecordsFullTransformForRotatedImages()
     {
         using var source = new Bitmap(4, 6);
@@ -137,5 +184,13 @@ public class GdiShimTests
     private static void AssertNear(float expected, float actual)
     {
         Assert.InRange(MathF.Abs(expected - actual), 0f, 0.0001f);
+    }
+
+    private static void WriteBgra(IntPtr scan0, Color color)
+    {
+        Marshal.WriteByte(scan0, 0, color.B);
+        Marshal.WriteByte(scan0, 1, color.G);
+        Marshal.WriteByte(scan0, 2, color.R);
+        Marshal.WriteByte(scan0, 3, color.A);
     }
 }
