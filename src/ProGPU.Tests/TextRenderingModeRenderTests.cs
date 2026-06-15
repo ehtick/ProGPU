@@ -63,6 +63,38 @@ public sealed class TextRenderingModeRenderTests
     }
 
     [Fact]
+    public void DrawingContextRecordsNativeAnimatedTextHintingMode()
+    {
+        var font = TryLoadTestFont();
+        if (font == null)
+        {
+            return;
+        }
+
+        var context = new DrawingContext();
+        context.DrawText(
+            "ProGPU",
+            font,
+            18f,
+            new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f)),
+            new Vector2(4.25f, 24.5f),
+            textHintingMode: TextHintingMode.Animated);
+        context.DrawGlyphRun(
+            new[] { font.GetGlyphIndex('A') },
+            new[] { new Vector2(4.25f, 24.5f) },
+            font,
+            18f,
+            new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f)),
+            Vector2.Zero,
+            textHintingMode: TextHintingMode.Animated);
+
+        Assert.Collection(
+            context.Commands,
+            first => Assert.Equal(TextHintingMode.Animated, first.TextHintingMode),
+            second => Assert.Equal(TextHintingMode.Animated, second.TextHintingMode));
+    }
+
+    [Fact]
     public void CompileStaticDxfPreservesClearTypeTextRenderingMode()
     {
         var font = TryLoadTestFont();
@@ -86,6 +118,32 @@ public sealed class TextRenderingModeRenderTests
         Assert.Contains(
             buffer.TextRecords,
             record => record.Command.TextRenderingMode == TextRenderingMode.ClearType);
+    }
+
+    [Fact]
+    public void CompileStaticDxfPreservesAnimatedTextHintingMode()
+    {
+        var font = TryLoadTestFont();
+        if (font == null)
+        {
+            return;
+        }
+
+        var window = HeadlessWindow.Shared;
+        var context = new DrawingContext();
+        context.DrawText(
+            "ProGPU",
+            font,
+            24f,
+            new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f)),
+            new Vector2(10.25f, 36.5f),
+            textHintingMode: TextHintingMode.Animated);
+
+        using var buffer = window.Compositor.CompileStaticDxf(context);
+
+        Assert.Contains(
+            buffer.TextRecords,
+            record => record.Command.TextHintingMode == TextHintingMode.Animated);
     }
 
     [Fact]

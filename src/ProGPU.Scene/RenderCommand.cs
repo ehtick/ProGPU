@@ -60,6 +60,13 @@ public enum TextRenderingMode
     ClearType
 }
 
+public enum TextHintingMode
+{
+    Auto,
+    Fixed,
+    Animated
+}
+
 public struct Line3D
 {
     public Vector3 Start;
@@ -159,6 +166,7 @@ public struct RenderCommand
     public bool IsItalic;
     public float Rotation;
     public TextRenderingMode TextRenderingMode;
+    public TextHintingMode TextHintingMode;
     public bool IsTextAliased
     {
         readonly get => TextRenderingMode == TextRenderingMode.Aliased;
@@ -368,7 +376,8 @@ public class DrawingContext : IRenderDataProvider
         bool isBold = false,
         bool isItalic = false,
         float rotation = 0f,
-        TextRenderingMode textRenderingMode = TextRenderingMode.Grayscale)
+        TextRenderingMode textRenderingMode = TextRenderingMode.Grayscale,
+        TextHintingMode textHintingMode = TextHintingMode.Auto)
     {
         Commands.Add(new RenderCommand
         {
@@ -381,7 +390,8 @@ public class DrawingContext : IRenderDataProvider
             IsBold = isBold,
             IsItalic = isItalic,
             Rotation = rotation,
-            TextRenderingMode = textRenderingMode
+            TextRenderingMode = textRenderingMode,
+            TextHintingMode = textHintingMode
         });
     }
 
@@ -395,7 +405,8 @@ public class DrawingContext : IRenderDataProvider
         bool isBold = false,
         bool isItalic = false,
         float rotation = 0f,
-        TextRenderingMode textRenderingMode = TextRenderingMode.Grayscale)
+        TextRenderingMode textRenderingMode = TextRenderingMode.Grayscale,
+        TextHintingMode textHintingMode = TextHintingMode.Auto)
     {
         Commands.Add(new RenderCommand
         {
@@ -409,7 +420,8 @@ public class DrawingContext : IRenderDataProvider
             IsBold = isBold,
             IsItalic = isItalic,
             Rotation = rotation,
-            TextRenderingMode = textRenderingMode
+            TextRenderingMode = textRenderingMode,
+            TextHintingMode = textHintingMode
         });
     }
 
@@ -423,7 +435,8 @@ public class DrawingContext : IRenderDataProvider
         Matrix4x4 transform = default,
         bool isBold = false,
         bool isItalic = false,
-        TextRenderingMode textRenderingMode = TextRenderingMode.Grayscale)
+        TextRenderingMode textRenderingMode = TextRenderingMode.Grayscale,
+        TextHintingMode textHintingMode = TextHintingMode.Auto)
     {
         Commands.Add(new RenderCommand
         {
@@ -437,7 +450,8 @@ public class DrawingContext : IRenderDataProvider
             Transform = transform,
             IsBold = isBold,
             IsItalic = isItalic,
-            TextRenderingMode = textRenderingMode
+            TextRenderingMode = textRenderingMode,
+            TextHintingMode = textHintingMode
         });
     }
 

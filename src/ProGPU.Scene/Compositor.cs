@@ -169,6 +169,47 @@ public unsafe class Compositor : IDisposable
         return TextRenderingMode.Grayscale;
     }
 
+    private static (byte SubpixelX, Vector2 SnappedLogicalPos) ResolveTextPlacement(
+        Vector2 transformedPosition,
+        float dpiScale,
+        float rasterFontSize,
+        bool isRotated,
+        TextHintingMode textHintingMode)
+    {
+        if (textHintingMode == TextHintingMode.Animated)
+        {
+            return (0, transformedPosition);
+        }
+
+        var transformedPhysicalPosition = transformedPosition * dpiScale;
+        if (!isRotated && rasterFontSize <= 24f)
+        {
+            float screenX = transformedPhysicalPosition.X;
+            float screenY = transformedPhysicalPosition.Y;
+            float ipartX = MathF.Floor(screenX);
+            float fpartX = screenX - ipartX;
+            int subpixelIndex = (int)MathF.Round(fpartX * 4f);
+            if (subpixelIndex == 4)
+            {
+                subpixelIndex = 0;
+                ipartX += 1.0f;
+            }
+
+            var snapped = new Vector2(ipartX, MathF.Round(screenY)) / dpiScale;
+            return ((byte)subpixelIndex, snapped);
+        }
+
+        if (!isRotated)
+        {
+            var snapped = new Vector2(
+                MathF.Round(transformedPhysicalPosition.X),
+                MathF.Round(transformedPhysicalPosition.Y)) / dpiScale;
+            return (0, snapped);
+        }
+
+        return (0, transformedPosition);
+    }
+
     private readonly List<StaticTextRecord> _compiledTextRecords = new();
 
     public CompositorMetrics Metrics { get; private set; }
@@ -4495,41 +4536,12 @@ public unsafe class Compositor : IDisposable
                              activeTransform.M22 < 0.0f;
 
             Vector2 transPos = Vector2.Transform(new Vector2(baseCursorX + cmd.Position.X, baseCursorY + cmd.Position.Y), activeTransform);
-            Vector2 transPosPhysical = transPos * dpiScale;
-
-            byte subpixelX = 0;
-            float ipartX = 0f;
-            float snappedY = 0f;
-            Vector2 snappedLogicalPos;
-
-            if (!isRotated && rasterFontSize <= 24f)
-            {
-                float screenX = transPosPhysical.X;
-                float screenY = transPosPhysical.Y;
-
-                float ipartX_temp = MathF.Floor(screenX);
-                float fpartX = screenX - ipartX_temp;
-                int subIdx = (int)MathF.Round(fpartX * 4f);
-                if (subIdx == 4)
-                {
-                    subIdx = 0;
-                    ipartX_temp += 1.0f;
-                }
-                subpixelX = (byte)subIdx;
-                ipartX = ipartX_temp;
-                snappedY = MathF.Round(screenY);
-                snappedLogicalPos = new Vector2(ipartX, snappedY) / dpiScale;
-            }
-            else if (!isRotated)
-            {
-                ipartX = MathF.Round(transPosPhysical.X);
-                snappedY = MathF.Round(transPosPhysical.Y);
-                snappedLogicalPos = new Vector2(ipartX, snappedY) / dpiScale;
-            }
-            else
-            {
-                snappedLogicalPos = transPos;
-            }
+            var (subpixelX, snappedLogicalPos) = ResolveTextPlacement(
+                transPos,
+                dpiScale,
+                rasterFontSize,
+                isRotated,
+                cmd.TextHintingMode);
 
             float scaleRatio = physicalFontSize / rasterFontSize;
 
@@ -4706,41 +4718,12 @@ public unsafe class Compositor : IDisposable
             float baseCursorY = position.Y;
 
             Vector2 transPos = Vector2.Transform(new Vector2(baseCursorX + cmd.Position.X, baseCursorY + cmd.Position.Y), activeTransform);
-            Vector2 transPosPhysical = transPos * dpiScale;
-
-            byte subpixelX = 0;
-            float ipartX = 0f;
-            float snappedY = 0f;
-            Vector2 snappedLogicalPos;
-
-            if (!isRotated && rasterFontSize <= 24f)
-            {
-                float screenX = transPosPhysical.X;
-                float screenY = transPosPhysical.Y;
-
-                float ipartX_temp = MathF.Floor(screenX);
-                float fpartX = screenX - ipartX_temp;
-                int subIdx = (int)MathF.Round(fpartX * 4f);
-                if (subIdx == 4)
-                {
-                    subIdx = 0;
-                    ipartX_temp += 1.0f;
-                }
-                subpixelX = (byte)subIdx;
-                ipartX = ipartX_temp;
-                snappedY = MathF.Round(screenY);
-                snappedLogicalPos = new Vector2(ipartX, snappedY) / dpiScale;
-            }
-            else if (!isRotated)
-            {
-                ipartX = MathF.Round(transPosPhysical.X);
-                snappedY = MathF.Round(transPosPhysical.Y);
-                snappedLogicalPos = new Vector2(ipartX, snappedY) / dpiScale;
-            }
-            else
-            {
-                snappedLogicalPos = transPos;
-            }
+            var (subpixelX, snappedLogicalPos) = ResolveTextPlacement(
+                transPos,
+                dpiScale,
+                rasterFontSize,
+                isRotated,
+                cmd.TextHintingMode);
 
             float scaleRatio = physicalFontSize / rasterFontSize;
 
