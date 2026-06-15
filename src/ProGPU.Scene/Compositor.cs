@@ -121,6 +121,9 @@ public unsafe class Compositor : IDisposable
     internal const int MaxGradientStops = 65536;
     private const float StrokeEpsilon = 0.0001f;
     private const float AliasedShapeTypeOffset = 1000f;
+    private const int MinGpuArcStrokeSegmentCount = 8;
+    private const int MaxGpuArcStrokeSegmentCount = 96;
+    private const float GpuArcStrokeSegmentPixelLength = 12f;
 
     public struct StaticTextRecord
     {
@@ -2534,9 +2537,17 @@ public unsafe class Compositor : IDisposable
                     }
                     else if (segment is ArcSegment arc)
                     {
-                        int segmentCount = ArcSegmentGeometry.CountFlattenedSegments(segmentStart, arc);
-                        maxVertices += 4 * segmentCount;
-                        maxIndices += 6 * segmentCount;
+                        if (TryGetGpuArcStrokeSegmentCount(segmentStart, arc, transform, thickness, out int segmentCount))
+                        {
+                            maxVertices += 2 * (segmentCount + 1);
+                            maxIndices += 6 * segmentCount;
+                        }
+                        else
+                        {
+                            segmentCount = ArcSegmentGeometry.CountFlattenedSegments(segmentStart, arc);
+                            maxVertices += 4 * segmentCount;
+                            maxIndices += 6 * segmentCount;
+                        }
                     }
 
                     if (TryGetPathSegmentEndPoint(segment, out var segmentEndPoint))
@@ -2725,27 +2736,40 @@ public unsafe class Compositor : IDisposable
                     }
                     else if (segment is ArcSegment arc)
                     {
-                        var points = ArcSegmentGeometry.FlattenArc(segmentStart, arc);
-                        for (int i = 0; i < points.Length - 1; i++)
-                        {
-                            var arcLineStart = points[i];
-                            var arcLineEnd = points[i + 1];
-                            if (arcLineStart == arcLineEnd)
-                            {
-                                continue;
-                            }
-
-                            AppendStrokeLineVertices(
+                        if (!AppendStrokeArcVertices(
                                 verticesSpan,
                                 indicesSpan,
                                 ref currentVertexCount,
                                 ref currentIndexCount,
-                                penSolidColor,
                                 penBrushIdx,
                                 thickness,
-                                Vector2.Transform(arcLineStart, transform),
-                                Vector2.Transform(arcLineEnd, transform),
-                                cmd.IsEdgeAliased);
+                                segmentStart,
+                                arc,
+                                transform,
+                                cmd.IsEdgeAliased))
+                        {
+                            var points = ArcSegmentGeometry.FlattenArc(segmentStart, arc);
+                            for (int i = 0; i < points.Length - 1; i++)
+                            {
+                                var arcLineStart = points[i];
+                                var arcLineEnd = points[i + 1];
+                                if (arcLineStart == arcLineEnd)
+                                {
+                                    continue;
+                                }
+
+                                AppendStrokeLineVertices(
+                                    verticesSpan,
+                                    indicesSpan,
+                                    ref currentVertexCount,
+                                    ref currentIndexCount,
+                                    penSolidColor,
+                                    penBrushIdx,
+                                    thickness,
+                                    Vector2.Transform(arcLineStart, transform),
+                                    Vector2.Transform(arcLineEnd, transform),
+                                    cmd.IsEdgeAliased);
+                            }
                         }
 
                         currentPoint = arc.Point;
@@ -3003,6 +3027,162 @@ public unsafe class Compositor : IDisposable
         indicesSpan[currentIndexCount++] = idxStart + 2;
     }
 
+    private static bool AppendStrokeArcVertices(
+        Span<VectorVertex> verticesSpan,
+        Span<uint> indicesSpan,
+        ref int currentVertexCount,
+        ref int currentIndexCount,
+        float penBrushIdx,
+        float thickness,
+        Vector2 segmentStart,
+        ArcSegment arc,
+        Matrix4x4 transform,
+        bool isEdgeAliased)
+    {
+        if (!TryGetArcShaderParameters(
+                segmentStart,
+                arc,
+                transform,
+                out Vector2 center,
+                out Vector2 axisX,
+                out Vector2 axisY,
+                out float theta1,
+                out float deltaTheta))
+        {
+            return false;
+        }
+
+        int segmentCount = CountGpuArcStrokeSegments(axisX, axisY, deltaTheta, thickness);
+        uint idxStart = (uint)currentVertexCount;
+        var arcShapeType = EncodeShapeType(isEdgeAliased, 11f);
+        var arcParameters = new Vector4(theta1, deltaTheta, segmentCount, 0f);
+        var baseVertex = new VectorVertex(
+            center,
+            arcParameters,
+            axisX,
+            penBrushIdx,
+            axisY,
+            idxStart,
+            thickness,
+            arcShapeType);
+
+        int vertexToAdd = 2 * (segmentCount + 1);
+        verticesSpan.Slice(currentVertexCount, vertexToAdd).Fill(baseVertex);
+        currentVertexCount += vertexToAdd;
+
+        for (int i = 0; i < segmentCount; i++)
+        {
+            uint currentLeft = (uint)(idxStart + 2 * i);
+            uint currentRight = (uint)(idxStart + 2 * i + 1);
+            uint nextLeft = (uint)(idxStart + 2 * i + 2);
+            uint nextRight = (uint)(idxStart + 2 * i + 3);
+
+            indicesSpan[currentIndexCount++] = currentLeft;
+            indicesSpan[currentIndexCount++] = currentRight;
+            indicesSpan[currentIndexCount++] = nextLeft;
+
+            indicesSpan[currentIndexCount++] = currentRight;
+            indicesSpan[currentIndexCount++] = nextRight;
+            indicesSpan[currentIndexCount++] = nextLeft;
+        }
+
+        return true;
+    }
+
+    private static bool TryGetGpuArcStrokeSegmentCount(
+        Vector2 segmentStart,
+        ArcSegment arc,
+        Matrix4x4 transform,
+        float thickness,
+        out int segmentCount)
+    {
+        segmentCount = 0;
+        if (!TryGetArcShaderParameters(
+                segmentStart,
+                arc,
+                transform,
+                out _,
+                out Vector2 axisX,
+                out Vector2 axisY,
+                out _,
+                out float deltaTheta))
+        {
+            return false;
+        }
+
+        segmentCount = CountGpuArcStrokeSegments(axisX, axisY, deltaTheta, thickness);
+        return true;
+    }
+
+    private static int CountGpuArcStrokeSegments(Vector2 axisX, Vector2 axisY, float deltaTheta, float thickness)
+    {
+        float maxRadius = MathF.Max(axisX.Length(), axisY.Length());
+        float geometrySegmentEstimate = MathF.Abs(deltaTheta) * maxRadius / GpuArcStrokeSegmentPixelLength;
+        int geometrySegments = float.IsFinite(geometrySegmentEstimate)
+            ? (int)MathF.Ceiling(MathF.Min(geometrySegmentEstimate, MaxGpuArcStrokeSegmentCount))
+            : MaxGpuArcStrokeSegmentCount;
+        float strokeSegmentEstimate = thickness * 1.5f + MinGpuArcStrokeSegmentCount;
+        int strokeSegments = float.IsFinite(strokeSegmentEstimate)
+            ? (int)MathF.Ceiling(MathF.Min(strokeSegmentEstimate, MaxGpuArcStrokeSegmentCount))
+            : MaxGpuArcStrokeSegmentCount;
+        return Math.Clamp(
+            Math.Max(geometrySegments, strokeSegments),
+            MinGpuArcStrokeSegmentCount,
+            MaxGpuArcStrokeSegmentCount);
+    }
+
+    private static bool TryGetArcShaderParameters(
+        Vector2 segmentStart,
+        ArcSegment arc,
+        Matrix4x4 transform,
+        out Vector2 center,
+        out Vector2 axisX,
+        out Vector2 axisY,
+        out float theta1,
+        out float deltaTheta)
+    {
+        center = default;
+        axisX = default;
+        axisY = default;
+        theta1 = 0f;
+        deltaTheta = 0f;
+
+        if (!ArcSegmentGeometry.TryGetArcCenter(
+                segmentStart,
+                arc.Point,
+                arc.Size,
+                arc.RotationAngle,
+                arc.IsLargeArc,
+                arc.SweepDirection,
+                out Vector2 localCenter,
+                out theta1,
+                out deltaTheta,
+                out float radiusX,
+                out float radiusY))
+        {
+            return false;
+        }
+
+        float phi = arc.RotationAngle * MathF.PI / 180f;
+        float cosPhi = MathF.Cos(phi);
+        float sinPhi = MathF.Sin(phi);
+        var localAxisX = new Vector2(radiusX * cosPhi, radiusX * sinPhi);
+        var localAxisY = new Vector2(-radiusY * sinPhi, radiusY * cosPhi);
+
+        center = Vector2.Transform(localCenter, transform);
+        axisX = TransformDirection(localAxisX, transform);
+        axisY = TransformDirection(localAxisY, transform);
+
+        return IsFinite(center) &&
+               IsFinite(axisX) &&
+               IsFinite(axisY) &&
+               float.IsFinite(theta1) &&
+               float.IsFinite(deltaTheta) &&
+               axisX.LengthSquared() > StrokeEpsilon * StrokeEpsilon &&
+               axisY.LengthSquared() > StrokeEpsilon * StrokeEpsilon &&
+               MathF.Abs(deltaTheta) > StrokeEpsilon;
+    }
+
     private static void AppendStrokeSegmentJoinTriangles(
         Span<VectorVertex> verticesSpan,
         Span<uint> indicesSpan,
@@ -3099,7 +3279,7 @@ public unsafe class Compositor : IDisposable
                     cubic.ControlPoint2 - segmentStart,
                     cubic.Point - segmentStart);
             case ArcSegment arc:
-                return TryGetFlattenedArcDirection(segmentStart, arc, isStart: true, out direction);
+                return TryGetArcDirection(segmentStart, arc, isStart: true, out direction);
             default:
                 direction = default;
                 return false;
@@ -3124,25 +3304,42 @@ public unsafe class Compositor : IDisposable
                     cubic.Point - cubic.ControlPoint1,
                     cubic.Point - segmentStart);
             case ArcSegment arc:
-                return TryGetFlattenedArcDirection(segmentStart, arc, isStart: false, out direction);
+                return TryGetArcDirection(segmentStart, arc, isStart: false, out direction);
             default:
                 direction = default;
                 return false;
         }
     }
 
-    private static bool TryGetFlattenedArcDirection(Vector2 segmentStart, ArcSegment arc, bool isStart, out Vector2 direction)
+    private static bool TryGetArcDirection(Vector2 segmentStart, ArcSegment arc, bool isStart, out Vector2 direction)
     {
-        var points = ArcSegmentGeometry.FlattenArc(segmentStart, arc);
-        if (points.Length < 2)
+        direction = default;
+        if (!ArcSegmentGeometry.TryGetArcCenter(
+                segmentStart,
+                arc.Point,
+                arc.Size,
+                arc.RotationAngle,
+                arc.IsLargeArc,
+                arc.SweepDirection,
+                out _,
+                out float theta1,
+                out float deltaTheta,
+                out float radiusX,
+                out float radiusY))
         {
-            direction = default;
             return false;
         }
 
-        return isStart
-            ? TrySelectDirection(out direction, points[1] - points[0])
-            : TrySelectDirection(out direction, points[^1] - points[^2]);
+        float phi = arc.RotationAngle * MathF.PI / 180f;
+        float cosPhi = MathF.Cos(phi);
+        float sinPhi = MathF.Sin(phi);
+        var axisX = new Vector2(radiusX * cosPhi, radiusX * sinPhi);
+        var axisY = new Vector2(-radiusY * sinPhi, radiusY * cosPhi);
+        float theta = isStart ? theta1 : theta1 + deltaTheta;
+        float sweepSign = deltaTheta < 0f ? -1f : 1f;
+        var tangent = (-axisX * MathF.Sin(theta) + axisY * MathF.Cos(theta)) * sweepSign;
+
+        return TrySelectDirection(out direction, tangent);
     }
 
     private static bool TrySelectDirection(out Vector2 direction, params Vector2[] candidates)
@@ -3159,6 +3356,11 @@ public unsafe class Compositor : IDisposable
 
         direction = default;
         return false;
+    }
+
+    private static bool IsFinite(Vector2 value)
+    {
+        return float.IsFinite(value.X) && float.IsFinite(value.Y);
     }
 
     private static bool TryGetPathSegmentEndPoint(PathSegment segment, out Vector2 endPoint)

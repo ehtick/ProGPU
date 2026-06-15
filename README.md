@@ -323,7 +323,7 @@ To achieve state-of-the-art vector quality with zero performance degradation, we
   - **Fill Pass (Brush)**: Inflates bounding quad vertices and `texCoord` offset variables outwards by a padding of `1.5` pixels.
   - **Stroke Pass (Pen)**: Inflates bounding quad vertices and `texCoord` offsets by `thickness / 2.0 + 1.5` pixels.
   This expansion guarantees that the outer half of a stroke of width $T$, as well as its smooth anti-aliasing gradient, are fully rendered without quad boundary clipping.
-- **Pixel-Distance WGSL Stroke Anti-Aliasing**: For GPU-expanded Lines, Quadratic Beziers, and Cubic Beziers, the vertex shader computes the exact signed pixel distance from the center spline to the expanded vertex boundaries, passing it to the fragment shader via `gridIndex`. The fragment shader evaluates anti-aliasing dynamically using:
+- **Pixel-Distance WGSL Stroke Anti-Aliasing**: For GPU-expanded Lines, Quadratic Beziers, Cubic Beziers, and elliptical Arcs, the vertex shader computes the exact signed pixel distance from the center spline to the expanded vertex boundaries, passing it to the fragment shader via `gridIndex`. The fragment shader evaluates anti-aliasing dynamically using:
   ```wgsl
   let d_pixels = abs(input.gridIndex);
   let d_shape = d_pixels - input.strokeThickness * 0.5;
@@ -691,15 +691,16 @@ The ProGPU solution is partitioned into modular, highly specialized C# projects.
 ProGPU routes all graphics and compute tasks directly to the GPU using specialized WGSL (WebGPU Shading Language) shaders. The following sections detail their purpose, execution pipelines, and exact implementations.
 
 ### 1. VectorShader (Rasterization Graphics Pipeline)
-- **Role**: Primary graphics pipeline shader for standard UI rendering. Responsible for rasterizing vector shapes (rectangles, ellipses, rounded rectangles) and evaluating Bezier curves on the GPU.
+- **Role**: Primary graphics pipeline shader for standard UI rendering. Responsible for rasterizing vector shapes (rectangles, ellipses, rounded rectangles) and evaluating Bezier curves and elliptical arcs on the GPU.
 - **Why It is Used**: Avoids uploading dense pre-tessellated mesh structures. Instead, it utilizes cheap mathematical Signed Distance Fields (SDFs) and GPU vertex expansion to draw vector primitives with zero CPU overhead.
 - **Implementation Mechanics**:
   - **GPU Stroke Expansion & Miter Scaling (`sType == 3u`)**: Expands lines dynamically in the vertex shader. Computes normal vectors ($miterN$) at segment junctions, scales them by $1/\cos(\theta)$ ($miterScale$), and offsets vertices to form precise, variable-thickness miter joints. Passes the signed pixel distance from the center line to the fragment shader via `gridIndex` for zero-cost edge anti-aliasing.
   - **Dynamic Bezier Evaluation (`sType == 5u & 6u`)**: Replaces CPU Bezier flattening. For Quadratics and Cubics, the vertex shader interpolates coordinates directly based on the thread's `vertexIndex` and parametric factor $t \in [0, 1]$, calculating curve positions and tangents to offset vertices outward along normal vectors on the fly, storing signed pixel distances in `gridIndex`.
+  - **Dynamic Arc Evaluation (`sType == 11u`)**: Replaces CPU arc flattening for valid path strokes. The compositor sends the transformed ellipse center plus two axis vectors, and the vertex shader evaluates arc positions and tangents parametrically before stroke expansion.
   - **Analytical SDF Fragment Evaluation (`sType < 3u`)**: Computes Signed Distance Fields for Rectangles, Ellipses, and Rounded Rectangles. Anti-aliases boundaries dynamically using screen-space partial derivatives:
     $$\text{fw} = \max(\text{fwidth}(d), 0.0001)$$
     $$\alpha = 1.0 - \text{smoothstep}(-0.5 \cdot \text{fw}, 0.5 \cdot \text{fw}, d)$$
-  - **Pixel-Distance Stroke Anti-Aliasing (`sType == 3u \|\| 5u \|\| 6u`)**: Resolves aliasing for lines and curves by evaluating screen-space smoothstep transitions using the interpolated `gridIndex` pixel distance to the stroke boundary:
+  - **Pixel-Distance Stroke Anti-Aliasing (`sType == 3u \|\| 5u \|\| 6u \|\| 11u`)**: Resolves aliasing for lines, curves, and arcs by evaluating screen-space smoothstep transitions using the interpolated `gridIndex` pixel distance to the stroke boundary:
     $$d_{\text{shape}} = \text{abs}(\text{gridIndex}) - \text{strokeThickness} \cdot 0.5$$
     $$\alpha = 1.0 - \text{smoothstep}(-0.5, 0.5, d_{\text{shape}})$$
   - **Gradient Interpolation**: Evaluates Linear (`brushType == 1u`) and Radial (`brushType == 2u`) gradients dynamically for up to 4 stop colors by calculating projection coordinates and interpolating between bounds using stop offsets.
@@ -1076,5 +1077,4 @@ GpuSharingInterop.COMHelper.CallUpdateSubresource(context, image.WinTexture2D, 0
 
 ### 6. Graceful Runtime Fallback
 If graphics interop is not supported by the environment (e.g. software rendering, missing drivers, or Linux configurations lacking Vulkan opaque handles), the control gracefully falls back to the **Decoupled Render-Thread Blitting Pipeline** (Phase 2). This ensures 100% functionality and visual parity across all host configurations!
-
 
