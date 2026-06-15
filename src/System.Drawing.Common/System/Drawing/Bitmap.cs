@@ -126,6 +126,8 @@ public class Bitmap : Image
     private byte[]? _lockedBytes;
     private GCHandle _lockedHandle;
     private Rectangle _lockedRect;
+    private PixelFormat _lockedPixelFormat;
+    private int _lockedStride;
     private bool _lockedWriteBack;
 
     public BitmapData LockBits(Rectangle rect, ImageLockMode flags, PixelFormat format)
@@ -137,32 +139,14 @@ public class Bitmap : Image
         
         int subWidth = rect.Width;
         int subHeight = rect.Height;
-        _lockedBytes = new byte[subWidth * subHeight * 4];
+        int stride = GetLockStride(subWidth, format);
+        _lockedBytes = new byte[stride * subHeight];
         _lockedRect = rect;
+        _lockedPixelFormat = format;
+        _lockedStride = stride;
         _lockedWriteBack = flags != ImageLockMode.ReadOnly;
-        
-        unsafe
-        {
-            fixed (byte* src = fullPixels)
-            fixed (byte* dst = _lockedBytes)
-            {
-                for (int y = 0; y < subHeight; y++)
-                {
-                    int srcY = rect.Y + y;
-                    byte* srcRow = src + (srcY * Width + rect.X) * 4;
-                    byte* dstRow = dst + y * subWidth * 4;
-                    
-                    for (int x = 0; x < subWidth; x++)
-                    {
-                        int idx = x * 4;
-                        dstRow[idx] = srcRow[idx + 2];     // B (source R)
-                        dstRow[idx + 1] = srcRow[idx + 1]; // G (source G)
-                        dstRow[idx + 2] = srcRow[idx];     // R (source B)
-                        dstRow[idx + 3] = srcRow[idx + 3]; // A (source A)
-                    }
-                }
-            }
-        }
+
+        CopyRgbaToLockBuffer(fullPixels, _lockedBytes, rect, format, stride);
         
         _lockedHandle = GCHandle.Alloc(_lockedBytes, GCHandleType.Pinned);
 
@@ -170,10 +154,75 @@ public class Bitmap : Image
         {
             Width = subWidth,
             Height = subHeight,
-            Stride = subWidth * 4,
-            PixelFormat = PixelFormat.Format32bppArgb,
+            Stride = stride,
+            PixelFormat = format,
             Scan0 = _lockedHandle.AddrOfPinnedObject()
         };
+    }
+
+    private static int GetLockStride(int width, PixelFormat format)
+    {
+        var bytesPerRow = format switch
+        {
+            PixelFormat.Format32bppArgb or PixelFormat.Format32bppPArgb or PixelFormat.Format32bppRgb => checked(width * 4),
+            PixelFormat.Format24bppRgb => checked(width * 3),
+            PixelFormat.Format16bppRgb565 => checked(width * 2),
+            _ => throw new NotSupportedException($"LockBits pixel format '{format}' is not supported.")
+        };
+
+        return (bytesPerRow + 3) & ~3;
+    }
+
+    private void CopyRgbaToLockBuffer(byte[] source, byte[] destination, Rectangle rect, PixelFormat format, int stride)
+    {
+        for (int y = 0; y < rect.Height; y++)
+        {
+            var srcOffset = ((rect.Y + y) * Width + rect.X) * 4;
+            var dstOffset = y * stride;
+            for (int x = 0; x < rect.Width; x++)
+            {
+                var src = srcOffset + x * 4;
+                var r = source[src];
+                var g = source[src + 1];
+                var b = source[src + 2];
+                var a = source[src + 3];
+                WriteLockPixel(destination, dstOffset, x, format, r, g, b, a);
+            }
+        }
+    }
+
+    private static void WriteLockPixel(byte[] destination, int rowOffset, int x, PixelFormat format, byte r, byte g, byte b, byte a)
+    {
+        switch (format)
+        {
+            case PixelFormat.Format32bppArgb:
+            case PixelFormat.Format32bppPArgb:
+                var offset32 = rowOffset + x * 4;
+                destination[offset32] = b;
+                destination[offset32 + 1] = g;
+                destination[offset32 + 2] = r;
+                destination[offset32 + 3] = a;
+                break;
+            case PixelFormat.Format32bppRgb:
+                offset32 = rowOffset + x * 4;
+                destination[offset32] = b;
+                destination[offset32 + 1] = g;
+                destination[offset32 + 2] = r;
+                destination[offset32 + 3] = 255;
+                break;
+            case PixelFormat.Format24bppRgb:
+                var offset24 = rowOffset + x * 3;
+                destination[offset24] = b;
+                destination[offset24 + 1] = g;
+                destination[offset24 + 2] = r;
+                break;
+            case PixelFormat.Format16bppRgb565:
+                var offset16 = rowOffset + x * 2;
+                ushort rgb565 = (ushort)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+                destination[offset16] = (byte)(rgb565 & 0xFF);
+                destination[offset16 + 1] = (byte)(rgb565 >> 8);
+                break;
+        }
     }
 
     private void ValidateLockBitsRectangle(Rectangle rect)
@@ -203,28 +252,77 @@ public class Bitmap : Image
 
             if (_lockedWriteBack)
             {
-                unsafe
-                {
-                    fixed (byte* pBytes = _lockedBytes)
-                    {
-                        int totalPixels = _lockedRect.Width * _lockedRect.Height;
-                        for (int i = 0; i < totalPixels; i++)
-                        {
-                            int idx = i * 4;
-                            byte b = pBytes[idx];
-                            pBytes[idx] = pBytes[idx + 2];     // R
-                            pBytes[idx + 2] = b;               // B
-                        }
-                    }
-                }
-
-                _texture.WritePixelsSubRect(new ReadOnlySpan<byte>(_lockedBytes), (uint)_lockedRect.X, (uint)_lockedRect.Y, (uint)_lockedRect.Width, (uint)_lockedRect.Height);
+                var rgba = ConvertLockBufferToRgba(_lockedBytes, _lockedRect, _lockedPixelFormat, _lockedStride);
+                _texture.WritePixelsSubRect(rgba, (uint)_lockedRect.X, (uint)_lockedRect.Y, (uint)_lockedRect.Width, (uint)_lockedRect.Height);
                 _texture.AlphaMode = GpuTextureAlphaMode.Straight;
                 _hasDefinedPixels = true;
             }
 
             _lockedBytes = null;
+            _lockedStride = 0;
+            _lockedPixelFormat = default;
             _lockedWriteBack = false;
+        }
+    }
+
+    private static byte[] ConvertLockBufferToRgba(byte[] source, Rectangle rect, PixelFormat format, int stride)
+    {
+        var rgba = new byte[rect.Width * rect.Height * 4];
+        for (int y = 0; y < rect.Height; y++)
+        {
+            var srcRow = y * stride;
+            var dstRow = y * rect.Width * 4;
+            for (int x = 0; x < rect.Width; x++)
+            {
+                ReadLockPixel(source, srcRow, x, format, out var r, out var g, out var b, out var a);
+                var dst = dstRow + x * 4;
+                rgba[dst] = r;
+                rgba[dst + 1] = g;
+                rgba[dst + 2] = b;
+                rgba[dst + 3] = a;
+            }
+        }
+
+        return rgba;
+    }
+
+    private static void ReadLockPixel(byte[] source, int rowOffset, int x, PixelFormat format, out byte r, out byte g, out byte b, out byte a)
+    {
+        switch (format)
+        {
+            case PixelFormat.Format32bppArgb:
+            case PixelFormat.Format32bppPArgb:
+                var offset32 = rowOffset + x * 4;
+                b = source[offset32];
+                g = source[offset32 + 1];
+                r = source[offset32 + 2];
+                a = source[offset32 + 3];
+                break;
+            case PixelFormat.Format32bppRgb:
+                offset32 = rowOffset + x * 4;
+                b = source[offset32];
+                g = source[offset32 + 1];
+                r = source[offset32 + 2];
+                a = 255;
+                break;
+            case PixelFormat.Format24bppRgb:
+                var offset24 = rowOffset + x * 3;
+                b = source[offset24];
+                g = source[offset24 + 1];
+                r = source[offset24 + 2];
+                a = 255;
+                break;
+            case PixelFormat.Format16bppRgb565:
+                var offset16 = rowOffset + x * 2;
+                ushort rgb565 = (ushort)(source[offset16] | (source[offset16 + 1] << 8));
+                r = (byte)(((rgb565 >> 11) & 0x1F) * 255 / 31);
+                g = (byte)(((rgb565 >> 5) & 0x3F) * 255 / 63);
+                b = (byte)((rgb565 & 0x1F) * 255 / 31);
+                a = 255;
+                break;
+            default:
+                r = g = b = a = 0;
+                break;
         }
     }
 
@@ -248,6 +346,8 @@ public class Bitmap : Image
         }
 
         _lockedBytes = null;
+        _lockedStride = 0;
+        _lockedPixelFormat = default;
         _lockedWriteBack = false;
         _texture.Dispose();
         _isDisposed = true;

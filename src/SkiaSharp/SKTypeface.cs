@@ -121,24 +121,64 @@ public class SKTypeface : IDisposable
     public static SKTypeface FromFamilyName(string familyName, SKFontStyle style)
     {
         var systemFonts = FontApi.GetSystemFonts();
+        FontInfo? fallback = null;
         foreach (var font in systemFonts)
         {
-            if (font.FamilyName.Equals(familyName, StringComparison.OrdinalIgnoreCase))
+            if (!font.FamilyName.Equals(familyName, StringComparison.OrdinalIgnoreCase))
             {
-                try
-                {
-                    var ttf = CreateFont(font);
-                    bool isBold = style.Weight >= SKFontStyleWeight.SemiBold;
-                    bool isItalic = style.Slant != SKFontStyleSlant.Upright;
-                    return new SKTypeface(ttf, font.FamilyName, isBold, isItalic);
-                }
-                catch
-                {
-                    // Skip and try next
-                }
+                continue;
+            }
+
+            fallback ??= font;
+            if (!MatchesStyle(font, style))
+            {
+                continue;
+            }
+
+            try
+            {
+                var ttf = CreateFont(font);
+                bool isBold = style.Weight >= SKFontStyleWeight.SemiBold;
+                bool isItalic = style.Slant != SKFontStyleSlant.Upright;
+                return new SKTypeface(ttf, font.FamilyName, isBold, isItalic);
+            }
+            catch
+            {
+                // Skip and try next
             }
         }
+
+        if (fallback != null)
+        {
+            try
+            {
+                var ttf = CreateFont(fallback);
+                bool isBold = style.Weight >= SKFontStyleWeight.SemiBold;
+                bool isItalic = style.Slant != SKFontStyleSlant.Upright;
+                return new SKTypeface(ttf, fallback.FamilyName, isBold, isItalic);
+            }
+            catch
+            {
+                // Fall through to default.
+            }
+        }
+
         return Default;
+    }
+
+    private static bool MatchesStyle(FontInfo font, SKFontStyle style)
+    {
+        var name = font.Name;
+        var wantsBold = style.Weight >= SKFontStyleWeight.SemiBold;
+        var wantsItalic = style.Slant != SKFontStyleSlant.Upright;
+        var isBold = ContainsStyleToken(name, "bold") || ContainsStyleToken(name, "semibold") || ContainsStyleToken(name, "demibold") || ContainsStyleToken(name, "black");
+        var isItalic = ContainsStyleToken(name, "italic") || ContainsStyleToken(name, "oblique");
+        return wantsBold == isBold && wantsItalic == isItalic;
+    }
+
+    private static bool ContainsStyleToken(string value, string token)
+    {
+        return value.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     public SKFont CreateSKFont(float size)

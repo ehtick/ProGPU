@@ -122,6 +122,8 @@ public class SKCanvas : IDisposable
     public void Scale(float sx, float sy)
     {
         _currentMatrix.ScaleX *= sx;
+        _currentMatrix.SkewY *= sx;
+        _currentMatrix.SkewX *= sy;
         _currentMatrix.ScaleY *= sy;
     }
 

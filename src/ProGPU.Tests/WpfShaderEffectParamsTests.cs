@@ -1,4 +1,6 @@
 using ProGPU.Scene;
+using ProGPU.Backend;
+using System.Runtime.CompilerServices;
 using Xunit;
 
 namespace ProGPU.Tests;
@@ -106,6 +108,22 @@ public class WpfShaderEffectParamsTests
     public void RejectsSamplerRegistersOutsideWpfBank(int registerIndex)
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => new WpfShaderEffectSampler(registerIndex, null));
+    }
+
+    [Fact]
+    public void DirectTextureBindsAtRequestedSourceRegister()
+    {
+        var texture = (GpuTexture)RuntimeHelpers.GetUninitializedObject(typeof(GpuTexture));
+        var parameters = new WpfShaderEffectParams
+        {
+            Texture = texture,
+            SourceTextureRegisterIndex = 3,
+            SamplingMode = TextureSamplingMode.Nearest
+        };
+
+        Assert.True(parameters.TryGetSampler(3, out var resolvedTexture, out var samplingMode));
+        Assert.Same(texture, resolvedTexture);
+        Assert.Equal(TextureSamplingMode.Nearest, samplingMode);
     }
 
     private static int GetRenderCacheKey(WpfShaderEffect effect)

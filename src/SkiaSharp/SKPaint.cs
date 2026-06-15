@@ -76,10 +76,37 @@ public class SKPaint : IDisposable
             var c = new Vector4(Color.R / 255.0f, Color.G / 255.0f, Color.B / 255.0f, Color.A / 255.0f);
             penBrush = new SolidColorBrush(c);
         }
-        return new Pen(penBrush, StrokeWidth);
+        return new Pen(
+            penBrush,
+            StrokeWidth,
+            MapStrokeJoin(StrokeJoin),
+            StrokeMiter,
+            MapStrokeCap(StrokeCap),
+            MapStrokeCap(StrokeCap),
+            MapStrokeCap(StrokeCap));
     }
 
     public void Dispose() { }
+
+    private static PenLineCap MapStrokeCap(SKStrokeCap cap)
+    {
+        return cap switch
+        {
+            SKStrokeCap.Round => PenLineCap.Round,
+            SKStrokeCap.Square => PenLineCap.Square,
+            _ => PenLineCap.Flat
+        };
+    }
+
+    private static PenLineJoin MapStrokeJoin(SKStrokeJoin join)
+    {
+        return join switch
+        {
+            SKStrokeJoin.Round => PenLineJoin.Round,
+            SKStrokeJoin.Bevel => PenLineJoin.Bevel,
+            _ => PenLineJoin.Miter
+        };
+    }
 }
 
 public class SKShader : IDisposable

@@ -9,6 +9,8 @@ using DrawingFillMode = System.Drawing.Drawing2D.FillMode;
 using DrawingGraphics = System.Drawing.Graphics;
 using DrawingGraphicsPath = System.Drawing.Drawing2D.GraphicsPath;
 using DrawingPens = System.Drawing.Pens;
+using WpfFillRule = System.Windows.Media.FillRule;
+using WpfPathGeometry = System.Windows.Media.PathGeometry;
 
 namespace ProGPU.Tests;
 
@@ -113,6 +115,31 @@ public sealed class PathShimCompatibilityTests
 
         var command = Assert.Single(context.Commands);
         Assert.Equal(FillRule.EvenOdd, command.Path!.FillRule);
+    }
+
+    [Fact]
+    public void SkPathResetRestoresWindingFillType()
+    {
+        using var path = new SKPath { FillType = SKPathFillType.EvenOdd };
+        path.AddRect(new SKRect(0f, 0f, 10f, 10f));
+
+        path.Reset();
+
+        Assert.Equal(SKPathFillType.Winding, path.FillType);
+        Assert.Equal(FillRule.Nonzero, path.Geometry.FillRule);
+        Assert.True(path.IsEmpty);
+    }
+
+    [Fact]
+    public void WpfPathGeometryParseHonorsFillRulePrefix()
+    {
+        var evenOdd = WpfPathGeometry.Parse("F0 M 0 0 L 10 0 L 10 10 Z");
+        var nonzero = WpfPathGeometry.Parse("F1 M 0 0 L 10 0 L 10 10 Z");
+
+        Assert.Equal(WpfFillRule.EvenOdd, evenOdd.FillRule);
+        Assert.Equal(WpfFillRule.Nonzero, nonzero.FillRule);
+        Assert.Single(evenOdd.Figures);
+        Assert.Single(nonzero.Figures);
     }
 
     [Fact]

@@ -106,6 +106,7 @@ public class SKPath : IDisposable
     {
         Geometry.Figures.Clear();
         _currentFigure = null;
+        FillType = SKPathFillType.Winding;
     }
 
     public void AddCircle(float x, float y, float radius, SKPathDirection direction = SKPathDirection.Clockwise)

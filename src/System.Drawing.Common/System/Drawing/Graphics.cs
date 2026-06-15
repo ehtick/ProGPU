@@ -100,7 +100,11 @@ public class Graphics : IDisposable
     {
         var p1 = Tx(rect.X, rect.Y);
         var p2 = Tx(rect.Right, rect.Bottom);
-        return new Rect(p1.X, p1.Y, p2.X - p1.X, p2.Y - p1.Y);
+        var x1 = MathF.Min(p1.X, p2.X);
+        var y1 = MathF.Min(p1.Y, p2.Y);
+        var x2 = MathF.Max(p1.X, p2.X);
+        var y2 = MathF.Max(p1.Y, p2.Y);
+        return new Rect(x1, y1, x2 - x1, y2 - y1);
     }
 
     private Matrix4x4 CurrentTransform4x4()

@@ -303,6 +303,55 @@ public sealed class SkCanvasStateTests
         AssertNear(13f + 17f * 5f + 19f * 7f, matrix.TransY);
     }
 
+    [Fact]
+    public void ScaleAppliesToSkewedMatrixTerms()
+    {
+        var context = new DrawingContext();
+        using var canvas = new SKCanvas(context, 100f, 100f);
+        canvas.SetMatrix(new SKMatrix
+        {
+            ScaleX = 2f,
+            SkewX = 3f,
+            SkewY = 5f,
+            ScaleY = 7f,
+            TransX = 11f,
+            TransY = 13f,
+            Persp2 = 1f
+        });
+
+        canvas.Scale(17f, 19f);
+
+        var matrix = canvas.TotalMatrix;
+        AssertNear(34f, matrix.ScaleX);
+        AssertNear(57f, matrix.SkewX);
+        AssertNear(85f, matrix.SkewY);
+        AssertNear(133f, matrix.ScaleY);
+        AssertNear(11f, matrix.TransX);
+        AssertNear(13f, matrix.TransY);
+    }
+
+    [Fact]
+    public void SkPaintToPenPreservesCapsJoinsAndMiter()
+    {
+        using var paint = new SKPaint
+        {
+            Style = SKPaintStyle.Stroke,
+            StrokeCap = SKStrokeCap.Round,
+            StrokeJoin = SKStrokeJoin.Bevel,
+            StrokeMiter = 2.5f,
+            StrokeWidth = 3f
+        };
+
+        var pen = Assert.IsType<Pen>(paint.ToPen());
+
+        Assert.Equal(PenLineCap.Round, pen.StartLineCap);
+        Assert.Equal(PenLineCap.Round, pen.EndLineCap);
+        Assert.Equal(PenLineCap.Round, pen.DashCap);
+        Assert.Equal(PenLineJoin.Bevel, pen.LineJoin);
+        AssertNear(2.5f, pen.MiterLimit);
+        AssertNear(3f, pen.Thickness);
+    }
+
     private static void AssertMatrixNear(Matrix4x4 expected, Matrix4x4 actual)
     {
         AssertNear(expected.M11, actual.M11);

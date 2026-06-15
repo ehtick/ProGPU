@@ -139,6 +139,77 @@ public class GdiShimTests
     }
 
     [Fact]
+    public void LockBitsUsesRequested24BppRgbLayout()
+    {
+        using var bitmap = new Bitmap(2, 1);
+        bitmap.SetPixel(0, 0, Color.FromArgb(255, 10, 20, 30));
+
+        BitmapData data = bitmap.LockBits(
+            new Rectangle(0, 0, 1, 1),
+            ImageLockMode.ReadWrite,
+            PixelFormat.Format24bppRgb);
+
+        try
+        {
+            Assert.Equal(PixelFormat.Format24bppRgb, data.PixelFormat);
+            Assert.Equal(4, data.Stride);
+            Assert.Equal(30, Marshal.ReadByte(data.Scan0, 0));
+            Assert.Equal(20, Marshal.ReadByte(data.Scan0, 1));
+            Assert.Equal(10, Marshal.ReadByte(data.Scan0, 2));
+            Marshal.WriteByte(data.Scan0, 0, 255);
+            Marshal.WriteByte(data.Scan0, 1, 0);
+            Marshal.WriteByte(data.Scan0, 2, 0);
+        }
+        finally
+        {
+            bitmap.UnlockBits(data);
+        }
+
+        Assert.Equal(Color.Blue.ToArgb(), bitmap.GetPixel(0, 0).ToArgb());
+    }
+
+    [Fact]
+    public void LockBitsUsesRequested16BppRgb565Layout()
+    {
+        using var bitmap = new Bitmap(1, 1);
+        bitmap.SetPixel(0, 0, Color.Red);
+
+        BitmapData data = bitmap.LockBits(
+            new Rectangle(0, 0, 1, 1),
+            ImageLockMode.ReadWrite,
+            PixelFormat.Format16bppRgb565);
+
+        try
+        {
+            Assert.Equal(PixelFormat.Format16bppRgb565, data.PixelFormat);
+            Assert.Equal(4, data.Stride);
+            Assert.Equal(0x00, Marshal.ReadByte(data.Scan0, 0));
+            Assert.Equal(0xF8, Marshal.ReadByte(data.Scan0, 1));
+            Marshal.WriteByte(data.Scan0, 0, 0xE0);
+            Marshal.WriteByte(data.Scan0, 1, 0x07);
+        }
+        finally
+        {
+            bitmap.UnlockBits(data);
+        }
+
+        Assert.Equal(Color.Lime.ToArgb(), bitmap.GetPixel(0, 0).ToArgb());
+    }
+
+    [Fact]
+    public void FillRectangleNormalizesReflectedBounds()
+    {
+        using var graphics = Graphics.FromHwnd(IntPtr.Zero);
+        graphics.ScaleTransform(-1f, 1f);
+
+        graphics.FillRectangle(Brushes.Blue, 1f, 2f, 3f, 4f);
+
+        var command = Assert.Single(graphics.DrawingContext.Commands);
+        Assert.Equal(RenderCommandType.DrawRect, command.Type);
+        Assert.Equal(new Rect(-4f, 2f, 3f, 4f), command.Rect);
+    }
+
+    [Fact]
     public void UnlockBitsDoesNotWriteBackReadOnlyBuffer()
     {
         using var bitmap = new Bitmap(2, 2);

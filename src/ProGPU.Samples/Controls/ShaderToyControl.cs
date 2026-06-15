@@ -76,6 +76,8 @@ namespace Microsoft.UI.Xaml.Controls
         private bool _renderedThisKey;
         
         private float _time;
+        private float _timeDelta;
+        private float _frameRate = 60f;
         private float _frame;
         private Vector4 _mouse;
         private Vector2? _clickPos;
@@ -89,6 +91,8 @@ namespace Microsoft.UI.Xaml.Controls
         }
 
         public float Time => _time;
+        public float TimeDelta => _timeDelta;
+        public float FrameRate => _frameRate;
         public float Frame => _frame;
 
         public ShaderToyControl()
@@ -141,6 +145,8 @@ namespace Microsoft.UI.Xaml.Controls
         public void Reset()
         {
             _time = 0f;
+            _timeDelta = 0f;
+            _frameRate = 60f;
             _frame = 0f;
             _mouse = Vector4.Zero;
             _clickPos = null;
@@ -151,7 +157,9 @@ namespace Microsoft.UI.Xaml.Controls
         {
             if (IsPlaying)
             {
-                _time += delta * TimeScale;
+                _timeDelta = delta * TimeScale;
+                _frameRate = delta > 0f ? 1f / delta : 0f;
+                _time += _timeDelta;
                 _frame += 1.0f;
                 Invalidate();
             }
@@ -259,6 +267,8 @@ namespace Microsoft.UI.Xaml.Controls
 
             // 4. Time parameters
             _params.Time = _time;
+            _params.TimeDelta = _timeDelta;
+            _params.FrameRate = _frameRate;
             _params.Frame = _frame;
 
             // 5. Build and enqueue custom drawing extension command

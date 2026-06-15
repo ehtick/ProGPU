@@ -114,7 +114,14 @@ public class PathGeometry : Geometry
         var geom = new PathGeometry();
         if (string.IsNullOrWhiteSpace(pathData)) return geom;
 
-        var internalGeom = ProGPU.Vector.PathGeometry.Parse(pathData);
+        var trimmedPathData = pathData.TrimStart();
+        if (TryReadFillRulePrefix(trimmedPathData, out var fillRule, out var geometryData))
+        {
+            geom.FillRule = fillRule;
+            trimmedPathData = geometryData;
+        }
+
+        var internalGeom = ProGPU.Vector.PathGeometry.Parse(trimmedPathData);
         foreach (var fig in internalGeom.Figures)
         {
             var figure = new PathFigure
@@ -161,6 +168,26 @@ public class PathGeometry : Geometry
             geom.Figures.Add(figure);
         }
         return geom;
+    }
+
+    private static bool TryReadFillRulePrefix(string pathData, out FillRule fillRule, out string geometryData)
+    {
+        fillRule = default;
+        geometryData = pathData;
+
+        if (pathData.Length < 2 || (pathData[0] != 'F' && pathData[0] != 'f') || (pathData[1] != '0' && pathData[1] != '1'))
+        {
+            return false;
+        }
+
+        if (pathData.Length > 2 && !char.IsWhiteSpace(pathData[2]) && pathData[2] != ',')
+        {
+            return false;
+        }
+
+        fillRule = pathData[1] == '1' ? FillRule.Nonzero : FillRule.EvenOdd;
+        geometryData = pathData[2..].TrimStart(' ', '\t', '\r', '\n', ',');
+        return true;
     }
 
     public override void Draw(ProGPU.Scene.DrawingContext context, ProGPU.Vector.Brush? fill, ProGPU.Vector.Pen? pen)

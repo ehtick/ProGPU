@@ -122,6 +122,13 @@ public sealed class WpfShaderEffectParams
             }
         }
 
+        if (registerIndex == SourceTextureRegisterIndex && Texture != null)
+        {
+            texture = Texture;
+            samplingMode = SamplingMode;
+            return true;
+        }
+
         if (registerIndex == 0 && Texture != null)
         {
             texture = Texture;
