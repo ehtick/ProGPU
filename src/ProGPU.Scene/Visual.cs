@@ -451,6 +451,42 @@ public abstract class EffectBase
 {
 }
 
+public sealed class WpfShaderEffect : EffectBase
+{
+    public WpfShaderEffect(WpfShaderEffectParams parameters)
+    {
+        Parameters = parameters ?? throw new ArgumentNullException(nameof(parameters));
+    }
+
+    public WpfShaderEffectParams Parameters { get; }
+
+    public float Padding { get; set; }
+
+    public bool IsFailed => Parameters.IsFailed;
+
+    public string? LastError => Parameters.LastError;
+
+    internal void UpdateDrawParameters(WpfShaderEffectParams target, GpuTexture sourceTexture, Rect rect)
+    {
+        if (target.IsFailed)
+        {
+            Parameters.IsFailed = true;
+            Parameters.LastError = target.LastError;
+        }
+
+        target.Texture = sourceTexture;
+        target.Rect = rect;
+        target.ShaderSource = Parameters.ShaderSource;
+        target.ShaderKey = Parameters.ShaderKey;
+        target.Constants = Parameters.Constants;
+        target.Samplers = Parameters.Samplers;
+        target.SamplingMode = Parameters.SamplingMode;
+        target.IsFailed = Parameters.IsFailed;
+        target.LastError = Parameters.LastError;
+        target.SourceTextureOverridesSampler0 = true;
+    }
+}
+
 public class BlurEffect : EffectBase
 {
     public float BlurRadius { get; set; }
@@ -480,4 +516,3 @@ public interface ILayoutNode
 {
     void InvalidateMeasure();
 }
-

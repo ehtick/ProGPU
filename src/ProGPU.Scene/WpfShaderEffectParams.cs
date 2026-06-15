@@ -21,6 +21,7 @@ public sealed class WpfShaderEffectParams
     public TextureSamplingMode SamplingMode { get; set; } = TextureSamplingMode.Linear;
     public bool IsFailed { get; set; }
     public string? LastError { get; set; }
+    internal bool SourceTextureOverridesSampler0 { get; set; }
 
     public string GetStableShaderKey()
     {
@@ -87,6 +88,13 @@ public sealed class WpfShaderEffectParams
     public bool TryGetSampler(int registerIndex, out GpuTexture texture, out TextureSamplingMode samplingMode)
     {
         ValidateSamplerRegister(registerIndex);
+
+        if (registerIndex == 0 && SourceTextureOverridesSampler0 && Texture != null)
+        {
+            texture = Texture;
+            samplingMode = SamplingMode;
+            return true;
+        }
 
         foreach (var sampler in Samplers)
         {

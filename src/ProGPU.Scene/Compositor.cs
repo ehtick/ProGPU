@@ -400,6 +400,7 @@ public unsafe class Compositor : IDisposable
 
     private readonly ComputeAccelerator _compute;
     private readonly Dictionary<Visual, (GpuTexture Source, GpuTexture Temp, GpuTexture Destination)> _effectTextures = new();
+    private readonly Dictionary<Visual, WpfShaderEffectParams> _wpfShaderEffectDrawParams = new();
     private readonly HashSet<Visual> _elementsRenderingEffects = new();
     private readonly HashSet<Visual> _elementsRenderingLayers = new();
     private readonly HashSet<GpuTexture> _allocatedLayerTextures = new();
@@ -5090,6 +5091,10 @@ public unsafe class Compositor : IDisposable
             blurRadius = shadow.BlurRadius;
             padding = MathF.Ceiling(blurRadius * 2f);
         }
+        else if (fe.Effect is WpfShaderEffect shaderEffect)
+        {
+            padding = MathF.Ceiling(MathF.Max(0f, shaderEffect.Padding));
+        }
 
 
         uint w = (uint)(fe.Size.X + padding * 2f);
@@ -5169,6 +5174,11 @@ public unsafe class Compositor : IDisposable
             var controlRect = new Rect(fe.Offset - new Vector2(padding, padding), new Vector2(w, h));
             DrawTextureOnMain(textures.Source, controlRect, parentTransform);
         }
+        else if (fe.Effect is WpfShaderEffect shaderEffect)
+        {
+            var controlRect = new Rect(fe.Offset - new Vector2(padding, padding), new Vector2(w, h));
+            DrawWpfShaderEffectOnMain(fe, shaderEffect, textures.Source, controlRect, parentTransform);
+        }
 
 
         fe.IsDirty = false;
@@ -5227,6 +5237,77 @@ public unsafe class Compositor : IDisposable
             Rect = localRect
         };
         CompileTextureCommand(cmd, parentTransform);
+    }
+
+    private void DrawWpfShaderEffectOnMain(
+        Visual visual,
+        WpfShaderEffect effect,
+        GpuTexture sourceTexture,
+        Rect localRect,
+        Matrix4x4 parentTransform)
+    {
+        var pipeline = GetExtension(CompositorBuiltInExtensions.WpfShaderEffect);
+        if (pipeline == null)
+        {
+            DrawTextureOnMain(sourceTexture, localRect, parentTransform);
+            return;
+        }
+
+        CommitPendingDrawCalls();
+
+        if (!_wpfShaderEffectDrawParams.TryGetValue(visual, out var parameters))
+        {
+            parameters = new WpfShaderEffectParams();
+            _wpfShaderEffectDrawParams[visual] = parameters;
+        }
+
+        effect.UpdateDrawParameters(parameters, sourceTexture, localRect);
+
+        var cmd = new RenderCommand
+        {
+            Type = RenderCommandType.DrawExtension,
+            ExtensionId = CompositorBuiltInExtensions.WpfShaderEffect,
+            DataParam = parameters
+        };
+
+        pipeline.Compile(this, null, parentTransform, ref cmd);
+        var cmdTransform = cmd.Transform;
+        if (cmdTransform == default || cmdTransform == new Matrix4x4())
+        {
+            cmdTransform = Matrix4x4.Identity;
+        }
+
+        _drawCalls.Add(new CompositorDrawCall
+        {
+            Type = DrawCallType.Extension,
+            ExtensionId = cmd.ExtensionId,
+            IntParam = cmd.IntParam,
+            FloatParam = cmd.FloatParam,
+            DataParam = cmd.DataParam,
+            PointBufferOffset = (int)_pendingVectorStart,
+            PointBufferCount = (int)((uint)_vectorIndicesList.Count - _pendingVectorStart),
+            DoubleBufferOffset = cmd.DoubleBufferOffset,
+            DoubleBufferCount = cmd.DoubleBufferCount,
+            WeightBufferOffset = cmd.WeightBufferOffset,
+            WeightBufferCount = cmd.WeightBufferCount,
+            FloatBufferOffset = cmd.FloatBufferOffset,
+            FloatBufferCount = cmd.FloatBufferCount,
+            StaticBuffer = cmd.StaticBuffer,
+            Brush = cmd.Brush,
+            Pen = cmd.Pen,
+            Path = cmd.Path,
+            Transform = parentTransform * cmdTransform,
+            LineThicknessOrRadius = cmd.RadiusX,
+            Scale = cmd.Scale,
+            Translate = cmd.Translate,
+            Color = (cmd.Brush is SolidColorBrush solid) ? solid.Color : new Vector4(1f, 1f, 1f, 1f),
+            ClipRect = _activeClipRect,
+            MaskTexture = _maskStack.Count > 0 ? _maskStack.Peek() : null,
+            BlendMode = _activeBlendMode
+        });
+
+        _pendingVectorStart = (uint)_vectorIndicesList.Count;
+        _pendingTextStart = (uint)_textVerticesList.Count;
     }
 
     public void RenderOffscreen(Visual node, uint width, uint height, GpuTexture targetTexture, float padding, float dpiScale, Vector4? clearColor = null, bool loadExistingContents = false)

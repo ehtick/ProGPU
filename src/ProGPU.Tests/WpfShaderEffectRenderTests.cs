@@ -1,7 +1,9 @@
+using System.Numerics;
 using Microsoft.UI.Xaml;
 using ProGPU.Backend;
 using ProGPU.Scene;
 using ProGPU.Tests.Headless;
+using ProGPU.Vector;
 using Silk.NET.WebGPU;
 using Xunit;
 
@@ -123,6 +125,45 @@ fn wpf_effect_main(uv: vec2<f32>, inputColor: vec4<f32>) -> vec4<f32> {
         }
     }
 
+    [Fact]
+    public void WpfShaderEffectVisual_RendersVisualSourceThroughNativeGpuPipeline()
+    {
+        var window = HeadlessWindow.Shared;
+        window.Resize(128, 96);
+
+        using var sampler0 = new GpuTexture(
+            window.Context,
+            1,
+            1,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.TextureBinding | TextureUsage.CopyDst,
+            "WPF Shader Effect Conflicting Register 0 Texture");
+        sampler0.WritePixels(new byte[] { 255, 0, 0, 255 });
+
+        var visual = new ShaderEffectSourceVisual(sampler0);
+        window.Content = visual;
+
+        try
+        {
+            window.Render();
+
+            var effect = Assert.IsType<WpfShaderEffect>(visual.Effect);
+            Assert.False(effect.IsFailed, effect.LastError);
+
+            var pixels = window.ReadPixels();
+            var center = ((44 * 128) + 56) * 4;
+
+            Assert.InRange(pixels[center + 0], 190, 220);
+            Assert.InRange(pixels[center + 1], 20, 35);
+            Assert.InRange(pixels[center + 2], 240, 255);
+            Assert.Equal(255, pixels[center + 3]);
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
     private sealed class ShaderEffectVisual : FrameworkElement
     {
         private readonly WpfShaderEffectParams _effect;
@@ -137,6 +178,37 @@ fn wpf_effect_main(uv: vec2<f32>, inputColor: vec4<f32>) -> vec4<f32> {
         public override void OnRender(DrawingContext context)
         {
             context.DrawWpfShaderEffect(_effect);
+        }
+    }
+
+    private sealed class ShaderEffectSourceVisual : FrameworkElement
+    {
+        public ShaderEffectSourceVisual(GpuTexture conflictingSampler0)
+        {
+            Width = 128f;
+            Height = 96f;
+            Effect = new WpfShaderEffect(new WpfShaderEffectParams
+            {
+                ShaderKey = "test_visual_wpf_shader_effect_source_tint",
+                SamplingMode = TextureSamplingMode.Nearest,
+                Samplers = new[]
+                {
+                    new WpfShaderEffectSampler(0, conflictingSampler0, TextureSamplingMode.Nearest)
+                },
+                ShaderSource = @"
+fn wpf_effect_main(uv: vec2<f32>, inputColor: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(inputColor.g, inputColor.r * 0.5, 1.0, inputColor.a);
+}
+"
+            });
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            context.DrawRectangle(
+                new SolidColorBrush(new Vector4(0.2f, 0.8f, 0.1f, 1f)),
+                null,
+                new Rect(24, 20, 64, 48));
         }
     }
 }
