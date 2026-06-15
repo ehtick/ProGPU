@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using System.Text;
 using ProGPU.Backend;
 using ProGPU.Vector;
 using Silk.NET.Core.Native;
@@ -11,7 +12,9 @@ namespace ProGPU.Scene.Extensions;
 
 public sealed unsafe class WpfShaderEffectExtensionPipeline : ICompositorExtension, IDisposable
 {
-    private const string VertexAndHeaderShader = @"
+    private static readonly string VertexAndHeaderShader = CreateVertexAndHeaderShader();
+
+    private const string VertexAndHeaderShaderPrefix = @"
 struct VSUniforms {
     projection: mat4x4<f32>,
     mvp: mat4x4<f32>,
@@ -27,9 +30,6 @@ struct WpfEffectUniforms {
 };
 
 @group(1) @binding(0) var<uniform> effect: WpfEffectUniforms;
-
-@group(2) @binding(0) var sourceSampler: sampler;
-@group(2) @binding(1) var sourceTexture: texture_2d<f32>;
 
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -55,11 +55,48 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 fn wpf_constant(index: u32) -> vec4<f32> {
     return effect.constants[index];
 }
-
-fn wpf_sample_source(uv: vec2<f32>) -> vec4<f32> {
-    return textureSample(sourceTexture, sourceSampler, uv);
-}
 ";
+
+    private static string CreateVertexAndHeaderShader()
+    {
+        var builder = new StringBuilder(VertexAndHeaderShaderPrefix);
+
+        for (var i = 0; i < WpfShaderEffectParams.MaxSamplerRegisterCount; i++)
+        {
+            builder.Append("@group(2) @binding(")
+                .Append(i * 2)
+                .Append(") var sourceSampler")
+                .Append(i)
+                .AppendLine(": sampler;");
+            builder.Append("@group(2) @binding(")
+                .Append(i * 2 + 1)
+                .Append(") var sourceTexture")
+                .Append(i)
+                .AppendLine(": texture_2d<f32>;");
+        }
+
+        builder.AppendLine();
+        builder.AppendLine("fn wpf_sample_register(index: u32, uv: vec2<f32>) -> vec4<f32> {");
+        for (var i = 0; i < WpfShaderEffectParams.MaxSamplerRegisterCount; i++)
+        {
+            builder.Append("    if (index == ")
+                .Append(i)
+                .Append("u) { return textureSample(sourceTexture")
+                .Append(i)
+                .Append(", sourceSampler")
+                .Append(i)
+                .AppendLine(", uv); }");
+        }
+
+        builder.AppendLine("    return vec4<f32>(0.0);");
+        builder.AppendLine("}");
+        builder.AppendLine();
+        builder.AppendLine("fn wpf_sample_source(uv: vec2<f32>) -> vec4<f32> {");
+        builder.AppendLine("    return wpf_sample_register(0u, uv);");
+        builder.AppendLine("}");
+
+        return builder.ToString();
+    }
 
     private const string FragmentWrapperShader = @"
 @fragment
@@ -77,9 +114,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     private readonly List<EffectGpuResources> _pool = new();
-    private readonly Dictionary<Compositor.TextureCacheKey, Compositor.CachedBindGroup> _textureBindGroups = new();
+    private readonly Dictionary<string, Compositor.CachedBindGroup> _textureBindGroups = new();
     private int _usedCount;
     private WgpuContext? _contextRef;
+    private GpuTexture? _fallbackTexture;
     private BindGroupLayout* _effectBindGroupLayout;
     private BindGroupLayout* _sourceBindGroupLayout;
     private PipelineLayout* _onscreenPipelineLayout;
@@ -93,8 +131,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         }
 
         _contextRef = compositor.Context;
-        var wgpu = _contextRef.Wgpu;
-        var device = _contextRef.Device;
+        var context = _contextRef;
+        var wgpu = context.Wgpu;
+        var device = context.Device;
 
         var effectEntry = new BindGroupLayoutEntry
         {
@@ -114,33 +153,47 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         };
         _effectBindGroupLayout = wgpu.DeviceCreateBindGroupLayout(device, &effectLayoutDesc);
 
-        var sourceEntries = stackalloc BindGroupLayoutEntry[2];
-        sourceEntries[0] = new BindGroupLayoutEntry
+        const int sourceEntryCount = WpfShaderEffectParams.MaxSamplerRegisterCount * 2;
+        var sourceEntries = stackalloc BindGroupLayoutEntry[sourceEntryCount];
+        for (var i = 0; i < WpfShaderEffectParams.MaxSamplerRegisterCount; i++)
         {
-            Binding = 0,
-            Visibility = ShaderStage.Fragment,
-            Sampler = new SamplerBindingLayout
+            sourceEntries[i * 2] = new BindGroupLayoutEntry
             {
-                Type = SamplerBindingType.Filtering
-            }
-        };
-        sourceEntries[1] = new BindGroupLayoutEntry
-        {
-            Binding = 1,
-            Visibility = ShaderStage.Fragment,
-            Texture = new TextureBindingLayout
+                Binding = (uint)(i * 2),
+                Visibility = ShaderStage.Fragment,
+                Sampler = new SamplerBindingLayout
+                {
+                    Type = SamplerBindingType.Filtering
+                }
+            };
+            sourceEntries[i * 2 + 1] = new BindGroupLayoutEntry
             {
-                SampleType = TextureSampleType.Float,
-                ViewDimension = TextureViewDimension.Dimension2D,
-                Multisampled = false
-            }
-        };
+                Binding = (uint)(i * 2 + 1),
+                Visibility = ShaderStage.Fragment,
+                Texture = new TextureBindingLayout
+                {
+                    SampleType = TextureSampleType.Float,
+                    ViewDimension = TextureViewDimension.Dimension2D,
+                    Multisampled = false
+                }
+            };
+        }
+
         var sourceLayoutDesc = new BindGroupLayoutDescriptor
         {
-            EntryCount = 2,
+            EntryCount = sourceEntryCount,
             Entries = sourceEntries
         };
         _sourceBindGroupLayout = wgpu.DeviceCreateBindGroupLayout(device, &sourceLayoutDesc);
+
+        _fallbackTexture = new GpuTexture(
+            context,
+            1,
+            1,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.TextureBinding | TextureUsage.CopyDst,
+            "WPF Shader Effect Transparent Fallback");
+        _fallbackTexture.WritePixels(new byte[] { 0, 0, 0, 0 });
 
         var onscreenLayouts = stackalloc BindGroupLayout*[3];
         onscreenLayouts[0] = compositor.VectorUniformBindGroupLayout;
@@ -171,7 +224,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         Matrix4x4 transform,
         ref RenderCommand cmd)
     {
-        if (cmd.DataParam is not WpfShaderEffectParams p || p.Texture == null)
+        if (cmd.DataParam is not WpfShaderEffectParams p || !p.HasAnyTexture())
         {
             return;
         }
@@ -231,7 +284,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     public void EndFrame(Compositor compositor)
     {
         ulong frame = compositor.FrameNumber;
-        List<Compositor.TextureCacheKey>? keysToRemove = null;
+        List<string>? keysToRemove = null;
 
         lock (_textureBindGroups)
         {
@@ -244,7 +297,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                         compositor.Context.Wgpu.BindGroupRelease((BindGroup*)kvp.Value.BindGroupPtr);
                     }
 
-                    keysToRemove ??= new List<Compositor.TextureCacheKey>();
+                    keysToRemove ??= new List<string>();
                     keysToRemove.Add(kvp.Key);
                 }
             }
@@ -265,7 +318,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         bool isOffscreen,
         in Compositor.CompositorDrawCall dc)
     {
-        if (dc.PointBufferCount <= 0 || dc.DataParam is not WpfShaderEffectParams p || p.Texture == null || p.IsFailed)
+        if (dc.PointBufferCount <= 0 || dc.DataParam is not WpfShaderEffectParams p || !p.HasAnyTexture() || p.IsFailed)
         {
             return;
         }
@@ -337,7 +390,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
         var gpuRes = _pool[_usedCount++];
         Span<float> uniformFloats = stackalloc float[WpfShaderEffectParams.UniformFloatCount];
-        p.CopyUniformFloats(uniformFloats, p.Texture.Width, p.Texture.Height);
+        if (!p.TryGetPrimaryTexture(out var primaryTexture))
+        {
+            return;
+        }
+
+        p.CopyUniformFloats(uniformFloats, primaryTexture.Width, primaryTexture.Height);
         gpuRes.UniformBuffer.Write<float>(uniformFloats);
 
         var textureBindGroup = GetTextureBindGroup(compositor, activePipeline, p, isOffscreen);
@@ -363,6 +421,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         {
             _pool.Clear();
             _textureBindGroups.Clear();
+            _fallbackTexture = null;
             return;
         }
 
@@ -411,6 +470,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
         _pool.Clear();
         _textureBindGroups.Clear();
+        _fallbackTexture?.Dispose();
+        _fallbackTexture = null;
     }
 
     private RenderPipeline* CreatePipeline(
@@ -488,17 +549,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         WpfShaderEffectParams parameters,
         bool isOffscreen)
     {
-        var texture = parameters.Texture;
-        if (texture == null)
+        if (_fallbackTexture == null)
         {
             return null;
         }
 
-        var key = new Compositor.TextureCacheKey(
-            texture.Id,
-            texture.Generation,
-            isOffscreen,
-            parameters.SamplingMode);
+        var key = BuildTextureBindGroupKey(parameters, isOffscreen);
 
         lock (_textureBindGroups)
         {
@@ -509,22 +565,34 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             }
 
             var wgpu = compositor.Context.Wgpu;
-            var textureEntries = stackalloc BindGroupEntry[2];
-            textureEntries[0] = new BindGroupEntry
+            const int entryCount = WpfShaderEffectParams.MaxSamplerRegisterCount * 2;
+            var textureEntries = stackalloc BindGroupEntry[entryCount];
+            for (var i = 0; i < WpfShaderEffectParams.MaxSamplerRegisterCount; i++)
             {
-                Binding = 0,
-                Sampler = compositor.GetTextureSampler(parameters.SamplingMode)
-            };
-            textureEntries[1] = new BindGroupEntry
-            {
-                Binding = 1,
-                TextureView = texture.ViewPtr
-            };
+                var texture = _fallbackTexture;
+                var samplingMode = TextureSamplingMode.Linear;
+                if (parameters.TryGetSampler(i, out var registeredTexture, out var registeredSamplingMode))
+                {
+                    texture = registeredTexture;
+                    samplingMode = registeredSamplingMode;
+                }
+
+                textureEntries[i * 2] = new BindGroupEntry
+                {
+                    Binding = (uint)(i * 2),
+                    Sampler = compositor.GetTextureSampler(samplingMode)
+                };
+                textureEntries[i * 2 + 1] = new BindGroupEntry
+                {
+                    Binding = (uint)(i * 2 + 1),
+                    TextureView = texture.ViewPtr
+                };
+            }
 
             var bgDesc = new BindGroupDescriptor
             {
                 Layout = _sourceBindGroupLayout,
-                EntryCount = 2,
+                EntryCount = entryCount,
                 Entries = textureEntries,
                 Label = (byte*)SilkMarshal.StringToPtr("WPF Shader Effect Texture BG")
             };
@@ -535,5 +603,32 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             _textureBindGroups[key] = new Compositor.CachedBindGroup((nint)bg, compositor.FrameNumber);
             return bg;
         }
+    }
+
+    private static string BuildTextureBindGroupKey(WpfShaderEffectParams parameters, bool isOffscreen)
+    {
+        var builder = new StringBuilder(isOffscreen ? "off" : "on");
+        for (var i = 0; i < WpfShaderEffectParams.MaxSamplerRegisterCount; i++)
+        {
+            if (parameters.TryGetSampler(i, out var texture, out var samplingMode))
+            {
+                builder.Append('|')
+                    .Append(i)
+                    .Append(':')
+                    .Append(texture.Id)
+                    .Append(':')
+                    .Append(texture.Generation)
+                    .Append(':')
+                    .Append((int)samplingMode);
+            }
+            else
+            {
+                builder.Append('|')
+                    .Append(i)
+                    .Append(":0:0:0");
+            }
+        }
+
+        return builder.ToString();
     }
 }

@@ -10,12 +10,14 @@ public sealed class WpfShaderEffectParams
     public const int ConstantFloatCount = MaxConstantRegisterCount * FloatsPerConstantRegister;
     public const int UniformFloatCount = ConstantFloatCount + 8;
     public const int UniformByteCount = UniformFloatCount * sizeof(float);
+    public const int MaxSamplerRegisterCount = 16;
 
     public GpuTexture? Texture { get; set; }
     public Rect Rect { get; set; }
     public string ShaderSource { get; set; } = WpfShaderEffectShaders.PassThrough;
     public string ShaderKey { get; set; } = string.Empty;
     public float[] Constants { get; set; } = Array.Empty<float>();
+    public WpfShaderEffectSampler[] Samplers { get; set; } = Array.Empty<WpfShaderEffectSampler>();
     public TextureSamplingMode SamplingMode { get; set; } = TextureSamplingMode.Linear;
     public bool IsFailed { get; set; }
     public string? LastError { get; set; }
@@ -64,6 +66,81 @@ public sealed class WpfShaderEffectParams
         destination[ConstantFloatCount + 7] = textureHeight > 0 ? 1f / textureHeight : 0f;
     }
 
+    public bool HasAnyTexture()
+    {
+        if (Texture != null)
+        {
+            return true;
+        }
+
+        foreach (var sampler in Samplers)
+        {
+            if (sampler.Texture != null)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public bool TryGetSampler(int registerIndex, out GpuTexture texture, out TextureSamplingMode samplingMode)
+    {
+        ValidateSamplerRegister(registerIndex);
+
+        foreach (var sampler in Samplers)
+        {
+            if (sampler.RegisterIndex == registerIndex && sampler.Texture != null)
+            {
+                texture = sampler.Texture;
+                samplingMode = sampler.SamplingMode;
+                return true;
+            }
+        }
+
+        if (registerIndex == 0 && Texture != null)
+        {
+            texture = Texture;
+            samplingMode = SamplingMode;
+            return true;
+        }
+
+        texture = null!;
+        samplingMode = TextureSamplingMode.Linear;
+        return false;
+    }
+
+    public bool TryGetPrimaryTexture(out GpuTexture texture)
+    {
+        if (TryGetSampler(0, out texture, out _))
+        {
+            return true;
+        }
+
+        foreach (var sampler in Samplers)
+        {
+            if (sampler.Texture != null)
+            {
+                texture = sampler.Texture;
+                return true;
+            }
+        }
+
+        texture = null!;
+        return false;
+    }
+
+    internal static void ValidateSamplerRegister(int registerIndex)
+    {
+        if ((uint)registerIndex >= MaxSamplerRegisterCount)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(registerIndex),
+                registerIndex,
+                $"WPF shader sampler register must be between 0 and {MaxSamplerRegisterCount - 1}.");
+        }
+    }
+
     private static ulong ComputeStableHash(string value)
     {
         const ulong fnvOffsetBasis = 14695981039346656037UL;
@@ -78,6 +155,38 @@ public sealed class WpfShaderEffectParams
 
         return hash;
     }
+}
+
+public sealed class WpfShaderEffectSampler
+{
+    private int _registerIndex;
+
+    public WpfShaderEffectSampler()
+    {
+    }
+
+    public WpfShaderEffectSampler(
+        int registerIndex,
+        GpuTexture? texture,
+        TextureSamplingMode samplingMode = TextureSamplingMode.Linear)
+    {
+        RegisterIndex = registerIndex;
+        Texture = texture;
+        SamplingMode = samplingMode;
+    }
+
+    public int RegisterIndex
+    {
+        get => _registerIndex;
+        set
+        {
+            WpfShaderEffectParams.ValidateSamplerRegister(value);
+            _registerIndex = value;
+        }
+    }
+
+    public GpuTexture? Texture { get; set; }
+    public TextureSamplingMode SamplingMode { get; set; } = TextureSamplingMode.Linear;
 }
 
 public static class WpfShaderEffectShaders

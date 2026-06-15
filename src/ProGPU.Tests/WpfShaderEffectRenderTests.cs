@@ -61,6 +61,68 @@ fn wpf_effect_main(uv: vec2<f32>, inputColor: vec4<f32>) -> vec4<f32> {
         }
     }
 
+    [Fact]
+    public void WpfShaderEffect_CanSampleNativeSamplerRegister()
+    {
+        var window = HeadlessWindow.Shared;
+        window.Resize(128, 96);
+
+        using var source0 = new GpuTexture(
+            window.Context,
+            1,
+            1,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.TextureBinding | TextureUsage.CopyDst,
+            "WPF Shader Effect Register 0 Texture");
+        source0.WritePixels(new byte[] { 255, 0, 0, 255 });
+
+        using var source1 = new GpuTexture(
+            window.Context,
+            1,
+            1,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.TextureBinding | TextureUsage.CopyDst,
+            "WPF Shader Effect Register 1 Texture");
+        source1.WritePixels(new byte[] { 0, 192, 64, 255 });
+
+        var effect = new WpfShaderEffectParams
+        {
+            Rect = new Rect(24, 20, 64, 48),
+            ShaderKey = "test_wpf_native_shader_effect_sampler_register_1",
+            Samplers = new[]
+            {
+                new WpfShaderEffectSampler(0, source0, TextureSamplingMode.Nearest),
+                new WpfShaderEffectSampler(1, source1, TextureSamplingMode.Nearest)
+            },
+            ShaderSource = @"
+fn wpf_effect_main(uv: vec2<f32>, inputColor: vec4<f32>) -> vec4<f32> {
+    return wpf_sample_register(1u, uv);
+}
+"
+        };
+
+        window.Content = new ShaderEffectVisual(effect);
+
+        try
+        {
+            window.Render();
+
+            Assert.False(effect.IsFailed, effect.LastError);
+
+            var pixels = window.ReadPixels();
+            var center = (((20 + 24) * 128) + (24 + 32)) * 4;
+
+            Assert.InRange(pixels[center + 0], 0, 12);
+            Assert.InRange(pixels[center + 1], 180, 205);
+            Assert.InRange(pixels[center + 2], 54, 78);
+            Assert.Equal(255, pixels[center + 3]);
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
     private sealed class ShaderEffectVisual : FrameworkElement
     {
         private readonly WpfShaderEffectParams _effect;

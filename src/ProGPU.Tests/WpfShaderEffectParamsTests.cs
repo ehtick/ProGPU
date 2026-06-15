@@ -60,4 +60,12 @@ public class WpfShaderEffectParamsTests
 
         Assert.Equal("legacy_invert_ps_2_0", parameters.GetStableShaderKey());
     }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(WpfShaderEffectParams.MaxSamplerRegisterCount)]
+    public void RejectsSamplerRegistersOutsideWpfBank(int registerIndex)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new WpfShaderEffectSampler(registerIndex, null));
+    }
 }

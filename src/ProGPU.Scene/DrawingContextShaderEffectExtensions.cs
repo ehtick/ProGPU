@@ -7,7 +7,7 @@ public static class DrawingContextShaderEffectExtensions
 {
     public static void DrawWpfShaderEffect(this DrawingContext context, WpfShaderEffectParams parameters)
     {
-        if (parameters.Texture == null)
+        if (!parameters.HasAnyTexture())
         {
             return;
         }
