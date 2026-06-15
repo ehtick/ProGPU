@@ -381,22 +381,24 @@ public class SKCanvas : IDisposable
             return;
         }
 
-        // Convert positions from SKPoint to Vector2
-        var positions = new Vector2[textBlob.GlyphPositions.Length];
-        for (int i = 0; i < positions.Length; i++)
+        foreach (var run in textBlob.Runs)
         {
-            positions[i] = new Vector2(textBlob.GlyphPositions[i].X, textBlob.GlyphPositions[i].Y);
-        }
+            var positions = new Vector2[run.GlyphPositions.Length];
+            for (int i = 0; i < positions.Length; i++)
+            {
+                positions[i] = new Vector2(run.GlyphPositions[i].X, run.GlyphPositions[i].Y);
+            }
 
-        _context.DrawGlyphRun(
-            textBlob.GlyphIndices,
-            positions,
-            textBlob.Font.Typeface.Font,
-            textBlob.Font.Size,
-            brush,
-            new Vector2(x, y),
-            _currentMatrix.ToMatrix4x4()
-        );
+            _context.DrawGlyphRun(
+                run.GlyphIndices,
+                positions,
+                run.Font.Typeface.Font,
+                run.Font.Size,
+                brush,
+                new Vector2(x, y),
+                _currentMatrix.ToMatrix4x4()
+            );
+        }
     }
 
     public void Dispose() { }
