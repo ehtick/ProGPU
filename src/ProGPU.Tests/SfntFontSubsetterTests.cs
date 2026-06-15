@@ -43,6 +43,56 @@ public class SfntFontSubsetterTests
         Assert.Empty(subset);
     }
 
+    [Fact]
+    public void CreatesCompactTrueTypeSubsetWithGlyphRemappingAndCompositeRewrite()
+    {
+        byte[] fontData = BuildCompactTrueTypeSubsetFixtureFont();
+
+        byte[] subset = SfntFontSubsetter.CreateCompactSubset(fontData, 0, new ushort[] { 3 }, out var glyphMap);
+
+        Assert.Equal(new[]
+        {
+            new SfntGlyphRemap(0, 0),
+            new SfntGlyphRemap(2, 1),
+            new SfntGlyphRemap(3, 2)
+        }, glyphMap);
+
+        SfntFontFace subsetFace = SfntFontFace.Load(subset);
+        Assert.True(subsetFace.TryGetGlyphCount(out ushort glyphCount));
+        Assert.Equal(3, glyphCount);
+        Assert.True(subsetFace.TryGetGlyphBounds(1, out SfntGlyphBounds componentBounds));
+        Assert.Equal(20, componentBounds.XMax);
+        Assert.True(subsetFace.TryGetGlyphBounds(2, out SfntGlyphBounds compositeBounds));
+        Assert.Equal(40, compositeBounds.XMax);
+        Assert.True(subsetFace.TryGetHorizontalGlyphMetrics(1, out SfntHorizontalGlyphMetrics componentMetrics));
+        Assert.Equal(502, componentMetrics.AdvanceWidth);
+        Assert.True(subsetFace.TryGetHorizontalGlyphMetrics(2, out SfntHorizontalGlyphMetrics compositeMetrics));
+        Assert.Equal(503, compositeMetrics.AdvanceWidth);
+        Assert.False(subsetFace.TryGetTable("DSIG", out _));
+        Assert.False(subsetFace.TryGetTable("cmap", out _));
+        Assert.False(subsetFace.TryGetTable("GSUB", out _));
+
+        Assert.True(subsetFace.TryGetTable("loca", out ReadOnlyMemory<byte> loca));
+        Assert.True(subsetFace.TryGetTable("glyf", out ReadOnlyMemory<byte> glyf));
+        uint[] offsets = ReadLongLoca(loca.Span, glyphCount);
+        int compositeOffset = checked((int)offsets[2]);
+        Assert.Equal(-1, ReadShort(glyf.Span, compositeOffset));
+        Assert.Equal(1, ReadUShort(glyf.Span, compositeOffset + 12));
+    }
+
+    [Fact]
+    public void TryCreateCompactSubsetFailsClosedForInvalidFonts()
+    {
+        Assert.False(SfntFontSubsetter.TryCreateCompactSubset(
+            new byte[] { 1, 2, 3 },
+            0,
+            new ushort[] { 1 },
+            out byte[] subset,
+            out var glyphMap));
+        Assert.Empty(subset);
+        Assert.Empty(glyphMap);
+    }
+
     private static byte[] BuildTrueTypeSubsetFixtureFont()
     {
         byte[] glyf = BuildGlyfTable(out uint[] glyphOffsets);
@@ -56,6 +106,29 @@ public class SfntFontSubsetterTests
             ("DSIG", Enumerable.Repeat((byte)0xA5, 128).ToArray()));
     }
 
+    private static byte[] BuildCompactTrueTypeSubsetFixtureFont()
+    {
+        byte[][] glyphs =
+        {
+            Array.Empty<byte>(),
+            BuildSimpleGlyph(0, 0, 300, 300, 768),
+            BuildSimpleGlyph(0, 0, 20, 20),
+            BuildCompositeGlyph(0, 0, 40, 40, 2),
+        };
+
+        byte[] glyf = BuildGlyfTable(glyphs, out uint[] glyphOffsets);
+        return BuildSfntWithTables(
+            ("head", BuildHeadTable()),
+            ("hhea", BuildHheaTable()),
+            ("maxp", BuildMaxpTable(4)),
+            ("hmtx", BuildHmtxTable(4)),
+            ("loca", BuildLongLoca(glyphOffsets)),
+            ("glyf", glyf),
+            ("cmap", Enumerable.Repeat((byte)0xC0, 32).ToArray()),
+            ("GSUB", Enumerable.Repeat((byte)0xAB, 32).ToArray()),
+            ("DSIG", Enumerable.Repeat((byte)0xA5, 128).ToArray()));
+    }
+
     private static byte[] BuildGlyfTable(out uint[] glyphOffsets)
     {
         byte[][] glyphs =
@@ -66,6 +139,11 @@ public class SfntFontSubsetterTests
             BuildSimpleGlyph(0, 0, 300, 300, 768),
         };
 
+        return BuildGlyfTable(glyphs, out glyphOffsets);
+    }
+
+    private static byte[] BuildGlyfTable(byte[][] glyphs, out uint[] glyphOffsets)
+    {
         glyphOffsets = new uint[glyphs.Length + 1];
         using var stream = new MemoryStream();
         for (int i = 0; i < glyphs.Length; i++)
@@ -223,6 +301,30 @@ public class SfntFontSubsetterTests
     private static short ReadShort(ReadOnlySpan<byte> data, int offset)
     {
         return unchecked((short)((data[offset] << 8) | data[offset + 1]));
+    }
+
+    private static ushort ReadUShort(ReadOnlySpan<byte> data, int offset)
+    {
+        return (ushort)((data[offset] << 8) | data[offset + 1]);
+    }
+
+    private static uint ReadUInt(ReadOnlySpan<byte> data, int offset)
+    {
+        return (uint)((data[offset] << 24) |
+                      (data[offset + 1] << 16) |
+                      (data[offset + 2] << 8) |
+                       data[offset + 3]);
+    }
+
+    private static uint[] ReadLongLoca(ReadOnlySpan<byte> loca, ushort glyphCount)
+    {
+        var offsets = new uint[glyphCount + 1];
+        for (int i = 0; i < offsets.Length; i++)
+        {
+            offsets[i] = ReadUInt(loca, i * 4);
+        }
+
+        return offsets;
     }
 
     private static void WriteTag(BinaryWriter writer, string tag)

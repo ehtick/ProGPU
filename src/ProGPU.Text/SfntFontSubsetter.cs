@@ -12,6 +12,24 @@ public
 #else
 internal
 #endif
+readonly struct SfntGlyphRemap
+{
+    public SfntGlyphRemap(ushort sourceGlyphId, ushort subsetGlyphId)
+    {
+        SourceGlyphId = sourceGlyphId;
+        SubsetGlyphId = subsetGlyphId;
+    }
+
+    public ushort SourceGlyphId { get; }
+
+    public ushort SubsetGlyphId { get; }
+}
+
+#if PROGPU_TEXT_PUBLIC
+public
+#else
+internal
+#endif
 static class SfntFontSubsetter
 {
     private const ushort CompositeMoreComponents = 0x0020;
@@ -19,6 +37,7 @@ static class SfntFontSubsetter
     private const ushort CompositeHasScale = 0x0008;
     private const ushort CompositeHasXYScale = 0x0040;
     private const ushort CompositeHasTwoByTwo = 0x0080;
+    private const ushort CompositeHasInstructions = 0x0100;
     private const uint CheckSumAdjustment = 0xB1B0AFBA;
 
     public static bool TryCreateGlyphIdPreservingSubset(
@@ -93,6 +112,115 @@ static class SfntFontSubsetter
         return BuildSfnt(face.SfntVersion, tables);
     }
 
+    public static bool TryCreateCompactSubset(
+        ReadOnlySpan<byte> fontData,
+        int directoryOffset,
+        IEnumerable<ushort> glyphs,
+        out byte[] subset,
+        out SfntGlyphRemap[] glyphMap)
+    {
+        try
+        {
+            subset = CreateCompactSubset(fontData, directoryOffset, glyphs, out glyphMap);
+            return true;
+        }
+        catch (Exception ex) when (ex is ArgumentException or FormatException or OverflowException or IOException)
+        {
+            subset = Array.Empty<byte>();
+            glyphMap = Array.Empty<SfntGlyphRemap>();
+            return false;
+        }
+    }
+
+    public static byte[] CreateCompactSubset(
+        ReadOnlySpan<byte> fontData,
+        int directoryOffset,
+        IEnumerable<ushort> glyphs,
+        out SfntGlyphRemap[] glyphMap)
+    {
+        FontFaceData face = FontFaceData.Parse(fontData, directoryOffset);
+
+        if (!face.TryGetTable("head", out byte[] headTable) ||
+            !face.TryGetTable("maxp", out byte[] maxpTable) ||
+            !face.TryGetTable("loca", out byte[] locaTable) ||
+            !face.TryGetTable("glyf", out byte[] glyfTable))
+        {
+            throw new FormatException("Compact subsetting requires TrueType head, maxp, loca, and glyf tables.");
+        }
+
+        if (headTable.Length < 54 || maxpTable.Length < 6)
+        {
+            throw new FormatException("Required TrueType subset tables are truncated.");
+        }
+
+        ushort glyphCount = ReadUShort(maxpTable, 4);
+        if (glyphCount == 0)
+        {
+            throw new FormatException("Compact subsetting requires at least glyph 0.");
+        }
+
+        short sourceLocaFormat = ReadShort(headTable, 50);
+        uint[] sourceGlyphOffsets = ReadLoca(locaTable, glyphCount, sourceLocaFormat);
+        bool[] includedGlyphs = CreateIncludedGlyphSet(glyphCount, glyphs);
+        IncludeCompositeGlyphDependencies(glyfTable, sourceGlyphOffsets, includedGlyphs);
+
+        ushort[] sourceGlyphOrder = CreateCompactGlyphOrder(includedGlyphs);
+        if (sourceGlyphOrder.Length > ushort.MaxValue)
+        {
+            throw new FormatException("Compact subset glyph count exceeds UInt16 range.");
+        }
+
+        var sourceToSubsetMap = CreateGlyphRemap(sourceGlyphOrder, out glyphMap);
+        GlyphTableSubset glyphSubset = BuildCompactGlyphTableSubset(glyfTable, sourceGlyphOffsets, sourceGlyphOrder, sourceToSubsetMap);
+
+        byte[] subsetHead = (byte[])headTable.Clone();
+        WriteUInt(subsetHead, 8, 0);
+        WriteShort(subsetHead, 50, 1);
+
+        byte[] subsetMaxp = (byte[])maxpTable.Clone();
+        WriteUShort(subsetMaxp, 4, checked((ushort)sourceGlyphOrder.Length));
+
+        var hasHorizontalMetrics = false;
+        byte[] subsetHhea = Array.Empty<byte>();
+        byte[] subsetHmtx = Array.Empty<byte>();
+        if (face.TryGetTable("hhea", out byte[] hheaTable) &&
+            face.TryGetTable("hmtx", out byte[] hmtxTable))
+        {
+            if (hheaTable.Length < 36)
+            {
+                throw new FormatException("Horizontal header table is truncated.");
+            }
+
+            subsetHhea = (byte[])hheaTable.Clone();
+            WriteUShort(subsetHhea, 34, checked((ushort)sourceGlyphOrder.Length));
+            subsetHmtx = BuildCompactHmtxTable(hheaTable, hmtxTable, sourceGlyphOrder);
+            hasHorizontalMetrics = true;
+        }
+
+        var tables = new List<TableData>(face.Tables.Count);
+        foreach (TableData table in face.Tables)
+        {
+            if (ShouldSkipCompactCopiedTable(table.Tag))
+            {
+                continue;
+            }
+
+            tables.Add(table);
+        }
+
+        tables.Add(new TableData("head", subsetHead));
+        tables.Add(new TableData("maxp", subsetMaxp));
+        tables.Add(new TableData("loca", glyphSubset.Loca));
+        tables.Add(new TableData("glyf", glyphSubset.Glyf));
+        if (hasHorizontalMetrics)
+        {
+            tables.Add(new TableData("hhea", subsetHhea));
+            tables.Add(new TableData("hmtx", subsetHmtx));
+        }
+
+        return BuildSfnt(face.SfntVersion, tables);
+    }
+
     private static bool[] CreateIncludedGlyphSet(ushort glyphCount, IEnumerable<ushort> glyphs)
     {
         var includedGlyphs = new bool[glyphCount];
@@ -140,6 +268,40 @@ static class SfntFontSubsetter
                 }
             }
         }
+    }
+
+    private static ushort[] CreateCompactGlyphOrder(bool[] includedGlyphs)
+    {
+        var glyphOrder = new List<ushort>();
+        for (int i = 0; i < includedGlyphs.Length; i++)
+        {
+            if (includedGlyphs[i])
+            {
+                glyphOrder.Add(checked((ushort)i));
+            }
+        }
+
+        if (glyphOrder.Count == 0 || glyphOrder[0] != 0)
+        {
+            glyphOrder.Insert(0, 0);
+        }
+
+        return glyphOrder.ToArray();
+    }
+
+    private static Dictionary<ushort, ushort> CreateGlyphRemap(ushort[] sourceGlyphOrder, out SfntGlyphRemap[] glyphMap)
+    {
+        var sourceToSubsetMap = new Dictionary<ushort, ushort>(sourceGlyphOrder.Length);
+        glyphMap = new SfntGlyphRemap[sourceGlyphOrder.Length];
+        for (int subsetGlyph = 0; subsetGlyph < sourceGlyphOrder.Length; subsetGlyph++)
+        {
+            ushort sourceGlyph = sourceGlyphOrder[subsetGlyph];
+            ushort compactGlyph = checked((ushort)subsetGlyph);
+            sourceToSubsetMap[sourceGlyph] = compactGlyph;
+            glyphMap[subsetGlyph] = new SfntGlyphRemap(sourceGlyph, compactGlyph);
+        }
+
+        return sourceToSubsetMap;
     }
 
     private static List<ushort> ReadCompositeComponents(
@@ -233,6 +395,163 @@ static class SfntFontSubsetter
 
         offsets[^1] = checked((uint)glyfStream.Position);
         return new GlyphTableSubset(glyfStream.ToArray(), BuildLongLoca(offsets));
+    }
+
+    private static GlyphTableSubset BuildCompactGlyphTableSubset(
+        ReadOnlySpan<byte> sourceGlyf,
+        uint[] sourceGlyphOffsets,
+        ushort[] sourceGlyphOrder,
+        IReadOnlyDictionary<ushort, ushort> sourceToSubsetMap)
+    {
+        var offsets = new uint[sourceGlyphOrder.Length + 1];
+        using var glyfStream = new MemoryStream();
+
+        for (int subsetGlyph = 0; subsetGlyph < sourceGlyphOrder.Length; subsetGlyph++)
+        {
+            offsets[subsetGlyph] = checked((uint)glyfStream.Position);
+            ushort sourceGlyph = sourceGlyphOrder[subsetGlyph];
+            uint sourceStart = sourceGlyphOffsets[sourceGlyph];
+            uint sourceEnd = sourceGlyphOffsets[sourceGlyph + 1];
+            if (sourceStart == sourceEnd)
+            {
+                continue;
+            }
+
+            if (sourceStart > sourceEnd || sourceEnd > sourceGlyf.Length)
+            {
+                throw new FormatException("Glyph location table contains an invalid glyph range.");
+            }
+
+            ReadOnlySpan<byte> glyphData = sourceGlyf.Slice(checked((int)sourceStart), checked((int)(sourceEnd - sourceStart)));
+            byte[] remappedGlyph = RemapCompositeGlyphData(glyphData, sourceToSubsetMap);
+            glyfStream.Write(remappedGlyph);
+            WritePadding(glyfStream);
+        }
+
+        offsets[^1] = checked((uint)glyfStream.Position);
+        return new GlyphTableSubset(glyfStream.ToArray(), BuildLongLoca(offsets));
+    }
+
+    private static byte[] RemapCompositeGlyphData(
+        ReadOnlySpan<byte> glyphData,
+        IReadOnlyDictionary<ushort, ushort> sourceToSubsetMap)
+    {
+        byte[] remappedGlyph = glyphData.ToArray();
+        if (glyphData.Length == 0)
+        {
+            return remappedGlyph;
+        }
+
+        if (!CanRead(glyphData, 0, 10) || ReadShort(glyphData, 0) >= 0)
+        {
+            return remappedGlyph;
+        }
+
+        int offset = 10;
+        ushort flags;
+        do
+        {
+            if (!CanRead(glyphData, offset, 4))
+            {
+                throw new FormatException("Composite glyph component record is truncated.");
+            }
+
+            flags = ReadUShort(glyphData, offset);
+            ushort sourceGlyph = ReadUShort(glyphData, offset + 2);
+            if (!sourceToSubsetMap.TryGetValue(sourceGlyph, out ushort subsetGlyph))
+            {
+                throw new FormatException("Composite glyph references a glyph outside the compact subset.");
+            }
+
+            WriteUShort(remappedGlyph, offset + 2, subsetGlyph);
+            offset += 4;
+
+            offset += (flags & CompositeArgsAreWords) != 0 ? 4 : 2;
+            if ((flags & CompositeHasScale) != 0)
+            {
+                offset += 2;
+            }
+            else if ((flags & CompositeHasXYScale) != 0)
+            {
+                offset += 4;
+            }
+            else if ((flags & CompositeHasTwoByTwo) != 0)
+            {
+                offset += 8;
+            }
+        }
+        while ((flags & CompositeMoreComponents) != 0);
+
+        if ((flags & CompositeHasInstructions) != 0)
+        {
+            if (!CanRead(glyphData, offset, 2))
+            {
+                throw new FormatException("Composite glyph instruction length is truncated.");
+            }
+
+            int instructionLength = ReadUShort(glyphData, offset);
+            if (!CanRead(glyphData, offset + 2, instructionLength))
+            {
+                throw new FormatException("Composite glyph instructions are truncated.");
+            }
+        }
+
+        return remappedGlyph;
+    }
+
+    private static byte[] BuildCompactHmtxTable(
+        ReadOnlySpan<byte> sourceHhea,
+        ReadOnlySpan<byte> sourceHmtx,
+        ushort[] sourceGlyphOrder)
+    {
+        ushort sourceMetricCount = ReadUShort(sourceHhea, 34);
+        if (sourceMetricCount == 0)
+        {
+            throw new FormatException("Horizontal metrics table has no long metrics.");
+        }
+
+        using var hmtxStream = new MemoryStream(checked(sourceGlyphOrder.Length * 4));
+        foreach (ushort sourceGlyph in sourceGlyphOrder)
+        {
+            ReadSourceHorizontalMetrics(sourceHmtx, sourceMetricCount, sourceGlyph, out ushort advanceWidth, out short leftSideBearing);
+            hmtxStream.WriteByte((byte)(advanceWidth >> 8));
+            hmtxStream.WriteByte((byte)(advanceWidth & 0xFF));
+            hmtxStream.WriteByte((byte)((unchecked((ushort)leftSideBearing) >> 8) & 0xFF));
+            hmtxStream.WriteByte((byte)(unchecked((ushort)leftSideBearing) & 0xFF));
+        }
+
+        return hmtxStream.ToArray();
+    }
+
+    private static void ReadSourceHorizontalMetrics(
+        ReadOnlySpan<byte> sourceHmtx,
+        ushort sourceMetricCount,
+        ushort sourceGlyph,
+        out ushort advanceWidth,
+        out short leftSideBearing)
+    {
+        int advanceOffset;
+        int leftSideBearingOffset;
+        if (sourceGlyph < sourceMetricCount)
+        {
+            advanceOffset = sourceGlyph * 4;
+            leftSideBearingOffset = advanceOffset + 2;
+        }
+        else
+        {
+            advanceOffset = (sourceMetricCount - 1) * 4;
+            leftSideBearingOffset = sourceMetricCount * 4 + (sourceGlyph - sourceMetricCount) * 2;
+        }
+
+        if (!CanRead(sourceHmtx, advanceOffset, 2))
+        {
+            throw new FormatException("Horizontal metrics table is truncated.");
+        }
+
+        advanceWidth = ReadUShort(sourceHmtx, advanceOffset);
+        leftSideBearing = CanRead(sourceHmtx, leftSideBearingOffset, 2)
+            ? ReadShort(sourceHmtx, leftSideBearingOffset)
+            : (short)0;
     }
 
     private static uint[] ReadLoca(ReadOnlySpan<byte> locaTable, ushort glyphCount, short locaFormat)
@@ -345,6 +664,13 @@ static class SfntFontSubsetter
         }
 
         return output;
+    }
+
+    private static bool ShouldSkipCompactCopiedTable(string tag)
+    {
+        return tag is "DSIG" or "head" or "maxp" or "loca" or "glyf" or "hhea" or "hmtx" or
+            "cmap" or "GSUB" or "GPOS" or "GDEF" or "kern" or "vhea" or "vmtx" or
+            "VORG" or "BASE" or "JSTF" or "MATH" or "COLR" or "CPAL" or "post";
     }
 
     private static ushort CalculateSearchRange(ushort tableCount)
