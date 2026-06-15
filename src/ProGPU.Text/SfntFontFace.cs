@@ -51,6 +51,44 @@ public
 #else
 internal
 #endif
+readonly struct SfntHorizontalGlyphMetrics
+{
+    public SfntHorizontalGlyphMetrics(ushort advanceWidth, short leftSideBearing)
+    {
+        AdvanceWidth = advanceWidth;
+        LeftSideBearing = leftSideBearing;
+    }
+
+    public ushort AdvanceWidth { get; }
+    public short LeftSideBearing { get; }
+}
+
+#if PROGPU_TEXT_PUBLIC
+public
+#else
+internal
+#endif
+readonly struct SfntGlyphBounds
+{
+    public SfntGlyphBounds(short xMin, short yMin, short xMax, short yMax)
+    {
+        XMin = xMin;
+        YMin = yMin;
+        XMax = xMax;
+        YMax = yMax;
+    }
+
+    public short XMin { get; }
+    public short YMin { get; }
+    public short XMax { get; }
+    public short YMax { get; }
+}
+
+#if PROGPU_TEXT_PUBLIC
+public
+#else
+internal
+#endif
 sealed class SfntFontFace
 {
     private readonly byte[] _data;
@@ -67,6 +105,7 @@ sealed class SfntFontFace
     public int FaceIndex { get; }
     public uint BaseOffset { get; }
     public IReadOnlyDictionary<string, SfntTableRecord> Tables => _tables;
+    public bool UsesSymbolCharacterMap => TryFindCmapSubtables(out _, out _, out bool usesSymbolCharacterMap) && usesSymbolCharacterMap;
 
     public static SfntFontFace Load(string filePath, int faceIndex = 0)
     {
@@ -206,6 +245,186 @@ sealed class SfntFontFace
         return false;
     }
 
+    public bool TryGetGlyphCount(out ushort glyphCount)
+    {
+        glyphCount = 0;
+        if (!TryGetTable("maxp", out ReadOnlyMemory<byte> tableMemory))
+        {
+            return false;
+        }
+
+        ReadOnlySpan<byte> table = tableMemory.Span;
+        if (table.Length < 6)
+        {
+            return false;
+        }
+
+        glyphCount = ReadUShort(table, 4);
+        return true;
+    }
+
+    public bool TryGetEmbeddingRights(out ushort fsType)
+    {
+        fsType = 0;
+        if (!TryGetTable("OS/2", out ReadOnlyMemory<byte> tableMemory))
+        {
+            return false;
+        }
+
+        ReadOnlySpan<byte> table = tableMemory.Span;
+        if (table.Length < 10)
+        {
+            return false;
+        }
+
+        fsType = ReadUShort(table, 8);
+        return true;
+    }
+
+    public bool TryGetGlyphIndex(uint codePoint, out ushort glyphIndex)
+    {
+        glyphIndex = 0;
+        if (!TryFindCmapSubtables(out ReadOnlyMemory<byte> format4Memory, out ReadOnlyMemory<byte> format12Memory, out _))
+        {
+            return false;
+        }
+
+        if (!format12Memory.IsEmpty && TryGetFormat12GlyphIndex(format12Memory.Span, codePoint, out glyphIndex))
+        {
+            return true;
+        }
+
+        if (!format4Memory.IsEmpty && TryGetFormat4GlyphIndex(format4Memory.Span, codePoint, out glyphIndex))
+        {
+            return true;
+        }
+
+        glyphIndex = 0;
+        return true;
+    }
+
+    public bool TryGetHorizontalGlyphMetrics(ushort glyphIndex, out SfntHorizontalGlyphMetrics metrics)
+    {
+        metrics = default;
+        if (!TryGetTable("hhea", out ReadOnlyMemory<byte> hheaMemory) ||
+            !TryGetTable("hmtx", out ReadOnlyMemory<byte> hmtxMemory))
+        {
+            return false;
+        }
+
+        ReadOnlySpan<byte> hhea = hheaMemory.Span;
+        ReadOnlySpan<byte> hmtx = hmtxMemory.Span;
+        if (hhea.Length < 36)
+        {
+            return false;
+        }
+
+        ushort numberOfHorizontalMetrics = ReadUShort(hhea, 34);
+        if (numberOfHorizontalMetrics == 0)
+        {
+            return false;
+        }
+
+        int advanceOffset;
+        int leftSideBearingOffset;
+        if (glyphIndex < numberOfHorizontalMetrics)
+        {
+            advanceOffset = glyphIndex * 4;
+            leftSideBearingOffset = advanceOffset + 2;
+        }
+        else
+        {
+            advanceOffset = (numberOfHorizontalMetrics - 1) * 4;
+            leftSideBearingOffset = numberOfHorizontalMetrics * 4 + (glyphIndex - numberOfHorizontalMetrics) * 2;
+        }
+
+        if (!CanRead(hmtx, advanceOffset, 2))
+        {
+            return false;
+        }
+
+        ushort advanceWidth = ReadUShort(hmtx, advanceOffset);
+        short leftSideBearing = CanRead(hmtx, leftSideBearingOffset, 2)
+            ? ReadShort(hmtx, leftSideBearingOffset)
+            : (short)0;
+
+        metrics = new SfntHorizontalGlyphMetrics(advanceWidth, leftSideBearing);
+        return true;
+    }
+
+    public bool TryGetGlyphBounds(ushort glyphIndex, out SfntGlyphBounds bounds)
+    {
+        bounds = default;
+        if (!TryGetTable("head", out ReadOnlyMemory<byte> headMemory) ||
+            !TryGetTable("loca", out ReadOnlyMemory<byte> locaMemory) ||
+            !TryGetTable("glyf", out ReadOnlyMemory<byte> glyfMemory))
+        {
+            return false;
+        }
+
+        ReadOnlySpan<byte> head = headMemory.Span;
+        ReadOnlySpan<byte> loca = locaMemory.Span;
+        ReadOnlySpan<byte> glyf = glyfMemory.Span;
+        if (head.Length < 52)
+        {
+            return false;
+        }
+
+        short indexToLocFormat = ReadShort(head, 50);
+        uint startOffset;
+        uint endOffset;
+        if (indexToLocFormat == 0)
+        {
+            int locaOffset = glyphIndex * 2;
+            if (!CanRead(loca, locaOffset, 4))
+            {
+                return false;
+            }
+
+            startOffset = (uint)(ReadUShort(loca, locaOffset) * 2);
+            endOffset = (uint)(ReadUShort(loca, locaOffset + 2) * 2);
+        }
+        else if (indexToLocFormat == 1)
+        {
+            int locaOffset = glyphIndex * 4;
+            if (!CanRead(loca, locaOffset, 8))
+            {
+                return false;
+            }
+
+            startOffset = ReadUInt(loca, locaOffset);
+            endOffset = ReadUInt(loca, locaOffset + 4);
+        }
+        else
+        {
+            return false;
+        }
+
+        if (startOffset == endOffset)
+        {
+            bounds = default;
+            return true;
+        }
+
+        if (startOffset > glyf.Length || endOffset > glyf.Length || startOffset > endOffset)
+        {
+            return false;
+        }
+
+        int glyphOffset = checked((int)startOffset);
+        if (!CanRead(glyf, glyphOffset, 10))
+        {
+            return false;
+        }
+
+        bounds = new SfntGlyphBounds(
+            ReadShort(glyf, glyphOffset + 2),
+            ReadShort(glyf, glyphOffset + 4),
+            ReadShort(glyf, glyphOffset + 6),
+            ReadShort(glyf, glyphOffset + 8));
+        return true;
+    }
+
     private static uint[] ReadFaceOffsets(byte[] data)
     {
         if (data.Length < 12)
@@ -272,6 +491,213 @@ sealed class SfntFontFace
         }
 
         return new SfntFontFace(data, faceIndex, baseOffset, tables);
+    }
+
+    private bool TryFindCmapSubtables(
+        out ReadOnlyMemory<byte> format4,
+        out ReadOnlyMemory<byte> format12,
+        out bool usesSymbolCharacterMap)
+    {
+        format4 = default;
+        format12 = default;
+        usesSymbolCharacterMap = false;
+
+        if (!TryGetTable("cmap", out ReadOnlyMemory<byte> cmapMemory))
+        {
+            return false;
+        }
+
+        ReadOnlySpan<byte> cmap = cmapMemory.Span;
+        if (cmap.Length < 4)
+        {
+            return false;
+        }
+
+        ReadOnlyMemory<byte> symbolFormat4 = default;
+        ushort tableCount = ReadUShort(cmap, 2);
+        for (int i = 0; i < tableCount; i++)
+        {
+            int recordOffset = 4 + i * 8;
+            if (!CanRead(cmap, recordOffset, 8))
+            {
+                break;
+            }
+
+            ushort platformId = ReadUShort(cmap, recordOffset);
+            ushort encodingId = ReadUShort(cmap, recordOffset + 2);
+            uint subtableOffset = ReadUInt(cmap, recordOffset + 4);
+            if (subtableOffset > cmap.Length || !CanRead(cmap, (int)subtableOffset, 2))
+            {
+                continue;
+            }
+
+            ushort format = ReadUShort(cmap, (int)subtableOffset);
+            ReadOnlyMemory<byte> subtable = GetCmapSubtable(cmapMemory, subtableOffset, format);
+            if (subtable.IsEmpty)
+            {
+                continue;
+            }
+
+            if (format == 12 && IsUnicodeCmap(platformId, encodingId))
+            {
+                format12 = subtable;
+            }
+            else if (format == 4 && IsUnicodeCmap(platformId, encodingId))
+            {
+                format4 = subtable;
+                usesSymbolCharacterMap = false;
+            }
+            else if (format == 4 && platformId == 3 && encodingId == 0 && format4.IsEmpty)
+            {
+                symbolFormat4 = subtable;
+            }
+        }
+
+        if (format4.IsEmpty && !symbolFormat4.IsEmpty)
+        {
+            format4 = symbolFormat4;
+            usesSymbolCharacterMap = true;
+        }
+
+        return !format4.IsEmpty || !format12.IsEmpty;
+    }
+
+    private static ReadOnlyMemory<byte> GetCmapSubtable(ReadOnlyMemory<byte> cmap, uint offset, ushort format)
+    {
+        ReadOnlySpan<byte> span = cmap.Span;
+        int subtableOffset = checked((int)offset);
+        if (format == 4)
+        {
+            if (!CanRead(span, subtableOffset, 4))
+            {
+                return default;
+            }
+
+            ushort length = ReadUShort(span, subtableOffset + 2);
+            return length > 0 && CanRead(span, subtableOffset, length)
+                ? cmap.Slice(subtableOffset, length)
+                : default;
+        }
+
+        if (format == 12)
+        {
+            if (!CanRead(span, subtableOffset, 8))
+            {
+                return default;
+            }
+
+            uint length = ReadUInt(span, subtableOffset + 4);
+            return length <= int.MaxValue && length > 0 && CanRead(span, subtableOffset, checked((int)length))
+                ? cmap.Slice(subtableOffset, checked((int)length))
+                : default;
+        }
+
+        return default;
+    }
+
+    private static bool TryGetFormat12GlyphIndex(ReadOnlySpan<byte> format12, uint codePoint, out ushort glyphIndex)
+    {
+        glyphIndex = 0;
+        if (format12.Length < 16)
+        {
+            return false;
+        }
+
+        uint groupCount = ReadUInt(format12, 12);
+        int low = 0;
+        int high = checked((int)groupCount) - 1;
+        while (low <= high)
+        {
+            int mid = low + ((high - low) / 2);
+            int offset = 16 + mid * 12;
+            if (!CanRead(format12, offset, 12))
+            {
+                return false;
+            }
+
+            uint start = ReadUInt(format12, offset);
+            uint end = ReadUInt(format12, offset + 4);
+            if (codePoint >= start && codePoint <= end)
+            {
+                uint value = ReadUInt(format12, offset + 8) + (codePoint - start);
+                glyphIndex = value <= ushort.MaxValue ? (ushort)value : (ushort)0;
+                return true;
+            }
+
+            if (codePoint < start)
+            {
+                high = mid - 1;
+            }
+            else
+            {
+                low = mid + 1;
+            }
+        }
+
+        glyphIndex = 0;
+        return true;
+    }
+
+    private static bool TryGetFormat4GlyphIndex(ReadOnlySpan<byte> format4, uint codePoint, out ushort glyphIndex)
+    {
+        glyphIndex = 0;
+        if (format4.Length < 14 || codePoint > ushort.MaxValue)
+        {
+            return false;
+        }
+
+        ushort code = (ushort)codePoint;
+        ushort segmentCount = (ushort)(ReadUShort(format4, 6) / 2);
+        int endCodeOffset = 14;
+        int startCodeOffset = endCodeOffset + segmentCount * 2 + 2;
+        int deltaOffset = startCodeOffset + segmentCount * 2;
+        int rangeOffset = deltaOffset + segmentCount * 2;
+        if (!CanRead(format4, rangeOffset, segmentCount * 2))
+        {
+            return false;
+        }
+
+        int segment = -1;
+        for (int i = 0; i < segmentCount; i++)
+        {
+            if (ReadUShort(format4, endCodeOffset + i * 2) >= code)
+            {
+                segment = i;
+                break;
+            }
+        }
+
+        if (segment < 0 || ReadUShort(format4, startCodeOffset + segment * 2) > code)
+        {
+            glyphIndex = 0;
+            return true;
+        }
+
+        short delta = ReadShort(format4, deltaOffset + segment * 2);
+        ushort idRangeOffset = ReadUShort(format4, rangeOffset + segment * 2);
+        if (idRangeOffset == 0)
+        {
+            glyphIndex = (ushort)((code + delta) & 0xFFFF);
+            return true;
+        }
+
+        int rangeOffsetAddress = rangeOffset + segment * 2;
+        int glyphIndexAddress = rangeOffsetAddress + idRangeOffset + (code - ReadUShort(format4, startCodeOffset + segment * 2)) * 2;
+        if (!CanRead(format4, glyphIndexAddress, 2))
+        {
+            glyphIndex = 0;
+            return true;
+        }
+
+        ushort rawIndex = ReadUShort(format4, glyphIndexAddress);
+        glyphIndex = rawIndex == 0 ? (ushort)0 : (ushort)((rawIndex + delta) & 0xFFFF);
+        return true;
+    }
+
+    private static bool IsUnicodeCmap(ushort platformId, ushort encodingId)
+    {
+        return platformId == 0 ||
+               (platformId == 3 && (encodingId == 1 || encodingId == 10));
     }
 
     private static string DecodeName(ReadOnlySpan<byte> bytes, ushort platformId, ushort encodingId)
@@ -360,6 +786,29 @@ sealed class SfntFontFace
         }
 
         return (ushort)((data[offset] << 8) | data[offset + 1]);
+    }
+
+    private static uint ReadUInt(ReadOnlySpan<byte> data, int offset)
+    {
+        if (offset > data.Length || data.Length - offset < 4)
+        {
+            throw new FormatException("SFNT UInt32 value is truncated.");
+        }
+
+        return (uint)((data[offset] << 24) |
+                      (data[offset + 1] << 16) |
+                      (data[offset + 2] << 8) |
+                       data[offset + 3]);
+    }
+
+    private static short ReadShort(ReadOnlySpan<byte> data, int offset)
+    {
+        return unchecked((short)ReadUShort(data, offset));
+    }
+
+    private static bool CanRead(ReadOnlySpan<byte> data, int offset, int length)
+    {
+        return offset >= 0 && length >= 0 && offset <= data.Length && length <= data.Length - offset;
     }
 
     private readonly struct NameCandidate
