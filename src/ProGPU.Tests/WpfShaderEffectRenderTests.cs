@@ -1,3 +1,4 @@
+using System;
 using System.Numerics;
 using Microsoft.UI.Xaml;
 using ProGPU.Backend;
@@ -184,6 +185,54 @@ fn wpf_effect_main(uv: vec2<f32>, inputColor: vec4<f32>) -> vec4<f32> {
     }
 
     [Fact]
+    public void WpfShaderEffect_PreservesTextureCoordinatesWhenClipped()
+    {
+        var window = HeadlessWindow.Shared;
+        window.Resize(160, 90);
+
+        using var texture = new GpuTexture(
+            window.Context,
+            2,
+            1,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.TextureBinding | TextureUsage.CopyDst,
+            "WPF Shader Effect Clip Source");
+        texture.WritePixels(new byte[]
+        {
+            255, 0, 0, 255,
+            0, 220, 0, 255
+        });
+
+        var effect = new WpfShaderEffectParams
+        {
+            Texture = texture,
+            Rect = new Rect(20f, 25f, 80f, 40f),
+            ShaderKey = $"test_wpf_native_shader_effect_clipped_uv_{Guid.NewGuid():N}",
+            SamplingMode = TextureSamplingMode.Nearest
+        };
+
+        window.Content = new ClippedShaderEffectVisual(effect);
+
+        try
+        {
+            window.Render();
+
+            Assert.False(effect.IsFailed, effect.LastError);
+
+            var pixels = window.ReadPixels();
+            var clippedLeft = ReadPixel(pixels, window.Width, x: 65, y: 45);
+
+            Assert.True(clippedLeft.G >= 180, $"Expected clipped shader effect to preserve right-half green UVs, found {clippedLeft}.");
+            Assert.True(clippedLeft.R <= 80, $"Expected clipped shader effect not to stretch left red UVs, found {clippedLeft}.");
+            Assert.Equal(255, clippedLeft.A);
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
+    [Fact]
     public void WpfShaderEffectVisual_RendersVisualSourceThroughNativeGpuPipeline()
     {
         var window = HeadlessWindow.Shared;
@@ -283,6 +332,25 @@ fn wpf_effect_main(uv: vec2<f32>, inputColor: vec4<f32>) -> vec4<f32> {
         public override void OnRender(DrawingContext context)
         {
             context.DrawWpfShaderEffect(_effect);
+        }
+    }
+
+    private sealed class ClippedShaderEffectVisual : FrameworkElement
+    {
+        private readonly WpfShaderEffectParams _effect;
+
+        public ClippedShaderEffectVisual(WpfShaderEffectParams effect)
+        {
+            _effect = effect;
+            Width = 160f;
+            Height = 90f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            context.PushClip(new Rect(60f, 25f, 40f, 40f));
+            context.DrawWpfShaderEffect(_effect);
+            context.PopClip();
         }
     }
 

@@ -319,16 +319,37 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         var v2 = Vector2.Transform(new Vector2(r.X + r.Width, r.Y + r.Height), transform);
         var v3 = Vector2.Transform(new Vector2(r.X, r.Y + r.Height), transform);
 
-        int startIndex = compositor.VectorIndices.Count;
+        var uv0 = new Vector2(0f, 0f);
+        var uv1 = new Vector2(1f, 0f);
+        var uv2 = new Vector2(1f, 1f);
+        var uv3 = new Vector2(0f, 1f);
 
+        if (compositor.ActiveClipRect.HasValue &&
+            !QuadClipper.TryClipAxisAlignedQuad(
+                compositor.ActiveClipRect.Value,
+                ref v0,
+                ref v1,
+                ref v2,
+                ref v3,
+                ref uv0,
+                ref uv1,
+                ref uv2,
+                ref uv3))
+        {
+            cmd.PointBufferOffset = compositor.VectorIndices.Count;
+            cmd.PointBufferCount = 0;
+            return;
+        }
+
+        int startIndex = compositor.VectorIndices.Count;
         int originalVertexCount = compositor.VectorVertices.Count;
         CollectionsMarshal.SetCount(compositor.VectorVertices, originalVertexCount + 4);
         var vertexSpan = CollectionsMarshal.AsSpan(compositor.VectorVertices).Slice(originalVertexCount, 4);
 
-        vertexSpan[0] = new VectorVertex(v0, color, new Vector2(0f, 0f));
-        vertexSpan[1] = new VectorVertex(v1, color, new Vector2(1f, 0f));
-        vertexSpan[2] = new VectorVertex(v2, color, new Vector2(1f, 1f));
-        vertexSpan[3] = new VectorVertex(v3, color, new Vector2(0f, 1f));
+        vertexSpan[0] = new VectorVertex(v0, color, uv0);
+        vertexSpan[1] = new VectorVertex(v1, color, uv1);
+        vertexSpan[2] = new VectorVertex(v2, color, uv2);
+        vertexSpan[3] = new VectorVertex(v3, color, uv3);
 
         int originalIndexCount = compositor.VectorIndices.Count;
         CollectionsMarshal.SetCount(compositor.VectorIndices, originalIndexCount + 6);
@@ -341,17 +362,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         indexSpan[3] = idxStart;
         indexSpan[4] = idxStart + 2;
         indexSpan[5] = idxStart + 3;
-
-        if (compositor.ActiveClipRect.HasValue)
-        {
-            var vertices = CollectionsMarshal.AsSpan(compositor.VectorVertices);
-            for (int i = originalVertexCount; i < vertices.Length; i++)
-            {
-                var v = vertices[i];
-                v.Position = compositor.ClampToClip(v.Position);
-                vertices[i] = v;
-            }
-        }
 
         cmd.PointBufferOffset = startIndex;
         cmd.PointBufferCount = compositor.VectorIndices.Count - startIndex;

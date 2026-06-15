@@ -17,6 +17,16 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
 }
 ";
 
+    private const string HorizontalSplitShader = @"
+fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
+    if (fragCoord.x < 40.0) {
+        return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+    }
+
+    return vec4<f32>(0.0, 1.0, 0.0, 1.0);
+}
+";
+
     [Fact]
     public void ShaderToy_HonorsActiveOpacityMask()
     {
@@ -46,6 +56,47 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
             Assert.Equal(255, visible.A);
 
             AssertColorNear(background, hidden, tolerance: 12);
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
+    [Fact]
+    public void ShaderToy_PreservesFragCoordinatesWhenClipped()
+    {
+        var window = HeadlessWindow.Shared;
+        window.Resize(160, 90);
+
+        var shader = new ShaderToyParams
+        {
+            Rect = new Rect(20f, 25f, 80f, 40f),
+            ShaderKey = $"test_shadertoy_clipped_coords_{Guid.NewGuid():N}",
+            ShaderSource = HorizontalSplitShader,
+            Resolution = new Vector3(80f, 40f, 1f),
+            Time = 0f,
+            TimeDelta = 0f,
+            Frame = 0f,
+            FrameRate = 60f,
+            Mouse = Vector4.Zero,
+            Date = Vector4.Zero
+        };
+
+        window.Content = new ClippedShaderToyVisual(shader);
+
+        try
+        {
+            window.Render();
+
+            Assert.False(shader.IsFailed);
+
+            var pixels = window.ReadPixels();
+            var clippedLeft = ReadPixel(pixels, window.Width, x: 65, y: 45);
+
+            Assert.True(clippedLeft.G >= 180, $"Expected clipped ShaderToy to preserve right-half green fragCoord, found {clippedLeft}.");
+            Assert.True(clippedLeft.R <= 80, $"Expected clipped ShaderToy not to compress left red half, found {clippedLeft}.");
+            Assert.Equal(255, clippedLeft.A);
         }
         finally
         {
@@ -116,6 +167,27 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
                 CompositorBuiltInExtensions.ShaderToy,
                 dataParam: _masked);
             context.PopOpacityMask();
+        }
+    }
+
+    private sealed class ClippedShaderToyVisual : FrameworkElement
+    {
+        private readonly ShaderToyParams _shader;
+
+        public ClippedShaderToyVisual(ShaderToyParams shader)
+        {
+            _shader = shader;
+            Width = 160f;
+            Height = 90f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            context.PushClip(new Rect(60f, 25f, 40f, 40f));
+            context.DrawExtension(
+                CompositorBuiltInExtensions.ShaderToy,
+                dataParam: _shader);
+            context.PopClip();
         }
     }
 }
