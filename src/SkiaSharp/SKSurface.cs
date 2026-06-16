@@ -236,6 +236,7 @@ public class SKSurface : IDisposable
 
         // Clear recorded commands so we don't redraw them next flush
         _drawingContext.Commands.Clear();
+        Canvas.ReleaseLayerTexturesAfterFlush();
     }
 
     public unsafe SKImage Snapshot()

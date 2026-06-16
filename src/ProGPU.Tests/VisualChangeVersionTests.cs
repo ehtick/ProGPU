@@ -2,6 +2,7 @@ using System.Numerics;
 using ProGPU.Backend;
 using ProGPU.Scene;
 using ProGPU.Tests.Headless;
+using ProGPU.Vector;
 using Silk.NET.WebGPU;
 using Xunit;
 
@@ -150,5 +151,47 @@ public sealed class VisualChangeVersionTests
         Assert.Equal(offset, visual.Offset);
         Assert.Equal(version, visual.ChangeVersion);
         Assert.False(visual.IsDirty);
+    }
+
+    [Fact]
+    public void RenderOffscreenPublishesCurrentContextForGpuSeriesUploads()
+    {
+        using var window = new HeadlessWindow(64, 64);
+        using var target = new GpuTexture(
+            window.Context,
+            64,
+            64,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.RenderAttachment | TextureUsage.TextureBinding,
+            "RenderOffscreen Current Context Test");
+        var visual = new DrawingVisual
+        {
+            Size = new Vector2(64f, 64f)
+        };
+        visual.Context.DrawGpuLineSeries(
+            Array.Empty<float>(),
+            pointsCount: 0,
+            thickness: 2f,
+            brush: new SolidColorBrush(new Vector4(1f, 0f, 0f, 1f)));
+
+        var previous = WgpuContext.Current;
+        WgpuContext.Current = null;
+
+        try
+        {
+            window.Compositor.RenderOffscreen(
+                visual,
+                width: 64,
+                height: 64,
+                targetTexture: target,
+                padding: 0f,
+                dpiScale: 1f);
+
+            Assert.Null(WgpuContext.Current);
+        }
+        finally
+        {
+            WgpuContext.Current = previous;
+        }
     }
 }

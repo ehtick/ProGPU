@@ -696,7 +696,7 @@ public class SKCanvas : IDisposable
         }
     }
 
-    public void Dispose()
+    internal void ReleaseLayerTexturesAfterFlush()
     {
         foreach (var texture in _ownedLayerTextures)
         {
@@ -704,5 +704,10 @@ public class SKCanvas : IDisposable
         }
 
         _ownedLayerTextures.Clear();
+    }
+
+    public void Dispose()
+    {
+        ReleaseLayerTexturesAfterFlush();
     }
 }

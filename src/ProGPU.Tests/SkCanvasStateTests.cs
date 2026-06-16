@@ -1,5 +1,7 @@
 using System;
+using System.Collections;
 using System.Numerics;
+using System.Reflection;
 using ProGPU.Backend;
 using ProGPU.Scene;
 using ProGPU.Vector;
@@ -150,6 +152,25 @@ public sealed class SkCanvasStateTests
                 Assert.NotNull(draw.Texture);
             },
             pop => Assert.Equal(RenderCommandType.PopClip, pop.Type));
+    }
+
+    [Fact]
+    public void SurfaceFlushReleasesSaveLayerTexturesAfterConsumingCommands()
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(32, 32, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var layerPaint = new SKPaint();
+        using var fill = new SKPaint { Color = SKColors.Red };
+
+        var restoreCount = surface.Canvas.SaveLayer(layerPaint);
+        surface.Canvas.DrawRect(new SKRect(2f, 2f, 20f, 20f), fill);
+        surface.Canvas.RestoreToCount(restoreCount);
+
+        var ownedLayerTextures = GetOwnedLayerTextures(surface.Canvas);
+        Assert.Single(ownedLayerTextures);
+
+        surface.Flush();
+
+        Assert.Empty(ownedLayerTextures);
     }
 
     [Fact]
@@ -631,5 +652,13 @@ public sealed class SkCanvasStateTests
     private static void AssertNear(float expected, float actual)
     {
         Assert.InRange(MathF.Abs(expected - actual), 0f, 0.0001f);
+    }
+
+    private static IList GetOwnedLayerTextures(SKCanvas canvas)
+    {
+        var field = typeof(SKCanvas).GetField(
+            "_ownedLayerTextures",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        return (IList)field!.GetValue(canvas)!;
     }
 }

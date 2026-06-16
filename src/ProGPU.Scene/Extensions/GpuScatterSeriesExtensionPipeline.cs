@@ -142,7 +142,10 @@ fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
                     }
 
                     int requiredLength = pointsCount * 3;
-                    bool needsUpload = cachedBuffer.PointsCount != pointsCount || cachedBuffer.Buffer == null;
+                    bool needsUpload =
+                        !cachedBuffer.IsOwnedBy(compositor.Context) ||
+                        cachedBuffer.PointsCount != pointsCount ||
+                        cachedBuffer.Buffer == null;
 
                     if (!needsUpload)
                     {

@@ -289,6 +289,27 @@ public unsafe class WgpuContext : IDisposable
         set => _current = value;
     }
 
+    public static CurrentContextScope PushCurrent(WgpuContext? context)
+    {
+        return new CurrentContextScope(context);
+    }
+
+    public readonly struct CurrentContextScope : IDisposable
+    {
+        private readonly WgpuContext? _previous;
+
+        internal CurrentContextScope(WgpuContext? context)
+        {
+            _previous = Current;
+            Current = context;
+        }
+
+        public void Dispose()
+        {
+            Current = _previous;
+        }
+    }
+
     private IWindow? _window;
     public IWindow? Window => _window;
 

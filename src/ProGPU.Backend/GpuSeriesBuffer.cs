@@ -19,7 +19,13 @@ namespace ProGPU.Backend
         public object? AssociatedData { get; set; }
         public int AssociatedDataVersion { get; set; }
         
+        private WgpuContext? _context;
         private bool _isDisposed;
+
+        public bool IsOwnedBy(WgpuContext context)
+        {
+            return ReferenceEquals(_context, context);
+        }
 
         public void Upload(float[] interleavedCoords, int pointsCount)
         {
@@ -33,6 +39,19 @@ namespace ProGPU.Backend
             {
                 throw new InvalidOperationException("WgpuContext.Current is not initialized. Cannot create GpuBuffer.");
             }
+
+            if (_context != null && !ReferenceEquals(_context, context))
+            {
+                ReleaseBindGroups(_context);
+                VsUniformBuffer?.Dispose();
+                VsUniformBuffer = null;
+                FsUniformBuffer?.Dispose();
+                FsUniformBuffer = null;
+                Buffer?.Dispose();
+                Buffer = null;
+            }
+
+            _context = context;
 
             if (Buffer == null || Buffer.Size < requiredBytes)
             {
@@ -59,8 +78,22 @@ namespace ProGPU.Backend
 
         public void ReleaseBindGroups()
         {
-            var context = WgpuContext.Current;
+            var context = _context ?? WgpuContext.Current;
             if (context == null) return;
+
+            ReleaseBindGroups(context);
+        }
+
+        private void ReleaseBindGroups(WgpuContext context)
+        {
+            if (context.IsDisposed)
+            {
+                LineBindGroup = 0;
+                ScatterBindGroup = 0;
+                LineBindGroupOffscreen = 0;
+                ScatterBindGroupOffscreen = 0;
+                return;
+            }
 
             if (LineBindGroup != 0)
             {

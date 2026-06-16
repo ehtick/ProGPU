@@ -1075,7 +1075,9 @@ public unsafe class Compositor : IDisposable
     public void RenderScene(Visual root, uint width, uint height, TextureView* targetView)
     {
         if (_isDisposed) return;
-        
+
+        using var currentContextScope = WgpuContext.PushCurrent(_context);
+
         _context.CleanupPendingResources();
         
         _currentWidth = width;
@@ -5718,6 +5720,8 @@ public unsafe class Compositor : IDisposable
 
     public void RenderOffscreen(Visual node, uint width, uint height, GpuTexture targetTexture, float padding, float dpiScale, Vector4? clearColor = null, bool loadExistingContents = false, bool includeRootTransform = true)
     {
+        using var currentContextScope = WgpuContext.PushCurrent(_context);
+
         var savedWidth = _currentWidth;
         var savedHeight = _currentHeight;
         var savedDpiScale = _currentDpiScale;
@@ -7253,7 +7257,10 @@ public unsafe class Compositor : IDisposable
                 }
 
                 int requiredLength = pointsCount * 2;
-                bool needsUpload = cachedBuffer.PointsCount != pointsCount || cachedBuffer.Buffer == null;
+                bool needsUpload =
+                    !cachedBuffer.IsOwnedBy(_context) ||
+                    cachedBuffer.PointsCount != pointsCount ||
+                    cachedBuffer.Buffer == null;
 
                 if (!needsUpload)
                 {
@@ -7349,7 +7356,10 @@ public unsafe class Compositor : IDisposable
                 }
 
                 int requiredLength = pointsCount * 3;
-                bool needsUpload = cachedBuffer.PointsCount != pointsCount || cachedBuffer.Buffer == null;
+                bool needsUpload =
+                    !cachedBuffer.IsOwnedBy(_context) ||
+                    cachedBuffer.PointsCount != pointsCount ||
+                    cachedBuffer.Buffer == null;
 
                 if (!needsUpload)
                 {
