@@ -126,6 +126,25 @@ public class WpfShaderEffectParamsTests
         Assert.Equal(TextureSamplingMode.Nearest, samplingMode);
     }
 
+    [Fact]
+    public void PrimaryTextureUsesDeclaredSourceRegisterBeforeSamplerZero()
+    {
+        var sourceTexture = (GpuTexture)RuntimeHelpers.GetUninitializedObject(typeof(GpuTexture));
+        var samplerZeroTexture = (GpuTexture)RuntimeHelpers.GetUninitializedObject(typeof(GpuTexture));
+        var parameters = new WpfShaderEffectParams
+        {
+            Texture = sourceTexture,
+            SourceTextureRegisterIndex = 3,
+            Samplers = new[]
+            {
+                new WpfShaderEffectSampler(0, samplerZeroTexture, TextureSamplingMode.Nearest)
+            }
+        };
+
+        Assert.True(parameters.TryGetPrimaryTexture(out var primaryTexture));
+        Assert.Same(sourceTexture, primaryTexture);
+    }
+
     private static int GetRenderCacheKey(WpfShaderEffect effect)
     {
         var method = typeof(WpfShaderEffect).GetMethod(

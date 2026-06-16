@@ -392,6 +392,71 @@ fn wpf_effect_main(uv: vec2<f32>, inputColor: vec4<f32>) -> vec4<f32> {
         }
     }
 
+    [Fact]
+    public void WpfShaderEffectShaderModuleCacheSeparatesSourceAlphaModes()
+    {
+        var window = HeadlessWindow.Shared;
+        window.Resize(32, 32);
+
+        var shaderKey = $"test_wpf_shader_effect_alpha_module_key_{Guid.NewGuid():N}";
+        using var straightTexture = new GpuTexture(
+            window.Context,
+            1,
+            1,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.TextureBinding | TextureUsage.CopyDst,
+            "WPF Shader Effect Straight Cache Source",
+            alphaMode: GpuTextureAlphaMode.Straight);
+        straightTexture.WritePixels(new byte[] { 255, 0, 0, 255 });
+
+        using var premultipliedTexture = new GpuTexture(
+            window.Context,
+            1,
+            1,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.TextureBinding | TextureUsage.CopyDst,
+            "WPF Shader Effect Premultiplied Cache Source",
+            alphaMode: GpuTextureAlphaMode.Premultiplied);
+        premultipliedTexture.WritePixels(new byte[] { 128, 0, 0, 128 });
+
+        var straightEffect = new WpfShaderEffectParams
+        {
+            Texture = straightTexture,
+            Rect = new Rect(0f, 0f, 32f, 32f),
+            ShaderKey = shaderKey,
+            SamplingMode = TextureSamplingMode.Nearest
+        };
+        var premultipliedEffect = new WpfShaderEffectParams
+        {
+            Texture = premultipliedTexture,
+            Rect = new Rect(0f, 0f, 32f, 32f),
+            ShaderKey = shaderKey,
+            SamplingMode = TextureSamplingMode.Nearest
+        };
+
+        try
+        {
+            window.Content = new StraightOpacityShaderEffectVisual(straightEffect);
+            window.Render();
+            Assert.False(straightEffect.IsFailed, straightEffect.LastError);
+
+            window.Content = new StraightOpacityShaderEffectVisual(premultipliedEffect);
+            window.Render();
+            Assert.False(premultipliedEffect.IsFailed, premultipliedEffect.LastError);
+
+            var pixel = ReadPixel(window.ReadPixels(), window.Width, x: 16, y: 16);
+
+            Assert.InRange(pixel.R, 52, 76);
+            Assert.InRange(pixel.G, 0, 8);
+            Assert.InRange(pixel.B, 0, 8);
+            Assert.Equal(255, pixel.A);
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
     private sealed class ShaderEffectVisual : FrameworkElement
     {
         private readonly WpfShaderEffectParams _effect;

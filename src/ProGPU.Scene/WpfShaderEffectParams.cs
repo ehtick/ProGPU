@@ -143,7 +143,12 @@ public sealed class WpfShaderEffectParams
 
     public bool TryGetPrimaryTexture(out GpuTexture texture)
     {
-        if (TryGetSampler(0, out texture, out _))
+        if (TryGetSampler(SourceTextureRegisterIndex, out texture, out _))
+        {
+            return true;
+        }
+
+        if (SourceTextureRegisterIndex != 0 && TryGetSampler(0, out texture, out _))
         {
             return true;
         }
