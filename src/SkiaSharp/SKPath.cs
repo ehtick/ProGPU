@@ -353,6 +353,10 @@ public class SKRoundRect : IDisposable
     public void SetRect(SKRect rect)
     {
         Rect = rect;
+        for (int i = 0; i < CornerRadii.Length; i++)
+        {
+            CornerRadii[i] = default;
+        }
     }
 
     public void Dispose() { }

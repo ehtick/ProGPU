@@ -279,6 +279,34 @@ public sealed class SkCanvasStateTests
     }
 
     [Fact]
+    public void RoundRectSetRectClearsPreviousCornerRadii()
+    {
+        var context = new DrawingContext();
+        using var canvas = new SKCanvas(context, 100f, 100f);
+        using var roundRect = new SKRoundRect();
+        using var paint = new SKPaint();
+        roundRect.SetRectRadii(
+            new SKRect(0f, 0f, 20f, 10f),
+            new[]
+            {
+                new SKPoint(2f, 3f),
+                new SKPoint(4f, 3f),
+                new SKPoint(4f, 5f),
+                new SKPoint(2f, 5f)
+            });
+
+        roundRect.SetRect(new SKRect(1f, 2f, 21f, 12f));
+        canvas.DrawRoundRect(roundRect, paint);
+
+        Assert.All(roundRect.CornerRadii, radius => Assert.Equal(default, radius));
+        var command = Assert.Single(context.Commands);
+        Assert.Equal(RenderCommandType.DrawRoundedRect, command.Type);
+        Assert.Equal(new Rect(1f, 2f, 20f, 10f), command.Rect);
+        Assert.Equal(0f, command.RadiusX);
+        Assert.Equal(0f, command.RadiusY);
+    }
+
+    [Fact]
     public void DrawPathInverseFillRecordsNativeDifferenceGeometry()
     {
         var context = new DrawingContext();
