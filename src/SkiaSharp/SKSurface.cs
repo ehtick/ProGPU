@@ -80,7 +80,7 @@ public class SKSurface : IDisposable
         _gpuTexture = texture;
         _ownsTexture = ownsTexture;
         _pixels = pixels;
-        _rowBytes = rowBytes;
+        _rowBytes = pixels != IntPtr.Zero ? ResolveCpuSurfaceRowBytes(width, height, rowBytes, nameof(rowBytes)) : rowBytes;
         _colorType = colorType;
         _alphaType = alphaType;
         _origin = origin;
@@ -91,7 +91,6 @@ public class SKSurface : IDisposable
 
         if (_pixels != IntPtr.Zero && _gpuTexture != null)
         {
-            int actualRowBytes = _rowBytes > 0 ? _rowBytes : _width * 4;
             byte[] temp = new byte[_width * _height * 4];
             unsafe
             {
@@ -100,7 +99,7 @@ public class SKSurface : IDisposable
                 {
                     for (int y = 0; y < _height; y++)
                     {
-                        byte* srcRow = src + y * actualRowBytes;
+                        byte* srcRow = src + y * _rowBytes;
                         byte* dstRow = dst + y * _width * 4;
                         
                         for (int x = 0; x < _width; x++)
@@ -141,6 +140,7 @@ public class SKSurface : IDisposable
 
     public static SKSurface Create(SKImageInfo info, IntPtr pixels, int rowBytes, SKSurfaceProperties properties)
     {
+        int actualRowBytes = pixels != IntPtr.Zero ? ResolveCpuSurfaceRowBytes(info.Width, info.Height, rowBytes, nameof(rowBytes)) : rowBytes;
         var ctx = SKContextHelper.GetContext();
         var texture = new GpuTexture(
             ctx,
@@ -150,7 +150,7 @@ public class SKSurface : IDisposable
             TextureUsage.RenderAttachment | TextureUsage.CopySrc | TextureUsage.CopyDst | TextureUsage.TextureBinding,
             "SKSurface CPU-backed Backing Texture"
         );
-        return new SKSurface(ctx, info.Width, info.Height, texture, true, pixels, rowBytes, info.ColorType, info.AlphaType);
+        return new SKSurface(ctx, info.Width, info.Height, texture, true, pixels, actualRowBytes, info.ColorType, info.AlphaType);
     }
 
     public static SKSurface Create(GRContext grContext, GRBackendRenderTarget renderTarget, GRSurfaceOrigin origin, SKColorType colorType)
@@ -226,7 +226,6 @@ public class SKSurface : IDisposable
         if (_pixels != IntPtr.Zero)
         {
             byte[] readBackBytes = _gpuTexture.ReadPixels();
-            int actualRowBytes = _rowBytes > 0 ? _rowBytes : _width * 4;
             
             unsafe
             {
@@ -236,7 +235,7 @@ public class SKSurface : IDisposable
                     for (int y = 0; y < _height; y++)
                     {
                         byte* srcRow = src + y * _width * 4;
-                        byte* dstRow = dst + y * actualRowBytes;
+                        byte* dstRow = dst + y * _rowBytes;
                         
                         for (int x = 0; x < _width; x++)
                         {
@@ -250,6 +249,18 @@ public class SKSurface : IDisposable
         // Clear recorded commands and dispose command-retained source textures.
         _drawingContext.Clear();
         Canvas.ReleaseLayerTexturesAfterFlush();
+    }
+
+    private static int ResolveCpuSurfaceRowBytes(int width, int height, int rowBytes, string parameterName)
+    {
+        int minimumRowBytes = checked(width * 4);
+        int actualRowBytes = rowBytes > 0 ? rowBytes : minimumRowBytes;
+        if (height > 0 && actualRowBytes < minimumRowBytes)
+        {
+            throw new ArgumentException("Row bytes must be large enough for one surface row.", parameterName);
+        }
+
+        return actualRowBytes;
     }
 
     public unsafe SKImage Snapshot()

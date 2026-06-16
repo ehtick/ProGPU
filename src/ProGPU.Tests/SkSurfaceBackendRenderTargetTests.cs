@@ -156,6 +156,27 @@ public sealed class SkSurfaceBackendRenderTargetTests
     }
 
     [Fact]
+    public void CpuBackedSurfaceRejectsRowBytesSmallerThanPixelWidth()
+    {
+        var pixels = Marshal.AllocHGlobal(8);
+        try
+        {
+            var exception = Assert.Throws<ArgumentException>(
+                () => SKSurface.Create(
+                    new SKImageInfo(2, 1, SKColorType.Rgba8888, SKAlphaType.Premul),
+                    pixels,
+                    rowBytes: 4));
+
+            Assert.Equal("rowBytes", exception.ParamName);
+            Assert.Contains("Row bytes", exception.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(pixels);
+        }
+    }
+
+    [Fact]
     public void SurfaceCompositorDisposingHandlerClearsContextCache()
     {
         var context = new WgpuContext();
