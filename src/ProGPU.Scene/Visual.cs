@@ -33,7 +33,9 @@ public class Visual
         {
             if (_effect != value)
             {
+                _effect?.RemoveOwner(this);
                 _effect = value;
+                _effect?.AddOwner(this);
                 Invalidate();
             }
         }
@@ -482,9 +484,47 @@ public class DrawingVisual : Visual
 
 public abstract class EffectBase
 {
+    private readonly object _ownersLock = new();
+    private readonly List<WeakReference<Visual>> _owners = new();
     private long _changeVersion;
 
     public long ChangeVersion => _changeVersion;
+
+    internal void AddOwner(Visual owner)
+    {
+        lock (_ownersLock)
+        {
+            for (var i = _owners.Count - 1; i >= 0; i--)
+            {
+                if (!_owners[i].TryGetTarget(out var existing))
+                {
+                    _owners.RemoveAt(i);
+                    continue;
+                }
+
+                if (ReferenceEquals(existing, owner))
+                {
+                    return;
+                }
+            }
+
+            _owners.Add(new WeakReference<Visual>(owner));
+        }
+    }
+
+    internal void RemoveOwner(Visual owner)
+    {
+        lock (_ownersLock)
+        {
+            for (var i = _owners.Count - 1; i >= 0; i--)
+            {
+                if (!_owners[i].TryGetTarget(out var existing) || ReferenceEquals(existing, owner))
+                {
+                    _owners.RemoveAt(i);
+                }
+            }
+        }
+    }
 
     protected void Invalidate()
     {
@@ -496,11 +536,43 @@ public abstract class EffectBase
                 _changeVersion = 1;
             }
         }
+
+        NotifyOwners();
     }
 
     internal virtual int GetRenderCacheKey()
     {
         return HashCode.Combine(GetType(), ChangeVersion);
+    }
+
+    private void NotifyOwners()
+    {
+        List<Visual>? owners = null;
+
+        lock (_ownersLock)
+        {
+            for (var i = _owners.Count - 1; i >= 0; i--)
+            {
+                if (!_owners[i].TryGetTarget(out var owner))
+                {
+                    _owners.RemoveAt(i);
+                    continue;
+                }
+
+                owners ??= new List<Visual>();
+                owners.Add(owner);
+            }
+        }
+
+        if (owners == null)
+        {
+            return;
+        }
+
+        foreach (var owner in owners)
+        {
+            owner.Invalidate();
+        }
     }
 }
 

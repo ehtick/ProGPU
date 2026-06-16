@@ -106,6 +106,59 @@ public sealed class VisualChangeVersionTests
     }
 
     [Fact]
+    public void EffectPropertyChangesInvalidateOwnerAndCachedAncestor()
+    {
+        var parent = new ContainerVisual { CacheAsLayer = true };
+        var child = new DrawingVisual { Effect = new BlurEffect(2f) };
+        parent.AddChild(child);
+        parent.IsDirty = false;
+        child.IsDirty = false;
+        var parentVersion = parent.ChangeVersion;
+        var childVersion = child.ChangeVersion;
+
+        ((BlurEffect)child.Effect!).BlurRadius = 4f;
+
+        Assert.True(child.IsDirty);
+        Assert.True(parent.IsDirty);
+        Assert.True(child.ChangeVersion > childVersion);
+        Assert.True(parent.ChangeVersion > parentVersion);
+    }
+
+    [Fact]
+    public void SharedEffectPropertyChangesInvalidateAllOwners()
+    {
+        var effect = new DropShadowEffect(2f);
+        var first = new DrawingVisual { Effect = effect };
+        var second = new DrawingVisual { Effect = effect };
+        first.IsDirty = false;
+        second.IsDirty = false;
+        var firstVersion = first.ChangeVersion;
+        var secondVersion = second.ChangeVersion;
+
+        effect.Offset = new Vector2(3f, 4f);
+
+        Assert.True(first.IsDirty);
+        Assert.True(second.IsDirty);
+        Assert.True(first.ChangeVersion > firstVersion);
+        Assert.True(second.ChangeVersion > secondVersion);
+    }
+
+    [Fact]
+    public void DetachedEffectNoLongerInvalidatesPreviousOwner()
+    {
+        var effect = new BlurEffect(2f);
+        var visual = new DrawingVisual { Effect = effect };
+        visual.Effect = null;
+        visual.IsDirty = false;
+        var visualVersion = visual.ChangeVersion;
+
+        effect.BlurRadius = 4f;
+
+        Assert.False(visual.IsDirty);
+        Assert.Equal(visualVersion, visual.ChangeVersion);
+    }
+
+    [Fact]
     public void ChildCollectionChangesIncrementParentChangeVersion()
     {
         var parent = new ContainerVisual();
