@@ -211,6 +211,35 @@ public sealed class SkImageBitmapTests
     }
 
     [Fact]
+    public void ReadPixelsRejectsDestinationStrideTooSmallForCopiedRange()
+    {
+        using var bitmap = new SKBitmap(new SKImageInfo(2, 1, SKColorType.Rgba8888, SKAlphaType.Premul));
+        WriteBytes(bitmap.GetPixels(), new byte[]
+        {
+            255, 0, 0, 255, 0, 255, 0, 255
+        });
+        using var image = SKImage.FromBitmap(bitmap);
+        var dst = Marshal.AllocHGlobal(8);
+        try
+        {
+            var exception = Assert.Throws<ArgumentException>(
+                () => image.ReadPixels(
+                    new SKImageInfo(3, 1, SKColorType.Rgba8888, SKAlphaType.Premul),
+                    dst,
+                    dstRowBytes: 8,
+                    srcX: -1,
+                    srcY: 0,
+                    SKImageCachingHint.Allow));
+
+            Assert.Equal("dstRowBytes", exception.ParamName);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(dst);
+        }
+    }
+
+    [Fact]
     public void ReadPixelsUnpremultipliesWhenDestinationRequestsUnpremul()
     {
         using var bitmap = new SKBitmap(new SKImageInfo(1, 1, SKColorType.Rgba8888, SKAlphaType.Premul));

@@ -163,6 +163,12 @@ public class SKImage : IDisposable
         if (copyWidth <= 0 || copyHeight <= 0) return;
         
         int actualDstRowBytes = dstRowBytes > 0 ? dstRowBytes : dstInfo.Width * 4;
+        int minimumDstRowBytes = checked((dstStartX + copyWidth) * 4);
+        if (actualDstRowBytes < minimumDstRowBytes)
+        {
+            throw new ArgumentException("Destination row bytes must cover the copied pixel range.", nameof(dstRowBytes));
+        }
+
         bool convertAlpha = Texture.AlphaMode == GpuTextureAlphaMode.Premultiplied
             ? dstInfo.AlphaType == SKAlphaType.Unpremul
             : dstInfo.AlphaType == SKAlphaType.Premul;
