@@ -418,7 +418,17 @@ public class Graphics : IDisposable
     public void DrawString(string s, Font font, Brush brush, PointF point) => DrawString(s, font, brush, point.X, point.Y);
     public void DrawString(string s, Font font, Brush brush, float x, float y)
     {
-        _context.DrawText(s, font.TtfFont, GetFontPixelSize(font), brush.ToProGpuBrush(), new Vector2(x, y), CurrentTransform4x4());
+        var isBold = (font.Style & FontStyle.Bold) != 0;
+        var isItalic = (font.Style & FontStyle.Italic) != 0;
+        _context.DrawText(
+            s,
+            font.TtfFont,
+            GetFontPixelSize(font),
+            brush.ToProGpuBrush(),
+            new Vector2(x, y),
+            CurrentTransform4x4(),
+            isBold,
+            isItalic);
     }
 
     public void DrawString(string s, Font font, Brush brush, RectangleF layoutRectangle)

@@ -5,6 +5,8 @@ using System.Drawing.Imaging;
 using System.IO;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using System.Reflection;
+using System.Runtime.CompilerServices;
 using ProGPU.Backend;
 using ProGPU.Scene;
 using SkiaSharp;
@@ -556,6 +558,39 @@ public class GdiShimTests
         AssertNear(1f, command.Transform.M12);
         AssertNear(-1f, command.Transform.M21);
         AssertNear(0f, command.Transform.M22);
+    }
+
+    [Fact]
+    public void DrawStringForwardsFontStyleFlags()
+    {
+        using var target = new Bitmap(40, 40);
+        using var graphics = Graphics.FromImage(target);
+        using var font = CreateCommandFont(FontStyle.Bold | FontStyle.Italic);
+        using var brush = new SolidBrush(Color.Black);
+
+        graphics.DrawString("Styled", font, brush, 1f, 2f);
+
+        var command = Assert.Single(graphics.DrawingContext.Commands);
+        Assert.Equal(RenderCommandType.DrawText, command.Type);
+        Assert.True(command.IsBold);
+        Assert.True(command.IsItalic);
+    }
+
+    private static Font CreateCommandFont(FontStyle style)
+    {
+        var font = (Font)RuntimeHelpers.GetUninitializedObject(typeof(Font));
+        SetBackingField(font, nameof(Font.Size), 12f);
+        SetBackingField(font, nameof(Font.Style), style);
+        SetBackingField(font, nameof(Font.Unit), GraphicsUnit.Point);
+        return font;
+    }
+
+    private static void SetBackingField<T>(object instance, string propertyName, T value)
+    {
+        var field = instance.GetType().GetField(
+            $"<{propertyName}>k__BackingField",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        field!.SetValue(instance, value);
     }
 
     private static void AssertNear(float expected, float actual)
