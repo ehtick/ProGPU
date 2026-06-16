@@ -252,11 +252,22 @@ public class SKShader : IDisposable
         float[]? colorPos,
         SKShaderTileMode mode)
     {
-        // Conical falls back to radial gradient brush using start center and radius for simplicity
+        if (!NearlyEqual(start.X, end.X) ||
+            !NearlyEqual(start.Y, end.Y) ||
+            !NearlyEqual(startRadius, endRadius))
+        {
+            throw new NotSupportedException("Two-point conical gradients with different centers or radii are not supported by ProGPU Skia gradients.");
+        }
+
         return CreateRadialGradient(start, startRadius, colors, colorPos, mode);
     }
 
     public void Dispose() { }
+
+    private static bool NearlyEqual(float left, float right)
+    {
+        return Math.Abs(left - right) <= 1e-5f;
+    }
 
     private static GradientSpreadMethod MapTileMode(SKShaderTileMode mode)
     {

@@ -95,6 +95,17 @@ public sealed class SkImageBitmapTests
     }
 
     [Fact]
+    public void FromBitmapForcesOpaqueUploadsToAlpha255()
+    {
+        using var bitmap = new SKBitmap(new SKImageInfo(1, 1, SKColorType.Rgba8888, SKAlphaType.Opaque));
+        WriteBytes(bitmap.GetPixels(), new byte[] { 10, 20, 30, 0 });
+
+        using var image = SKImage.FromBitmap(bitmap);
+
+        Assert.Equal(new byte[] { 10, 20, 30, 255 }, image.Texture.ReadPixels());
+    }
+
+    [Fact]
     public void EncodeUnpremultipliesPremultipliedPixels()
     {
         using var bitmap = new SKBitmap(new SKImageInfo(1, 1, SKColorType.Rgba8888, SKAlphaType.Premul));

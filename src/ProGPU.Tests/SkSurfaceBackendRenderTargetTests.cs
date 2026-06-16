@@ -66,6 +66,24 @@ public sealed class SkSurfaceBackendRenderTargetTests
     }
 
     [Fact]
+    public void CreateFromBottomLeftBackendRenderTargetFailsExplicitly()
+    {
+        using var grContext = GRContext.CreateGl() ?? throw new InvalidOperationException("Failed to create GRContext.");
+        using var texture = new GpuTexture(
+            grContext.Context,
+            4,
+            4,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.RenderAttachment | TextureUsage.CopySrc | TextureUsage.CopyDst | TextureUsage.TextureBinding,
+            "SKSurface bottom-left render target test");
+        using var renderTarget = new GRBackendRenderTarget(4, 4, texture);
+
+        var exception = Assert.Throws<NotSupportedException>(
+            () => SKSurface.Create(grContext, renderTarget, GRSurfaceOrigin.BottomLeft, SKColorType.Rgba8888));
+        Assert.Contains("BottomLeft", exception.Message);
+    }
+
+    [Fact]
     public void CpuBackedUnpremulSurfaceConvertsAtGpuBoundary()
     {
         var pixels = Marshal.AllocHGlobal(4);

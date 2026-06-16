@@ -148,6 +148,11 @@ public class SKSurface : IDisposable
         ArgumentNullException.ThrowIfNull(grContext);
         ArgumentNullException.ThrowIfNull(renderTarget);
 
+        if (origin == GRSurfaceOrigin.BottomLeft)
+        {
+            throw new NotSupportedException("GRSurfaceOrigin.BottomLeft is not supported by ProGPU-backed SKSurface render targets yet.");
+        }
+
         var texture = renderTarget.BackendTexture
             ?? throw new NotSupportedException("This WebGPU-backed Skia shim can only wrap ProGPU GpuTexture render targets. GL, Vulkan, and Metal backend handles cannot be rendered through this context.");
 

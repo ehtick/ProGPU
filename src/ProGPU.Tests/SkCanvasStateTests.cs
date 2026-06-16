@@ -168,6 +168,22 @@ public sealed class SkCanvasStateTests
     }
 
     [Fact]
+    public void CreateTwoPointConicalGradientRejectsUnsupportedCentersOrRadii()
+    {
+        var exception = Assert.Throws<NotSupportedException>(
+            () => SKShader.CreateTwoPointConicalGradient(
+                new SKPoint(0f, 0f),
+                4f,
+                new SKPoint(10f, 0f),
+                8f,
+                new[] { SKColors.Red, SKColors.Blue },
+                null,
+                SKShaderTileMode.Clamp));
+
+        Assert.Contains("Two-point conical gradients", exception.Message);
+    }
+
+    [Fact]
     public void DrawRectAppliesPaintBlendMode()
     {
         var context = new DrawingContext();

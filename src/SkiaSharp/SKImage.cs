@@ -41,6 +41,11 @@ public class SKImage : IDisposable
         );
 
         byte[] buffer = bitmap.CopyRgba8888Rows();
+        if (bitmap.AlphaType == SKAlphaType.Opaque)
+        {
+            ForceOpaqueAlpha(buffer);
+        }
+
         texture.WritePixels(new ReadOnlySpan<byte>(buffer));
 
         return new SKImage(texture, ownsTexture: true);
@@ -49,6 +54,14 @@ public class SKImage : IDisposable
     public static SKImage FromTexture(GpuTexture texture)
     {
         return new SKImage(texture);
+    }
+
+    private static void ForceOpaqueAlpha(byte[] rgbaPixels)
+    {
+        for (int i = 3; i < rgbaPixels.Length; i += 4)
+        {
+            rgbaPixels[i] = 255;
+        }
     }
 
     internal static SKImage FromOwnedTexture(GpuTexture texture)
