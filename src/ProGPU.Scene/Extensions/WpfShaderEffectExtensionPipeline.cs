@@ -268,7 +268,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     private SourceLayoutResources GetOrCreateSourceLayout(Compositor compositor, int[] activeRegisters)
     {
-        var includeMask = activeRegisters.Length < WpfShaderEffectParams.MaxSamplerRegisterCount;
+        var includeMask = compositor.Context.CanBindWpfShaderEffectMask(activeRegisters.Length);
         var layoutKey = BuildSourceLayoutKey(activeRegisters, includeMask);
 
         lock (_sourceLayouts)

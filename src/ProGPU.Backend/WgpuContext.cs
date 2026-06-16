@@ -17,6 +17,9 @@ public unsafe class WgpuContext : IDisposable
     public Queue* Queue { get; private set; } = null;
     public Surface* Surface { get; private set; } = null;
     public TextureFormat SwapChainFormat { get; private set; } = TextureFormat.Bgra8Unorm;
+    public uint MaxSampledTexturesPerShaderStage { get; private set; } = 16;
+    public uint MaxSamplersPerShaderStage { get; private set; } = 16;
+    public uint MaxBindGroups { get; private set; } = 4;
 
     public static event Action<ErrorType, string>? OnWebGpuError;
 
@@ -403,9 +406,14 @@ public unsafe class WgpuContext : IDisposable
         var deviceSignal = new ManualResetEventSlim(false);
         Device* requestedDevice = null;
 
+        var adapterLimits = new SupportedLimits();
+        Wgpu.AdapterGetLimits(Adapter, &adapterLimits);
+        var requiredLimits = CreateRequiredLimits(adapterLimits);
+
         var deviceDesc = new DeviceDescriptor
         {
-            Label = (byte*)SilkMarshal.StringToPtr("ProGPU Primary Device")
+            Label = (byte*)SilkMarshal.StringToPtr("ProGPU Primary Device"),
+            RequiredLimits = &requiredLimits
         };
 
         var onDeviceReceived = PfnRequestDeviceCallback.From((status, device, message, userData) =>
@@ -434,6 +442,12 @@ public unsafe class WgpuContext : IDisposable
             throw new InvalidOperationException("Failed to obtain WebGPU Device.");
         }
         Device = requestedDevice;
+
+        var deviceLimits = new SupportedLimits();
+        Wgpu.DeviceGetLimits(Device, &deviceLimits);
+        MaxSampledTexturesPerShaderStage = Math.Max(16, deviceLimits.Limits.MaxSampledTexturesPerShaderStage);
+        MaxSamplersPerShaderStage = Math.Max(16, deviceLimits.Limits.MaxSamplersPerShaderStage);
+        MaxBindGroups = Math.Max(4, deviceLimits.Limits.MaxBindGroups);
 
         // 5. Retrieve Default Queue
         SafeLog("[WGPUCONTEXT] Getting Default Queue\n");
@@ -547,6 +561,57 @@ public unsafe class WgpuContext : IDisposable
         }
 
         return presentModes[0];
+    }
+
+    public bool CanBindWpfShaderEffectMask(int activeSamplerRegisterCount)
+    {
+        return CanBindWpfShaderEffectMask(
+            activeSamplerRegisterCount,
+            MaxSampledTexturesPerShaderStage,
+            MaxSamplersPerShaderStage,
+            MaxBindGroups);
+    }
+
+    public static bool CanBindWpfShaderEffectMask(
+        int activeSamplerRegisterCount,
+        uint maxSampledTexturesPerShaderStage,
+        uint maxSamplersPerShaderStage,
+        uint maxBindGroups)
+    {
+        if (activeSamplerRegisterCount < 0)
+        {
+            return false;
+        }
+
+        var requiredTextureAndSamplerCount = checked((uint)activeSamplerRegisterCount + 1u);
+        return maxBindGroups >= 4
+            && maxSampledTexturesPerShaderStage >= requiredTextureAndSamplerCount
+            && maxSamplersPerShaderStage >= requiredTextureAndSamplerCount;
+    }
+
+    private static RequiredLimits CreateRequiredLimits(SupportedLimits adapterLimits)
+    {
+        var requiredLimits = new RequiredLimits
+        {
+            Limits = adapterLimits.Limits
+        };
+
+        if (requiredLimits.Limits.MaxSampledTexturesPerShaderStage < 16)
+        {
+            requiredLimits.Limits.MaxSampledTexturesPerShaderStage = 16;
+        }
+
+        if (requiredLimits.Limits.MaxSamplersPerShaderStage < 16)
+        {
+            requiredLimits.Limits.MaxSamplersPerShaderStage = 16;
+        }
+
+        if (requiredLimits.Limits.MaxBindGroups < 4)
+        {
+            requiredLimits.Limits.MaxBindGroups = 4;
+        }
+
+        return requiredLimits;
     }
 
     public void ReconfigureIfNeeded(uint width, uint height)

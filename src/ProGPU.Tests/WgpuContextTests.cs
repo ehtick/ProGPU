@@ -35,4 +35,26 @@ public sealed class WgpuContextTests
 
         Assert.Equal(PresentMode.Fifo, selected);
     }
+
+    [Theory]
+    [InlineData(15, 16u, 16u, 4u, true)]
+    [InlineData(16, 16u, 16u, 4u, false)]
+    [InlineData(16, 17u, 17u, 4u, true)]
+    [InlineData(16, 17u, 16u, 4u, false)]
+    [InlineData(16, 17u, 17u, 3u, false)]
+    public void WpfShaderEffectMaskBindingFollowsDeviceLimits(
+        int activeSamplerRegisterCount,
+        uint maxSampledTexturesPerShaderStage,
+        uint maxSamplersPerShaderStage,
+        uint maxBindGroups,
+        bool expected)
+    {
+        var canBind = WgpuContext.CanBindWpfShaderEffectMask(
+            activeSamplerRegisterCount,
+            maxSampledTexturesPerShaderStage,
+            maxSamplersPerShaderStage,
+            maxBindGroups);
+
+        Assert.Equal(expected, canBind);
+    }
 }

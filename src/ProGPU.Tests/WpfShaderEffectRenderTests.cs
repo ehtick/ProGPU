@@ -185,6 +185,81 @@ fn wpf_effect_main(uv: vec2<f32>, inputColor: vec4<f32>) -> vec4<f32> {
     }
 
     [Fact]
+    public void WpfShaderEffect_AllSamplerRegistersWithMaskFollowsDeviceLimits()
+    {
+        var window = HeadlessWindow.Shared;
+        window.Resize(160, 90);
+
+        var textures = new GpuTexture[WpfShaderEffectParams.MaxSamplerRegisterCount];
+        try
+        {
+            var samplers = new WpfShaderEffectSampler[textures.Length];
+            for (var register = 0; register < textures.Length; register++)
+            {
+                textures[register] = new GpuTexture(
+                    window.Context,
+                    1,
+                    1,
+                    TextureFormat.Rgba8Unorm,
+                    TextureUsage.TextureBinding | TextureUsage.CopyDst,
+                    $"WPF Shader Effect Register {register} Limit Texture");
+                textures[register].WritePixels(register == 15
+                    ? new byte[] { 0, 192, 64, 255 }
+                    : new byte[] { 255, 0, 0, 255 });
+                samplers[register] = new WpfShaderEffectSampler(register, textures[register], TextureSamplingMode.Nearest);
+            }
+
+            var unmasked = new WpfShaderEffectParams
+            {
+                Texture = textures[0],
+                Rect = new Rect(20, 25, 40, 40),
+                ShaderKey = "test_wpf_shader_effect_limit_unmasked",
+                SamplingMode = TextureSamplingMode.Nearest
+            };
+
+            var masked = new WpfShaderEffectParams
+            {
+                Rect = new Rect(90, 25, 40, 40),
+                SourceTextureRegisterIndex = 15,
+                Samplers = samplers,
+                ShaderKey = "test_wpf_shader_effect_all_registers_mask",
+                ShaderSource = @"
+fn wpf_effect_main(uv: vec2<f32>, inputColor: vec4<f32>) -> vec4<f32> {
+    return wpf_sample_register(15u, uv);
+}
+"
+            };
+
+            window.Content = new MaskedShaderEffectVisual(unmasked, masked);
+            var canBindMaskedAllRegisters = window.Context.CanBindWpfShaderEffectMask(WpfShaderEffectParams.MaxSamplerRegisterCount);
+
+            window.Render();
+
+            if (!canBindMaskedAllRegisters)
+            {
+                Assert.True(masked.IsFailed);
+                Assert.Contains("cannot also bind an active mask", masked.LastError);
+                return;
+            }
+
+            Assert.False(masked.IsFailed, masked.LastError);
+            var pixels = window.ReadPixels();
+            var hidden = ReadPixel(pixels, window.Width, x: 110, y: 45);
+            var background = ReadPixel(pixels, window.Width, x: 10, y: 10);
+
+            AssertColorNear(background, hidden, tolerance: 12);
+        }
+        finally
+        {
+            window.Content = null;
+            foreach (var texture in textures)
+            {
+                texture?.Dispose();
+            }
+        }
+    }
+
+    [Fact]
     public void WpfShaderEffect_PreservesTextureCoordinatesWhenClipped()
     {
         var window = HeadlessWindow.Shared;
