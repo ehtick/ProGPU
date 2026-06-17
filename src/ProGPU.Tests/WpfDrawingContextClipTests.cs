@@ -236,7 +236,7 @@ public sealed class WpfDrawingContextClipTests
         var geometry = new WpfPathGeometry();
         var figure = new WpfPathFigure
         {
-            StartPoint = new Vector2(10f, 10f),
+            StartPoint = new WpfPoint(10, 10),
             IsClosed = true
         };
         figure.Segments.Add(new WpfLineSegment(new Vector2(80f, 20f)));
@@ -250,7 +250,7 @@ public sealed class WpfDrawingContextClipTests
         var geometry = new WpfPathGeometry();
         var figure = new WpfPathFigure
         {
-            StartPoint = new Vector2(35f, 15f),
+            StartPoint = new WpfPoint(35, 15),
             IsClosed = true
         };
         figure.Segments.Add(new WpfLineSegment(new Vector2(100f, 35f)));

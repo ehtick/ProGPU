@@ -149,12 +149,17 @@ public sealed class WpfPathGeometryDrawTests
     {
         var figure = new WpfPathFigure
         {
-            StartPoint = origin,
+            StartPoint = ToPoint(origin),
             IsClosed = true,
             IsFilled = isFilled
         };
         figure.Segments.Add(new WpfLineSegment(origin + new Vector2(10f, 0f)));
         figure.Segments.Add(new WpfLineSegment(origin + new Vector2(0f, 10f)));
         return figure;
+    }
+
+    private static WpfPoint ToPoint(Vector2 point)
+    {
+        return new WpfPoint(point.X, point.Y);
     }
 }

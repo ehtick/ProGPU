@@ -1,5 +1,6 @@
 using System;
 using System.Numerics;
+using System.Windows;
 using Microsoft.UI.Xaml;
 using ProGPU.Tests.Headless;
 using Xunit;
@@ -18,6 +19,7 @@ using WpfMatrix = System.Windows.Media.Matrix;
 using WpfMatrixTransform = System.Windows.Media.MatrixTransform;
 using WpfPathFigure = System.Windows.Media.PathFigure;
 using WpfPathGeometry = System.Windows.Media.PathGeometry;
+using WpfStreamGeometry = System.Windows.Media.StreamGeometry;
 using WpfSweepDirection = System.Windows.Media.SweepDirection;
 
 namespace ProGPU.Tests;
@@ -70,8 +72,8 @@ public sealed class PathArcShimTests
 
         var figure = Assert.Single(geometry.Figures);
         var parsedArc = Assert.IsType<WpfArcSegment>(Assert.Single(figure.Segments));
-        Assert.Equal(new Vector2(40f, 0f), parsedArc.Point);
-        Assert.Equal(new Vector2(20f, 10f), parsedArc.Size);
+        Assert.Equal(new Point(40, 0), parsedArc.Point);
+        Assert.Equal(new Size(20, 10), parsedArc.Size);
         Assert.Equal(30f, parsedArc.RotationAngle);
         Assert.False(parsedArc.IsLargeArc);
         Assert.Equal(WpfSweepDirection.Clockwise, parsedArc.SweepDirection);
@@ -104,6 +106,34 @@ public sealed class PathArcShimTests
         Assert.IsType<VectorArcSegment>(segment);
         Assert.IsNotType<VectorLineSegment>(segment);
         Assert.Equal(ToMatrix4x4(transform), command.Transform);
+    }
+
+    [Fact]
+    public void PresentationCoreStreamGeometryArcToPreservesNativeArcSegment()
+    {
+        var geometry = new WpfStreamGeometry();
+        using (var context = geometry.Open())
+        {
+            context.BeginFigure(new Point(30, 100), isFilled: false, isClosed: false);
+            context.ArcTo(
+                new Point(210, 100),
+                new Size(110, 70),
+                rotationAngle: 20,
+                isLargeArc: false,
+                WpfSweepDirection.Clockwise,
+                isStroked: true,
+                isSmoothJoin: false);
+        }
+
+        var drawingContext = new ProGPU.Scene.DrawingContext();
+        geometry.Draw(
+            drawingContext,
+            fill: null,
+            pen: new VectorPen(new VectorSolidColorBrush(new Vector4(1f, 0f, 0f, 1f)), 4f));
+
+        var command = Assert.Single(drawingContext.Commands);
+        Assert.NotNull(command.Path);
+        Assert.IsType<VectorArcSegment>(Assert.Single(command.Path.Figures[0].Segments));
     }
 
     [Fact]
@@ -186,12 +216,12 @@ public sealed class PathArcShimTests
         var geometry = new WpfPathGeometry();
         var figure = new WpfPathFigure
         {
-            StartPoint = new Vector2(30f, 100f)
+            StartPoint = new Point(30, 100)
         };
         figure.Segments.Add(new WpfArcSegment(
-            new Vector2(210f, 100f),
-            new Vector2(110f, 70f),
-            20f,
+            new Point(210, 100),
+            new Size(110, 70),
+            20,
             isLargeArc: false,
             WpfSweepDirection.Clockwise));
         geometry.Figures.Add(figure);
