@@ -93,6 +93,43 @@ public sealed class SkSurfaceBackendRenderTargetTests
     }
 
     [Fact]
+    public void SnapshotFromBgraBackendRenderTargetReadPixelsConvertsToRequestedRgba()
+    {
+        using var grContext = GRContext.CreateGl() ?? throw new InvalidOperationException("Failed to create GRContext.");
+        using var texture = new GpuTexture(
+            grContext.Context,
+            4,
+            4,
+            TextureFormat.Bgra8Unorm,
+            TextureUsage.RenderAttachment | TextureUsage.CopySrc | TextureUsage.CopyDst | TextureUsage.TextureBinding,
+            "SKSurface wrapped BGRA snapshot readback test");
+        using var renderTarget = new GRBackendRenderTarget(4, 4, texture);
+        using var surface = SKSurface.Create(grContext, renderTarget, GRSurfaceOrigin.TopLeft, SKColorType.Bgra8888);
+
+        surface.Canvas.Clear(SKColors.Red);
+        using var snapshot = surface.Snapshot();
+        var pixels = Marshal.AllocHGlobal(4);
+        try
+        {
+            snapshot.ReadPixels(
+                new SKImageInfo(1, 1, SKColorType.Rgba8888, SKAlphaType.Premul),
+                pixels,
+                dstRowBytes: 4,
+                srcX: 0,
+                srcY: 0,
+                SKImageCachingHint.Allow);
+
+            var readback = new byte[4];
+            Marshal.Copy(pixels, readback, 0, readback.Length);
+            Assert.Equal(new byte[] { 255, 0, 0, 255 }, readback);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(pixels);
+        }
+    }
+
+    [Fact]
     public void RepeatedFlushesPreserveExistingGpuSurfaceContents()
     {
         using var surface = SKSurface.Create(new SKImageInfo(8, 4, SKColorType.Rgba8888, SKAlphaType.Premul));

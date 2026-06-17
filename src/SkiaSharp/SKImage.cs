@@ -96,7 +96,7 @@ public class SKImage : IDisposable
             throw new ArgumentException("Destination row bytes must be large enough for one row.", nameof(dst));
         }
 
-        byte[] src = Texture.ReadPixels();
+        byte[] src = ReadTexturePixelsAsRgba8888();
         bool sourcePremultiplied = Texture.AlphaMode == GpuTextureAlphaMode.Premultiplied;
         bool targetPremultiplied = dst.Info.AlphaType == SKAlphaType.Premul;
 
@@ -156,7 +156,7 @@ public class SKImage : IDisposable
 
     public void ReadPixels(SKImageInfo dstInfo, IntPtr dstPixels, int dstRowBytes, int srcX, int srcY, SKImageCachingHint cachingHint)
     {
-        byte[] pixels = Texture.ReadPixels(); // Read back from GPU
+        byte[] pixels = ReadTexturePixelsAsRgba8888();
         int srcWidth = Width;
         int srcHeight = Height;
         
@@ -251,7 +251,7 @@ public class SKImage : IDisposable
 
     public SKData Encode(SKEncodedImageFormat format, int quality)
     {
-        byte[] pixels = Texture.ReadPixels();
+        byte[] pixels = ReadTexturePixelsAsRgba8888();
         if (Texture.AlphaMode == GpuTextureAlphaMode.Premultiplied)
         {
             UnpremultiplyRgba8888(pixels);
@@ -269,6 +269,25 @@ public class SKImage : IDisposable
                 writer.WritePng(pixels, Width, Height, StbImageWriteSharp.ColorComponents.RedGreenBlueAlpha, ms);
             }
             return new SKData(ms.ToArray());
+        }
+    }
+
+    private byte[] ReadTexturePixelsAsRgba8888()
+    {
+        byte[] pixels = Texture.ReadPixels();
+        if (Texture.Format is TextureFormat.Bgra8Unorm or TextureFormat.Bgra8UnormSrgb)
+        {
+            SwizzleBgraToRgba(pixels);
+        }
+
+        return pixels;
+    }
+
+    private static void SwizzleBgraToRgba(byte[] pixels)
+    {
+        for (int i = 0; i + 3 < pixels.Length; i += 4)
+        {
+            (pixels[i], pixels[i + 2]) = (pixels[i + 2], pixels[i]);
         }
     }
 

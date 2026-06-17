@@ -163,6 +163,7 @@ public class SKCanvas : IDisposable
         _context = layerFrame.ParentContext;
         if (layerFrame.LayerContext.Commands.Count == 0 || !IsValidLayerBounds(layerFrame.Bounds))
         {
+            layerFrame.LayerContext.Clear();
             return;
         }
 

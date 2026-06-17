@@ -484,8 +484,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                 Invert = p.Invert,
                 BlurSigma = p.BlurSigma,
                 HasMask = effectiveMaskTexture != null ? 1f : 0f,
-                CanvasWidth = compositor.CurrentWidth,
-                CanvasHeight = compositor.CurrentHeight,
+                CanvasWidth = compositor.CurrentCanvasPixelWidth,
+                CanvasHeight = compositor.CurrentCanvasPixelHeight,
                 SourceIsPremultiplied = sourceAlphaMode == GpuTextureAlphaMode.Premultiplied ? 1f : 0f,
                 OutputIsPremultiplied = pipelineSourceAlphaMode == GpuTextureAlphaMode.Premultiplied ? 1f : 0f
             });

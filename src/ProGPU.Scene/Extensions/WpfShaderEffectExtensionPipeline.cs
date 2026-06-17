@@ -577,8 +577,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         Span<float> uniformFloats = stackalloc float[WpfShaderEffectParams.UniformFloatCount];
 
         p.CopyUniformFloats(uniformFloats, primaryTexture.Width, primaryTexture.Height);
-        uniformFloats[WpfShaderEffectParams.CanvasWidthMetadataIndex] = compositor.CurrentWidth;
-        uniformFloats[WpfShaderEffectParams.CanvasHeightMetadataIndex] = compositor.CurrentHeight;
+        uniformFloats[WpfShaderEffectParams.CanvasWidthMetadataIndex] = compositor.CurrentCanvasPixelWidth;
+        uniformFloats[WpfShaderEffectParams.CanvasHeightMetadataIndex] = compositor.CurrentCanvasPixelHeight;
         uniformFloats[WpfShaderEffectParams.HasMaskMetadataIndex] = dc.MaskTexture != null && sourceLayout.IncludeMask ? 1f : 0f;
         gpuRes.UniformBuffer.Write<float>(uniformFloats);
 

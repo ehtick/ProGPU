@@ -263,6 +263,50 @@ public sealed class SkCanvasStateTests
     }
 
     [Fact]
+    public void RestoreLayerClearsRetainedImageTexturesWhenLayerBoundsAreSkipped()
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(32, 32, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var layerPaint = new SKPaint();
+        using var bitmap = new SKBitmap(1, 1);
+        using var image = SKImage.FromBitmap(bitmap);
+
+        var restoreCount = surface.Canvas.SaveLayer(new SKRect(0f, 0f, 0f, 0f), layerPaint);
+        surface.Canvas.DrawImage(
+            image,
+            new SKRect(0f, 0f, 1f, 1f),
+            new SKRect(2f, 2f, 12f, 12f),
+            null!);
+
+        var layerContext = GetCurrentDrawingContext(surface.Canvas);
+        var retainedTexture = Assert.Single(layerContext.Commands).Texture!;
+        Assert.Equal(1, layerContext.RetainedResourceCount);
+
+        var retainedTextureDisposed = false;
+        void OnTextureDisposed(ulong id)
+        {
+            if (id == retainedTexture.Id)
+            {
+                retainedTextureDisposed = true;
+            }
+        }
+
+        GpuTexture.OnDisposedWithId += OnTextureDisposed;
+        try
+        {
+            surface.Canvas.RestoreToCount(restoreCount);
+
+            Assert.True(retainedTextureDisposed);
+            Assert.Empty(layerContext.Commands);
+            Assert.Equal(0, layerContext.RetainedResourceCount);
+            Assert.Empty(GetOwnedLayerTextures(surface.Canvas));
+        }
+        finally
+        {
+            GpuTexture.OnDisposedWithId -= OnTextureDisposed;
+        }
+    }
+
+    [Fact]
     public void ClipRectRecordsCurrentCanvasMatrix()
     {
         var context = new DrawingContext();

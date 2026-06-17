@@ -499,6 +499,8 @@ public unsafe class Compositor : IDisposable
     internal GpuBuffer GradientStopsStorageBuffer => _gradientStopsStorageBuffer;
     internal uint CurrentWidth => _currentWidth;
     internal uint CurrentHeight => _currentHeight;
+    internal float CurrentCanvasPixelWidth => MathF.Max(1f, _currentWidth * (_currentDpiScale > 0f ? _currentDpiScale : 1f));
+    internal float CurrentCanvasPixelHeight => MathF.Max(1f, _currentHeight * (_currentDpiScale > 0f ? _currentDpiScale : 1f));
     public float CurrentDpiScale => _currentDpiScale;
     internal Matrix4x4 CurrentProjection => _currentProjection;
     internal System.Runtime.CompilerServices.ConditionalWeakTable<object, GpuSeriesBuffer> DynamicGpuBufferCache => _dynamicGpuBufferCache;
@@ -5604,7 +5606,9 @@ public unsafe class Compositor : IDisposable
             else if (fe.Effect is DropShadowEffect sEff)
             {
                 // Draw blurred shadow first (at offset, shifted back by padding)
-                var shadowRect = new Rect(sEff.Offset - new Vector2(padding, padding), new Vector2(w, h));
+                var shadowRect = new Rect(
+                    sEff.Offset - new Vector2(padding, padding),
+                    new Vector2(logicalWidth, logicalHeight));
                 DrawTextureOnMain(textures.Destination, shadowRect, compositeTransform);
 
                 // Draw original source on top (shifted back by padding)
