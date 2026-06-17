@@ -68,6 +68,31 @@ public sealed class SkSurfaceBackendRenderTargetTests
     }
 
     [Fact]
+    public void SnapshotFromBgraBackendRenderTargetPreservesTextureFormat()
+    {
+        using var grContext = GRContext.CreateGl() ?? throw new InvalidOperationException("Failed to create GRContext.");
+        using var texture = new GpuTexture(
+            grContext.Context,
+            4,
+            4,
+            TextureFormat.Bgra8Unorm,
+            TextureUsage.RenderAttachment | TextureUsage.CopySrc | TextureUsage.CopyDst | TextureUsage.TextureBinding,
+            "SKSurface wrapped BGRA snapshot test");
+        using var renderTarget = new GRBackendRenderTarget(4, 4, texture);
+        using var surface = SKSurface.Create(grContext, renderTarget, GRSurfaceOrigin.TopLeft, SKColorType.Bgra8888);
+
+        surface.Canvas.Clear(SKColors.Red);
+        using var snapshot = surface.Snapshot();
+
+        Assert.Equal(TextureFormat.Bgra8Unorm, snapshot.Texture.Format);
+        var pixels = snapshot.Texture.ReadPixels();
+        Assert.Equal(0, pixels[0]);
+        Assert.Equal(0, pixels[1]);
+        Assert.Equal(255, pixels[2]);
+        Assert.Equal(255, pixels[3]);
+    }
+
+    [Fact]
     public void RepeatedFlushesPreserveExistingGpuSurfaceContents()
     {
         using var surface = SKSurface.Create(new SKImageInfo(8, 4, SKColorType.Rgba8888, SKAlphaType.Premul));

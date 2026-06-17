@@ -280,7 +280,7 @@ public class SKSurface : IDisposable
             _context,
             (uint)_width,
             (uint)_height,
-            TextureFormat.Rgba8Unorm,
+            _gpuTexture.Format,
             TextureUsage.TextureBinding | TextureUsage.CopyDst | TextureUsage.CopySrc,
             "SKSurface Snapshot Texture",
             alphaMode: _gpuTexture.AlphaMode
