@@ -220,6 +220,79 @@ public sealed class SkCanvasStateTests
     }
 
     [Fact]
+    public void SurfaceFlushReleasesRecordedResourcesWhenRenderFails()
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(32, 32, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var layerPaint = new SKPaint();
+        using var fill = new SKPaint { Color = SKColors.Red };
+        using var bitmap = new SKBitmap(1, 1);
+        using var image = SKImage.FromBitmap(bitmap);
+
+        surface.Canvas.DrawImage(
+            image,
+            new SKRect(0f, 0f, 1f, 1f),
+            new SKRect(1f, 1f, 8f, 8f),
+            null!);
+
+        var restoreCount = surface.Canvas.SaveLayer(layerPaint);
+        surface.Canvas.DrawRect(new SKRect(2f, 2f, 20f, 20f), fill);
+        surface.Canvas.RestoreToCount(restoreCount);
+
+        var drawingContext = GetSurfaceDrawingContext(surface);
+        GpuTexture? retainedImageTexture = null;
+        foreach (var command in drawingContext.Commands)
+        {
+            if (command.Texture != null)
+            {
+                retainedImageTexture = command.Texture;
+                break;
+            }
+        }
+
+        Assert.NotNull(retainedImageTexture);
+        Assert.Equal(1, drawingContext.RetainedResourceCount);
+
+        var ownedLayerTextures = GetOwnedLayerTextures(surface.Canvas);
+        var layerTexture = Assert.IsType<GpuTexture>(Assert.Single(ownedLayerTextures));
+
+        var compositor = GetSurfaceCompositor(surface);
+        compositor.RegisterExtension(9901, new ThrowingCompileExtension());
+        drawingContext.DrawExtension(9901);
+
+        var retainedTextureDisposed = false;
+        var layerTextureDisposed = false;
+        void OnTextureDisposed(ulong id)
+        {
+            if (id == retainedImageTexture.Id)
+            {
+                retainedTextureDisposed = true;
+            }
+
+            if (id == layerTexture.Id)
+            {
+                layerTextureDisposed = true;
+            }
+        }
+
+        GpuTexture.OnDisposedWithId += OnTextureDisposed;
+        try
+        {
+            var exception = Assert.Throws<InvalidOperationException>(() => surface.Flush());
+            Assert.Contains("Synthetic SKSurface flush failure", exception.Message, StringComparison.Ordinal);
+
+            Assert.Empty(drawingContext.Commands);
+            Assert.Equal(0, drawingContext.RetainedResourceCount);
+            Assert.Empty(ownedLayerTextures);
+            Assert.True(retainedTextureDisposed);
+            Assert.True(layerTextureDisposed);
+        }
+        finally
+        {
+            GpuTexture.OnDisposedWithId -= OnTextureDisposed;
+        }
+    }
+
+    [Fact]
     public void RestoreLayerReleasesRetainedImageTexturesAfterOffscreenRender()
     {
         using var surface = SKSurface.Create(new SKImageInfo(32, 32, SKColorType.Rgba8888, SKAlphaType.Premul));
@@ -1008,5 +1081,50 @@ public sealed class SkCanvasStateTests
             "_context",
             BindingFlags.Instance | BindingFlags.NonPublic);
         return (DrawingContext)field!.GetValue(canvas)!;
+    }
+
+    private static DrawingContext GetSurfaceDrawingContext(SKSurface surface)
+    {
+        var field = typeof(SKSurface).GetField(
+            "_drawingContext",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        return (DrawingContext)field!.GetValue(surface)!;
+    }
+
+    private static Compositor GetSurfaceCompositor(SKSurface surface)
+    {
+        var contextField = typeof(SKSurface).GetField(
+            "_context",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        var textureField = typeof(SKSurface).GetField(
+            "_gpuTexture",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        var method = typeof(SKSurface).GetMethod(
+            "GetCompositorForContext",
+            BindingFlags.Static | BindingFlags.NonPublic);
+
+        var context = (WgpuContext)contextField!.GetValue(surface)!;
+        var texture = (GpuTexture)textureField!.GetValue(surface)!;
+        return (Compositor)method!.Invoke(null, new object[] { context, texture.Format })!;
+    }
+
+    private sealed class ThrowingCompileExtension : ICompositorExtension
+    {
+        public void Compile(
+            Compositor compositor,
+            IRenderDataProvider? provider,
+            Matrix4x4 transform,
+            ref RenderCommand cmd)
+        {
+            throw new InvalidOperationException("Synthetic SKSurface flush failure.");
+        }
+
+        public unsafe void Render(
+            Compositor compositor,
+            void* renderPassEncoder,
+            bool isOffscreen,
+            in Compositor.CompositorDrawCall dc)
+        {
+        }
     }
 }

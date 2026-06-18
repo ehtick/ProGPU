@@ -241,42 +241,47 @@ public class SKSurface : IDisposable
         var compositor = GetCompositorForContext(_context, _gpuTexture.Format);
         try
         {
-            compositor.RenderOffscreen(visual, (uint)_width, (uint)_height, _gpuTexture, 0f, 1f, null, _hasTextureContents);
-        }
-        finally
-        {
-            visual.Context.Clear();
-        }
-
-        _hasTextureContents = true;
-
-        // If CPU-backed surface, read pixels back and copy to memory pointer
-        if (_pixels != IntPtr.Zero)
-        {
-            byte[] readBackBytes = _gpuTexture.ReadPixels();
-            
-            unsafe
+            try
             {
-                fixed (byte* src = readBackBytes)
+                compositor.RenderOffscreen(visual, (uint)_width, (uint)_height, _gpuTexture, 0f, 1f, null, _hasTextureContents);
+            }
+            finally
+            {
+                visual.Context.Clear();
+            }
+
+            _hasTextureContents = true;
+
+            // If CPU-backed surface, read pixels back and copy to memory pointer
+            if (_pixels != IntPtr.Zero)
+            {
+                byte[] readBackBytes = _gpuTexture.ReadPixels();
+
+                unsafe
                 {
-                    byte* dst = (byte*)_pixels;
-                    for (int y = 0; y < _height; y++)
+                    fixed (byte* src = readBackBytes)
                     {
-                        byte* srcRow = src + y * _width * 4;
-                        byte* dstRow = dst + y * _rowBytes;
-                        
-                        for (int x = 0; x < _width; x++)
+                        byte* dst = (byte*)_pixels;
+                        for (int y = 0; y < _height; y++)
                         {
-                            CopyRgbaTexturePixelToSurface(srcRow, dstRow, x, _colorType, _alphaType, _gpuTexture.AlphaMode);
+                            byte* srcRow = src + y * _width * 4;
+                            byte* dstRow = dst + y * _rowBytes;
+
+                            for (int x = 0; x < _width; x++)
+                            {
+                                CopyRgbaTexturePixelToSurface(srcRow, dstRow, x, _colorType, _alphaType, _gpuTexture.AlphaMode);
+                            }
                         }
                     }
                 }
             }
         }
-
-        // Clear recorded commands and dispose command-retained source textures.
-        _drawingContext.Clear();
-        Canvas.ReleaseLayerTexturesAfterFlush();
+        finally
+        {
+            // Clear recorded commands and dispose command-retained source/save-layer textures.
+            _drawingContext.Clear();
+            Canvas.ReleaseLayerTexturesAfterFlush();
+        }
     }
 
     private static int ResolveCpuSurfaceRowBytes(int width, int height, int rowBytes, string parameterName)
