@@ -85,9 +85,9 @@ public unsafe class GpuBuffer : IDisposable
             {
                 if (!_context.IsDisposed)
                 {
-                    _context.Wgpu.BufferDestroy(BufferPtr);
-                    _context.Wgpu.BufferRelease(BufferPtr);
+                    _context.QueueBufferDisposal((IntPtr)BufferPtr);
                 }
+
                 BufferPtr = null;
             }
         }

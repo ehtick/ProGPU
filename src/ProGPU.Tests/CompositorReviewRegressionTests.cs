@@ -437,6 +437,31 @@ public sealed class CompositorReviewRegressionTests
         }
     }
 
+    [Fact]
+    public unsafe void GpuBufferDisposeQueuesNativeBufferDisposal()
+    {
+        using var window = new HeadlessWindow(16, 16);
+        using var buffer = new GpuBuffer(
+            window.Context,
+            16,
+            BufferUsage.Vertex | BufferUsage.CopyDst,
+            "Explicit Buffer Disposal Queue Test");
+        var bufferPtr = (IntPtr)buffer.BufferPtr;
+
+        Assert.NotEqual(IntPtr.Zero, bufferPtr);
+        Assert.Empty(window.Context.PendingBuffers);
+
+        buffer.Dispose();
+
+        Assert.True(buffer.BufferPtr == null);
+        lock (window.Context.DisposalLock)
+        {
+            Assert.Contains(bufferPtr, window.Context.PendingBuffers);
+        }
+
+        window.Context.CleanupPendingResources();
+    }
+
     private static void AssertMixedColorGlyphDrawCalls(Compositor compositor)
     {
         Compositor.CompositorDrawCall[] drawCalls = GetDrawCalls(compositor);
