@@ -37,6 +37,9 @@ public class Bitmap : Image
 
     public Bitmap(int width, int height)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(width);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(height);
+
         _texture = new GpuTexture(
             GpuProvider.Context,
             (uint)width,

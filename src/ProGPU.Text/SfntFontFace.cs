@@ -289,7 +289,8 @@ sealed class SfntFontFace
             return false;
         }
 
-        if (!format12Memory.IsEmpty && TryGetFormat12GlyphIndex(format12Memory.Span, codePoint, out glyphIndex))
+        if (!format12Memory.IsEmpty && TryGetFormat12GlyphIndex(format12Memory.Span, codePoint, out glyphIndex) &&
+            (glyphIndex != 0 || format4Memory.IsEmpty))
         {
             return true;
         }
