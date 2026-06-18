@@ -143,6 +143,11 @@ public unsafe class GlyphAtlas : IDisposable
     public GlyphInfo GetOrCreateGlyph(TtfFont font, uint codePoint, float size, byte subpixelX = 0)
     {
         ushort glyphIdx = font.GetGlyphIndex(codePoint);
+        if (IsWhitespaceCodePoint(codePoint))
+        {
+            return CreateEmptyGlyphInfo(font, glyphIdx, size);
+        }
+
         return GetOrCreateGlyphByIndex(font, glyphIdx, size, subpixelX);
     }
 
@@ -174,16 +179,10 @@ public unsafe class GlyphAtlas : IDisposable
             {
                 var outline = font.GetGlyphOutline(glyphIdx);
 
-                // Handle space or control characters (empty outlines)
-                if (outline == null || glyphIdx == font.GetGlyphIndex(' ') || glyphIdx == font.GetGlyphIndex('\t') || glyphIdx == font.GetGlyphIndex('\n') || glyphIdx == font.GetGlyphIndex('\r'))
+                // Handle empty glyphs such as font-owned space outlines.
+                if (outline == null)
                 {
-                    float advance = font.GetAdvanceWidth(glyphIdx, size);
-                    info = new GlyphInfo
-                    {
-                        X = 0, Y = 0, Width = 0, Height = 0,
-                        BearX = 0, BearY = 0, Advance = advance,
-                        TexCoordMin = Vector2.Zero, TexCoordMax = Vector2.Zero
-                    };
+                    info = CreateEmptyGlyphInfo(font, glyphIdx, size);
                 }
                 else
                 {
@@ -461,6 +460,28 @@ public unsafe class GlyphAtlas : IDisposable
         }
 
         return info;
+    }
+
+    private static bool IsWhitespaceCodePoint(uint codePoint)
+    {
+        return codePoint is ' ' or '\t' or '\n' or '\r';
+    }
+
+    private static GlyphInfo CreateEmptyGlyphInfo(TtfFont font, ushort glyphIdx, float size)
+    {
+        float advance = font.GetAdvanceWidth(glyphIdx, size);
+        return new GlyphInfo
+        {
+            X = 0,
+            Y = 0,
+            Width = 0,
+            Height = 0,
+            BearX = 0,
+            BearY = 0,
+            Advance = advance,
+            TexCoordMin = Vector2.Zero,
+            TexCoordMax = Vector2.Zero
+        };
     }
 
     public void Dispose()

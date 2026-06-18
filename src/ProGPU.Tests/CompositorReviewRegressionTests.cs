@@ -56,6 +56,92 @@ public sealed class CompositorReviewRegressionTests
     }
 
     [Fact]
+    public void GlyphAtlasDoesNotTreatMissingGlyphIdAsWhitespace()
+    {
+        var font = new TtfFont(BuildMissingGlyphOutlineFont());
+        GlyphAtlas atlas = HeadlessWindow.Shared.Compositor.Atlas;
+
+        GlyphInfo tab = atlas.GetOrCreateGlyph(font, '\t', 24f);
+        GlyphInfo missing = atlas.GetOrCreateGlyph(font, 0x2603u, 24f);
+
+        Assert.Equal(0u, tab.Width);
+        Assert.Equal(0u, tab.Height);
+        Assert.True(missing.Width > 0, "Expected missing-glyph ID 0 to keep its outline width.");
+        Assert.True(missing.Height > 0, "Expected missing-glyph ID 0 to keep its outline height.");
+    }
+
+    [Fact]
+    public void GpuSeriesDrawCallColorsIncludeBrushAndActiveOpacity()
+    {
+        var window = HeadlessWindow.Shared;
+        window.Resize(64, 64);
+        window.Content = new GpuSeriesOpacityVisual();
+
+        try
+        {
+            window.Render();
+
+            Compositor.CompositorDrawCall[] drawCalls = GetDrawCalls(window.Compositor);
+            Compositor.CompositorDrawCall line = Assert.Single(drawCalls, drawCall => drawCall.Type == Compositor.DrawCallType.ChartLine);
+            Compositor.CompositorDrawCall scatter = Assert.Single(drawCalls, drawCall => drawCall.Type == Compositor.DrawCallType.ChartScatter);
+
+            Assert.Equal(0.15f, line.Color.W, precision: 4);
+            Assert.Equal(0.1f, scatter.Color.W, precision: 4);
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
+    [Fact]
+    public void CachedLayerRefreshesWhenPhysicalTextureSizeChanges()
+    {
+        using var window = new HeadlessWindow(64, 64);
+        using var target1x = new GpuTexture(
+            window.Context,
+            32,
+            16,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.RenderAttachment | TextureUsage.TextureBinding,
+            "Layer Cache 1x Target");
+        using var target2x = new GpuTexture(
+            window.Context,
+            64,
+            32,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.RenderAttachment | TextureUsage.TextureBinding,
+            "Layer Cache 2x Target");
+        var visual = new CachedLayerResizeVisual();
+
+        window.Compositor.RenderOffscreen(
+            visual,
+            width: 32,
+            height: 16,
+            targetTexture: target1x,
+            padding: 0f,
+            dpiScale: 1f);
+
+        Assert.NotNull(visual.LayerTexture);
+        Assert.Equal(32u, visual.LayerTexture.Width);
+        Assert.Equal(16u, visual.LayerTexture.Height);
+        Assert.False(visual.IsDirty);
+
+        window.Compositor.RenderOffscreen(
+            visual,
+            width: 32,
+            height: 16,
+            targetTexture: target2x,
+            padding: 0f,
+            dpiScale: 2f);
+
+        Assert.NotNull(visual.LayerTexture);
+        Assert.Equal(64u, visual.LayerTexture.Width);
+        Assert.Equal(32u, visual.LayerTexture.Height);
+        Assert.False(visual.IsDirty);
+    }
+
+    [Fact]
     public void TransformedEllipticalRoundedRectanglePathFallbackAppliesTransformOnce()
     {
         var window = HeadlessWindow.Shared;
@@ -402,6 +488,46 @@ public sealed class CompositorReviewRegressionTests
             ("CPAL", BuildCpalTable()));
     }
 
+    private static byte[] BuildMissingGlyphOutlineFont()
+    {
+        byte[][] glyphs =
+        {
+            BuildRectangleGlyph(0, 0, 500, 500),
+            BuildRectangleGlyph(100, 100, 500, 500),
+        };
+
+        byte[] glyf = BuildGlyfTable(glyphs, out uint[] glyphOffsets);
+        return BuildSfntWithTables(
+            ("head", BuildHeadTable()),
+            ("hhea", BuildHheaTable(glyphs.Length)),
+            ("maxp", BuildMaxpTable(glyphs.Length)),
+            ("hmtx", BuildHmtxTable(glyphs.Length)),
+            ("cmap", BuildSingleMappedGlyphCmapFormat12Table()),
+            ("loca", BuildLongLoca(glyphOffsets)),
+            ("glyf", glyf));
+    }
+
+    private static byte[] BuildSingleMappedGlyphCmapFormat12Table()
+    {
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+
+        WriteUShort(writer, 0);
+        WriteUShort(writer, 1);
+        WriteUShort(writer, 3);
+        WriteUShort(writer, 10);
+        WriteUInt(writer, 12);
+        WriteUShort(writer, 12);
+        WriteUShort(writer, 0);
+        WriteUInt(writer, 28);
+        WriteUInt(writer, 0);
+        WriteUInt(writer, 1);
+        WriteUInt(writer, (uint)'A');
+        WriteUInt(writer, (uint)'A');
+        WriteUInt(writer, 1);
+        return stream.ToArray();
+    }
+
     private sealed class TextureCacheVisual : FrameworkElement
     {
         private readonly GpuTexture _texture;
@@ -719,6 +845,59 @@ public sealed class CompositorReviewRegressionTests
                 pen: null,
                 new Rect(0f, 0f, 32f, 32f));
             context.PopOpacityMask();
+        }
+    }
+
+    private sealed class GpuSeriesOpacityVisual : FrameworkElement
+    {
+        public GpuSeriesOpacityVisual()
+        {
+            Width = 64f;
+            Height = 64f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            int lineOffset = context.FloatBuffer.Count;
+            context.FloatBuffer.AddRange(new[] { 0f, 0f, 20f, 20f });
+            int scatterOffset = context.FloatBuffer.Count;
+            context.FloatBuffer.AddRange(new[] { 4f, 4f, 6f, 24f, 24f, 6f });
+
+            context.PushOpacity(0.5f);
+            context.Commands.Add(new RenderCommand
+            {
+                Type = RenderCommandType.DrawGpuLineSeries,
+                FloatBufferOffset = lineOffset,
+                FloatBufferCount = 4,
+                GpuPointsCount = 2,
+                RadiusX = 2f,
+                Brush = new SolidColorBrush(new Vector4(0.2f, 0.3f, 0.4f, 0.6f)) { Opacity = 0.5f },
+                Scale = Vector2.One
+            });
+            context.Commands.Add(new RenderCommand
+            {
+                Type = RenderCommandType.DrawGpuScatterSeries,
+                FloatBufferOffset = scatterOffset,
+                FloatBufferCount = 6,
+                GpuPointsCount = 2,
+                RadiusX = 6f,
+                Brush = new SolidColorBrush(new Vector4(0.8f, 0.7f, 0.6f, 0.8f)) { Opacity = 0.25f },
+                Scale = Vector2.One
+            });
+            context.PopOpacity();
+        }
+    }
+
+    private sealed class CachedLayerResizeVisual : DrawingVisual
+    {
+        public CachedLayerResizeVisual()
+        {
+            Size = new Vector2(32f, 16f);
+            CacheAsLayer = true;
+            Context.DrawRectangle(
+                new SolidColorBrush(new Vector4(1f, 0f, 0f, 1f)),
+                pen: null,
+                new Rect(0f, 0f, 32f, 16f));
         }
     }
 

@@ -586,6 +586,15 @@ public unsafe class Compositor : IDisposable
 
     public GlyphAtlas Atlas => _atlas;
     public TextureFormat RenderFormat { get; private set; }
+
+    private Vector4 ResolveDrawCallBrushColor(Brush? brush)
+    {
+        Vector4 color = brush is SolidColorBrush solid
+            ? solid.Color
+            : new Vector4(1f, 1f, 1f, 1f);
+        color.W *= (brush?.Opacity ?? 1f) * _activeOpacity;
+        return color;
+    }
     
     public StaticCompilationContext? ActiveCompilationContext { get; private set; }
 
@@ -2251,7 +2260,7 @@ public unsafe class Compositor : IDisposable
                                     LineThicknessOrRadius = localCmd.RadiusX,
                                     Scale = localCmd.Scale,
                                     Translate = localCmd.Translate,
-                                    Color = (localCmd.Brush is SolidColorBrush solid) ? solid.Color : new Vector4(1f, 1f, 1f, 1f),
+                                    Color = ResolveDrawCallBrushColor(localCmd.Brush),
                                     ClipRect = _activeClipRect,
                                     MaskTexture = _maskStack.Count > 0 ? _maskStack.Peek() : null,
                                     BlendMode = _activeBlendMode
@@ -2474,7 +2483,7 @@ public unsafe class Compositor : IDisposable
                                 LineThicknessOrRadius = localCmd.RadiusX,
                                 Scale = localCmd.Scale,
                                 Translate = localCmd.Translate,
-                                Color = (localCmd.Brush is SolidColorBrush solid) ? solid.Color : new Vector4(1f, 1f, 1f, 1f),
+                                Color = ResolveDrawCallBrushColor(localCmd.Brush),
                                 ClipRect = _activeClipRect,
                                 MaskTexture = _maskStack.Count > 0 ? _maskStack.Peek() : null,
                                 BlendMode = _activeBlendMode
@@ -5693,7 +5702,9 @@ public unsafe class Compositor : IDisposable
         uint h = (uint)MathF.Max(1f, node.Size.Y * dpiScale);
 
         bool hasCached = node.LayerTexture != null;
-        bool needsUpdate = !hasCached || node.IsDirty;
+        bool cachedTextureSizeChanged = hasCached
+            && (node.LayerTexture!.Width != w || node.LayerTexture.Height != h);
+        bool needsUpdate = !hasCached || node.IsDirty || cachedTextureSizeChanged;
 
         if (needsUpdate)
         {
@@ -5846,7 +5857,7 @@ public unsafe class Compositor : IDisposable
             LineThicknessOrRadius = cmd.RadiusX,
             Scale = cmd.Scale,
             Translate = cmd.Translate,
-            Color = (cmd.Brush is SolidColorBrush solid) ? solid.Color : new Vector4(1f, 1f, 1f, 1f),
+            Color = ResolveDrawCallBrushColor(cmd.Brush),
             ClipRect = _activeClipRect,
             MaskTexture = _maskStack.Count > 0 ? _maskStack.Peek() : null,
             BlendMode = _activeBlendMode
@@ -6598,7 +6609,7 @@ public unsafe class Compositor : IDisposable
                                     LineThicknessOrRadius = localCmd.RadiusX,
                                     Scale = localCmd.Scale,
                                     Translate = localCmd.Translate,
-                                    Color = (localCmd.Brush is SolidColorBrush solid) ? solid.Color : new Vector4(1f, 1f, 1f, 1f),
+                                    Color = ResolveDrawCallBrushColor(localCmd.Brush),
                                     ClipRect = _activeClipRect,
                                     MaskTexture = _maskStack.Count > 0 ? _maskStack.Peek() : null,
                                     BlendMode = _activeBlendMode
@@ -7008,7 +7019,7 @@ public unsafe class Compositor : IDisposable
                                     LineThicknessOrRadius = localCmd.RadiusX,
                                     Scale = localCmd.Scale,
                                     Translate = localCmd.Translate,
-                                    Color = (localCmd.Brush is SolidColorBrush solid) ? solid.Color : new Vector4(1f, 1f, 1f, 1f),
+                                    Color = ResolveDrawCallBrushColor(localCmd.Brush),
                                     ClipRect = _activeClipRect,
                                     MaskTexture = _maskStack.Count > 0 ? _maskStack.Peek() : null,
                                     BlendMode = _activeBlendMode
@@ -7049,7 +7060,7 @@ public unsafe class Compositor : IDisposable
                                     PointBufferOffset = (int)pendingVectorStart,
                                     PointBufferCount = (int)((uint)_vectorIndicesList.Count - pendingVectorStart),
                                     Transform = Matrix4x4.Identity * cmdTransform,
-                                    Color = (localCmd.Brush is SolidColorBrush solid) ? solid.Color : new Vector4(1f, 1f, 1f, 1f),
+                                    Color = ResolveDrawCallBrushColor(localCmd.Brush),
                                     ClipRect = _activeClipRect
                                 });
                             }
@@ -7082,7 +7093,7 @@ public unsafe class Compositor : IDisposable
                                     PointBufferOffset = (int)pendingVectorStart,
                                     PointBufferCount = (int)((uint)_vectorIndicesList.Count - pendingVectorStart),
                                     Transform = Matrix4x4.Identity * cmdTransform,
-                                    Color = (localCmd.Brush is SolidColorBrush solid) ? solid.Color : new Vector4(1f, 1f, 1f, 1f),
+                                    Color = ResolveDrawCallBrushColor(localCmd.Brush),
                                     ClipRect = _activeClipRect
                                 });
                             }
@@ -7472,7 +7483,7 @@ public unsafe class Compositor : IDisposable
             StaticBuffer = staticBuffer,
             Transform = transform,
             LineThicknessOrRadius = cmd.RadiusX,
-            Color = (cmd.Brush is SolidColorBrush solid) ? solid.Color : new Vector4(1f, 1f, 1f, 1f),
+            Color = ResolveDrawCallBrushColor(cmd.Brush),
             Scale = cmd.Scale,
             Translate = cmd.Translate,
             ClipRect = _activeClipRect
@@ -7630,7 +7641,7 @@ public unsafe class Compositor : IDisposable
             StaticBuffer = staticBuffer,
             Transform = transform,
             LineThicknessOrRadius = cmd.RadiusX,
-            Color = (cmd.Brush is SolidColorBrush solid) ? solid.Color : new Vector4(1f, 1f, 1f, 1f),
+            Color = ResolveDrawCallBrushColor(cmd.Brush),
             Scale = cmd.Scale,
             Translate = cmd.Translate,
             ClipRect = _activeClipRect
