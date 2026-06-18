@@ -510,7 +510,7 @@ public class SKCanvas : IDisposable
         try
         {
             var brush = paint.ToBrush();
-            var pen = paint.ToPen();
+            var pen = paint.ToPen(GetCurrentStrokeScale());
             _context.Commands.Add(new RenderCommand
             {
                 Type = RenderCommandType.DrawRect,
@@ -542,7 +542,7 @@ public class SKCanvas : IDisposable
         try
         {
             var brush = paint.ToBrush();
-            var pen = paint.ToPen();
+            var pen = paint.ToPen(GetCurrentStrokeScale());
             _context.Commands.Add(new RenderCommand
             {
                 Type = RenderCommandType.DrawRoundedRect,
@@ -587,7 +587,7 @@ public class SKCanvas : IDisposable
         try
         {
             var brush = paint.ToBrush();
-            var pen = paint.ToPen();
+            var pen = paint.ToPen(GetCurrentStrokeScale());
             _context.Commands.Add(new RenderCommand
             {
                 Type = RenderCommandType.DrawEllipse,
@@ -611,7 +611,7 @@ public class SKCanvas : IDisposable
         try
         {
             var brush = paint.ToBrush();
-            var pen = paint.ToPen();
+            var pen = paint.ToPen(GetCurrentStrokeScale());
             _context.Commands.Add(new RenderCommand
             {
                 Type = RenderCommandType.DrawCircle,
@@ -634,7 +634,7 @@ public class SKCanvas : IDisposable
         try
         {
             var brush = paint.ToBrush();
-            var pen = paint.ToPen();
+            var pen = paint.ToPen(GetCurrentStrokeScale());
 
             if (IsInverseFillType(path.FillType))
             {
@@ -670,6 +670,11 @@ public class SKCanvas : IDisposable
             Pen = pen,
             Transform = transform
         });
+    }
+
+    private float GetCurrentStrokeScale()
+    {
+        return TransformMetrics.GetStrokeScale(_currentMatrix.ToMatrix4x4());
     }
 
     private PathGeometry CreateCanvasDifferenceGeometry(PathGeometry excluded)

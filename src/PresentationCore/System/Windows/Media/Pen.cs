@@ -35,26 +35,46 @@ public class Pen
 
     public ProGPU.Vector.Pen? ToNative()
     {
+        return ToNative(1f);
+    }
+
+    public ProGPU.Vector.Pen? ToNative(float thicknessScale)
+    {
         if (Brush == null) return null;
-        return CreateNativePen(Brush.ToNative());
+        return CreateNativePen(Brush.ToNative(), thicknessScale);
     }
 
     public ProGPU.Vector.Pen? ToNative(Rect targetBounds)
     {
-        if (Brush == null) return null;
-        return CreateNativePen(Brush.ToNative(targetBounds));
+        return ToNative(targetBounds, 1f);
     }
 
-    private ProGPU.Vector.Pen CreateNativePen(ProGPU.Vector.Brush brush)
+    public ProGPU.Vector.Pen? ToNative(Rect targetBounds, float thicknessScale)
+    {
+        if (Brush == null) return null;
+        return CreateNativePen(Brush.ToNative(targetBounds), thicknessScale);
+    }
+
+    private ProGPU.Vector.Pen CreateNativePen(ProGPU.Vector.Brush brush, float thicknessScale)
     {
         return new ProGPU.Vector.Pen(
             brush,
-            (float)Thickness,
+            GetScaledThickness(thicknessScale),
             ToNativeLineJoin(LineJoin),
             (float)global::System.Math.Max(1.0, MiterLimit),
             ToNativeLineCap(StartLineCap),
             ToNativeLineCap(EndLineCap),
             ToNativeLineCap(DashCap));
+    }
+
+    private float GetScaledThickness(float thicknessScale)
+    {
+        if (!float.IsFinite(thicknessScale) || thicknessScale <= 0f)
+        {
+            thicknessScale = 1f;
+        }
+
+        return (float)Thickness * thicknessScale;
     }
 
     private static ProGPU.Vector.PenLineJoin ToNativeLineJoin(PenLineJoin lineJoin)

@@ -66,8 +66,14 @@ public class SKPaint : IDisposable
 
     public Pen? ToPen()
     {
+        return ToPen(1f);
+    }
+
+    public Pen? ToPen(float strokeScale)
+    {
         if (Style == SKPaintStyle.Fill) return null;
 
+        var scaledStrokeWidth = ScaleStrokeWidth(StrokeWidth, strokeScale);
         Brush penBrush;
         if (Shader != null)
         {
@@ -80,11 +86,11 @@ public class SKPaint : IDisposable
             var c = new Vector4(color.R / 255.0f, color.G / 255.0f, color.B / 255.0f, color.A / 255.0f);
             penBrush = new SolidColorBrush(c);
         }
-        var (dashArray, dashOffset) = MapDashEffect(PathEffect, StrokeWidth);
+        var (dashArray, dashOffset) = MapDashEffect(PathEffect, scaledStrokeWidth);
 
         return new Pen(
             penBrush,
-            StrokeWidth,
+            scaledStrokeWidth,
             MapStrokeJoin(StrokeJoin),
             StrokeMiter,
             MapStrokeCap(StrokeCap),
@@ -107,6 +113,16 @@ public class SKPaint : IDisposable
     private SKColor GetFilteredColor()
     {
         return ColorFilter?.Apply(Color) ?? Color;
+    }
+
+    private static float ScaleStrokeWidth(float strokeWidth, float strokeScale)
+    {
+        if (!float.IsFinite(strokeScale) || strokeScale <= 0f)
+        {
+            return strokeWidth;
+        }
+
+        return strokeWidth * strokeScale;
     }
 
     private void ThrowIfShaderColorFilter()

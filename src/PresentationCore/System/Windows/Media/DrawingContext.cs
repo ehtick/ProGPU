@@ -31,6 +31,7 @@ public class DrawingContext : IDisposable
 
     private Matrix4x4 CurrentTransform => _transformStack.Peek();
     private float CurrentOpacity => _opacityStack.Peek();
+    private float CurrentStrokeScale => ProGPU.Vector.TransformMetrics.GetStrokeScale(CurrentTransform);
 
     private void ApplyContextStateToLastCommands(int startCount)
     {
@@ -56,7 +57,7 @@ public class DrawingContext : IDisposable
     public void DrawLine(Pen? pen, Point point0, Point point1)
     {
         if (pen == null) return;
-        var nativePen = pen.ToNative(new Rect(point0, point1));
+        var nativePen = pen.ToNative(new Rect(point0, point1), CurrentStrokeScale);
         if (nativePen == null) return;
         var p0 = new Vector2((float)point0.X, (float)point0.Y);
         var p1 = new Vector2((float)point1.X, (float)point1.Y);
@@ -69,7 +70,7 @@ public class DrawingContext : IDisposable
     public void DrawRectangle(Brush? brush, Pen? pen, Rect rectangle)
     {
         var nativeBrush = brush?.ToNative(rectangle);
-        var nativePen = pen?.ToNative(rectangle);
+        var nativePen = pen?.ToNative(rectangle, CurrentStrokeScale);
         var nativeRect = new ProGPU.Scene.Rect((float)rectangle.X, (float)rectangle.Y, (float)rectangle.Width, (float)rectangle.Height);
 
         int start = _nativeContext.Commands.Count;
@@ -80,7 +81,7 @@ public class DrawingContext : IDisposable
     public void DrawRoundedRectangle(Brush? brush, Pen? pen, Rect rectangle, double radiusX, double radiusY)
     {
         var nativeBrush = brush?.ToNative(rectangle);
-        var nativePen = pen?.ToNative(rectangle);
+        var nativePen = pen?.ToNative(rectangle, CurrentStrokeScale);
         var nativeRect = new ProGPU.Scene.Rect((float)rectangle.X, (float)rectangle.Y, (float)rectangle.Width, (float)rectangle.Height);
 
         int start = _nativeContext.Commands.Count;
@@ -92,7 +93,7 @@ public class DrawingContext : IDisposable
     {
         var bounds = new Rect(center.X - radiusX, center.Y - radiusY, radiusX * 2.0, radiusY * 2.0);
         var nativeBrush = brush?.ToNative(bounds);
-        var nativePen = pen?.ToNative(bounds);
+        var nativePen = pen?.ToNative(bounds, CurrentStrokeScale);
         var c = new Vector2((float)center.X, (float)center.Y);
 
         int start = _nativeContext.Commands.Count;
@@ -105,7 +106,7 @@ public class DrawingContext : IDisposable
         if (geometry == null) return;
         var bounds = geometry.Bounds;
         var nativeBrush = brush?.ToNative(bounds);
-        var nativePen = pen?.ToNative(bounds);
+        var nativePen = pen?.ToNative(bounds, CurrentStrokeScale);
 
         int start = _nativeContext.Commands.Count;
         geometry.Draw(_nativeContext, nativeBrush, nativePen);

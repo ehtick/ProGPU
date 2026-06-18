@@ -443,6 +443,57 @@ public sealed class SkCanvasStateTests
     }
 
     [Fact]
+    public void DrawRectScalesStrokeWidthWithCanvasMatrix()
+    {
+        var context = new DrawingContext();
+        using var canvas = new SKCanvas(context, 100f, 100f);
+        using var paint = new SKPaint
+        {
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 2f
+        };
+
+        canvas.Scale(3f, 3f);
+        canvas.DrawRect(new SKRect(10f, 20f, 40f, 60f), paint);
+
+        var command = Assert.Single(context.Commands);
+        Assert.Equal(RenderCommandType.DrawRect, command.Type);
+        Assert.NotNull(command.Pen);
+        AssertNear(6f, command.Pen!.Thickness);
+        AssertMatrixNear(Matrix4x4.CreateScale(3f, 3f, 1f), command.Transform);
+    }
+
+    [Fact]
+    public void DrawPathScalesStrokeWidthWithSetMatrix()
+    {
+        var context = new DrawingContext();
+        using var canvas = new SKCanvas(context, 100f, 100f);
+        using var path = new SKPath();
+        using var paint = new SKPaint
+        {
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 1.5f
+        };
+        var matrix = new SKMatrix
+        {
+            ScaleX = 2f,
+            ScaleY = 5f,
+            Persp2 = 1f
+        };
+
+        path.MoveTo(0f, 0f);
+        path.LineTo(10f, 0f);
+        canvas.SetMatrix(matrix);
+        canvas.DrawPath(path, paint);
+
+        var command = Assert.Single(context.Commands);
+        Assert.Equal(RenderCommandType.DrawPath, command.Type);
+        Assert.NotNull(command.Pen);
+        AssertNear(7.5f, command.Pen!.Thickness);
+        AssertMatrixNear(matrix.ToMatrix4x4(), command.Transform);
+    }
+
+    [Fact]
     public void ClipPathRecordsCurrentCanvasMatrix()
     {
         var context = new DrawingContext();
