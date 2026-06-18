@@ -533,6 +533,43 @@ public sealed class CompositorReviewRegressionTests
     }
 
     [Fact]
+    public void OpacityMaskWritesComputedAlphaIntoMaskTarget()
+    {
+        var window = HeadlessWindow.Shared;
+        window.Resize(120, 40);
+        window.Content = new OpacityMaskAlphaVisual();
+
+        try
+        {
+            window.Render();
+
+            var pixels = window.ReadPixels();
+            var blackMask = ReadPixel(pixels, window.Width, x: 16, y: 16);
+            var blueMask = ReadPixel(pixels, window.Width, x: 56, y: 16);
+            var halfOpacityMask = ReadPixel(pixels, window.Width, x: 96, y: 16);
+
+            Assert.True(blackMask.R >= 220, $"Expected opaque black mask to preserve red draw, found {blackMask}.");
+            Assert.True(blackMask.G <= 35, $"Expected opaque black mask green channel to stay low, found {blackMask}.");
+            Assert.True(blackMask.B <= 35, $"Expected opaque black mask blue channel to stay low, found {blackMask}.");
+            Assert.Equal(255, blackMask.A);
+
+            Assert.True(blueMask.R >= 220, $"Expected opaque blue mask to preserve red draw, found {blueMask}.");
+            Assert.True(blueMask.G <= 35, $"Expected opaque blue mask green channel to stay low, found {blueMask}.");
+            Assert.True(blueMask.B <= 35, $"Expected opaque blue mask blue channel to stay low, found {blueMask}.");
+            Assert.Equal(255, blueMask.A);
+
+            Assert.InRange(halfOpacityMask.R, 110, 150);
+            Assert.InRange(halfOpacityMask.G, 0, 16);
+            Assert.InRange(halfOpacityMask.B, 0, 16);
+            Assert.Equal(255, halfOpacityMask.A);
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
+    [Fact]
     public void CachedTextureBindGroupsAreQueuedWhenSourceTextureIsDisposed()
     {
         using var window = new HeadlessWindow(16, 16);
@@ -1076,6 +1113,41 @@ public sealed class CompositorReviewRegressionTests
                 new SolidColorBrush(new Vector4(1f, 0f, 0f, 1f)),
                 pen: null,
                 new Rect(0f, 0f, 32f, 32f));
+            context.PopOpacityMask();
+        }
+    }
+
+    private sealed class OpacityMaskAlphaVisual : FrameworkElement
+    {
+        private readonly SolidColorBrush _background = new(new Vector4(0f, 0f, 0f, 1f));
+        private readonly SolidColorBrush _red = new(new Vector4(1f, 0f, 0f, 1f));
+
+        public OpacityMaskAlphaVisual()
+        {
+            Width = 120f;
+            Height = 40f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            context.DrawRectangle(_background, null, new Rect(0f, 0f, 120f, 40f));
+
+            context.PushOpacityMask(
+                new SolidColorBrush(new Vector4(0f, 0f, 0f, 1f)),
+                new Rect(0f, 0f, 32f, 32f));
+            context.DrawRectangle(_red, null, new Rect(0f, 0f, 32f, 32f));
+            context.PopOpacityMask();
+
+            context.PushOpacityMask(
+                new SolidColorBrush(new Vector4(0f, 0f, 1f, 1f)),
+                new Rect(40f, 0f, 32f, 32f));
+            context.DrawRectangle(_red, null, new Rect(40f, 0f, 32f, 32f));
+            context.PopOpacityMask();
+
+            context.PushOpacityMask(
+                new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f)) { Opacity = 0.5f },
+                new Rect(80f, 0f, 32f, 32f));
+            context.DrawRectangle(_red, null, new Rect(80f, 0f, 32f, 32f));
             context.PopOpacityMask();
         }
     }

@@ -732,6 +732,12 @@ fn fs_main_premultiplied(input: VertexOutput) -> @location(0) vec4<f32> {
     let color = vector_fs_main(input);
     return vec4<f32>(color.rgb * color.a, color.a);
 }
+
+@fragment
+fn fs_mask(input: VertexOutput) -> @location(0) vec4<f32> {
+    let color = vector_fs_main(input);
+    return vec4<f32>(color.a, 0.0, 0.0, 1.0);
+}
 ";
 
     public const string TextShader = @"
@@ -890,6 +896,12 @@ fn fs_main_premultiplied(input: VertexOutput) -> @location(0) vec4<f32> {
     let color = text_fs_main(input);
     return vec4<f32>(color.rgb * color.a, color.a);
 }
+
+@fragment
+fn fs_mask(input: VertexOutput) -> @location(0) vec4<f32> {
+    let color = text_fs_main(input);
+    return vec4<f32>(color.a, 0.0, 0.0, 1.0);
+}
 ";
 
     public const string TextureShader = @"
@@ -1000,6 +1012,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 fn fs_main_premultiplied(input: VertexOutput) -> @location(0) vec4<f32> {
     let color = texture_fs_main(input);
     return vec4<f32>(color.rgb * color.a, color.a);
+}
+
+@fragment
+fn fs_mask(input: VertexOutput) -> @location(0) vec4<f32> {
+    let color = texture_fs_main(input);
+    return vec4<f32>(color.a, 0.0, 0.0, 1.0);
 }
 ";
 

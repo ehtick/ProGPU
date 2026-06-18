@@ -163,7 +163,7 @@ public sealed class TextureBlendRenderTests
                 null,
                 new Rect(0f, 0f, 32f, 32f));
             context.PushOpacityMask(
-                new SolidColorBrush(new Vector4(0.5f, 0f, 0f, 1f)),
+                new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f)) { Opacity = 0.5f },
                 new Rect(0f, 0f, 32f, 32f));
             context.DrawTexture(_texture, new Rect(0f, 0f, 32f, 32f));
             context.PopOpacityMask();

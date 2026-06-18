@@ -248,13 +248,13 @@ public sealed class StaticDxfRenderTests
             context.DrawStaticDxf(_visibleBuffer);
 
             context.PushOpacityMask(
-                new SolidColorBrush(new Vector4(0f, 0f, 0f, 1f)),
+                new SolidColorBrush(new Vector4(0f, 0f, 0f, 0f)),
                 new Rect(75f, 25f, 40f, 40f));
             context.DrawStaticDxf(_extensionMaskedBuffer);
             context.PopOpacityMask();
 
             context.PushOpacityMask(
-                new SolidColorBrush(new Vector4(0f, 0f, 0f, 1f)),
+                new SolidColorBrush(new Vector4(0f, 0f, 0f, 0f)),
                 new Rect(130f, 25f, 40f, 40f));
             context.Commands.Add(new RenderCommand
             {

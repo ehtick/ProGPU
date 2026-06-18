@@ -710,7 +710,7 @@ fn wpf_effect_main(uv: vec2<f32>, inputColor: vec4<f32>) -> vec4<f32> {
         {
             context.DrawWpfShaderEffect(_unmasked);
             context.PushOpacityMask(
-                new SolidColorBrush(new Vector4(0f, 0f, 0f, 1f)),
+                new SolidColorBrush(new Vector4(0f, 0f, 0f, 0f)),
                 new Rect(90f, 25f, 40f, 40f));
             context.DrawWpfShaderEffect(_masked);
             context.PopOpacityMask();

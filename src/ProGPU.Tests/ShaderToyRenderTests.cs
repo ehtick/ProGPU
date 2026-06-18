@@ -237,7 +237,7 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
                 dataParam: _unmasked);
 
             context.PushOpacityMask(
-                new SolidColorBrush(new Vector4(0f, 0f, 0f, 1f)),
+                new SolidColorBrush(new Vector4(0f, 0f, 0f, 0f)),
                 new Rect(90f, 25f, 40f, 40f));
             context.DrawExtension(
                 CompositorBuiltInExtensions.ShaderToy,
@@ -313,7 +313,7 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
         public override void OnRender(DrawingContext context)
         {
             context.PushOpacityMask(
-                new SolidColorBrush(new Vector4(0.5f, 0.5f, 0.5f, 1f)),
+                new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f)) { Opacity = 0.5f },
                 new Rect(0f, 0f, 32f, 32f));
             context.DrawExtension(
                 CompositorBuiltInExtensions.ShaderToy,

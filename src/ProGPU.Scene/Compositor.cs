@@ -7946,8 +7946,14 @@ public unsafe class Compositor : IDisposable
     private static string GetFragmentEntryPoint(
         DrawCallType type,
         GpuBlendMode blendMode,
-        GpuTextureAlphaMode textureAlphaMode)
+        GpuTextureAlphaMode textureAlphaMode,
+        bool writesOpacityMask)
     {
+        if (writesOpacityMask)
+        {
+            return "fs_mask";
+        }
+
         if (!BlendModeRequiresPremultipliedSource(blendMode))
         {
             return "fs_main";
@@ -8043,7 +8049,8 @@ public unsafe class Compositor : IDisposable
                         Attributes = textAttribsPtr
                     };
 
-                    var textFragmentEntryPoint = GetFragmentEntryPoint(type, blendMode, GpuTextureAlphaMode.Straight);
+                    bool writesOpacityMask = overrideFormat == TextureFormat.R8Unorm;
+                    var textFragmentEntryPoint = GetFragmentEntryPoint(type, blendMode, GpuTextureAlphaMode.Straight, writesOpacityMask);
                     var textSourceAlphaMode = GetPipelineSourceAlphaMode(type, blendMode, GpuTextureAlphaMode.Straight);
                     string textFragmentKey = textFragmentEntryPoint == "fs_main" ? string.Empty : $"_{textFragmentEntryPoint}";
                     string textPipelineKey = overrideFormat.HasValue
@@ -8078,7 +8085,8 @@ public unsafe class Compositor : IDisposable
                 throw new ArgumentException($"Unsupported pipeline draw call type: {type}");
             }
 
-            var fragmentEntryPoint = GetFragmentEntryPoint(type, blendMode, textureAlphaMode);
+            bool writesMaskTarget = overrideFormat == TextureFormat.R8Unorm;
+            var fragmentEntryPoint = GetFragmentEntryPoint(type, blendMode, textureAlphaMode, writesMaskTarget);
             var sourceAlphaMode = GetPipelineSourceAlphaMode(type, blendMode, textureAlphaMode);
             string alphaModeKey = type == DrawCallType.Texture ? $"_{textureAlphaMode}" : string.Empty;
             string fragmentKey = fragmentEntryPoint == "fs_main" ? string.Empty : $"_{fragmentEntryPoint}";
