@@ -59,6 +59,54 @@ public sealed class LayerRenderTests
         }
     }
 
+    [Fact]
+    public void VisualCompositeScopeAppliesRetainedOpacityMask()
+    {
+        var window = HeadlessWindow.Shared;
+        window.Resize(100, 60);
+        window.Content = new VisualCompositeScopeHost(new OpacityMaskedVisual());
+
+        try
+        {
+            window.Render();
+
+            var pixels = window.ReadPixels();
+            var visible = ReadPixel(pixels, window.Width, x: 25, y: 25);
+            var masked = ReadPixel(pixels, window.Width, x: 65, y: 25);
+
+            AssertRed(visible);
+            AssertBlack(masked);
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
+    [Fact]
+    public void CachedLayerCompositeAppliesRetainedOpacityMask()
+    {
+        var window = HeadlessWindow.Shared;
+        window.Resize(100, 60);
+        window.Content = new VisualCompositeScopeHost(new CachedOpacityMaskedVisual());
+
+        try
+        {
+            window.Render();
+
+            var pixels = window.ReadPixels();
+            var visible = ReadPixel(pixels, window.Width, x: 25, y: 25);
+            var masked = ReadPixel(pixels, window.Width, x: 65, y: 25);
+
+            AssertRed(visible);
+            AssertBlack(masked);
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
     private static RgbaPixel ReadPixel(byte[] pixels, uint width, int x, int y)
     {
         var index = ((y * (int)width) + x) * 4;
@@ -191,6 +239,32 @@ public sealed class LayerRenderTests
         public override void OnRender(DrawingContext context)
         {
             context.DrawRectangle(_red, null, new Rect(0f, 0f, 80f, 50f));
+        }
+    }
+
+    private class OpacityMaskedVisual : FrameworkElement
+    {
+        private readonly SolidColorBrush _red = new(new Vector4(1f, 0f, 0f, 1f));
+
+        public OpacityMaskedVisual()
+        {
+            Width = 80f;
+            Height = 50f;
+            OpacityMask = new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f));
+            OpacityMaskBounds = new Rect(0f, 0f, 40f, 50f);
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            context.DrawRectangle(_red, null, new Rect(0f, 0f, 80f, 50f));
+        }
+    }
+
+    private sealed class CachedOpacityMaskedVisual : OpacityMaskedVisual
+    {
+        public CachedOpacityMaskedVisual()
+        {
+            CacheAsLayer = true;
         }
     }
 }

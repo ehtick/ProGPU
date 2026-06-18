@@ -506,7 +506,8 @@ public unsafe class Compositor : IDisposable
     {
         None = 0,
         Clip = 1,
-        Opacity = 2
+        Opacity = 2,
+        OpacityMask = 4
     }
 
     private BatchType _currentBatchType = BatchType.None;
@@ -2128,19 +2129,9 @@ public unsafe class Compositor : IDisposable
             : Matrix4x4.CreateTranslation(offsetOverride.GetValueOrDefault().X, offsetOverride.GetValueOrDefault().Y, 0f);
         var globalTransform = localTransform * parentTransform;
 
-        bool pushedClip = false;
-        if (includeLocalVisualState && node.ClipBounds.HasValue)
-        {
-            PushClipRect(node.ClipBounds.Value, globalTransform);
-            pushedClip = true;
-        }
-
-        bool pushedOpacity = false;
-        if (includeLocalVisualState && node.Opacity < 1.0f)
-        {
-            PushOpacityValue(node.Opacity);
-            pushedOpacity = true;
-        }
+        var visualScope = includeLocalVisualState
+            ? PushVisualCompositeScope(node, globalTransform)
+            : VisualCompositeScope.None;
 
         bool isTemplated = node.HasTemplate;
         if (isTemplated)
@@ -2382,15 +2373,7 @@ public unsafe class Compositor : IDisposable
             }
         }
 
-        if (pushedOpacity)
-        {
-            PopOpacityValue();
-        }
-
-        if (pushedClip)
-        {
-            PopClipRect();
-        }
+        PopVisualCompositeScope(visualScope);
 
         node.IsDirty = false;
     }
@@ -5845,11 +5828,22 @@ public unsafe class Compositor : IDisposable
             scope |= VisualCompositeScope.Opacity;
         }
 
+        if (node.OpacityMask != null && node.OpacityMaskBounds.HasValue)
+        {
+            PushOpacityMaskValue(node.OpacityMask, node.OpacityMaskBounds.Value, compositeTransform);
+            scope |= VisualCompositeScope.OpacityMask;
+        }
+
         return scope;
     }
 
     private void PopVisualCompositeScope(VisualCompositeScope scope)
     {
+        if ((scope & VisualCompositeScope.OpacityMask) != 0)
+        {
+            PopOpacityMaskValue();
+        }
+
         if ((scope & VisualCompositeScope.Opacity) != 0)
         {
             PopOpacityValue();
