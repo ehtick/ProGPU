@@ -302,6 +302,40 @@ public sealed class CompositorReviewRegressionTests
     }
 
     [Fact]
+    public unsafe void ExplicitPhysicalRenderTargetFeedsFramebufferSizeToCanvasPixelHelpers()
+    {
+        using var window = new HeadlessWindow(24, 24);
+        using var target = new GpuTexture(
+            window.Context,
+            21,
+            17,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.RenderAttachment | TextureUsage.TextureBinding,
+            "HiDPI Explicit Canvas Size Target");
+        var extension = new CanvasSizeRecordingExtension();
+        window.Compositor.RegisterExtension(9004, extension);
+
+        var visual = new DrawingVisual
+        {
+            Size = new Vector2(10f, 8f)
+        };
+        visual.Context.DrawExtension(9004);
+
+        window.Compositor.RenderScene(
+            visual,
+            logicalWidth: 10,
+            logicalHeight: 8,
+            renderTargetWidth: 21,
+            renderTargetHeight: 17,
+            dpiScale: 2f,
+            target.ViewPtr);
+
+        Assert.Equal(1, extension.RenderCount);
+        Assert.Equal(21f, extension.CanvasPixelWidth);
+        Assert.Equal(17f, extension.CanvasPixelHeight);
+    }
+
+    [Fact]
     public void CachedLayerRecreatesTextureForCurrentWebGpuContext()
     {
         using var firstWindow = new HeadlessWindow(64, 64);
@@ -1134,6 +1168,42 @@ public sealed class CompositorReviewRegressionTests
         public void EndFrame(Compositor compositor)
         {
             EndFrameCount++;
+        }
+    }
+
+    private sealed class CanvasSizeRecordingExtension : ICompositorExtension
+    {
+        private static readonly PropertyInfo s_canvasPixelWidthProperty =
+            typeof(Compositor).GetProperty("CurrentCanvasPixelWidth", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingMemberException(typeof(Compositor).FullName, "CurrentCanvasPixelWidth");
+
+        private static readonly PropertyInfo s_canvasPixelHeightProperty =
+            typeof(Compositor).GetProperty("CurrentCanvasPixelHeight", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingMemberException(typeof(Compositor).FullName, "CurrentCanvasPixelHeight");
+
+        public int RenderCount { get; private set; }
+
+        public float CanvasPixelWidth { get; private set; }
+
+        public float CanvasPixelHeight { get; private set; }
+
+        public void Compile(
+            Compositor compositor,
+            IRenderDataProvider? provider,
+            Matrix4x4 transform,
+            ref RenderCommand cmd)
+        {
+        }
+
+        public unsafe void Render(
+            Compositor compositor,
+            void* renderPassEncoder,
+            bool isOffscreen,
+            in Compositor.CompositorDrawCall dc)
+        {
+            RenderCount++;
+            CanvasPixelWidth = (float)s_canvasPixelWidthProperty.GetValue(compositor)!;
+            CanvasPixelHeight = (float)s_canvasPixelHeightProperty.GetValue(compositor)!;
         }
     }
 

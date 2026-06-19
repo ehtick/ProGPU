@@ -553,8 +553,13 @@ public unsafe class Compositor : IDisposable
     internal GpuBuffer GradientStopsStorageBuffer => _gradientStopsStorageBuffer;
     internal uint CurrentWidth => _currentWidth;
     internal uint CurrentHeight => _currentHeight;
-    internal float CurrentCanvasPixelWidth => MathF.Max(1f, _currentWidth * (_currentDpiScale > 0f ? _currentDpiScale : 1f));
-    internal float CurrentCanvasPixelHeight => MathF.Max(1f, _currentHeight * (_currentDpiScale > 0f ? _currentDpiScale : 1f));
+    internal float CurrentCanvasPixelWidth => _explicitRenderTargetWidth.HasValue
+        ? _explicitRenderTargetWidth.Value
+        : MathF.Max(1f, _currentWidth * (_currentDpiScale > 0f ? _currentDpiScale : 1f));
+
+    internal float CurrentCanvasPixelHeight => _explicitRenderTargetHeight.HasValue
+        ? _explicitRenderTargetHeight.Value
+        : MathF.Max(1f, _currentHeight * (_currentDpiScale > 0f ? _currentDpiScale : 1f));
     private uint CurrentCanvasPixelWidthUInt => Math.Max(1u, (uint)Math.Round(CurrentCanvasPixelWidth));
     private uint CurrentCanvasPixelHeightUInt => Math.Max(1u, (uint)Math.Round(CurrentCanvasPixelHeight));
     public float CurrentDpiScale => _currentDpiScale;
