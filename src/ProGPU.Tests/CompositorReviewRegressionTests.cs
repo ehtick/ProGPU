@@ -271,6 +271,37 @@ public sealed class CompositorReviewRegressionTests
     }
 
     [Fact]
+    public unsafe void ExplicitPhysicalRenderTargetScalesLogicalSceneToFramebuffer()
+    {
+        using var window = new HeadlessWindow(20, 20);
+        using var target = new GpuTexture(
+            window.Context,
+            20,
+            20,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.RenderAttachment | TextureUsage.CopySrc,
+            "HiDPI Explicit Render Target");
+        var visual = new SolidLogicalSceneVisual();
+
+        window.Compositor.RenderScene(
+            visual,
+            logicalWidth: 10,
+            logicalHeight: 10,
+            renderTargetWidth: 20,
+            renderTargetHeight: 20,
+            dpiScale: 2f,
+            target.ViewPtr);
+
+        var pixels = target.ReadPixels();
+        var lowerRight = ReadPixel(pixels, target.Width, x: 15, y: 15);
+
+        Assert.True(lowerRight.R >= 220, $"Expected logical scene to fill the physical target width, found {lowerRight}.");
+        Assert.True(lowerRight.G <= 35, $"Expected logical scene green channel to stay low, found {lowerRight}.");
+        Assert.True(lowerRight.B <= 35, $"Expected logical scene blue channel to stay low, found {lowerRight}.");
+        Assert.Equal(255, lowerRight.A);
+    }
+
+    [Fact]
     public void CachedLayerRecreatesTextureForCurrentWebGpuContext()
     {
         using var firstWindow = new HeadlessWindow(64, 64);
@@ -1231,6 +1262,18 @@ public sealed class CompositorReviewRegressionTests
                 new SolidColorBrush(new Vector4(1f, 0f, 0f, 1f)),
                 pen: null,
                 new Rect(Vector2.Zero, size));
+        }
+    }
+
+    private sealed class SolidLogicalSceneVisual : DrawingVisual
+    {
+        public SolidLogicalSceneVisual()
+        {
+            Size = new Vector2(10f, 10f);
+            Context.DrawRectangle(
+                new SolidColorBrush(new Vector4(1f, 0f, 0f, 1f)),
+                pen: null,
+                new Rect(0f, 0f, 10f, 10f));
         }
     }
 
