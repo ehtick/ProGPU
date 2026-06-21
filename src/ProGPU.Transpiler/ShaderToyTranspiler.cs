@@ -1939,19 +1939,8 @@ namespace ProGPU.Transpiler
             }
             if (stmt is ForStatement fors)
             {
-                string initStr = "";
-                if (fors.Initializer != null)
-                {
-                    if (fors.Initializer is VariableDeclarationStatement vd)
-                    {
-                        initStr = $"var {ResolveIdentifier(vd.Name)}: {MapType(vd.Type)} = {GenerateExpression(vd.Initializer)}";
-                    }
-                    else if (fors.Initializer is ExpressionStatement es)
-                    {
-                        initStr = GenerateExpression(es.Expression);
-                    }
-                }
-
+                string initPrelude = "";
+                string initStr = GenerateForInitializer(fors.Initializer, indent + "    ", out initPrelude);
                 string condStr = fors.Condition != null ? GenerateExpression(fors.Condition) : "";
                 string incrStr = "";
                 if (fors.Increment != null)
@@ -1969,19 +1958,34 @@ namespace ProGPU.Transpiler
                 }
 
                 var sb = new StringBuilder();
-                sb.AppendLine($"{indent}for ({initStr}; {condStr}; {incrStr}) {{");
+                string forIndent = indent;
+                string bodyIndent = indent + "    ";
+                if (initPrelude.Length > 0)
+                {
+                    sb.AppendLine($"{indent}{{");
+                    sb.Append(initPrelude);
+                    forIndent = indent + "    ";
+                    bodyIndent = indent + "        ";
+                }
+
+                sb.AppendLine($"{forIndent}for ({initStr}; {condStr}; {incrStr}) {{");
                 if (fors.Body is BlockStatement block)
                 {
                     foreach (var s in block.Statements)
                     {
-                        sb.Append(GenerateStatement(s, indent + "    "));
+                        sb.Append(GenerateStatement(s, bodyIndent));
                     }
                 }
                 else
                 {
-                    sb.Append(GenerateStatement(fors.Body, indent + "    "));
+                    sb.Append(GenerateStatement(fors.Body, bodyIndent));
                 }
-                sb.AppendLine($"{indent}}}");
+                sb.AppendLine($"{forIndent}}}");
+                if (initPrelude.Length > 0)
+                {
+                    sb.AppendLine($"{indent}}}");
+                }
+
                 return sb.ToString();
             }
             if (stmt is ReturnStatement r)
@@ -2023,6 +2027,52 @@ namespace ProGPU.Transpiler
                 return $"{indent}continue;\n";
             }
             return "";
+        }
+
+        private string GenerateForInitializer(Statement initializer, string preludeIndent, out string prelude)
+        {
+            prelude = "";
+            if (initializer == null)
+            {
+                return "";
+            }
+
+            if (initializer is VariableDeclarationStatement vd)
+            {
+                return GenerateForInitializerDeclaration(vd);
+            }
+
+            if (initializer is ExpressionStatement es)
+            {
+                return GenerateExpression(es.Expression);
+            }
+
+            if (initializer is BlockStatement block)
+            {
+                var sb = new StringBuilder();
+                foreach (var statement in block.Statements)
+                {
+                    if (statement is not VariableDeclarationStatement)
+                    {
+                        throw new NotSupportedException("Only variable declarations are supported in multi-declaration for-loop initializers.");
+                    }
+
+                    sb.Append(GenerateStatement(statement, preludeIndent));
+                }
+
+                prelude = sb.ToString();
+                return "";
+            }
+
+            throw new NotSupportedException($"Unsupported for-loop initializer statement type '{initializer.GetType().Name}'.");
+        }
+
+        private string GenerateForInitializerDeclaration(VariableDeclarationStatement declaration)
+        {
+            string typeStr = MapType(declaration.Type);
+            return declaration.Initializer != null
+                ? $"var {ResolveIdentifier(declaration.Name)}: {typeStr} = {GenerateExpression(declaration.Initializer)}"
+                : $"var {ResolveIdentifier(declaration.Name)}: {typeStr}";
         }
 
         private string GenerateExpression(Expression expr)

@@ -84,7 +84,7 @@ public class Bitmap : Image
         NormalizeExistingContentsForPremultipliedRenderTarget();
 
         var visual = new GraphicsVisual(_recordedContext);
-        GpuProvider.Compositor.RenderOffscreen(
+        GpuProvider.GetCompositor(_texture.Context).RenderOffscreen(
             visual,
             (uint)Width,
             (uint)Height,

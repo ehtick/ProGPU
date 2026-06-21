@@ -506,8 +506,14 @@ public class Graphics : IDisposable
     {
         bitmap.Flush();
         var source = bitmap.GpuTexture;
+        var targetContext = _bitmap?.GpuTexture.Context ?? GpuProvider.Context;
+        if (!ReferenceEquals(source.Context, targetContext))
+        {
+            throw new InvalidOperationException("Cannot draw a GDI Bitmap from a different WebGPU context into this Graphics target.");
+        }
+
         var retainedTexture = new GpuTexture(
-            source.Context,
+            targetContext,
             source.Width,
             source.Height,
             source.Format,

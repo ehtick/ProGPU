@@ -156,6 +156,11 @@ public class SKImage : IDisposable
 
     public void ReadPixels(SKImageInfo dstInfo, IntPtr dstPixels, int dstRowBytes, int srcX, int srcY, SKImageCachingHint cachingHint)
     {
+        if (dstPixels == IntPtr.Zero)
+        {
+            throw new ArgumentNullException(nameof(dstPixels));
+        }
+
         byte[] pixels = ReadTexturePixelsAsRgba8888();
         int srcWidth = Width;
         int srcHeight = Height;

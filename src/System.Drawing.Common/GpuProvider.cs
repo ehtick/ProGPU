@@ -1,5 +1,6 @@
 using ProGPU.Backend;
 using ProGPU.Scene;
+using System.Collections.Generic;
 using Silk.NET.WebGPU;
 
 namespace System.Drawing;
@@ -7,7 +8,12 @@ namespace System.Drawing;
 internal static class GpuProvider
 {
     private static WgpuContext? _context;
-    private static Compositor? _compositor;
+    private static readonly Dictionary<WgpuContext, Compositor> _compositors = new();
+
+    static GpuProvider()
+    {
+        WgpuContext.Disposing += OnContextDisposing;
+    }
 
     public static WgpuContext Context
     {
@@ -44,17 +50,45 @@ internal static class GpuProvider
     {
         get
         {
-            var ctx = Context;
-            if (_compositor != null && !_compositor.IsDisposed && _compositor.Context == ctx)
+            return GetCompositor(Context);
+        }
+    }
+
+    public static Compositor GetCompositor(WgpuContext context)
+    {
+        if (context == null || context.IsDisposed)
+        {
+            throw new InvalidOperationException("Cannot create a compositor for a disposed or missing WebGPU context.");
+        }
+
+        lock (_compositors)
+        {
+            if (_compositors.TryGetValue(context, out var compositor) && !compositor.IsDisposed)
             {
-                return _compositor;
+                return compositor;
             }
-            if (_compositor != null)
+
+            if (compositor != null)
             {
-                try { _compositor.Dispose(); } catch {}
+                try { compositor.Dispose(); } catch { }
             }
-            _compositor = new Compositor(ctx, TextureFormat.Rgba8Unorm);
-            return _compositor;
+
+            compositor = new Compositor(context, TextureFormat.Rgba8Unorm);
+            _compositors[context] = compositor;
+            return compositor;
+        }
+    }
+
+    private static void OnContextDisposing(WgpuContext context)
+    {
+        lock (_compositors)
+        {
+            if (!_compositors.Remove(context, out var compositor))
+            {
+                return;
+            }
+
+            try { compositor.Dispose(); } catch { }
         }
     }
 }

@@ -221,13 +221,7 @@ public class SKShader : IDisposable
         var spreadMethod = MapTileMode(mode);
         return new SKShader(() =>
         {
-            var stops = new GradientStop[colors.Length];
-            for (int i = 0; i < colors.Length; i++)
-            {
-                var c = new Vector4(colors[i].R / 255.0f, colors[i].G / 255.0f, colors[i].B / 255.0f, colors[i].A / 255.0f);
-                float offset = colorPos != null ? colorPos[i] : (float)i / (colors.Length - 1);
-                stops[i] = new GradientStop(c, offset);
-            }
+            var stops = CreateGradientStops(colors, colorPos);
             return new LinearGradientBrush(new Vector2(start.X, start.Y), new Vector2(end.X, end.Y), stops)
             {
                 SpreadMethod = spreadMethod
@@ -245,13 +239,7 @@ public class SKShader : IDisposable
         var spreadMethod = MapTileMode(mode);
         return new SKShader(() =>
         {
-            var stops = new GradientStop[colors.Length];
-            for (int i = 0; i < colors.Length; i++)
-            {
-                var c = new Vector4(colors[i].R / 255.0f, colors[i].G / 255.0f, colors[i].B / 255.0f, colors[i].A / 255.0f);
-                float offset = colorPos != null ? colorPos[i] : (float)i / (colors.Length - 1);
-                stops[i] = new GradientStop(c, offset);
-            }
+            var stops = CreateGradientStops(colors, colorPos);
             return new RadialGradientBrush(new Vector2(center.X, center.Y), radius, stops)
             {
                 SpreadMethod = spreadMethod
@@ -271,13 +259,7 @@ public class SKShader : IDisposable
         var spreadMethod = MapTileMode(mode);
         return new SKShader(() =>
         {
-            var stops = new GradientStop[colors.Length];
-            for (int i = 0; i < colors.Length; i++)
-            {
-                var c = new Vector4(colors[i].R / 255.0f, colors[i].G / 255.0f, colors[i].B / 255.0f, colors[i].A / 255.0f);
-                float offset = colorPos != null ? colorPos[i] : (float)i / (colors.Length - 1);
-                stops[i] = new GradientStop(c, offset);
-            }
+            var stops = CreateGradientStops(colors, colorPos);
 
             return new TwoPointConicalGradientBrush(
                 new Vector2(start.X, start.Y),
@@ -292,6 +274,29 @@ public class SKShader : IDisposable
     }
 
     public void Dispose() { }
+
+    private static GradientStop[] CreateGradientStops(SKColor[] colors, float[]? colorPos)
+    {
+        ArgumentNullException.ThrowIfNull(colors);
+        if (colorPos != null && colorPos.Length < colors.Length)
+        {
+            throw new ArgumentException("Color position array must have at least as many entries as the color array.", nameof(colorPos));
+        }
+
+        var stops = new GradientStop[colors.Length];
+        for (int i = 0; i < colors.Length; i++)
+        {
+            var c = new Vector4(colors[i].R / 255.0f, colors[i].G / 255.0f, colors[i].B / 255.0f, colors[i].A / 255.0f);
+            float offset = colorPos != null
+                ? colorPos[i]
+                : colors.Length <= 1
+                    ? 0f
+                    : (float)i / (colors.Length - 1);
+            stops[i] = new GradientStop(c, offset);
+        }
+
+        return stops;
+    }
 
     private static GradientSpreadMethod MapTileMode(SKShaderTileMode mode)
     {

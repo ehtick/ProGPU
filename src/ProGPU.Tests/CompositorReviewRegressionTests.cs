@@ -12,8 +12,10 @@ using ProGPU.Backend;
 using ProGPU.Scene;
 using ProGPU.Tests.Headless;
 using ProGPU.Text;
+using ProGPU.Transpiler;
 using ProGPU.Vector;
 using Silk.NET.WebGPU;
+using SkiaSharp;
 using WpfPixelFormats = System.Windows.Media.Imaging.PixelFormats;
 using WpfWriteableBitmap = System.Windows.Media.Imaging.WriteableBitmap;
 using Xunit;
@@ -115,6 +117,133 @@ public sealed class CompositorReviewRegressionTests
             wpfBitmap?.GpuTexture.Dispose();
             WgpuContext.Current = previous;
         }
+    }
+
+    [Fact]
+    public void SkShaderSingleStopGradientsUseFiniteZeroOffset()
+    {
+        using var shader = SKShader.CreateLinearGradient(
+            new SKPoint(0f, 0f),
+            new SKPoint(10f, 0f),
+            [new SKColor(255, 0, 0, 255)],
+            colorPos: null,
+            SKShaderTileMode.Clamp);
+
+        var brush = Assert.IsType<LinearGradientBrush>(shader.ToBrush());
+        var stop = Assert.Single(brush.Stops);
+
+        Assert.Equal(0f, stop.Offset);
+        Assert.True(float.IsFinite(stop.Offset));
+    }
+
+    [Fact]
+    public void ShaderToyForLoopPreservesMultiDeclarationInitializers()
+    {
+        var wgsl = ShaderToyTranspiler.Translate(
+            """
+            void mainImage(out vec4 fragColor, in vec2 fragCoord)
+            {
+                int sum = 0;
+                for (int i = 0, j = 1; i < 4; i++)
+                {
+                    sum += i + j;
+                }
+                fragColor = vec4(float(sum));
+            }
+            """);
+
+        Assert.Contains("var i: i32 = 0;", wgsl, System.StringComparison.Ordinal);
+        Assert.Contains("var j: i32 = 1;", wgsl, System.StringComparison.Ordinal);
+        Assert.Contains("for (; (i < 4); i = i + 1) {", wgsl, System.StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GdiBitmapFlushUsesOwningContextWhenAmbientContextChanges()
+    {
+        var previous = WgpuContext.Current;
+        using var bitmapContext = new WgpuContext();
+        bitmapContext.Initialize(null);
+        using var ambientContext = new WgpuContext();
+        ambientContext.Initialize(null);
+
+        try
+        {
+            WgpuContext.Current = bitmapContext;
+            using var bitmap = new GdiBitmap(4, 4);
+            using (var graphics = GdiGraphics.FromImage(bitmap))
+            {
+                graphics.Clear(System.Drawing.Color.Red);
+            }
+
+            WgpuContext.Current = ambientContext;
+            bitmap.Flush();
+
+            Assert.Same(bitmapContext, bitmap.GpuTexture.Context);
+        }
+        finally
+        {
+            WgpuContext.Current = previous;
+        }
+    }
+
+    [Fact]
+    public void GdiDrawImageRejectsCrossContextBitmapsBeforeRecording()
+    {
+        var previous = WgpuContext.Current;
+        using var sourceContext = new WgpuContext();
+        sourceContext.Initialize(null);
+        using var targetContext = new WgpuContext();
+        targetContext.Initialize(null);
+
+        try
+        {
+            WgpuContext.Current = sourceContext;
+            using var source = new GdiBitmap(1, 1);
+            WgpuContext.Current = targetContext;
+            using var target = new GdiBitmap(2, 2);
+            using var graphics = GdiGraphics.FromImage(target);
+
+            var exception = Assert.Throws<System.InvalidOperationException>(
+                () => graphics.DrawImage(source, new GdiRectangle(0, 0, 1, 1)));
+            Assert.Contains("different WebGPU context", exception.Message, System.StringComparison.Ordinal);
+            Assert.Empty(graphics.DrawingContext.Commands);
+        }
+        finally
+        {
+            WgpuContext.Current = previous;
+        }
+    }
+
+    [Fact]
+    public void RenderOffscreenRestoresCompositorStateWhenCompilationFails()
+    {
+        using var window = new HeadlessWindow(32, 32);
+        using var target = new GpuTexture(
+            window.Context,
+            16,
+            16,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.RenderAttachment | TextureUsage.TextureBinding,
+            "Failing Offscreen Restore Target");
+        var beforeWidth = GetCompositorField<uint>(window.Compositor, "_currentWidth");
+        var beforeHeight = GetCompositorField<uint>(window.Compositor, "_currentHeight");
+        var beforeDpiScale = window.Compositor.CurrentDpiScale;
+        var beforeProjection = GetCompositorField<Matrix4x4>(window.Compositor, "_currentProjection");
+
+        var exception = Assert.Throws<System.InvalidOperationException>(
+            () => window.Compositor.RenderOffscreen(
+                new ThrowingRenderVisual(),
+                width: 16,
+                height: 16,
+                targetTexture: target,
+                padding: 0f,
+                dpiScale: 2f));
+
+        Assert.Equal("Synthetic offscreen render failure.", exception.Message);
+        Assert.Equal(beforeWidth, GetCompositorField<uint>(window.Compositor, "_currentWidth"));
+        Assert.Equal(beforeHeight, GetCompositorField<uint>(window.Compositor, "_currentHeight"));
+        Assert.Equal(beforeDpiScale, window.Compositor.CurrentDpiScale);
+        Assert.Equal(beforeProjection, GetCompositorField<Matrix4x4>(window.Compositor, "_currentProjection"));
     }
 
     [Fact]
@@ -787,6 +916,13 @@ public sealed class CompositorReviewRegressionTests
         return drawCalls.ToArray();
     }
 
+    private static T GetCompositorField<T>(Compositor compositor, string fieldName)
+    {
+        var field = typeof(Compositor).GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        return Assert.IsType<T>(field.GetValue(compositor));
+    }
+
     private static IList GetPathAtlasTempBuffers(Compositor compositor)
     {
         var pathAtlasField = typeof(Compositor).GetField("_pathAtlas", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -1344,6 +1480,20 @@ public sealed class CompositorReviewRegressionTests
                 new SolidColorBrush(new Vector4(1f, 0f, 0f, 1f)),
                 pen: null,
                 new Rect(0f, 0f, 10f, 10f));
+        }
+    }
+
+    private sealed class ThrowingRenderVisual : FrameworkElement
+    {
+        public ThrowingRenderVisual()
+        {
+            Width = 16f;
+            Height = 16f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            throw new System.InvalidOperationException("Synthetic offscreen render failure.");
         }
     }
 

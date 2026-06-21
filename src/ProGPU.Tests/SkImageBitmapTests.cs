@@ -240,6 +240,25 @@ public sealed class SkImageBitmapTests
     }
 
     [Fact]
+    public void ReadPixelsRejectsZeroDestinationPointer()
+    {
+        using var bitmap = new SKBitmap(new SKImageInfo(1, 1, SKColorType.Rgba8888, SKAlphaType.Premul));
+        WriteBytes(bitmap.GetPixels(), new byte[] { 255, 0, 0, 255 });
+        using var image = SKImage.FromBitmap(bitmap);
+
+        var exception = Assert.Throws<ArgumentNullException>(
+            () => image.ReadPixels(
+                new SKImageInfo(1, 1, SKColorType.Rgba8888, SKAlphaType.Premul),
+                IntPtr.Zero,
+                dstRowBytes: 4,
+                srcX: 0,
+                srcY: 0,
+                SKImageCachingHint.Allow));
+
+        Assert.Equal("dstPixels", exception.ParamName);
+    }
+
+    [Fact]
     public void ReadPixelsUnpremultipliesWhenDestinationRequestsUnpremul()
     {
         using var bitmap = new SKBitmap(new SKImageInfo(1, 1, SKColorType.Rgba8888, SKAlphaType.Premul));
