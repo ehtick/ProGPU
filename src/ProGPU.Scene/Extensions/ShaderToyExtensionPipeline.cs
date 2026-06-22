@@ -213,18 +213,39 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         {
             if (_contextRef != null && !_contextRef.IsDisposed)
             {
-                var wgpu = _contextRef.Wgpu;
-                if (_toyBindGroupLayout != null) wgpu.BindGroupLayoutRelease(_toyBindGroupLayout);
-                if (_onscreenPipelineLayout != null) wgpu.PipelineLayoutRelease(_onscreenPipelineLayout);
-                if (_offscreenPipelineLayout != null) wgpu.PipelineLayoutRelease(_offscreenPipelineLayout);
-
                 foreach (var res in _pool)
                 {
-                    if (res.BindGroupPtr != 0) wgpu.BindGroupRelease((BindGroup*)res.BindGroupPtr);
+                    QueueBindGroupRelease(_contextRef, res.BindGroupPtr);
                     res.UniformBuffer?.Dispose();
+                }
+
+                if (_toyBindGroupLayout != null)
+                {
+                    _contextRef.QueueBindGroupLayoutDisposal((IntPtr)_toyBindGroupLayout);
+                    _toyBindGroupLayout = null;
+                }
+
+                if (_onscreenPipelineLayout != null)
+                {
+                    _contextRef.QueuePipelineLayoutDisposal((IntPtr)_onscreenPipelineLayout);
+                    _onscreenPipelineLayout = null;
+                }
+
+                if (_offscreenPipelineLayout != null)
+                {
+                    _contextRef.QueuePipelineLayoutDisposal((IntPtr)_offscreenPipelineLayout);
+                    _offscreenPipelineLayout = null;
                 }
             }
             _pool.Clear();
+        }
+
+        private static void QueueBindGroupRelease(WgpuContext context, nint bindGroupPtr)
+        {
+            if (bindGroupPtr != 0 && !context.IsDisposed)
+            {
+                context.QueueBindGroupDisposal((IntPtr)bindGroupPtr);
+            }
         }
 
         public void Compile(

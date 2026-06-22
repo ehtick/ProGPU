@@ -10,6 +10,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using ProGPU.Backend;
 using ProGPU.Scene;
+using ProGPU.Scene.Extensions;
 using ProGPU.Tests.Headless;
 using ProGPU.Text;
 using ProGPU.Transpiler;
@@ -24,6 +25,12 @@ namespace ProGPU.Tests;
 
 public sealed class CompositorReviewRegressionTests
 {
+    private const string SolidShaderToySource = """
+fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
+    return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+}
+""";
+
     [Fact]
     public void CombinedPathAtlasBoundsUseGeometryCoordinatesBeforePadding()
     {
@@ -947,6 +954,55 @@ public sealed class CompositorReviewRegressionTests
     }
 
     [Fact]
+    public void ShaderToyPipelineDisposeQueuesGpuHandles()
+    {
+        using var window = new HeadlessWindow(16, 16);
+        var shader = new ShaderToyParams
+        {
+            Rect = new Rect(0f, 0f, 16f, 16f),
+            ShaderKey = $"review_shadertoy_disposal_{System.Guid.NewGuid():N}",
+            ShaderSource = SolidShaderToySource,
+            Resolution = new Vector3(16f, 16f, 1f),
+            Time = 0f,
+            TimeDelta = 0f,
+            Frame = 0f,
+            FrameRate = 60f,
+            Mouse = Vector4.Zero,
+            Date = Vector4.Zero
+        };
+        window.Content = new ShaderToyDisposalVisual(shader);
+
+        try
+        {
+            window.Render();
+
+            Assert.False(shader.IsFailed);
+            var extension = Assert.IsAssignableFrom<IDisposable>(
+                window.Compositor.GetExtension(CompositorBuiltInExtensions.ShaderToy));
+
+            lock (window.Context.DisposalLock)
+            {
+                Assert.Empty(window.Context.PendingBindGroups);
+            }
+
+            extension.Dispose();
+
+            lock (window.Context.DisposalLock)
+            {
+                Assert.NotEmpty(window.Context.PendingBindGroups);
+                Assert.NotEmpty(window.Context.PendingBindGroupLayouts);
+                Assert.NotEmpty(window.Context.PendingPipelineLayouts);
+            }
+
+            window.Context.CleanupPendingResources();
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
+    [Fact]
     public unsafe void GpuBufferDisposeQueuesNativeBufferDisposal()
     {
         using var window = new HeadlessWindow(16, 16);
@@ -1544,6 +1600,25 @@ public sealed class CompositorReviewRegressionTests
                 Scale = Vector2.One
             });
             context.PopOpacity();
+        }
+    }
+
+    private sealed class ShaderToyDisposalVisual : FrameworkElement
+    {
+        private readonly ShaderToyParams _shader;
+
+        public ShaderToyDisposalVisual(ShaderToyParams shader)
+        {
+            _shader = shader;
+            Width = 16f;
+            Height = 16f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            context.DrawExtension(
+                CompositorBuiltInExtensions.ShaderToy,
+                dataParam: _shader);
         }
     }
 
