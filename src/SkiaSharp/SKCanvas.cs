@@ -33,6 +33,7 @@ public class SKCanvas : IDisposable
 
     private readonly Stack<(SKMatrix Matrix, float Opacity, int PushedScopesCount)> _stateStack = new();
     private readonly Stack<PushKind> _pushedScopes = new();
+    private readonly Stack<RenderCommand> _activeClipPushes = new();
     private readonly Stack<LayerFrame> _layerStack = new();
 
     private sealed class LayerFrame
@@ -43,7 +44,8 @@ public class SKCanvas : IDisposable
             SKPaint? paint,
             int stateDepth,
             SKRect bounds,
-            SKMatrix boundsMatrix)
+            SKMatrix boundsMatrix,
+            RenderCommand[] activeClipPushes)
         {
             ParentContext = parentContext;
             LayerContext = layerContext;
@@ -51,6 +53,7 @@ public class SKCanvas : IDisposable
             StateDepth = stateDepth;
             Bounds = bounds;
             BoundsMatrix = boundsMatrix;
+            ActiveClipPushes = activeClipPushes;
         }
 
         public DrawingContext ParentContext { get; }
@@ -59,6 +62,7 @@ public class SKCanvas : IDisposable
         public int StateDepth { get; }
         public SKRect Bounds { get; }
         public SKMatrix BoundsMatrix { get; }
+        public RenderCommand[] ActiveClipPushes { get; }
     }
 
     public SKMatrix TotalMatrix
@@ -102,7 +106,14 @@ public class SKCanvas : IDisposable
 
         var parentContext = _context;
         var layerContext = new DrawingContext();
-        _layerStack.Push(new LayerFrame(parentContext, layerContext, paint?.Clone(), _stateStack.Count, bounds, _currentMatrix));
+        _layerStack.Push(new LayerFrame(
+            parentContext,
+            layerContext,
+            paint?.Clone(),
+            _stateStack.Count,
+            bounds,
+            _currentMatrix,
+            SnapshotActiveClipPushes()));
         _context = layerContext;
 
         return restoreCount;
@@ -133,9 +144,11 @@ public class SKCanvas : IDisposable
                 {
                     case PushKind.RectClip:
                         _context.PopClip();
+                        PopActiveClipScope();
                         break;
                     case PushKind.GeometryClip:
                         _context.PopGeometryClip();
+                        PopActiveClipScope();
                         break;
                     case PushKind.Opacity:
                         _context.PopOpacity();
@@ -303,12 +316,14 @@ public class SKCanvas : IDisposable
             alphaMode: GpuTextureAlphaMode.Premultiplied);
 
         var visual = new DrawingVisual { Size = new Vector2(_width, _height) };
+        ReplayActiveClipPushes(visual.Context, layerFrame.ActiveClipPushes);
         var pushedLayerBoundsClip = PushLayerBoundsClip(visual.Context, layerFrame);
         visual.Context.Append(layerFrame.LayerContext);
         if (pushedLayerBoundsClip)
         {
             visual.Context.PopClip();
         }
+        PopReplayedClipPushes(visual.Context, layerFrame.ActiveClipPushes);
 
         try
         {
@@ -348,6 +363,71 @@ public class SKCanvas : IDisposable
             Transform = layerFrame.BoundsMatrix.ToMatrix4x4()
         });
         return true;
+    }
+
+    private RenderCommand[] SnapshotActiveClipPushes()
+    {
+        var clips = _activeClipPushes.ToArray();
+        Array.Reverse(clips);
+        return clips;
+    }
+
+    private static void ReplayActiveClipPushes(DrawingContext context, IReadOnlyList<RenderCommand> clipPushes)
+    {
+        for (int i = 0; i < clipPushes.Count; i++)
+        {
+            context.Commands.Add(clipPushes[i]);
+        }
+    }
+
+    private static void PopReplayedClipPushes(DrawingContext context, IReadOnlyList<RenderCommand> clipPushes)
+    {
+        for (int i = clipPushes.Count - 1; i >= 0; i--)
+        {
+            switch (clipPushes[i].Type)
+            {
+                case RenderCommandType.PushClip:
+                    context.PopClip();
+                    break;
+                case RenderCommandType.PushGeometryClip:
+                    context.PopGeometryClip();
+                    break;
+            }
+        }
+    }
+
+    private void PushRectClipScope(SKRect rect, Matrix4x4 transform)
+    {
+        var command = new RenderCommand
+        {
+            Type = RenderCommandType.PushClip,
+            Rect = new Rect(rect.Left, rect.Top, rect.Width, rect.Height),
+            Transform = transform
+        };
+        _context.Commands.Add(command);
+        _pushedScopes.Push(PushKind.RectClip);
+        _activeClipPushes.Push(command);
+    }
+
+    private void PushGeometryClipScope(PathGeometry geometry, Matrix4x4 transform)
+    {
+        var command = new RenderCommand
+        {
+            Type = RenderCommandType.PushGeometryClip,
+            Path = geometry,
+            Transform = transform
+        };
+        _context.Commands.Add(command);
+        _pushedScopes.Push(PushKind.GeometryClip);
+        _activeClipPushes.Push(command);
+    }
+
+    private void PopActiveClipScope()
+    {
+        if (_activeClipPushes.Count > 0)
+        {
+            _activeClipPushes.Pop();
+        }
     }
 
     private static bool IsValidLayerBounds(SKRect bounds)
@@ -460,18 +540,11 @@ public class SKCanvas : IDisposable
         if (operation == SKClipOperation.Difference)
         {
             var excluded = CreateRectGeometry(rect).CreateTransformed(_currentMatrix.ToMatrix4x4());
-            _context.PushGeometryClip(CreateCanvasDifferenceGeometry(excluded), Matrix4x4.Identity);
-            _pushedScopes.Push(PushKind.GeometryClip);
+            PushGeometryClipScope(CreateCanvasDifferenceGeometry(excluded), Matrix4x4.Identity);
             return;
         }
 
-        _context.Commands.Add(new RenderCommand
-        {
-            Type = RenderCommandType.PushClip,
-            Rect = new Rect(rect.Left, rect.Top, rect.Width, rect.Height),
-            Transform = _currentMatrix.ToMatrix4x4()
-        });
-        _pushedScopes.Push(PushKind.RectClip);
+        PushRectClipScope(rect, _currentMatrix.ToMatrix4x4());
     }
 
     public void ClipPath(SKPath path, SKClipOperation operation = SKClipOperation.Intersect, bool antialias = true)
@@ -480,28 +553,24 @@ public class SKCanvas : IDisposable
         {
             if (IsInverseFillType(path.FillType))
             {
-                _context.PushGeometryClip(path.Geometry, _currentMatrix.ToMatrix4x4());
+                PushGeometryClipScope(path.Geometry, _currentMatrix.ToMatrix4x4());
             }
             else
             {
                 var excluded = path.Geometry.CreateTransformed(_currentMatrix.ToMatrix4x4());
-                _context.PushGeometryClip(CreateCanvasDifferenceGeometry(excluded), Matrix4x4.Identity);
+                PushGeometryClipScope(CreateCanvasDifferenceGeometry(excluded), Matrix4x4.Identity);
             }
-
-            _pushedScopes.Push(PushKind.GeometryClip);
             return;
         }
 
         if (IsInverseFillType(path.FillType))
         {
             var excluded = path.Geometry.CreateTransformed(_currentMatrix.ToMatrix4x4());
-            _context.PushGeometryClip(CreateCanvasDifferenceGeometry(excluded), Matrix4x4.Identity);
-            _pushedScopes.Push(PushKind.GeometryClip);
+            PushGeometryClipScope(CreateCanvasDifferenceGeometry(excluded), Matrix4x4.Identity);
             return;
         }
 
-        _context.PushGeometryClip(path.Geometry, _currentMatrix.ToMatrix4x4());
-        _pushedScopes.Push(PushKind.GeometryClip);
+        PushGeometryClipScope(path.Geometry, _currentMatrix.ToMatrix4x4());
     }
 
     public void DrawRect(float x, float y, float w, float h, SKPaint paint)

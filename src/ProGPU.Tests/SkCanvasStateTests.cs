@@ -178,6 +178,31 @@ public sealed class SkCanvasStateTests
     }
 
     [Fact]
+    public void SaveLayerBlurImageFilterClipsOffscreenSourceBeforeFiltering()
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(32, 32, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var layerPaint = new SKPaint { ImageFilter = SKImageFilter.CreateBlur(3f, 3f) };
+        using var fill = new SKPaint { Color = SKColors.Red };
+
+        surface.Canvas.Save();
+        surface.Canvas.ClipRect(new SKRect(16f, 8f, 28f, 24f));
+        var restoreCount = surface.Canvas.SaveLayer(layerPaint);
+        surface.Canvas.DrawRect(new SKRect(8f, 8f, 15f, 24f), fill);
+        surface.Canvas.RestoreToCount(restoreCount);
+        surface.Canvas.Restore();
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        var clippedEdgePixelOffset = (16 * 32 + 16) * 4;
+
+        Assert.InRange(pixels[clippedEdgePixelOffset], 0, 4);
+        Assert.InRange(pixels[clippedEdgePixelOffset + 1], 0, 4);
+        Assert.InRange(pixels[clippedEdgePixelOffset + 2], 0, 4);
+        Assert.InRange(pixels[clippedEdgePixelOffset + 3], 0, 4);
+    }
+
+    [Fact]
     public void SaveLayerAppliesDropShadowImageFilterWithNativeEffectTexture()
     {
         var context = new DrawingContext();

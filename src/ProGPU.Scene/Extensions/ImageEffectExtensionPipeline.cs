@@ -366,10 +366,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                     {
                         if (kvp.Value.BindGroupPtr != 0 && !compositor.Context.IsDisposed)
                         {
-                            unsafe
-                            {
-                                compositor.Context.Wgpu.BindGroupRelease((BindGroup*)kvp.Value.BindGroupPtr);
-                            }
+                            QueueBindGroupRelease(compositor.Context, kvp.Value.BindGroupPtr);
                         }
                         keysToRemove ??= new List<Compositor.TextureCacheKey>();
                         keysToRemove.Add(kvp.Key);
@@ -546,13 +543,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         {
             if (_contextRef != null && !_contextRef.IsDisposed)
             {
-                var wgpu = _contextRef.Wgpu;
-
                 foreach (var resource in _pool)
                 {
                     if (resource.BindGroupPtr != 0)
                     {
-                        wgpu.BindGroupRelease((BindGroup*)resource.BindGroupPtr);
+                        QueueBindGroupRelease(_contextRef, resource.BindGroupPtr);
                     }
 
                     resource.UniformBuffer.Dispose();
@@ -562,37 +557,45 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                 {
                     if (cached.BindGroupPtr != 0)
                     {
-                        wgpu.BindGroupRelease((BindGroup*)cached.BindGroupPtr);
+                        QueueBindGroupRelease(_contextRef, cached.BindGroupPtr);
                     }
                 }
 
                 if (_effectBindGroupLayout != null)
                 {
-                    wgpu.BindGroupLayoutRelease(_effectBindGroupLayout);
+                    _contextRef.QueueBindGroupLayoutDisposal((IntPtr)_effectBindGroupLayout);
                     _effectBindGroupLayout = null;
                 }
 
                 if (_textureBindGroupLayout != null)
                 {
-                    wgpu.BindGroupLayoutRelease(_textureBindGroupLayout);
+                    _contextRef.QueueBindGroupLayoutDisposal((IntPtr)_textureBindGroupLayout);
                     _textureBindGroupLayout = null;
                 }
 
                 if (_onscreenPipelineLayout != null)
                 {
-                    wgpu.PipelineLayoutRelease(_onscreenPipelineLayout);
+                    _contextRef.QueuePipelineLayoutDisposal((IntPtr)_onscreenPipelineLayout);
                     _onscreenPipelineLayout = null;
                 }
 
                 if (_offscreenPipelineLayout != null)
                 {
-                    wgpu.PipelineLayoutRelease(_offscreenPipelineLayout);
+                    _contextRef.QueuePipelineLayoutDisposal((IntPtr)_offscreenPipelineLayout);
                     _offscreenPipelineLayout = null;
                 }
             }
 
             _pool.Clear();
             _textureBindGroups.Clear();
+        }
+
+        private static void QueueBindGroupRelease(WgpuContext context, nint bindGroupPtr)
+        {
+            if (bindGroupPtr != 0 && !context.IsDisposed)
+            {
+                context.QueueBindGroupDisposal((IntPtr)bindGroupPtr);
+            }
         }
     }
 }

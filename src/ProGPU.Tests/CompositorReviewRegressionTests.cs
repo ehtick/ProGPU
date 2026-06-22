@@ -904,6 +904,49 @@ public sealed class CompositorReviewRegressionTests
     }
 
     [Fact]
+    public void ImageEffectPipelineDisposeQueuesGpuHandles()
+    {
+        using var window = new HeadlessWindow(16, 16);
+        using var source = new GpuTexture(
+            window.Context,
+            1,
+            1,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.TextureBinding | TextureUsage.CopyDst,
+            "Image Effect Disposal Queue Source");
+        source.WritePixels(new byte[] { 255, 0, 0, 255 });
+        window.Content = new ImageEffectCacheVisual(source);
+
+        try
+        {
+            window.Render();
+
+            var extension = Assert.IsAssignableFrom<IDisposable>(
+                window.Compositor.GetExtension(CompositorBuiltInExtensions.ImageEffect));
+
+            lock (window.Context.DisposalLock)
+            {
+                Assert.Empty(window.Context.PendingBindGroups);
+            }
+
+            extension.Dispose();
+
+            lock (window.Context.DisposalLock)
+            {
+                Assert.NotEmpty(window.Context.PendingBindGroups);
+                Assert.NotEmpty(window.Context.PendingBindGroupLayouts);
+                Assert.NotEmpty(window.Context.PendingPipelineLayouts);
+            }
+
+            window.Context.CleanupPendingResources();
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
+    [Fact]
     public unsafe void GpuBufferDisposeQueuesNativeBufferDisposal()
     {
         using var window = new HeadlessWindow(16, 16);
@@ -1067,6 +1110,26 @@ public sealed class CompositorReviewRegressionTests
         public override void OnRender(DrawingContext context)
         {
             context.DrawTexture(_texture, new Rect(0f, 0f, 16f, 16f));
+        }
+    }
+
+    private sealed class ImageEffectCacheVisual : FrameworkElement
+    {
+        private readonly GpuTexture _texture;
+
+        public ImageEffectCacheVisual(GpuTexture texture)
+        {
+            _texture = texture;
+            Width = 16f;
+            Height = 16f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            context.DrawImageWithEffect(
+                _texture,
+                new Rect(0f, 0f, 16f, 16f),
+                blurSigma: 1f);
         }
     }
 
