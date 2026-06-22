@@ -1,4 +1,5 @@
 using ProGPU.Backend;
+using Silk.NET.Core.Native;
 using Silk.NET.WebGPU;
 using System.Reflection;
 using Xunit;
@@ -80,5 +81,62 @@ public sealed class WgpuContextTests
         var snapshot = Assert.IsType<IntPtr[]>(method.Invoke(null, new object[] { pending }));
 
         Assert.Equal(new[] { new IntPtr(1), new IntPtr(2), new IntPtr(3) }, snapshot);
+    }
+
+    [Fact]
+    public unsafe void VerifyShaderModuleSkipsUnsupportedNativeCompilationInfo()
+    {
+        using var context = new WgpuContext();
+        context.Initialize(null);
+
+        var codePtr = SilkMarshal.StringToPtr(
+            """
+            @vertex
+            fn vs_main() -> @builtin(position) vec4<f32> {
+                return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+            }
+
+            @fragment
+            fn fs_main() -> @location(0) vec4<f32> {
+                return vec4<f32>(missing_symbol, 0.0, 0.0, 1.0);
+            }
+            """);
+        var labelPtr = SilkMarshal.StringToPtr("InvalidWgslVerificationTest");
+        ShaderModule* module = null;
+
+        try
+        {
+            var wgslDesc = new ShaderModuleWGSLDescriptor
+            {
+                Chain = new ChainedStruct
+                {
+                    Next = null,
+                    SType = SType.ShaderModuleWgslDescriptor
+                },
+                Code = (byte*)codePtr
+            };
+
+            var desc = new ShaderModuleDescriptor
+            {
+                NextInChain = (ChainedStruct*)&wgslDesc,
+                Label = (byte*)labelPtr
+            };
+
+            module = context.Wgpu.DeviceCreateShaderModule(context.Device, &desc);
+            Assert.True(module != null, "Expected WebGPU to create an invalid shader module so verification can exercise the unsupported-diagnostics path.");
+
+            Assert.True(context.VerifyShaderModule(module, out string errors));
+            Assert.Equal(string.Empty, errors);
+        }
+        finally
+        {
+            if (module != null)
+            {
+                context.Wgpu.ShaderModuleRelease(module);
+            }
+
+            SilkMarshal.Free(codePtr);
+            SilkMarshal.Free(labelPtr);
+        }
     }
 }

@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
-using System.Threading;
 using Silk.NET.Core.Native;
 using Silk.NET.WebGPU;
 using Silk.NET.Windowing;
@@ -655,18 +654,16 @@ public unsafe class WgpuContext : IDisposable
 
     public bool VerifyShaderModule(ShaderModule* module, out string errors)
     {
-        errors = "";
-        if (module == null || Device == null || _isDisposed) return false;
-
-        try
+        errors = string.Empty;
+        if (module == null || Device == null || _isDisposed)
         {
-            System.IO.File.AppendAllText(
-                "/Users/wieslawsoltes/GitHub/ProGPU/debug.txt",
-                $"[VerifyShaderModule] Skipping compilation info check because it is unimplemented in wgpu-native.\n"
-            );
+            errors = "Cannot verify a shader module without an active WebGPU device.";
+            return false;
         }
-        catch {}
 
+        // wgpu-native currently aborts the process from wgpuShaderModuleGetCompilationInfo.
+        // Keep verification process-safe and let pipeline creation/device error callbacks own
+        // backend shader diagnostics until the native diagnostics API is supported.
         return true;
     }
 
