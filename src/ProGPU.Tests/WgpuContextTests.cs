@@ -84,7 +84,7 @@ public sealed class WgpuContextTests
     }
 
     [Fact]
-    public unsafe void VerifyShaderModuleSkipsUnsupportedNativeCompilationInfo()
+    public unsafe void VerifyShaderModuleFailsClosedWhenNativeCompilationInfoIsUnavailable()
     {
         using var context = new WgpuContext();
         context.Initialize(null);
@@ -125,8 +125,8 @@ public sealed class WgpuContextTests
             module = context.Wgpu.DeviceCreateShaderModule(context.Device, &desc);
             Assert.True(module != null, "Expected WebGPU to create an invalid shader module so verification can exercise the unsupported-diagnostics path.");
 
-            Assert.True(context.VerifyShaderModule(module, out string errors));
-            Assert.Equal(string.Empty, errors);
+            Assert.False(context.VerifyShaderModule(module, out string errors));
+            Assert.Contains("verification is unavailable", errors, StringComparison.Ordinal);
         }
         finally
         {

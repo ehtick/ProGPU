@@ -90,7 +90,7 @@ public class Pen
             ToNativeLineCap(StartLineCap),
             ToNativeLineCap(EndLineCap),
             ToNativeLineCap(DashCap),
-            GetScaledDashArray(thicknessScale),
+            GetDashArray(),
             DashStyle?.Offset ?? 0.0);
     }
 
@@ -104,20 +104,14 @@ public class Pen
         return (float)Thickness * thicknessScale;
     }
 
-    private double[]? GetScaledDashArray(float thicknessScale)
+    private double[]? GetDashArray()
     {
         if (DashStyle?.Dashes is not { Length: > 0 } dashes)
         {
             return null;
         }
 
-        var dashScale = Thickness * thicknessScale;
-        if (!double.IsFinite(dashScale) || dashScale < 0.0)
-        {
-            dashScale = 0.0;
-        }
-
-        var scaledDashes = new double[dashes.Length];
+        var nativeDashes = new double[dashes.Length];
         for (var i = 0; i < dashes.Length; i++)
         {
             var dash = dashes[i];
@@ -126,10 +120,10 @@ public class Pen
                 return null;
             }
 
-            scaledDashes[i] = dash * dashScale;
+            nativeDashes[i] = dash;
         }
 
-        return scaledDashes;
+        return nativeDashes;
     }
 
     private static ProGPU.Vector.PenLineJoin ToNativeLineJoin(PenLineJoin lineJoin)

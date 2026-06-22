@@ -29,13 +29,30 @@ public sealed class WpfPenShimTests
 
         Assert.Equal(2, nativePen!.Thickness);
         Assert.True(nativePen.HasDashPattern);
-        Assert.Equal(new[] { 2.0, 4.0 }, nativePen.DashArray);
+        Assert.Equal(new[] { 1.0, 2.0 }, nativePen.DashArray);
         Assert.Equal(0.5, nativePen.DashOffset);
         Assert.Equal(VectorPenLineCap.Square, nativePen.StartLineCap);
         Assert.Equal(VectorPenLineCap.Triangle, nativePen.EndLineCap);
         Assert.Equal(VectorPenLineCap.Round, nativePen.DashCap);
         Assert.Equal(VectorPenLineJoin.Round, nativePen.LineJoin);
         Assert.Equal(3.5f, nativePen.MiterLimit);
+    }
+
+    [Fact]
+    public void PresentationCorePenToNativeKeepsDashUnitsRelativeWhenThicknessIsScaled()
+    {
+        var pen = new WpfPen(WpfBrushes.Black, 4)
+        {
+            DashStyle = new WpfDashStyle(new[] { 1.0, 1.5 }, 0.25)
+        };
+
+        var nativePen = pen.ToNative(3f);
+        Assert.NotNull(nativePen);
+
+        Assert.Equal(12, nativePen!.Thickness);
+        Assert.True(nativePen.HasDashPattern);
+        Assert.Equal(new[] { 1.0, 1.5 }, nativePen.DashArray);
+        Assert.Equal(0.25, nativePen.DashOffset);
     }
 
     [Fact]

@@ -662,9 +662,11 @@ public unsafe class WgpuContext : IDisposable
         }
 
         // wgpu-native currently aborts the process from wgpuShaderModuleGetCompilationInfo.
-        // Keep verification process-safe and let pipeline creation/device error callbacks own
-        // backend shader diagnostics until the native diagnostics API is supported.
-        return true;
+        // Keep verification process-safe and fail closed instead of reporting unchecked
+        // user shader modules as valid. Pipeline creation/device error callbacks remain
+        // responsible for detailed diagnostics until a safe native diagnostics API exists.
+        errors = "WebGPU shader module verification is unavailable for this backend; refusing to treat the module as verified.";
+        return false;
     }
 
     public void Dispose()
