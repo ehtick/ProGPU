@@ -378,7 +378,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                     var shaderModule = compositor.PipelineCache.GetOrCreateShader(shaderKey, fullShaderCode, $"ShaderToy_{shaderKey}");
 
                     string errors = "";
-                    if (shaderModule == null || !compositor.Context.VerifyShaderModule(shaderModule, out errors))
+                    var verification = shaderModule == null
+                        ? ShaderModuleVerificationStatus.Invalid
+                        : compositor.Context.GetShaderModuleVerificationStatus(shaderModule, out errors);
+                    if (verification == ShaderModuleVerificationStatus.Invalid)
                     {
                         Console.WriteLine($"[ShaderToy Render] Shader module creation failed:\n{errors}");
                         p.IsFailed = true;

@@ -7,6 +7,13 @@ using Silk.NET.Windowing;
 
 namespace ProGPU.Backend;
 
+public enum ShaderModuleVerificationStatus
+{
+    Verified,
+    Unavailable,
+    Invalid
+}
+
 public unsafe class WgpuContext : IDisposable
 {
     public WebGPU Wgpu { get; private set; } = null!;
@@ -652,21 +659,27 @@ public unsafe class WgpuContext : IDisposable
         }
     }
 
-    public bool VerifyShaderModule(ShaderModule* module, out string errors)
+    public ShaderModuleVerificationStatus GetShaderModuleVerificationStatus(ShaderModule* module, out string errors)
     {
         errors = string.Empty;
         if (module == null || Device == null || _isDisposed)
         {
             errors = "Cannot verify a shader module without an active WebGPU device.";
-            return false;
+            return ShaderModuleVerificationStatus.Invalid;
         }
 
         // wgpu-native currently aborts the process from wgpuShaderModuleGetCompilationInfo.
-        // Keep verification process-safe and fail closed instead of reporting unchecked
-        // user shader modules as valid. Pipeline creation/device error callbacks remain
+        // Keep verification process-safe and report that preflight diagnostics are
+        // unavailable instead of claiming unchecked user shader modules are verified.
+        // Pipeline creation/device error callbacks remain
         // responsible for detailed diagnostics until a safe native diagnostics API exists.
-        errors = "WebGPU shader module verification is unavailable for this backend; refusing to treat the module as verified.";
-        return false;
+        errors = "WebGPU shader module verification is unavailable for this backend; render pipeline creation will validate the module.";
+        return ShaderModuleVerificationStatus.Unavailable;
+    }
+
+    public bool VerifyShaderModule(ShaderModule* module, out string errors)
+    {
+        return GetShaderModuleVerificationStatus(module, out errors) == ShaderModuleVerificationStatus.Verified;
     }
 
     public void Dispose()

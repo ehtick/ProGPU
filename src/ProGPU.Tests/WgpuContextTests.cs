@@ -125,7 +125,11 @@ public sealed class WgpuContextTests
             module = context.Wgpu.DeviceCreateShaderModule(context.Device, &desc);
             Assert.True(module != null, "Expected WebGPU to create an invalid shader module so verification can exercise the unsupported-diagnostics path.");
 
-            Assert.False(context.VerifyShaderModule(module, out string errors));
+            Assert.Equal(
+                ShaderModuleVerificationStatus.Unavailable,
+                context.GetShaderModuleVerificationStatus(module, out string errors));
+            Assert.Contains("verification is unavailable", errors, StringComparison.Ordinal);
+            Assert.False(context.VerifyShaderModule(module, out errors));
             Assert.Contains("verification is unavailable", errors, StringComparison.Ordinal);
         }
         finally

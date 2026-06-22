@@ -698,7 +698,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                 fullShaderCode,
                 $"WPFShaderEffect_{shaderKey}");
 
-            if (!compositor.Context.VerifyShaderModule(shaderModule, out var errors))
+            var verification = compositor.Context.GetShaderModuleVerificationStatus(shaderModule, out var errors);
+            if (verification == ShaderModuleVerificationStatus.Invalid)
             {
                 parameters.IsFailed = true;
                 parameters.LastError = errors;
@@ -722,22 +723,52 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             attrs[1] = new VertexAttribute { Format = VertexFormat.Float32x4, Offset = 8, ShaderLocation = 1 };
             attrs[2] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 24, ShaderLocation = 2 };
 
+            var pipelineFailed = false;
+            Action<ErrorType, string> pipelineErrorHandler = (_, msg) =>
+            {
+                pipelineFailed = true;
+                parameters.LastError = msg;
+            };
+            WgpuContext.OnWebGpuError += pipelineErrorHandler;
+
             try
             {
-                return compositor.PipelineCache.GetOrCreateRenderPipeline(
-                    pipelineKey,
-                    shaderModule,
-                    vertexBufferLayouts: layouts,
-                    topology: PrimitiveTopology.TriangleList,
-                    targetFormat: compositor.RenderFormat,
-                    sampleCount: isOffscreen ? 1u : 4u,
-                    pipelineLayout: isOffscreen ? sourceLayout.OffscreenPipelineLayout : sourceLayout.OnscreenPipelineLayout,
-                    blendMode: blendMode,
-                    sourceAlphaMode: pipelineSourceAlphaMode);
+                try
+                {
+                    var pipeline = compositor.PipelineCache.GetOrCreateRenderPipeline(
+                        pipelineKey,
+                        shaderModule,
+                        vertexBufferLayouts: layouts,
+                        topology: PrimitiveTopology.TriangleList,
+                        targetFormat: compositor.RenderFormat,
+                        sampleCount: isOffscreen ? 1u : 4u,
+                        pipelineLayout: isOffscreen ? sourceLayout.OffscreenPipelineLayout : sourceLayout.OnscreenPipelineLayout,
+                        blendMode: blendMode,
+                        sourceAlphaMode: pipelineSourceAlphaMode);
+
+                    compositor.Context.WaitIdle();
+
+                    if (pipelineFailed || pipeline == null)
+                    {
+                        parameters.IsFailed = true;
+                        parameters.LastError = string.IsNullOrEmpty(parameters.LastError)
+                            ? "WPF shader effect pipeline creation failed."
+                            : parameters.LastError;
+                        compositor.PipelineCache.ReleaseRenderPipeline(pipelineKey);
+                        compositor.PipelineCache.ReleaseShader(shaderKey);
+                        return null;
+                    }
+
+                    return pipeline;
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal((IntPtr)layouts[0].Attributes);
+                }
             }
             finally
             {
-                Marshal.FreeHGlobal((IntPtr)layouts[0].Attributes);
+                WgpuContext.OnWebGpuError -= pipelineErrorHandler;
             }
         }
         catch (Exception ex)
