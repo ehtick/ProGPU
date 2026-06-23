@@ -102,6 +102,43 @@ public class WpfShaderEffectParamsTests
         Assert.NotEqual(constantsKey, samplerKey);
     }
 
+    [Fact]
+    public void VisualShaderEffectCacheKeyTracksPrimaryTextureGeneration()
+    {
+        var texture = CreateTextureWithGeneration(1);
+        var parameters = new WpfShaderEffectParams
+        {
+            Texture = texture
+        };
+        var effect = new WpfShaderEffect(parameters);
+
+        var initialKey = GetRenderCacheKey(effect);
+        SetTextureGeneration(texture, 2);
+        var resizedKey = GetRenderCacheKey(effect);
+
+        Assert.NotEqual(initialKey, resizedKey);
+    }
+
+    [Fact]
+    public void VisualShaderEffectCacheKeyTracksSamplerTextureGeneration()
+    {
+        var texture = CreateTextureWithGeneration(1);
+        var parameters = new WpfShaderEffectParams
+        {
+            Samplers = new[]
+            {
+                new WpfShaderEffectSampler(0, texture, TextureSamplingMode.Linear)
+            }
+        };
+        var effect = new WpfShaderEffect(parameters);
+
+        var initialKey = GetRenderCacheKey(effect);
+        SetTextureGeneration(texture, 2);
+        var resizedKey = GetRenderCacheKey(effect);
+
+        Assert.NotEqual(initialKey, resizedKey);
+    }
+
     [Theory]
     [InlineData(-1)]
     [InlineData(WpfShaderEffectParams.MaxSamplerRegisterCount)]
@@ -152,5 +189,21 @@ public class WpfShaderEffectParamsTests
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
         Assert.NotNull(method);
         return (int)method.Invoke(effect, null)!;
+    }
+
+    private static GpuTexture CreateTextureWithGeneration(uint generation)
+    {
+        var texture = (GpuTexture)RuntimeHelpers.GetUninitializedObject(typeof(GpuTexture));
+        SetTextureGeneration(texture, generation);
+        return texture;
+    }
+
+    private static void SetTextureGeneration(GpuTexture texture, uint generation)
+    {
+        var setter = typeof(GpuTexture)
+            .GetProperty(nameof(GpuTexture.Generation))!
+            .GetSetMethod(nonPublic: true);
+        Assert.NotNull(setter);
+        setter.Invoke(texture, new object[] { generation });
     }
 }

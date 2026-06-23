@@ -1164,6 +1164,14 @@ public class DrawingContext : IRenderDataProvider
                 {
                     adjustedCmd.Rect = new Rect(adjustedCmd.Rect.Position + translation, adjustedCmd.Rect.Size);
                 }
+                else if (adjustedCmd.Type == RenderCommandType.PushGeometryClip)
+                {
+                    var translationTransform = Matrix4x4.CreateTranslation(translation.X, translation.Y, 0f);
+                    var commandTransform = adjustedCmd.Transform == default
+                        ? Matrix4x4.Identity
+                        : adjustedCmd.Transform;
+                    adjustedCmd.Transform = commandTransform * translationTransform;
+                }
                 else
                 {
                     adjustedCmd.Position += translation;

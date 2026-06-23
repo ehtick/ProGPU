@@ -181,6 +181,7 @@ public sealed class WpfShaderEffectParams
         hash.Add(LastError);
         hash.Add(SourceTextureRegisterIndex);
         hash.Add(Texture?.Id ?? 0UL);
+        hash.Add(Texture?.Generation ?? 0u);
         hash.Add(Rect.X);
         hash.Add(Rect.Y);
         hash.Add(Rect.Width);
@@ -199,6 +200,7 @@ public sealed class WpfShaderEffectParams
             hash.Add(sampler.RegisterIndex);
             hash.Add(sampler.SamplingMode);
             hash.Add(sampler.Texture?.Id ?? 0UL);
+            hash.Add(sampler.Texture?.Generation ?? 0u);
         }
     }
 

@@ -1136,6 +1136,43 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     }
 
     [Fact]
+    public void AppendTranslatesGeometryClipTransform()
+    {
+        var source = new DrawingContext();
+        var clip = PrimitivePathGeometry.CreateRectangle(2f, 3f, 10f, 11f);
+        source.PushGeometryClip(clip);
+        source.PopGeometryClip();
+
+        var target = new DrawingContext();
+        target.Append(source, new Vector2(20f, 30f));
+
+        Assert.Equal(2, target.Commands.Count);
+        Assert.Equal(RenderCommandType.PushGeometryClip, target.Commands[0].Type);
+        Assert.Same(clip, target.Commands[0].Path);
+        Assert.Equal(Matrix4x4.CreateTranslation(20f, 30f, 0f), target.Commands[0].Transform);
+        Assert.Equal(RenderCommandType.PopGeometryClip, target.Commands[1].Type);
+    }
+
+    [Fact]
+    public void AppendComposesGeometryClipTransformBeforeTranslation()
+    {
+        var source = new DrawingContext();
+        var clip = PrimitivePathGeometry.CreateRectangle(2f, 3f, 10f, 11f);
+        var clipTransform = Matrix4x4.CreateScale(2f, 3f, 1f);
+        source.PushGeometryClip(clip, clipTransform);
+        source.PopGeometryClip();
+
+        var target = new DrawingContext();
+        target.Append(source, new Vector2(20f, 30f));
+
+        Assert.Equal(2, target.Commands.Count);
+        Assert.Equal(RenderCommandType.PushGeometryClip, target.Commands[0].Type);
+        Assert.Same(clip, target.Commands[0].Path);
+        Assert.Equal(clipTransform * Matrix4x4.CreateTranslation(20f, 30f, 0f), target.Commands[0].Transform);
+        Assert.Equal(RenderCommandType.PopGeometryClip, target.Commands[1].Type);
+    }
+
+    [Fact]
     public void OpacityMaskCompilationDoesNotInheritActiveBlendMode()
     {
         var window = HeadlessWindow.Shared;
