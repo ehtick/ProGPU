@@ -1904,7 +1904,7 @@ namespace ProGPU.Transpiler
             }
             if (stmt is ExpressionStatement e)
             {
-                return $"{indent}{GenerateExpression(e.Expression)};\n";
+                return $"{indent}{GenerateStatementExpression(e.Expression)};\n";
             }
             if (stmt is VariableDeclarationStatement v)
             {
@@ -1947,9 +1947,7 @@ namespace ProGPU.Transpiler
                 {
                     if (fors.Increment is UnaryExpression u && (u.Op == "++" || u.Op == "--"))
                     {
-                        string op = u.Op == "++" ? "+" : "-";
-                        string operand = GenerateExpression(u.Operand);
-                        incrStr = $"{operand} = {operand} {op} 1";
+                        incrStr = GenerateIncrementDecrementAssignment(u);
                     }
                     else
                     {
@@ -2044,7 +2042,7 @@ namespace ProGPU.Transpiler
 
             if (initializer is ExpressionStatement es)
             {
-                return GenerateExpression(es.Expression);
+                return GenerateStatementExpression(es.Expression);
             }
 
             if (initializer is BlockStatement block)
@@ -2105,16 +2103,18 @@ namespace ProGPU.Transpiler
             if (expr is UnaryExpression u)
             {
                 string operand = GenerateExpression(u.Operand);
+                if (IsIncrementDecrement(u.Op))
+                {
+                    throw new NotSupportedException(
+                        "GLSL embedded increment/decrement expressions are not supported by the ShaderToy WGSL transpiler. Use increment/decrement only as a standalone statement or for-loop increment.");
+                }
+
                 if (u.IsPostfix)
                 {
-                    if (u.Op == "++") return $"{operand} = {operand} + 1";
-                    if (u.Op == "--") return $"{operand} = {operand} - 1";
                     return operand + u.Op;
                 }
                 else
                 {
-                    if (u.Op == "++") return $"{operand} = {operand} + 1";
-                    if (u.Op == "--") return $"{operand} = {operand} - 1";
                     return u.Op + operand;
                 }
             }
@@ -2122,6 +2122,7 @@ namespace ProGPU.Transpiler
             {
                 string left = GenerateExpression(bin.Left);
                 string right = GenerateExpression(bin.Right);
+                BroadcastVectorScalarAddSub(bin, ref left, ref right);
                 return $"({left} {bin.Op} {right})";
             }
             if (expr is TernaryExpression ter)
@@ -2306,6 +2307,13 @@ namespace ProGPU.Transpiler
                     else
                     {
                         string cleanOp = op.TrimEnd('=');
+                        if ((cleanOp == "+" || cleanOp == "-") &&
+                            IsVector(memLeft.ResolvedType) &&
+                            IsScalar(assign.Right.ResolvedType))
+                        {
+                            rhsVal = $"{MapType(memLeft.ResolvedType)}({rhsVal})";
+                        }
+
                         fullRhs = $"{baseExpr}.{memLeft.Member} {cleanOp} ({rhsVal})";
                     }
                     
@@ -2324,9 +2332,54 @@ namespace ProGPU.Transpiler
 
                 string left = GenerateExpression(assign.Left);
                 string right = GenerateExpression(assign.Right);
+                if ((assign.Op == "+=" || assign.Op == "-=") &&
+                    IsVector(assign.Left.ResolvedType) &&
+                    IsScalar(assign.Right.ResolvedType))
+                {
+                    right = $"{MapType(assign.Left.ResolvedType)}({right})";
+                }
+
                 return $"{left} {assign.Op} {right}";
             }
             return "";
+        }
+
+        private string GenerateStatementExpression(Expression expression)
+        {
+            if (expression is UnaryExpression unary && IsIncrementDecrement(unary.Op))
+            {
+                return GenerateIncrementDecrementAssignment(unary);
+            }
+
+            return GenerateExpression(expression);
+        }
+
+        private string GenerateIncrementDecrementAssignment(UnaryExpression expression)
+        {
+            string op = expression.Op == "++" ? "+" : "-";
+            string operand = GenerateExpression(expression.Operand);
+            return $"{operand} = {operand} {op} 1";
+        }
+
+        private static bool IsIncrementDecrement(string op) => op == "++" || op == "--";
+
+        private static void BroadcastVectorScalarAddSub(BinaryExpression expression, ref string left, ref string right)
+        {
+            if (expression.Op != "+" && expression.Op != "-")
+            {
+                return;
+            }
+
+            string leftType = expression.Left.ResolvedType;
+            string rightType = expression.Right.ResolvedType;
+            if (IsVector(leftType) && IsScalar(rightType))
+            {
+                right = $"{MapType(leftType)}({right})";
+            }
+            else if (IsScalar(leftType) && IsVector(rightType))
+            {
+                left = $"{MapType(rightType)}({left})";
+            }
         }
 
         private static bool IsSwizzle(string member)
@@ -2356,6 +2409,8 @@ namespace ProGPU.Transpiler
         }
 
         private static bool IsVector(string type) => type != null && (type.StartsWith("vec") || type.StartsWith("ivec") || type.StartsWith("uvec") || type.StartsWith("bvec"));
+
+        private static bool IsScalar(string type) => type == "float" || type == "int" || type == "uint";
 
         private static string MapType(string glslType) => ShaderToyTranspiler.MapType(glslType);
         private static string ResolveIdentifier(string name) => ShaderToyTranspiler.ResolveIdentifier(name);
