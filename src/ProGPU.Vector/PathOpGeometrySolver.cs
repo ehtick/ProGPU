@@ -51,7 +51,7 @@ namespace ProGPU.Vector
 
         public static PathGeometry Combine(PathGeometry pathA, PathGeometry pathB, int op)
         {
-            var result = new PathGeometry();
+            var result = new PathGeometry { FillRule = GetOutputFillRule(pathA, pathB, op) };
 
             // CPU Fast Path for Empty Geometries
             bool emptyA = pathA.Figures.Count == 0 || IsEmptyFigures(pathA.Figures);
@@ -367,6 +367,11 @@ namespace ProGPU.Vector
             }
 
             return result;
+        }
+
+        private static FillRule GetOutputFillRule(PathGeometry pathA, PathGeometry pathB, int op)
+        {
+            return op == 4 ? pathB.FillRule : pathA.FillRule;
         }
 
         private static bool IsEmptyFigures(List<PathFigure> figures)

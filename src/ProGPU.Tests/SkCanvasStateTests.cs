@@ -331,6 +331,42 @@ public sealed class SkCanvasStateTests
     }
 
     [Fact]
+    public void RestoreLayerDisposesOffscreenTextureWhenRenderFails()
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(32, 32, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var layerPaint = new SKPaint();
+        using var fill = new SKPaint { Color = SKColors.Red };
+
+        var compositor = GetCanvasCompositor(surface);
+        compositor.RegisterExtension(9902, new ThrowingCompileExtension());
+
+        var restoreCount = surface.Canvas.SaveLayer(layerPaint);
+        surface.Canvas.DrawRect(new SKRect(2f, 2f, 20f, 20f), fill);
+        var layerContext = GetCurrentDrawingContext(surface.Canvas);
+        layerContext.DrawExtension(9902);
+
+        var disposedTextureCount = 0;
+        void OnTextureDisposed(ulong _) => disposedTextureCount++;
+
+        GpuTexture.OnDisposedWithId += OnTextureDisposed;
+        try
+        {
+            var exception = Assert.Throws<InvalidOperationException>(
+                () => surface.Canvas.RestoreToCount(restoreCount));
+            Assert.Contains("Synthetic SKSurface flush failure", exception.Message, StringComparison.Ordinal);
+
+            Assert.True(disposedTextureCount > 0);
+            Assert.Empty(GetOwnedLayerTextures(surface.Canvas));
+            Assert.Empty(layerContext.Commands);
+            Assert.Equal(0, layerContext.RetainedResourceCount);
+        }
+        finally
+        {
+            GpuTexture.OnDisposedWithId -= OnTextureDisposed;
+        }
+    }
+
+    [Fact]
     public void CanvasDisposeKeepsSaveLayerTextureAliveForDeferredDrawingContext()
     {
         var context = new DrawingContext();
@@ -1223,6 +1259,19 @@ public sealed class SkCanvasStateTests
         var context = (WgpuContext)contextField!.GetValue(surface)!;
         var texture = (GpuTexture)textureField!.GetValue(surface)!;
         return (Compositor)method!.Invoke(null, new object[] { context, texture.Format })!;
+    }
+
+    private static Compositor GetCanvasCompositor(SKSurface surface)
+    {
+        var contextField = typeof(SKSurface).GetField(
+            "_context",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        var method = typeof(SKCanvas).GetMethod(
+            "GetCompositorForContext",
+            BindingFlags.Static | BindingFlags.NonPublic);
+
+        var context = (WgpuContext)contextField!.GetValue(surface)!;
+        return (Compositor)method!.Invoke(null, new object[] { context })!;
     }
 
     private sealed class ThrowingCompileExtension : ICompositorExtension

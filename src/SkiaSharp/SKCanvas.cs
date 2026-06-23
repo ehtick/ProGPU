@@ -333,24 +333,37 @@ public class SKCanvas : IDisposable
         }
         PopReplayedClipPushes(visual.Context, layerFrame.ActiveClipPushes);
 
+        var textureRetained = false;
         try
         {
-            GetCompositorForContext(context).RenderOffscreen(
-                visual,
-                (uint)_width,
-                (uint)_height,
-                texture,
-                padding: 0f,
-                dpiScale: 1f);
+            try
+            {
+                GetCompositorForContext(context).RenderOffscreen(
+                    visual,
+                    (uint)_width,
+                    (uint)_height,
+                    texture,
+                    padding: 0f,
+                    dpiScale: 1f);
+            }
+            finally
+            {
+                visual.Context.Clear();
+            }
+
+            layerFrame.LayerContext.Clear();
+            _ownedLayerTextures.Add(texture);
+            textureRetained = true;
+            return texture;
         }
         finally
         {
-            visual.Context.Clear();
+            if (!textureRetained)
+            {
+                layerFrame.LayerContext.Clear();
+                texture.Dispose();
+            }
         }
-
-        layerFrame.LayerContext.Clear();
-        _ownedLayerTextures.Add(texture);
-        return texture;
     }
 
     private bool PushLayerBoundsClip(DrawingContext context, LayerFrame layerFrame)

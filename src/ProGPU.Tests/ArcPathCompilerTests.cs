@@ -282,6 +282,21 @@ public class ArcPathCompilerTests
     }
 
     [Fact]
+    public void PathOperationSolverInitializesReadbackResultFillRuleFromInputs()
+    {
+        string source = File.ReadAllText(FindPathOpGeometrySolverSource()).Replace("\r\n", "\n");
+
+        Assert.Contains(
+            "var result = new PathGeometry { FillRule = GetOutputFillRule(pathA, pathB, op) };",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "return op == 4 ? pathB.FillRule : pathA.FillRule;",
+            source,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PathOperationDestinationSegmentLimitMatchesShaderSplitCapacity()
     {
         const int horizontalSegments = 12;

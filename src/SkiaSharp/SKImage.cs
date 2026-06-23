@@ -99,6 +99,7 @@ public class SKImage : IDisposable
         byte[] src = ReadTexturePixelsAsRgba8888();
         bool sourcePremultiplied = Texture.AlphaMode == GpuTextureAlphaMode.Premultiplied;
         bool targetPremultiplied = dst.Info.AlphaType == SKAlphaType.Premul;
+        bool forceOpaqueAlpha = dst.Info.AlphaType == SKAlphaType.Opaque;
 
         unsafe
         {
@@ -132,6 +133,11 @@ public class SKImage : IDisposable
                             red = PremultiplyChannel(red, alpha);
                             green = PremultiplyChannel(green, alpha);
                             blue = PremultiplyChannel(blue, alpha);
+                        }
+
+                        if (forceOpaqueAlpha)
+                        {
+                            alpha = 255;
                         }
 
                         if (dst.Info.ColorType == SKColorType.Bgra8888)
