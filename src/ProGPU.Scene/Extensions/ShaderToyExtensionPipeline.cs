@@ -16,7 +16,7 @@ namespace ProGPU.Scene.Extensions
         public Vector3 Resolution;
         public float Time;
         public float TimeDelta;
-        public float Frame;
+        public int Frame;
         public float FrameRate;
         public float Pad0;
         public Vector4 Mouse;
@@ -55,7 +55,7 @@ struct ShaderToyUniforms {
     iResolution: vec3<f32>,
     iTime: f32,
     iTimeDelta: f32,
-    iFrame: f32,
+    iFrame: i32,
     iFrameRate: f32,
     _pad0: f32,
     iMouse: vec4<f32>,
@@ -520,7 +520,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                 Resolution = p.Resolution,
                 Time = p.Time,
                 TimeDelta = p.TimeDelta,
-                Frame = p.Frame,
+                Frame = (int)p.Frame,
                 FrameRate = p.FrameRate,
                 Pad0 = 0f,
                 Mouse = p.Mouse,

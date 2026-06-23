@@ -14,6 +14,8 @@ public sealed unsafe class WpfShaderEffectExtensionPipeline : ICompositorExtensi
 {
     private const string MaskSamplerLimitError =
         "WPF shader effects that use all 16 sampler registers cannot also bind an active mask on this WebGPU device.";
+    private const string CrossContextTextureErrorPrefix =
+        "WPF shader effect sampler texture belongs to a different WebGPU context";
 
     private const string VertexAndHeaderShaderPrefix = @"
 struct VSUniforms {
@@ -494,6 +496,17 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             return;
         }
 
+        if (!ValidateSamplerTextureContexts(compositor.Context, p, activeRegisters, out var textureContextError))
+        {
+            p.LastError = textureContextError;
+            return;
+        }
+
+        if (p.LastError?.StartsWith(CrossContextTextureErrorPrefix, StringComparison.Ordinal) == true)
+        {
+            p.LastError = null;
+        }
+
         var sourceLayout = GetOrCreateSourceLayout(compositor, activeRegisters);
         if (dc.MaskTexture != null && !sourceLayout.IncludeMask)
         {
@@ -880,6 +893,31 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         }
 
         return builder.ToString();
+    }
+
+    private static bool ValidateSamplerTextureContexts(
+        WgpuContext targetContext,
+        WpfShaderEffectParams parameters,
+        ReadOnlySpan<int> activeSamplerRegisters,
+        out string? error)
+    {
+        foreach (var register in activeSamplerRegisters)
+        {
+            if (!parameters.TryGetSampler(register, out var texture, out _))
+            {
+                continue;
+            }
+
+            if (!ReferenceEquals(texture.Context, targetContext))
+            {
+                error = $"{CrossContextTextureErrorPrefix} for register {register}. " +
+                    "Create or copy the sampler texture in the compositor target context before rendering the effect.";
+                return false;
+            }
+        }
+
+        error = null;
+        return true;
     }
 
     private static int[] CollectActiveSamplerRegisters(WpfShaderEffectParams parameters)

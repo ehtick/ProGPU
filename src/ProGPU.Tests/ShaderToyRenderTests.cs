@@ -167,6 +167,58 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
         }
     }
 
+    [Fact]
+    public void ShaderToy_GlslIFrameModuloCompilesAndRenders()
+    {
+        var window = HeadlessWindow.Shared;
+        window.Resize(32, 32);
+
+        var shader = new ShaderToyParams
+        {
+            Rect = new Rect(0f, 0f, 32f, 32f),
+            ShaderKey = $"test_shadertoy_iframe_modulo_{Guid.NewGuid():N}",
+            ShaderSource = """
+                void mainImage(out vec4 fragColor, in vec2 fragCoord)
+                {
+                    if ((iFrame % 2) == 0)
+                    {
+                        fragColor = vec4(0.0, 1.0, 0.0, 1.0);
+                    }
+                    else
+                    {
+                        fragColor = vec4(1.0, 0.0, 0.0, 1.0);
+                    }
+                }
+                """,
+            Resolution = new Vector3(32f, 32f, 1f),
+            Time = 0f,
+            TimeDelta = 0f,
+            Frame = 2f,
+            FrameRate = 60f,
+            Mouse = Vector4.Zero,
+            Date = Vector4.Zero
+        };
+
+        window.Content = new SingleShaderToyVisual(shader, 32f, 32f);
+
+        try
+        {
+            window.Render();
+
+            Assert.False(shader.IsFailed);
+
+            var pixel = ReadPixel(window.ReadPixels(), window.Width, x: 16, y: 16);
+            Assert.InRange(pixel.R, 0, 32);
+            Assert.InRange(pixel.G, 200, 255);
+            Assert.InRange(pixel.B, 0, 32);
+            Assert.Equal(255, pixel.A);
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
     private static ShaderToyParams CreateSolidRedParams(Rect rect, string name)
     {
         return CreateSolidRedParams(rect, name, $"test_shadertoy_mask_{name}_{Guid.NewGuid():N}");
@@ -319,6 +371,25 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
                 CompositorBuiltInExtensions.ShaderToy,
                 dataParam: _shader);
             context.PopOpacityMask();
+        }
+    }
+
+    private sealed class SingleShaderToyVisual : FrameworkElement
+    {
+        private readonly ShaderToyParams _shader;
+
+        public SingleShaderToyVisual(ShaderToyParams shader, float width, float height)
+        {
+            _shader = shader;
+            Width = width;
+            Height = height;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            context.DrawExtension(
+                CompositorBuiltInExtensions.ShaderToy,
+                dataParam: _shader);
         }
     }
 }

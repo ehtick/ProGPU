@@ -2,6 +2,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Numerics;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using GdiBitmap = System.Drawing.Bitmap;
 using GdiGraphics = System.Drawing.Graphics;
 using GdiInterpolationMode = System.Drawing.Drawing2D.InterpolationMode;
@@ -167,6 +168,22 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     }
 
     [Fact]
+    public void ShaderToyIFrameUniformUsesIntegerAbi()
+    {
+        var header = typeof(ShaderToyExtensionPipeline).GetField(
+                "VertexAndHeaderShader",
+                BindingFlags.Static | BindingFlags.NonPublic)
+            ?.GetRawConstantValue() as string
+            ?? throw new System.InvalidOperationException("Expected ShaderToy WGSL header.");
+
+        Assert.Contains("iFrame: i32", header, System.StringComparison.Ordinal);
+        Assert.DoesNotContain("iFrame: f32", header, System.StringComparison.Ordinal);
+        Assert.Equal(typeof(int), typeof(ShaderToyUniforms).GetField(nameof(ShaderToyUniforms.Frame))?.FieldType);
+        Assert.Equal(20, Marshal.OffsetOf<ShaderToyUniforms>(nameof(ShaderToyUniforms.Frame)).ToInt32());
+        Assert.Equal(64, Marshal.SizeOf<ShaderToyUniforms>());
+    }
+
+    [Fact]
     public void GdiBitmapFlushUsesOwningContextWhenAmbientContextChanges()
     {
         var previous = WgpuContext.Current;
@@ -311,6 +328,45 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
         {
             bitmap?.GpuTexture.Dispose();
             WgpuContext.Current = previous;
+        }
+    }
+
+    [Fact]
+    public void WpfShaderEffectRejectsCrossContextSamplerTexturesBeforeBinding()
+    {
+        using var sourceContext = new WgpuContext();
+        sourceContext.Initialize(null);
+        using var window = new HeadlessWindow(16, 16);
+        using var source = new GpuTexture(
+            sourceContext,
+            1,
+            1,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.TextureBinding | TextureUsage.CopyDst,
+            "Cross-context WPF Shader Effect Source");
+        source.WritePixels(new byte[] { 255, 0, 0, 255 });
+
+        var effect = new WpfShaderEffectParams
+        {
+            Texture = source,
+            Rect = new Rect(0f, 0f, 16f, 16f),
+            ShaderKey = $"review_wpf_shader_effect_cross_context_{System.Guid.NewGuid():N}"
+        };
+        window.Content = new WpfShaderEffectDisposalVisual(effect);
+
+        try
+        {
+            window.Render();
+
+            Assert.False(effect.IsFailed);
+            Assert.StartsWith(
+                "WPF shader effect sampler texture belongs to a different WebGPU context",
+                effect.LastError,
+                System.StringComparison.Ordinal);
+        }
+        finally
+        {
+            window.Content = null;
         }
     }
 
