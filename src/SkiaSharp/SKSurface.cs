@@ -468,11 +468,23 @@ public class SKSurface : IDisposable
 
     public void Dispose()
     {
-        Flush();
-        Canvas.Dispose();
-        if (_ownsTexture)
+        try
         {
-            _gpuTexture?.Dispose();
+            Flush();
+        }
+        finally
+        {
+            try
+            {
+                Canvas.Dispose();
+            }
+            finally
+            {
+                if (_ownsTexture)
+                {
+                    _gpuTexture?.Dispose();
+                }
+            }
         }
     }
 }

@@ -145,6 +145,26 @@ public class ProGpuHostControlTests
     }
 
     [Fact]
+    public void SwapchainImageDisposeUnmapsActiveStagingBufferBeforeQueueingDisposal()
+    {
+        string source = File.ReadAllText(FindProGpuHostControlSource()).Replace("\r\n", "\n");
+
+        int unmapIndex = source.IndexOf(
+            "_context.Wgpu.BufferUnmap((GpuBuffer*)StagingBuffer)",
+            StringComparison.Ordinal);
+        int queueIndex = source.IndexOf(
+            "_context.QueueBufferDisposal(StagingBuffer)",
+            StringComparison.Ordinal);
+
+        Assert.Contains("public bool IsStagingBufferMapActive;", source, StringComparison.Ordinal);
+        Assert.True(unmapIndex >= 0, "SwapchainImage.Dispose must unmap an active staging-buffer map.");
+        Assert.True(queueIndex >= 0, "SwapchainImage.Dispose must queue staging-buffer disposal.");
+        Assert.True(unmapIndex < queueIndex, "Mapped staging buffers must be unmapped before disposal is queued.");
+        Assert.Contains("image.IsStagingBufferMapActive = true;", source, StringComparison.Ordinal);
+        Assert.Contains("!image.IsStagingBufferMapActive", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AvaloniaHostStagingBuffersUseDeferredDisposalQueue()
     {
         string source = File.ReadAllText(FindProGpuHostControlSource()).Replace("\r\n", "\n");

@@ -46,6 +46,7 @@ public class ProGpuHostControl : Control
         public uint StagingBufferSize;
         public uint BytesPerRow;
         public bool IsReady = true;
+        public bool IsStagingBufferMapActive;
 
         // Windows specific
         public IntPtr WinD3DDevice = IntPtr.Zero;
@@ -58,7 +59,7 @@ public class ProGpuHostControl : Control
             _context = context;
         }
 
-        public void Dispose()
+        public unsafe void Dispose()
         {
             if (ImportedImage != null)
             {
@@ -91,12 +92,19 @@ public class ProGpuHostControl : Control
             {
                 if (!_context.IsDisposed)
                 {
+                    if (IsStagingBufferMapActive)
+                    {
+                        _context.Wgpu.BufferUnmap((GpuBuffer*)StagingBuffer);
+                        IsStagingBufferMapActive = false;
+                    }
+
                     _context.QueueBufferDisposal(StagingBuffer);
                 }
 
                 StagingBuffer = IntPtr.Zero;
                 StagingBufferSize = 0;
                 BytesPerRow = 0;
+                IsStagingBufferMapActive = false;
             }
         }
     }
@@ -766,57 +774,67 @@ public class ProGpuHostControl : Control
     private unsafe void CopyMappedToSharedTexture(WgpuContext context, SwapchainImage image, uint renderWidth, uint renderHeight)
     {
         void* mappedPtr = context.Wgpu.BufferGetConstMappedRange((GpuBuffer*)image.StagingBuffer, 0, (nuint)image.StagingBufferSize);
-        if (mappedPtr != null)
+        try
         {
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            if (mappedPtr != null)
             {
-                GpuSharingInterop.IOSurfaceLock(image.SharedHandle, 0, null);
-                void* destPtr = GpuSharingInterop.IOSurfaceGetBaseAddress(image.SharedHandle);
-                nuint surfaceBytesPerRow = GpuSharingInterop.IOSurfaceGetBytesPerRow(image.SharedHandle);
-
-                byte* srcBytes = (byte*)mappedPtr;
-                byte* destBytes = (byte*)destPtr;
-                uint rowBytes = renderWidth * 4;
-
-                for (uint y = 0; y < renderHeight; y++)
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
                 {
-                    byte* srcRow = srcBytes + (y * image.BytesPerRow);
-                    byte* destRow = destBytes + (y * (uint)surfaceBytesPerRow);
-                    System.Buffer.MemoryCopy(srcRow, destRow, rowBytes, rowBytes);
-                }
+                    GpuSharingInterop.IOSurfaceLock(image.SharedHandle, 0, null);
+                    void* destPtr = GpuSharingInterop.IOSurfaceGetBaseAddress(image.SharedHandle);
+                    nuint surfaceBytesPerRow = GpuSharingInterop.IOSurfaceGetBytesPerRow(image.SharedHandle);
 
-                GpuSharingInterop.IOSurfaceUnlock(image.SharedHandle, 0, null);
+                    byte* srcBytes = (byte*)mappedPtr;
+                    byte* destBytes = (byte*)destPtr;
+                    uint rowBytes = renderWidth * 4;
+
+                    for (uint y = 0; y < renderHeight; y++)
+                    {
+                        byte* srcRow = srcBytes + (y * image.BytesPerRow);
+                        byte* destRow = destBytes + (y * (uint)surfaceBytesPerRow);
+                        System.Buffer.MemoryCopy(srcRow, destRow, rowBytes, rowBytes);
+                    }
+
+                    GpuSharingInterop.IOSurfaceUnlock(image.SharedHandle, 0, null);
+                }
+                else if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
+                    GpuSharingInterop.COMHelper.CallGetImmediateContext(image.WinD3DDevice, out IntPtr d3dContext);
+                    if (d3dContext != IntPtr.Zero)
+                    {
+                        GpuSharingInterop.COMHelper.CallUpdateSubresource(
+                            d3dContext,
+                            image.WinTexture2D,
+                            0,
+                            IntPtr.Zero,
+                            mappedPtr,
+                            image.BytesPerRow,
+                            0
+                        );
+                        GpuSharingInterop.COMHelper.CallRelease(d3dContext);
+                    }
+                }
             }
-            else if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        }
+        finally
+        {
+            if (!context.IsDisposed && image.StagingBuffer != IntPtr.Zero && image.IsStagingBufferMapActive)
             {
-                GpuSharingInterop.COMHelper.CallGetImmediateContext(image.WinD3DDevice, out IntPtr d3dContext);
-                if (d3dContext != IntPtr.Zero)
-                {
-                    GpuSharingInterop.COMHelper.CallUpdateSubresource(
-                        d3dContext,
-                        image.WinTexture2D,
-                        0,
-                        IntPtr.Zero,
-                        mappedPtr,
-                        image.BytesPerRow,
-                        0
-                    );
-                    GpuSharingInterop.COMHelper.CallRelease(d3dContext);
-                }
+                context.Wgpu.BufferUnmap((GpuBuffer*)image.StagingBuffer);
+                image.IsStagingBufferMapActive = false;
             }
-
-            context.Wgpu.BufferUnmap((GpuBuffer*)image.StagingBuffer);
         }
     }
 
     private unsafe void TryUnmapStagingBuffer(WgpuContext context, SwapchainImage image)
     {
-        if (context.IsDisposed || image.StagingBuffer == IntPtr.Zero)
+        if (context.IsDisposed || image.StagingBuffer == IntPtr.Zero || !image.IsStagingBufferMapActive)
         {
             return;
         }
 
         context.Wgpu.BufferUnmap((GpuBuffer*)image.StagingBuffer);
+        image.IsStagingBufferMapActive = false;
     }
 
     private bool IsCurrentZeroCopyFrame(
@@ -898,7 +916,21 @@ public class ProGpuHostControl : Control
                     CopyTextureToStagingBuffer(image, renderWidth, renderHeight);
 
                     // Asynchronously map buffer - non-blocking!
-                    await MapBufferAsync(image.StagingBuffer, MapMode.Read, (nuint)image.StagingBufferSize);
+                    image.IsStagingBufferMapActive = true;
+                    try
+                    {
+                        await MapBufferAsync(image.StagingBuffer, MapMode.Read, (nuint)image.StagingBufferSize);
+                    }
+                    catch
+                    {
+                        image.IsStagingBufferMapActive = false;
+                        if (!IsCurrentZeroCopyFrame(swapchainImages, imageIndex, image, importedImage, drawingSurface, context))
+                        {
+                            return;
+                        }
+
+                        throw;
+                    }
 
                     if (!IsCurrentZeroCopyFrame(swapchainImages, imageIndex, image, importedImage, drawingSurface, context))
                     {

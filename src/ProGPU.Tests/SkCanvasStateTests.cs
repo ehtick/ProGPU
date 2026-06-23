@@ -368,6 +368,43 @@ public sealed class SkCanvasStateTests
     }
 
     [Fact]
+    public void SurfaceDisposeReleasesOwnedTextureWhenFlushFails()
+    {
+        var surface = SKSurface.Create(new SKImageInfo(32, 32, SKColorType.Rgba8888, SKAlphaType.Premul));
+        var texture = GetSurfaceTexture(surface);
+        var compositor = GetSurfaceCompositor(surface);
+        var drawingContext = GetSurfaceDrawingContext(surface);
+        compositor.RegisterExtension(9907, new ThrowingCompileExtension());
+        drawingContext.DrawExtension(9907);
+
+        var textureDisposed = false;
+        void OnTextureDisposed(ulong id)
+        {
+            if (id == texture.Id)
+            {
+                textureDisposed = true;
+            }
+        }
+
+        GpuTexture.OnDisposedWithId += OnTextureDisposed;
+        try
+        {
+            var exception = Assert.Throws<InvalidOperationException>(() => surface.Dispose());
+            Assert.Contains("Synthetic SKSurface flush failure", exception.Message, StringComparison.Ordinal);
+
+            Assert.True(textureDisposed);
+            Assert.True(texture.IsDisposed);
+            Assert.Empty(drawingContext.Commands);
+            Assert.Equal(0, drawingContext.RetainedResourceCount);
+        }
+        finally
+        {
+            GpuTexture.OnDisposedWithId -= OnTextureDisposed;
+            ResetSurfaceCompositor(surface);
+        }
+    }
+
+    [Fact]
     public void RestoreDropShadowLayerDisposesFilteredTextureWhenRenderFails()
     {
         using var context = new WgpuContext();
@@ -1320,6 +1357,14 @@ public sealed class SkCanvasStateTests
         return (DrawingContext)field!.GetValue(surface)!;
     }
 
+    private static GpuTexture GetSurfaceTexture(SKSurface surface)
+    {
+        var textureField = typeof(SKSurface).GetField(
+            "_gpuTexture",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        return (GpuTexture)textureField!.GetValue(surface)!;
+    }
+
     private static Compositor GetSurfaceCompositor(SKSurface surface)
     {
         var contextField = typeof(SKSurface).GetField(
@@ -1348,6 +1393,18 @@ public sealed class SkCanvasStateTests
 
         var context = (WgpuContext)contextField!.GetValue(surface)!;
         return (Compositor)method!.Invoke(null, new object[] { context })!;
+    }
+
+    private static void ResetSurfaceCompositor(SKSurface surface)
+    {
+        var contextField = typeof(SKSurface).GetField(
+            "_context",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        var removeMethod = typeof(SKSurface).GetMethod(
+            "RemoveCachedCompositor",
+            BindingFlags.Static | BindingFlags.NonPublic);
+
+        removeMethod!.Invoke(null, new[] { contextField!.GetValue(surface)! });
     }
 
     private static void DisposeCanvasCompositorCompute(SKSurface surface)
