@@ -858,6 +858,7 @@ namespace ProGPU.Transpiler
                 "iResolution" => "inputs.iResolution",
                 "iTime" => "inputs.iTime",
                 "iTimeDelta" => "inputs.iTimeDelta",
+                "iFrameRate" => "inputs.iFrameRate",
                 "iFrame" => "inputs.iFrame",
                 "iMouse" => "inputs.iMouse",
                 "iDate" => "inputs.iDate",
@@ -1562,6 +1563,7 @@ namespace ProGPU.Transpiler
                         "iResolution" => "vec3",
                         "iTime" => "float",
                         "iTimeDelta" => "float",
+                        "iFrameRate" => "float",
                         "iFrame" => "int",
                         "iMouse" => "vec4",
                         "iDate" => "vec4",
@@ -1681,7 +1683,7 @@ namespace ProGPU.Transpiler
             if (name == "reflect" || name == "refract") return argTypes.Count > 0 ? argTypes[0] : "vec3";
             if (name == "min" || name == "max" || name == "clamp" || name == "mix" || name == "step" || name == "smoothstep")
             {
-                return argTypes.Count > 0 ? argTypes[0] : "float";
+                return GetVectorizedBuiltinReturnType(argTypes);
             }
             if (name == "atan" || name == "atan2")
             {
@@ -1710,6 +1712,19 @@ namespace ProGPU.Transpiler
             if (name == "mat4") return "mat4";
 
             return "float";
+        }
+
+        private static string GetVectorizedBuiltinReturnType(List<string> argTypes)
+        {
+            foreach (var type in argTypes)
+            {
+                if (IsVector(type))
+                {
+                    return type;
+                }
+            }
+
+            return argTypes.Count > 0 ? argTypes[0] : "float";
         }
     }
 
@@ -2169,38 +2184,22 @@ namespace ProGPU.Transpiler
 
                 if (call.Callee == "min" || call.Callee == "max")
                 {
-                    var t0 = call.Arguments[0].ResolvedType;
-                    var t1 = call.Arguments[1].ResolvedType;
-                    var a0 = GenerateExpression(call.Arguments[0]);
-                    var a1 = GenerateExpression(call.Arguments[1]);
-                    if (t0 != t1)
-                    {
-                        if (IsVector(t0) && !IsVector(t1))
-                        {
-                            a1 = $"{MapType(t0)}({a1})";
-                        }
-                        else if (!IsVector(t0) && IsVector(t1))
-                        {
-                            a0 = $"{MapType(t1)}({a0})";
-                        }
-                    }
-                    return $"{call.Callee}({a0}, {a1})";
+                    var arguments = GenerateVectorBroadcastedArguments(call);
+                    return $"{call.Callee}({arguments[0]}, {arguments[1]})";
                 }
 
-                if (call.Callee == "clamp")
+                if (call.Callee == "step")
                 {
-                    var t0 = call.Arguments[0].ResolvedType;
-                    var t1 = call.Arguments[1].ResolvedType;
-                    var t2 = call.Arguments[2].ResolvedType;
-                    var a0 = GenerateExpression(call.Arguments[0]);
-                    var a1 = GenerateExpression(call.Arguments[1]);
-                    var a2 = GenerateExpression(call.Arguments[2]);
-                    if (IsVector(t0))
-                    {
-                        if (!IsVector(t1)) a1 = $"{MapType(t0)}({a1})";
-                        if (!IsVector(t2)) a2 = $"{MapType(t0)}({a2})";
-                    }
-                    return $"clamp({a0}, {a1}, {a2})";
+                    var arguments = GenerateVectorBroadcastedArguments(call);
+                    return $"step({arguments[0]}, {arguments[1]})";
+                }
+
+                if (call.Callee == "clamp" ||
+                    call.Callee == "mix" ||
+                    call.Callee == "smoothstep")
+                {
+                    var arguments = GenerateVectorBroadcastedArguments(call);
+                    return $"{call.Callee}({arguments[0]}, {arguments[1]}, {arguments[2]})";
                 }
 
                 if (_userFunctions.ContainsKey(call.Callee))
@@ -2380,6 +2379,36 @@ namespace ProGPU.Transpiler
             {
                 left = $"{MapType(rightType)}({left})";
             }
+        }
+
+        private List<string> GenerateVectorBroadcastedArguments(CallExpression call)
+        {
+            var arguments = new List<string>(call.Arguments.Count);
+            string? targetVectorType = null;
+            foreach (var argument in call.Arguments)
+            {
+                if (targetVectorType == null && IsVector(argument.ResolvedType))
+                {
+                    targetVectorType = argument.ResolvedType;
+                }
+
+                arguments.Add(GenerateExpression(argument));
+            }
+
+            if (targetVectorType == null)
+            {
+                return arguments;
+            }
+
+            for (int i = 0; i < call.Arguments.Count; i++)
+            {
+                if (IsScalar(call.Arguments[i].ResolvedType))
+                {
+                    arguments[i] = $"{MapType(targetVectorType)}({arguments[i]})";
+                }
+            }
+
+            return arguments;
         }
 
         private static bool IsSwizzle(string member)

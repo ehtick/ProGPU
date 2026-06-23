@@ -44,6 +44,41 @@ void mainImage(out vec4 color, in vec2 coord) {
     }
 
     [Fact]
+    public void ShaderToyFrameRateUniformMapsToInputStruct()
+    {
+        const string glsl = """
+void mainImage(out vec4 color, in vec2 coord) {
+    float rate = iFrameRate;
+    color = vec4(rate, 0.0, 0.0, 1.0);
+}
+""";
+
+        var wgsl = ShaderToyTranspiler.Translate(glsl);
+
+        Assert.Contains("inputs.iFrameRate", wgsl);
+        Assert.DoesNotContain("= iFrameRate;", wgsl);
+    }
+
+    [Fact]
+    public void ScalarBuiltinArgumentsBroadcastToVectorOperands()
+    {
+        const string glsl = """
+void mainImage(out vec4 color, in vec2 coord) {
+    vec3 a = mix(vec3(0.0), vec3(1.0), 0.5);
+    vec3 b = smoothstep(0.0, 1.0, a);
+    vec3 c = step(0.25, b);
+    color = vec4(c, 1.0);
+}
+""";
+
+        var wgsl = ShaderToyTranspiler.Translate(glsl);
+
+        Assert.Contains("mix(vec3<f32>(0.0), vec3<f32>(1.0), vec3<f32>(0.5))", wgsl);
+        Assert.Contains("smoothstep(vec3<f32>(0.0), vec3<f32>(1.0), a)", wgsl);
+        Assert.Contains("step(vec3<f32>(0.25), b)", wgsl);
+    }
+
+    [Fact]
     public void EmbeddedIncrementDecrementThrowsInsteadOfEmittingInvalidWgsl()
     {
         const string glsl = """
