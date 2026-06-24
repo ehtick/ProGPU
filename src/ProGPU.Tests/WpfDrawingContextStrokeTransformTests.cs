@@ -137,6 +137,34 @@ public sealed class WpfDrawingContextStrokeTransformTests
         AssertNear(15, matrix.OffsetY);
     }
 
+    [Fact]
+    public void DefaultMatrixMutatorsStartFromIdentity()
+    {
+        var translate = new WpfMatrix();
+        translate.Translate(10, 5);
+
+        AssertNear(1, translate.M11);
+        AssertNear(1, translate.M22);
+        AssertNear(10, translate.OffsetX);
+        AssertNear(5, translate.OffsetY);
+
+        var scale = default(WpfMatrix);
+        scale.Scale(2, 3);
+
+        AssertNear(2, scale.M11);
+        AssertNear(3, scale.M22);
+        AssertNear(0, scale.M12);
+        AssertNear(0, scale.M21);
+
+        var rotate = new WpfMatrix();
+        rotate.Rotate(90);
+
+        AssertNear(0, rotate.M11);
+        AssertNear(-1, rotate.M12);
+        AssertNear(1, rotate.M21);
+        AssertNear(0, rotate.M22);
+    }
+
     private static Matrix4x4 ToMatrix4x4(WpfMatrix matrix)
     {
         return new Matrix4x4(
