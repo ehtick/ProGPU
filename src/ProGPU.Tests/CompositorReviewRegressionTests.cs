@@ -255,6 +255,23 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     }
 
     [Fact]
+    public void ShaderToyShiftOperatorsBindBeforeRelationalOperators()
+    {
+        var wgsl = ShaderToyTranspiler.Translate(
+            """
+            void mainImage(out vec4 fragColor, in vec2 fragCoord)
+            {
+                uint x = uint(fragCoord.x);
+                bool folded = 1u < x >> 1u;
+                fragColor = folded ? vec4(0.0, 1.0, 0.0, 1.0) : vec4(1.0, 0.0, 0.0, 1.0);
+            }
+            """);
+
+        Assert.Contains("var folded: bool = (1u < (x >> 1u));", wgsl, System.StringComparison.Ordinal);
+        Assert.DoesNotContain("((1u < x) >> 1u)", wgsl, System.StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ShaderToyIFrameUniformUsesIntegerAbi()
     {
         var header = typeof(ShaderToyExtensionPipeline).GetField(
@@ -1428,6 +1445,26 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
 
         var exception = Assert.Throws<System.InvalidOperationException>(() => texture.ReadPixels());
         Assert.Equal("Texture was not created with CopySrc usage.", exception.Message);
+    }
+
+    [Fact]
+    public void GpuTextureWritePixelsSubRectRejectsOutOfBoundsRectBeforeUpload()
+    {
+        using var window = new HeadlessWindow(2, 2);
+        using var texture = new GpuTexture(
+            window.Context,
+            2,
+            2,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.TextureBinding | TextureUsage.CopyDst,
+            "SubRect Bounds Texture");
+
+        var pixels = new byte[2 * 2 * 4];
+        var exception = Assert.Throws<System.ArgumentOutOfRangeException>(
+            () => texture.WritePixelsSubRect(pixels, x: 1, y: 1, subWidth: 2, subHeight: 2));
+
+        Assert.Equal("pixels", exception.ParamName);
+        Assert.Equal(1u, texture.Generation);
     }
 
     [Fact]

@@ -1670,7 +1670,7 @@ namespace ProGPU.Transpiler
                 Match(TokenType.Operator, "++") || Match(TokenType.Operator, "--"))
             {
                 var op = Previous().Value;
-                var operand = ParseExpression(13);
+                var operand = ParseExpression(14);
                 return new UnaryExpression(op, operand, false);
             }
 
@@ -1776,9 +1776,10 @@ namespace ProGPU.Transpiler
                 "^" => 7,
                 "&" => 8,
                 "==" or "!=" => 9,
-                "<" or ">" or "<=" or ">=" or "<<" or ">>" => 10,
-                "+" or "-" => 11,
-                "*" or "/" or "%" => 12,
+                "<" or ">" or "<=" or ">=" => 10,
+                "<<" or ">>" => 11,
+                "+" or "-" => 12,
+                "*" or "/" or "%" => 13,
                 _ => 0
             };
         }

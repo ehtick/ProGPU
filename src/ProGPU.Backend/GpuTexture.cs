@@ -205,6 +205,23 @@ public unsafe class GpuTexture : IDisposable
     public void WritePixelsSubRect<T>(ReadOnlySpan<T> pixels, uint x, uint y, uint subWidth, uint subHeight) where T : unmanaged
     {
         if (_isDisposed) throw new ObjectDisposedException(nameof(GpuTexture));
+        if (subWidth == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(subWidth), "Pixel sub-rect width must be greater than zero.");
+        }
+
+        if (subHeight == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(subHeight), "Pixel sub-rect height must be greater than zero.");
+        }
+
+        if (x > Width
+            || y > Height
+            || subWidth > Width - x
+            || subHeight > Height - y)
+        {
+            throw new ArgumentOutOfRangeException(nameof(pixels), "Pixel sub-rect does not fit inside the texture bounds.");
+        }
 
         uint bytesPerPixel = Format switch
         {
