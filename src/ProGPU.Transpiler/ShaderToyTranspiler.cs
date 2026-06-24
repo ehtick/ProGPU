@@ -2210,6 +2210,12 @@ namespace ProGPU.Transpiler
                     return $"{call.Callee}({arguments[0]}, {arguments[1]})";
                 }
 
+                if (call.Callee == "pow")
+                {
+                    var arguments = GenerateVectorBroadcastedArguments(call);
+                    return $"pow({arguments[0]}, {arguments[1]})";
+                }
+
                 if (call.Callee == "step")
                 {
                     var arguments = GenerateVectorBroadcastedArguments(call);
@@ -2392,10 +2398,21 @@ namespace ProGPU.Transpiler
         {
             string op = expression.Op == "++" ? "+" : "-";
             string operand = GenerateExpression(expression.Operand);
-            return $"{operand} = {operand} {op} 1";
+            string literal = GenerateIncrementDecrementLiteral(expression.Operand.ResolvedType);
+            return $"{operand} = {operand} {op} {literal}";
         }
 
         private static bool IsIncrementDecrement(string op) => op == "++" || op == "--";
+
+        private static string GenerateIncrementDecrementLiteral(string resolvedType)
+        {
+            return resolvedType switch
+            {
+                "float" => "1.0",
+                "uint" => "1u",
+                _ => "1"
+            };
+        }
 
         private static void BroadcastVectorScalarAddSub(BinaryExpression expression, ref string left, ref string right)
         {

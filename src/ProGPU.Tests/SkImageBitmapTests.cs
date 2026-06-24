@@ -317,6 +317,42 @@ public sealed class SkImageBitmapTests
     }
 
     [Fact]
+    public void ReadPixelsUnpremultipliesPremulSourceWhenDestinationIsOpaque()
+    {
+        using var bitmap = new SKBitmap(new SKImageInfo(1, 1, SKColorType.Rgba8888, SKAlphaType.Premul));
+        WriteBytes(bitmap.GetPixels(), new byte[] { 128, 0, 0, 128 });
+        using var image = SKImage.FromBitmap(bitmap);
+        var rgbaDst = Marshal.AllocHGlobal(4);
+        var bgraDst = Marshal.AllocHGlobal(4);
+        try
+        {
+            image.ReadPixels(
+                new SKImageInfo(1, 1, SKColorType.Rgba8888, SKAlphaType.Opaque),
+                rgbaDst,
+                dstRowBytes: 4,
+                srcX: 0,
+                srcY: 0,
+                SKImageCachingHint.Allow);
+
+            image.ReadPixels(
+                new SKImageInfo(1, 1, SKColorType.Bgra8888, SKAlphaType.Opaque),
+                bgraDst,
+                dstRowBytes: 4,
+                srcX: 0,
+                srcY: 0,
+                SKImageCachingHint.Allow);
+
+            Assert.Equal(new byte[] { 255, 0, 0, 255 }, ReadBytes(rgbaDst, 4));
+            Assert.Equal(new byte[] { 0, 0, 255, 255 }, ReadBytes(bgraDst, 4));
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(bgraDst);
+            Marshal.FreeHGlobal(rgbaDst);
+        }
+    }
+
+    [Fact]
     public void ReadPixelsForcesOpaqueDestinationAlpha255()
     {
         using var bitmap = new SKBitmap(new SKImageInfo(1, 1, SKColorType.Rgba8888, SKAlphaType.Unpremul));

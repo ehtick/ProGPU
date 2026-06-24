@@ -95,14 +95,35 @@ void mainImage(out vec4 color, in vec2 coord) {
     }
 
     [Fact]
-    public void StandaloneIncrementDecrementStillEmitsMutatingStatements()
+    public void ScalarPowArgumentBroadcastsToVectorOperand()
+    {
+        const string glsl = """
+void mainImage(out vec4 color, in vec2 coord) {
+    vec3 rgb = pow(vec3(0.5), 2.2);
+    color = vec4(rgb, 1.0);
+}
+""";
+
+        var wgsl = ShaderToyTranspiler.Translate(glsl);
+
+        Assert.Contains("pow(vec3<f32>(0.5), vec3<f32>(2.2))", wgsl);
+    }
+
+    [Fact]
+    public void StandaloneIncrementDecrementEmitsTypeCorrectMutatingStatements()
     {
         const string glsl = """
 void mainImage(out vec4 color, in vec2 coord) {
     int i = 0;
     i++;
     --i;
-    color = vec4(float(i), 0.0, 0.0, 1.0);
+    float t = 0.0;
+    t++;
+    --t;
+    uint u = uint(0);
+    u++;
+    --u;
+    color = vec4(t + float(i) + float(u), 0.0, 0.0, 1.0);
 }
 """;
 
@@ -110,6 +131,10 @@ void mainImage(out vec4 color, in vec2 coord) {
 
         Assert.Contains("i = i + 1;", wgsl);
         Assert.Contains("i = i - 1;", wgsl);
+        Assert.Contains("t = t + 1.0;", wgsl);
+        Assert.Contains("t = t - 1.0;", wgsl);
+        Assert.Contains("u = u + 1u;", wgsl);
+        Assert.Contains("u = u - 1u;", wgsl);
     }
 
     [Fact]

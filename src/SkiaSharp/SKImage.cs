@@ -216,7 +216,7 @@ public class SKImage : IDisposable
                             byte blue = srcRow[srcIdx + 2];
 
                             if (Texture.AlphaMode == GpuTextureAlphaMode.Premultiplied
-                                && dstInfo.AlphaType == SKAlphaType.Unpremul)
+                                && (dstInfo.AlphaType == SKAlphaType.Unpremul || forceOpaqueAlpha))
                             {
                                 red = UnpremultiplyChannel(red, alpha);
                                 green = UnpremultiplyChannel(green, alpha);
