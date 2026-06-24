@@ -589,6 +589,13 @@ public unsafe class Compositor : IDisposable
     private uint CurrentCanvasPixelYUInt => RoundNonNegativeToUInt(CurrentCanvasPixelY);
     private uint CurrentCanvasPixelWidthUInt => Math.Max(1u, RoundNonNegativeToUInt(CurrentCanvasPixelWidth));
     private uint CurrentCanvasPixelHeightUInt => Math.Max(1u, RoundNonNegativeToUInt(CurrentCanvasPixelHeight));
+    private uint CurrentMaskTargetPixelWidthUInt => _explicitRenderTargetViewport.HasValue && _explicitRenderTargetWidth.HasValue
+        ? Math.Max(1u, _explicitRenderTargetWidth.Value)
+        : CurrentCanvasPixelWidthUInt;
+
+    private uint CurrentMaskTargetPixelHeightUInt => _explicitRenderTargetViewport.HasValue && _explicitRenderTargetHeight.HasValue
+        ? Math.Max(1u, _explicitRenderTargetHeight.Value)
+        : CurrentCanvasPixelHeightUInt;
     public float CurrentDpiScale => _currentDpiScale;
     internal Matrix4x4 CurrentProjection => _currentProjection;
     internal System.Runtime.CompilerServices.ConditionalWeakTable<object, GpuSeriesBuffer> DynamicGpuBufferCache => _dynamicGpuBufferCache;
@@ -8365,7 +8372,7 @@ public unsafe class Compositor : IDisposable
         }
         _drawCalls.RemoveRange(preDrawCallCount, _drawCalls.Count - preDrawCallCount);
 
-        var maskTex = GetMaskTexture(CurrentCanvasPixelWidthUInt, CurrentCanvasPixelHeightUInt);
+        var maskTex = GetMaskTexture(CurrentMaskTargetPixelWidthUInt, CurrentMaskTargetPixelHeightUInt);
         var prevMask = _maskStack.Count > 0 ? _maskStack.Peek() : null;
 
         _maskRenderPasses.Add(new MaskRenderPassInfo
@@ -8407,7 +8414,7 @@ public unsafe class Compositor : IDisposable
         }
         _drawCalls.RemoveRange(preDrawCallCount, _drawCalls.Count - preDrawCallCount);
 
-        var maskTex = GetMaskTexture(CurrentCanvasPixelWidthUInt, CurrentCanvasPixelHeightUInt);
+        var maskTex = GetMaskTexture(CurrentMaskTargetPixelWidthUInt, CurrentMaskTargetPixelHeightUInt);
         var prevMask = _maskStack.Count > 0 ? _maskStack.Peek() : null;
 
         _maskRenderPasses.Add(new MaskRenderPassInfo
@@ -8502,6 +8509,11 @@ public unsafe class Compositor : IDisposable
             };
 
             var pass = _context.Wgpu.CommandEncoderBeginRenderPass(encoder, &passDesc);
+            ApplyRenderPassViewport(
+                pass,
+                maskPass.MaskTexture.Width,
+                maskPass.MaskTexture.Height,
+                useRenderTargetViewport: !isOffscreen);
 
             var maskBindGroup = GetMaskBindGroup(maskPass.PreviousMaskTexture, isOffscreen: true);
 
@@ -8510,7 +8522,7 @@ public unsafe class Compositor : IDisposable
 
             foreach (var dc in maskPass.DrawCalls)
             {
-                ApplyDrawCallScissor(pass, dc, useRenderTargetViewport: false);
+                ApplyDrawCallScissor(pass, dc, useRenderTargetViewport: !isOffscreen);
 
                 if (dc.Type == DrawCallType.Vector)
                 {

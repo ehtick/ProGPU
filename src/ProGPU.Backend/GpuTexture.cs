@@ -161,6 +161,8 @@ public unsafe class GpuTexture : IDisposable
         {
             _context.Wgpu.QueueWriteTexture(_context.Queue, &destination, ptr, passedSize, &layout, &extent);
         }
+
+        Generation++;
     }
 
     public void WritePbgra32(Pbgra32PixelBuffer pixels)
@@ -244,6 +246,8 @@ public unsafe class GpuTexture : IDisposable
         {
             _context.Wgpu.QueueWriteTexture(_context.Queue, &destination, ptr, passedSize, &layout, &extent);
         }
+
+        Generation++;
     }
 
     public void CopyFrom(GpuTexture source)
@@ -313,6 +317,7 @@ public unsafe class GpuTexture : IDisposable
         _context.Wgpu.CommandEncoderRelease(encoder);
 
         AlphaMode = source.AlphaMode;
+        Generation++;
     }
 
     private void EnsurePbgra32CompatibleFormat()

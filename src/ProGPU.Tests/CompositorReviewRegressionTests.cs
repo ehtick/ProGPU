@@ -824,6 +824,39 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     }
 
     [Fact]
+    public unsafe void ExplicitRenderTargetViewportKeepsOpacityMaskSamplingAligned()
+    {
+        using var window = new HeadlessWindow(32, 24);
+        using var target = new GpuTexture(
+            window.Context,
+            32,
+            24,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.RenderAttachment | TextureUsage.CopySrc,
+            "Offset Explicit Viewport Mask Target");
+        var visual = new OffsetViewportOpacityMaskVisual();
+
+        window.Compositor.RenderScene(
+            visual,
+            logicalWidth: 8,
+            logicalHeight: 8,
+            renderTargetWidth: 32,
+            renderTargetHeight: 24,
+            renderTargetViewport: new RenderTargetViewport(8f, 4f, 16f, 16f),
+            dpiScale: 2f,
+            target.ViewPtr);
+
+        var pixels = target.ReadPixels();
+        var visibleMaskedPixel = ReadPixel(pixels, target.Width, x: 10, y: 6);
+        var clippedMaskedPixel = ReadPixel(pixels, target.Width, x: 14, y: 6);
+        var maskTexturePool = GetMaskTexturePool(window.Compositor);
+
+        Assert.True(visibleMaskedPixel.R >= 220, $"Expected opacity mask to align with viewport origin, found {visibleMaskedPixel}.");
+        Assert.True(clippedMaskedPixel.R <= 35, $"Expected pixels outside the opacity mask bounds to stay clear, found {clippedMaskedPixel}.");
+        Assert.Contains(maskTexturePool, texture => texture.Width == 32 && texture.Height == 24);
+    }
+
+    [Fact]
     public unsafe void ExplicitPhysicalRenderTargetFeedsFramebufferSizeToCanvasPixelHelpers()
     {
         using var window = new HeadlessWindow(24, 24);
@@ -1222,6 +1255,38 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
 
         var maskTexturePool = GetMaskTexturePool(window.Compositor);
         Assert.Contains(maskTexturePool, texture => texture.Width == 64 && texture.Height == 64);
+    }
+
+    [Fact]
+    public void PbgraTextureUploadBumpsGenerationForWpfShaderEffectCache()
+    {
+        using var window = new HeadlessWindow(1, 1);
+        using var texture = new GpuTexture(
+            window.Context,
+            1,
+            1,
+            TextureFormat.Bgra8Unorm,
+            TextureUsage.TextureBinding | TextureUsage.CopyDst,
+            "PBgra Generation Texture");
+        var parameters = new WpfShaderEffectParams
+        {
+            Texture = texture
+        };
+        var effect = new WpfShaderEffect(parameters);
+        var initialGeneration = texture.Generation;
+        var initialCacheKey = GetRenderCacheKey(effect);
+
+        texture.WritePbgra32SubRect(
+            new Pbgra32PixelBuffer(
+                width: 1,
+                height: 1,
+                stride: 4,
+                pixels: new byte[] { 0, 0, 255, 255 }),
+            x: 0,
+            y: 0);
+
+        Assert.True(texture.Generation > initialGeneration);
+        Assert.NotEqual(initialCacheKey, GetRenderCacheKey(effect));
     }
 
     [Fact]
@@ -1834,6 +1899,15 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
         return Assert.IsType<GpuTexture>(method.Invoke(compositor, [width, height]));
     }
 
+    private static int GetRenderCacheKey(WpfShaderEffect effect)
+    {
+        var method = typeof(WpfShaderEffect).GetMethod(
+            "GetRenderCacheKey",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        return (int)method.Invoke(effect, null)!;
+    }
+
     private static RgbaPixel ReadPixel(byte[] pixels, uint width, int x, int y)
     {
         var index = ((y * (int)width) + x) * 4;
@@ -2332,6 +2406,27 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
                 new SolidColorBrush(new Vector4(1f, 0f, 0f, 1f)),
                 pen: null,
                 new Rect(0f, 0f, 32f, 32f));
+            context.PopOpacityMask();
+        }
+    }
+
+    private sealed class OffsetViewportOpacityMaskVisual : FrameworkElement
+    {
+        public OffsetViewportOpacityMaskVisual()
+        {
+            Width = 8f;
+            Height = 8f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            context.PushOpacityMask(
+                new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f)),
+                new Rect(0f, 0f, 2f, 8f));
+            context.DrawRectangle(
+                new SolidColorBrush(new Vector4(1f, 0f, 0f, 1f)),
+                pen: null,
+                new Rect(0f, 0f, 8f, 8f));
             context.PopOpacityMask();
         }
     }
