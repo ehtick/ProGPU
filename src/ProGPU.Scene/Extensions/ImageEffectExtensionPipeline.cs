@@ -487,6 +487,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
             var gpuRes = _pool[_usedCount++];
             var effectiveMaskTexture = p.MaskTexture ?? dc.MaskTexture;
+            var maskCanvasWidth = effectiveMaskTexture?.Width ?? compositor.CurrentCanvasPixelWidth;
+            var maskCanvasHeight = effectiveMaskTexture?.Height ?? compositor.CurrentCanvasPixelHeight;
             gpuRes.UniformBuffer.WriteSingle(new EffectUniforms
             {
                 Brightness = p.Brightness,
@@ -497,8 +499,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                 Invert = p.Invert,
                 BlurSigma = p.BlurSigma,
                 HasMask = effectiveMaskTexture != null ? 1f : 0f,
-                CanvasWidth = compositor.CurrentCanvasPixelWidth,
-                CanvasHeight = compositor.CurrentCanvasPixelHeight,
+                CanvasWidth = MathF.Max(1f, maskCanvasWidth),
+                CanvasHeight = MathF.Max(1f, maskCanvasHeight),
                 SourceIsPremultiplied = sourceAlphaMode == GpuTextureAlphaMode.Premultiplied ? 1f : 0f,
                 OutputIsPremultiplied = pipelineSourceAlphaMode == GpuTextureAlphaMode.Premultiplied ? 1f : 0f
             });

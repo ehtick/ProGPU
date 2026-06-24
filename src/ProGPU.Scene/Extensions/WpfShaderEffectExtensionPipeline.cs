@@ -595,11 +595,14 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
         var gpuRes = _pool[_usedCount++];
         Span<float> uniformFloats = stackalloc float[WpfShaderEffectParams.UniformFloatCount];
+        var activeMaskTexture = sourceLayout.IncludeMask ? dc.MaskTexture : null;
+        var maskCanvasWidth = activeMaskTexture?.Width ?? compositor.CurrentCanvasPixelWidth;
+        var maskCanvasHeight = activeMaskTexture?.Height ?? compositor.CurrentCanvasPixelHeight;
 
         p.CopyUniformFloats(uniformFloats, primaryTexture.Width, primaryTexture.Height);
-        uniformFloats[WpfShaderEffectParams.CanvasWidthMetadataIndex] = compositor.CurrentCanvasPixelWidth;
-        uniformFloats[WpfShaderEffectParams.CanvasHeightMetadataIndex] = compositor.CurrentCanvasPixelHeight;
-        uniformFloats[WpfShaderEffectParams.HasMaskMetadataIndex] = dc.MaskTexture != null && sourceLayout.IncludeMask ? 1f : 0f;
+        uniformFloats[WpfShaderEffectParams.CanvasWidthMetadataIndex] = MathF.Max(1f, maskCanvasWidth);
+        uniformFloats[WpfShaderEffectParams.CanvasHeightMetadataIndex] = MathF.Max(1f, maskCanvasHeight);
+        uniformFloats[WpfShaderEffectParams.HasMaskMetadataIndex] = activeMaskTexture != null ? 1f : 0f;
         gpuRes.UniformBuffer.Write<float>(uniformFloats);
 
         var textureBindGroup = GetTextureBindGroup(compositor, sourceLayout, p, isOffscreen);
@@ -617,7 +620,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         wgpu.RenderPassEncoderSetBindGroup(pass, 2, textureBindGroup, 0, null);
         if (sourceLayout.IncludeMask)
         {
-            wgpu.RenderPassEncoderSetBindGroup(pass, 3, compositor.GetMaskBindGroup(dc.MaskTexture, isOffscreen), 0, null);
+            wgpu.RenderPassEncoderSetBindGroup(pass, 3, compositor.GetMaskBindGroup(activeMaskTexture, isOffscreen), 0, null);
         }
 
         wgpu.RenderPassEncoderSetPipeline(pass, activePipeline);

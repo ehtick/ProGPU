@@ -857,6 +857,74 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     }
 
     [Fact]
+    public unsafe void ExplicitRenderTargetViewportKeepsImageEffectMaskSamplingAligned()
+    {
+        using var window = new HeadlessWindow(32, 24);
+        using var target = new GpuTexture(
+            window.Context,
+            32,
+            24,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.RenderAttachment | TextureUsage.CopySrc,
+            "Offset Explicit Viewport Image Effect Mask Target");
+        using var source = CreateSolidTexture(window.Context, new byte[] { 255, 0, 0, 255 }, "Offset Viewport Image Effect Source");
+        var visual = new OffsetViewportImageEffectMaskVisual(source);
+
+        window.Compositor.RenderScene(
+            visual,
+            logicalWidth: 8,
+            logicalHeight: 8,
+            renderTargetWidth: 32,
+            renderTargetHeight: 24,
+            renderTargetViewport: new RenderTargetViewport(8f, 4f, 16f, 16f),
+            dpiScale: 2f,
+            target.ViewPtr);
+
+        var pixels = target.ReadPixels();
+        var visibleMaskedPixel = ReadPixel(pixels, target.Width, x: 10, y: 6);
+        var clippedMaskedPixel = ReadPixel(pixels, target.Width, x: 14, y: 6);
+        var maskTexturePool = GetMaskTexturePool(window.Compositor);
+
+        Assert.True(visibleMaskedPixel.R >= 220, $"Expected image effect mask to align with viewport origin, found {visibleMaskedPixel}.");
+        Assert.True(clippedMaskedPixel.R <= 35, $"Expected image effect pixels outside the opacity mask bounds to stay clear, found {clippedMaskedPixel}.");
+        Assert.Contains(maskTexturePool, texture => texture.Width == 32 && texture.Height == 24);
+    }
+
+    [Fact]
+    public unsafe void ExplicitRenderTargetViewportKeepsWpfShaderEffectMaskSamplingAligned()
+    {
+        using var window = new HeadlessWindow(32, 24);
+        using var target = new GpuTexture(
+            window.Context,
+            32,
+            24,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.RenderAttachment | TextureUsage.CopySrc,
+            "Offset Explicit Viewport WPF Shader Effect Mask Target");
+        using var source = CreateSolidTexture(window.Context, new byte[] { 255, 0, 0, 255 }, "Offset Viewport WPF Shader Effect Source");
+        var visual = new OffsetViewportWpfShaderEffectMaskVisual(source);
+
+        window.Compositor.RenderScene(
+            visual,
+            logicalWidth: 8,
+            logicalHeight: 8,
+            renderTargetWidth: 32,
+            renderTargetHeight: 24,
+            renderTargetViewport: new RenderTargetViewport(8f, 4f, 16f, 16f),
+            dpiScale: 2f,
+            target.ViewPtr);
+
+        var pixels = target.ReadPixels();
+        var visibleMaskedPixel = ReadPixel(pixels, target.Width, x: 10, y: 6);
+        var clippedMaskedPixel = ReadPixel(pixels, target.Width, x: 14, y: 6);
+        var maskTexturePool = GetMaskTexturePool(window.Compositor);
+
+        Assert.True(visibleMaskedPixel.R >= 220, $"Expected WPF shader-effect mask to align with viewport origin, found {visibleMaskedPixel}.");
+        Assert.True(clippedMaskedPixel.R <= 35, $"Expected WPF shader-effect pixels outside the opacity mask bounds to stay clear, found {clippedMaskedPixel}.");
+        Assert.Contains(maskTexturePool, texture => texture.Width == 32 && texture.Height == 24);
+    }
+
+    [Fact]
     public unsafe void ExplicitPhysicalRenderTargetFeedsFramebufferSizeToCanvasPixelHelpers()
     {
         using var window = new HeadlessWindow(24, 24);
@@ -1899,6 +1967,19 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
         return Assert.IsType<GpuTexture>(method.Invoke(compositor, [width, height]));
     }
 
+    private static GpuTexture CreateSolidTexture(WgpuContext context, byte[] rgba, string label)
+    {
+        var texture = new GpuTexture(
+            context,
+            1,
+            1,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.TextureBinding | TextureUsage.CopyDst,
+            label);
+        texture.WritePixels(rgba);
+        return texture;
+    }
+
     private static int GetRenderCacheKey(WpfShaderEffect effect)
     {
         var method = typeof(WpfShaderEffect).GetMethod(
@@ -2427,6 +2508,60 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
                 new SolidColorBrush(new Vector4(1f, 0f, 0f, 1f)),
                 pen: null,
                 new Rect(0f, 0f, 8f, 8f));
+            context.PopOpacityMask();
+        }
+    }
+
+    private sealed class OffsetViewportImageEffectMaskVisual : FrameworkElement
+    {
+        private readonly GpuTexture _source;
+
+        public OffsetViewportImageEffectMaskVisual(GpuTexture source)
+        {
+            _source = source;
+            Width = 8f;
+            Height = 8f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            context.PushOpacityMask(
+                new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f)),
+                new Rect(0f, 0f, 2f, 8f));
+            context.DrawExtension(
+                CompositorBuiltInExtensions.ImageEffect,
+                dataParam: new ImageEffectParams
+                {
+                    Texture = _source,
+                    Rect = new Rect(0f, 0f, 8f, 8f)
+                });
+            context.PopOpacityMask();
+        }
+    }
+
+    private sealed class OffsetViewportWpfShaderEffectMaskVisual : FrameworkElement
+    {
+        private readonly GpuTexture _source;
+
+        public OffsetViewportWpfShaderEffectMaskVisual(GpuTexture source)
+        {
+            _source = source;
+            Width = 8f;
+            Height = 8f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            context.PushOpacityMask(
+                new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f)),
+                new Rect(0f, 0f, 2f, 8f));
+            context.DrawWpfShaderEffect(new WpfShaderEffectParams
+            {
+                Texture = _source,
+                Rect = new Rect(0f, 0f, 8f, 8f),
+                ShaderKey = "offset_viewport_masked_wpf_shader_effect",
+                SamplingMode = TextureSamplingMode.Nearest
+            });
             context.PopOpacityMask();
         }
     }
