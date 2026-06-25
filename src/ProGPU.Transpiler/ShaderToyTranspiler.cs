@@ -1669,9 +1669,10 @@ namespace ProGPU.Transpiler
                 if (val.StartsWith("0x") || val.StartsWith("0X"))
                 {
                     string digits = val[2..];
-                    return isUnsigned
-                        ? new LiteralExpression(Convert.ToUInt32(digits, 16), "uint")
-                        : new LiteralExpression(Convert.ToInt32(digits, 16), "int");
+                    uint parsed = Convert.ToUInt32(digits, 16);
+                    return isUnsigned || parsed > int.MaxValue
+                        ? new LiteralExpression(parsed, "uint")
+                        : new LiteralExpression((int)parsed, "int");
                 }
                 if (val.StartsWith("0") && val.Length > 1)
                 {

@@ -395,6 +395,25 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     }
 
     [Fact]
+    public void ShaderToyParsesOverflowingHexLiteralAsUnsigned()
+    {
+        var wgsl = ShaderToyTranspiler.Translate(
+            """
+            void mainImage(out vec4 fragColor, in vec2 fragCoord)
+            {
+                uint x = uint(fragCoord.x);
+                uint mask = 0xffffffff;
+                x &= mask;
+                fragColor = vec4(float(x & 255u));
+            }
+            """);
+
+        Assert.Contains("var mask: u32 = 4294967295u;", wgsl, System.StringComparison.Ordinal);
+        Assert.Contains("x &= mask;", wgsl, System.StringComparison.Ordinal);
+        Assert.DoesNotContain("var mask: u32 = -1", wgsl, System.StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ShaderToyShiftOperatorsBindBeforeRelationalOperators()
     {
         var wgsl = ShaderToyTranspiler.Translate(
