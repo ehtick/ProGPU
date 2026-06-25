@@ -1719,8 +1719,9 @@ public unsafe class Compositor : IDisposable
                 _context.Wgpu.RenderPassEncoderSetVertexBuffer(pass, 0, buffer, 0, _textVertexBuffer.Size);
                 _context.Wgpu.RenderPassEncoderDraw(pass, 6, dc.IndexCount, 0, dc.IndexStart);
             }
-            else if (dc.Type == DrawCallType.Texture && dc.Texture != null)
+            else if (dc.Type == DrawCallType.Texture && IsTextureBindable(dc.Texture))
             {
+                var texture = dc.Texture!;
                 var activePipeline = GetPipeline(
                     dc.Type,
                     dc.BlendMode,
@@ -1745,8 +1746,8 @@ public unsafe class Compositor : IDisposable
                 currentType = DrawCallType.Texture;
                 currentBlendMode = dc.BlendMode;
 
-                var viewPtr = dc.Texture.ViewPtr;
-                var cacheKey = new TextureCacheKey(dc.Texture.Id, dc.Texture.Generation, isOffscreen: false, dc.TextureSamplingMode);
+                var viewPtr = texture.ViewPtr;
+                var cacheKey = new TextureCacheKey(texture.Id, texture.Generation, isOffscreen: false, dc.TextureSamplingMode);
 
                 CachedBindGroup? cachedBg;
                 lock (_persistentTextureBindGroups)
@@ -1902,6 +1903,16 @@ public unsafe class Compositor : IDisposable
                 }
             }
         }
+    }
+
+    private bool IsTextureBindable(GpuTexture? texture)
+    {
+        return texture != null
+            && !texture.IsDisposed
+            && !texture.Context.IsDisposed
+            && ReferenceEquals(texture.Context, _context)
+            && texture.TexturePtr != null
+            && texture.ViewPtr != null;
     }
 
     private void HandleTextureDisposed(ulong textureId)
@@ -6410,8 +6421,9 @@ public unsafe class Compositor : IDisposable
                 _context.Wgpu.RenderPassEncoderSetVertexBuffer(pass, 0, buffer, 0, _textVertexBuffer.Size);
                 _context.Wgpu.RenderPassEncoderDraw(pass, 6, dc.IndexCount, 0, dc.IndexStart);
             }
-            else if (dc.Type == DrawCallType.Texture && dc.Texture != null)
+            else if (dc.Type == DrawCallType.Texture && IsTextureBindable(dc.Texture))
             {
+                var texture = dc.Texture!;
                 var activePipeline = GetPipeline(
                     dc.Type,
                     dc.BlendMode,
@@ -6436,8 +6448,8 @@ public unsafe class Compositor : IDisposable
                 currentType = DrawCallType.Texture;
                 currentBlendMode = dc.BlendMode;
 
-                var viewPtr = dc.Texture.ViewPtr;
-                var cacheKey = new TextureCacheKey(dc.Texture.Id, dc.Texture.Generation, isOffscreen: true, dc.TextureSamplingMode);
+                var viewPtr = texture.ViewPtr;
+                var cacheKey = new TextureCacheKey(texture.Id, texture.Generation, isOffscreen: true, dc.TextureSamplingMode);
 
                 CachedBindGroup? cachedBg;
                 lock (_persistentTextureBindGroups)
@@ -8585,8 +8597,9 @@ public unsafe class Compositor : IDisposable
                     }
                     _context.Wgpu.RenderPassEncoderDraw(pass, 6, dc.IndexCount, 0, dc.IndexStart);
                 }
-                else if (dc.Type == DrawCallType.Texture && dc.Texture != null)
+                else if (dc.Type == DrawCallType.Texture && IsTextureBindable(dc.Texture))
                 {
+                    var texture = dc.Texture!;
                     var activePipeline = GetPipeline(
                         dc.Type,
                         dc.BlendMode,
@@ -8605,8 +8618,8 @@ public unsafe class Compositor : IDisposable
 
                     _context.Wgpu.RenderPassEncoderSetBindGroup(pass, 2, maskBindGroup, 0, null);
 
-                    var viewPtr = dc.Texture.ViewPtr;
-                    var cacheKey = new TextureCacheKey(dc.Texture.Id, dc.Texture.Generation, isOffscreen: true, dc.TextureSamplingMode);
+                    var viewPtr = texture.ViewPtr;
+                    var cacheKey = new TextureCacheKey(texture.Id, texture.Generation, isOffscreen: true, dc.TextureSamplingMode);
 
                     CachedBindGroup? cachedBg;
                     lock (_persistentTextureBindGroups)

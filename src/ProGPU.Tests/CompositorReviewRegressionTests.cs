@@ -664,6 +664,35 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     }
 
     [Fact]
+    public void RenderSceneSkipsTextureCommandsFromForeignContext()
+    {
+        using var sourceContext = new WgpuContext();
+        sourceContext.Initialize(null);
+        using var window = new HeadlessWindow(16, 16);
+        using var source = new GpuTexture(
+            sourceContext,
+            1,
+            1,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.TextureBinding | TextureUsage.CopyDst,
+            "Foreign Context Texture Command Source");
+        source.WritePixels(new byte[] { 255, 0, 0, 255 });
+        window.Content = new TextureCacheVisual(source);
+
+        try
+        {
+            window.Render();
+
+            var textureBindGroups = GetPersistentTextureBindGroups(window.Compositor);
+            Assert.DoesNotContain(textureBindGroups.Keys, key => key.TextureId == source.Id);
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
+    [Fact]
     public void RenderOffscreenRestoresCompositorStateWhenCompilationFails()
     {
         using var window = new HeadlessWindow(32, 32);
