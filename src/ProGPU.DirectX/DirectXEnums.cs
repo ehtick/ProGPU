@@ -85,6 +85,22 @@ public enum DxCpuAccessFlags
     Write = 1 << 1
 }
 
+public enum DxMapMode
+{
+    Read,
+    Write,
+    ReadWrite,
+    WriteDiscard,
+    WriteNoOverwrite
+}
+
+[Flags]
+public enum DxMapFlags
+{
+    None = 0,
+    DoNotWait = 1 << 0
+}
+
 [Flags]
 public enum DxTextureUsage
 {

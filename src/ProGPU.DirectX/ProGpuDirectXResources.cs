@@ -49,6 +49,7 @@ public sealed class ProGpuDirectXBuffer : ProGpuDirectXResource
     private readonly GpuBuffer? _backendBuffer;
     private readonly byte[]? _cpuShadow;
     private readonly byte[] _writeShadow;
+    private ProGpuDirectXMappedSubresource? _activeMapping;
 
     internal ProGpuDirectXBuffer(ProGpuDirectXDevice device, DxBufferDescriptor descriptor)
         : base(device, descriptor.Label)
@@ -80,7 +81,11 @@ public sealed class ProGpuDirectXBuffer : ProGpuDirectXResource
 
     public uint LastWriteSizeInBytes { get; private set; }
 
+    public uint LastWriteOffsetInBytes { get; private set; }
+
     public ulong Generation { get; private set; }
+
+    public bool IsMapped => _activeMapping is not null;
 
     public unsafe void Write<T>(ReadOnlySpan<T> data, uint offsetBytes = 0) where T : unmanaged
     {
@@ -100,7 +105,73 @@ public sealed class ProGpuDirectXBuffer : ProGpuDirectXResource
         }
 
         LastWriteSizeInBytes = dataSize;
+        LastWriteOffsetInBytes = offsetBytes;
         Generation++;
+    }
+
+    public ProGpuDirectXMappedSubresource Map(
+        DxMapMode mode,
+        DxMapFlags flags = DxMapFlags.None,
+        uint offsetBytes = 0,
+        uint? sizeInBytes = null)
+    {
+        ThrowIfDisposed();
+        ValidateMapMode(mode);
+        if (_activeMapping is not null)
+        {
+            throw new InvalidOperationException("DirectX buffer is already mapped.");
+        }
+
+        var mapSize = sizeInBytes ?? (Descriptor.SizeInBytes - offsetBytes);
+        ValidateReadRange(offsetBytes, mapSize);
+        if (mapSize == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(sizeInBytes), "Mapped DirectX buffer ranges must be non-empty.");
+        }
+
+        var requiresRead = RequiresCpuRead(mode);
+        var requiresWrite = RequiresCpuWrite(mode);
+        if (requiresRead && (Descriptor.CpuAccess & DxCpuAccessFlags.Read) == 0)
+        {
+            throw new InvalidOperationException("DirectX buffer was not created with CPU read access.");
+        }
+
+        if (requiresWrite && (Descriptor.CpuAccess & DxCpuAccessFlags.Write) == 0)
+        {
+            throw new InvalidOperationException("DirectX buffer was not created with CPU write access.");
+        }
+
+        if (requiresRead)
+        {
+            SynchronizeShadowForRead(offsetBytes, mapSize);
+        }
+        else if (mode == DxMapMode.WriteDiscard)
+        {
+            _writeShadow.AsSpan(checked((int)offsetBytes), checked((int)mapSize)).Clear();
+        }
+
+        _activeMapping = new ProGpuDirectXMappedSubresource(
+            this,
+            mode,
+            flags,
+            offsetBytes,
+            mapSize,
+            _writeShadow,
+            uploadOnUnmap: requiresWrite);
+
+        return _activeMapping;
+    }
+
+    public void Unmap(ProGpuDirectXMappedSubresource mapping)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(mapping);
+        if (!ReferenceEquals(mapping.Buffer, this))
+        {
+            throw new ArgumentException("Mapped DirectX subresource belongs to a different buffer.", nameof(mapping));
+        }
+
+        mapping.Unmap();
     }
 
     public byte[] ReadBytes(uint offsetBytes = 0, uint? sizeInBytes = null)
@@ -143,6 +214,7 @@ public sealed class ProGpuDirectXBuffer : ProGpuDirectXResource
         }
 
         LastWriteSizeInBytes = Math.Min(source.LastWriteSizeInBytes, Descriptor.SizeInBytes);
+        LastWriteOffsetInBytes = 0;
         Generation++;
     }
 
@@ -150,6 +222,50 @@ public sealed class ProGpuDirectXBuffer : ProGpuDirectXResource
     {
         ValidateReadRange(offsetBytes, sizeInBytes);
         return _writeShadow.AsSpan(checked((int)offsetBytes), checked((int)sizeInBytes)).ToArray();
+    }
+
+    internal void CompleteMappedSubresource(ProGpuDirectXMappedSubresource mapping)
+    {
+        if (!ReferenceEquals(_activeMapping, mapping))
+        {
+            throw new InvalidOperationException("DirectX buffer mapping is not active.");
+        }
+
+        if (mapping.UploadOnUnmap)
+        {
+            var mappedBytes = _writeShadow.AsSpan(
+                checked((int)mapping.OffsetBytes),
+                checked((int)mapping.SizeInBytes));
+
+            _backendBuffer?.Write(mappedBytes, mapping.OffsetBytes);
+            if (_cpuShadow is not null && !ReferenceEquals(_cpuShadow, _writeShadow))
+            {
+                mappedBytes.CopyTo(_cpuShadow.AsSpan(
+                    checked((int)mapping.OffsetBytes),
+                    checked((int)mapping.SizeInBytes)));
+            }
+
+            LastWriteOffsetInBytes = mapping.OffsetBytes;
+            LastWriteSizeInBytes = mapping.SizeInBytes;
+            Generation++;
+        }
+
+        _activeMapping = null;
+    }
+
+    private void SynchronizeShadowForRead(uint offsetBytes, uint sizeInBytes)
+    {
+        if (_backendBuffer is not { BufferPtr: not null })
+        {
+            return;
+        }
+
+        var bytes = _backendBuffer.ReadBytes(offsetBytes, sizeInBytes);
+        bytes.CopyTo(_writeShadow.AsSpan(checked((int)offsetBytes), checked((int)sizeInBytes)));
+        if (_cpuShadow is not null && !ReferenceEquals(_cpuShadow, _writeShadow))
+        {
+            bytes.CopyTo(_cpuShadow.AsSpan(checked((int)offsetBytes), checked((int)sizeInBytes)));
+        }
     }
 
     private static void ValidateDescriptor(DxBufferDescriptor descriptor)
@@ -166,6 +282,24 @@ public sealed class ProGpuDirectXBuffer : ProGpuDirectXResource
         }
     }
 
+    private static void ValidateMapMode(DxMapMode mode)
+    {
+        if (!Enum.IsDefined(mode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode), "Unknown DirectX map mode.");
+        }
+    }
+
+    private static bool RequiresCpuRead(DxMapMode mode)
+    {
+        return mode is DxMapMode.Read or DxMapMode.ReadWrite;
+    }
+
+    private static bool RequiresCpuWrite(DxMapMode mode)
+    {
+        return mode is DxMapMode.Write or DxMapMode.ReadWrite or DxMapMode.WriteDiscard or DxMapMode.WriteNoOverwrite;
+    }
+
     private void ValidateReadRange(uint offsetBytes, uint sizeInBytes)
     {
         if (offsetBytes > Descriptor.SizeInBytes || sizeInBytes > Descriptor.SizeInBytes - offsetBytes)
@@ -176,7 +310,120 @@ public sealed class ProGpuDirectXBuffer : ProGpuDirectXResource
 
     protected override void DisposeCore()
     {
+        _activeMapping?.Dispose();
+        _activeMapping = null;
         _backendBuffer?.Dispose();
+    }
+}
+
+public sealed class ProGpuDirectXMappedSubresource : IDisposable
+{
+    private ProGpuDirectXBuffer? _buffer;
+    private readonly byte[] _data;
+
+    internal ProGpuDirectXMappedSubresource(
+        ProGpuDirectXBuffer buffer,
+        DxMapMode mode,
+        DxMapFlags flags,
+        uint offsetBytes,
+        uint sizeInBytes,
+        byte[] data,
+        bool uploadOnUnmap)
+    {
+        _buffer = buffer;
+        Mode = mode;
+        Flags = flags;
+        OffsetBytes = offsetBytes;
+        SizeInBytes = sizeInBytes;
+        RowPitch = sizeInBytes;
+        DepthPitch = sizeInBytes;
+        _data = data;
+        UploadOnUnmap = uploadOnUnmap;
+    }
+
+    public ProGpuDirectXBuffer? Buffer => _buffer;
+
+    public DxMapMode Mode { get; }
+
+    public DxMapFlags Flags { get; }
+
+    public uint OffsetBytes { get; }
+
+    public uint SizeInBytes { get; }
+
+    public uint RowPitch { get; }
+
+    public uint DepthPitch { get; }
+
+    public bool IsMapped => _buffer is not null;
+
+    public Memory<byte> Data
+    {
+        get
+        {
+            ThrowIfUnmapped();
+            return _data.AsMemory(checked((int)OffsetBytes), checked((int)SizeInBytes));
+        }
+    }
+
+    public Span<byte> Span
+    {
+        get
+        {
+            ThrowIfUnmapped();
+            return _data.AsSpan(checked((int)OffsetBytes), checked((int)SizeInBytes));
+        }
+    }
+
+    internal bool UploadOnUnmap { get; }
+
+    public unsafe void Write<T>(ReadOnlySpan<T> data, uint offsetBytes = 0) where T : unmanaged
+    {
+        ThrowIfUnmapped();
+        var dataSize = checked((uint)(data.Length * sizeof(T)));
+        ValidateMappedRange(offsetBytes, dataSize);
+        MemoryMarshal.AsBytes(data).CopyTo(Span.Slice(checked((int)offsetBytes), checked((int)dataSize)));
+    }
+
+    public unsafe T[] Read<T>(uint elementCount, uint offsetBytes = 0) where T : unmanaged
+    {
+        ThrowIfUnmapped();
+        var dataSize = checked((uint)(elementCount * sizeof(T)));
+        ValidateMappedRange(offsetBytes, dataSize);
+        return MemoryMarshal.Cast<byte, T>(Span.Slice(checked((int)offsetBytes), checked((int)dataSize))).ToArray();
+    }
+
+    public void Unmap()
+    {
+        var buffer = _buffer;
+        if (buffer is null)
+        {
+            return;
+        }
+
+        buffer.CompleteMappedSubresource(this);
+        _buffer = null;
+    }
+
+    public void Dispose()
+    {
+        Unmap();
+    }
+
+    private void ValidateMappedRange(uint offsetBytes, uint sizeInBytes)
+    {
+        if (offsetBytes > SizeInBytes || sizeInBytes > SizeInBytes - offsetBytes)
+        {
+            throw new ArgumentOutOfRangeException(nameof(sizeInBytes), "Mapped DirectX buffer access exceeds the mapped range.");
+        }
+    }
+
+    private void ThrowIfUnmapped()
+    {
+        if (_buffer is null)
+        {
+            throw new ObjectDisposedException(nameof(ProGpuDirectXMappedSubresource));
+        }
     }
 }
 

@@ -1,5 +1,6 @@
 using ProGPU.Backend;
 using ProGPU.DirectX;
+using System.Runtime.InteropServices;
 using Xunit;
 
 namespace ProGPU.Tests;
@@ -991,6 +992,113 @@ fn fs_main() -> @location(0) vec4<f32> {
         var expected = new byte[] { 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7 };
         Assert.Equal(expected, staging.ReadBytes(offsetBytes: 1, sizeInBytes: 7));
         Assert.Equal(expected, source.BackendBuffer!.ReadBytes(offsetBytes: 1, sizeBytes: 7));
+    }
+
+    [Fact]
+    public void BuffersSupportContextMapWriteDiscardAndReadBack()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var buffer = device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = 16,
+            Usage = DxBufferUsage.CopySource | DxBufferUsage.CopyDestination,
+            CpuAccess = DxCpuAccessFlags.Read | DxCpuAccessFlags.Write
+        });
+        using var context = device.CreateImmediateContext();
+
+        using var writeMap = context.Map(buffer, DxMapMode.WriteDiscard);
+        Assert.True(buffer.IsMapped);
+        Assert.Equal(DxMapMode.WriteDiscard, writeMap.Mode);
+        Assert.Equal(16u, writeMap.RowPitch);
+        writeMap.Write<uint>([10, 20, 30, 40]);
+        Assert.Throws<InvalidOperationException>(() => context.Map(buffer, DxMapMode.Write));
+        context.Unmap(writeMap);
+
+        Assert.False(buffer.IsMapped);
+        Assert.Equal(0u, buffer.LastWriteOffsetInBytes);
+        Assert.Equal(16u, buffer.LastWriteSizeInBytes);
+        Assert.Equal([10u, 20u, 30u, 40u], buffer.Read<uint>(4));
+
+        using var readMap = context.Map(buffer, DxMapMode.Read);
+        Assert.Equal([10u, 20u, 30u, 40u], readMap.Read<uint>(4));
+    }
+
+    [Fact]
+    public void BufferMapWriteNoOverwritePreservesUnmappedBytes()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var buffer = device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = 8,
+            Usage = DxBufferUsage.CopySource | DxBufferUsage.CopyDestination,
+            CpuAccess = DxCpuAccessFlags.Read | DxCpuAccessFlags.Write
+        });
+
+        buffer.Write<byte>([0, 1, 2, 3, 4, 5, 6, 7]);
+        using var mapping = buffer.Map(DxMapMode.WriteNoOverwrite, offsetBytes: 2, sizeInBytes: 3);
+        mapping.Write<byte>([0xA0, 0xA1, 0xA2]);
+        mapping.Unmap();
+
+        Assert.Equal(2u, buffer.LastWriteOffsetInBytes);
+        Assert.Equal(3u, buffer.LastWriteSizeInBytes);
+        Assert.Equal(
+            [0, 1, 0xA0, 0xA1, 0xA2, 5, 6, 7],
+            buffer.ReadBytes());
+    }
+
+    [Fact]
+    public void BufferMapRejectsInvalidAccessAndRanges()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var gpuOnly = device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = 16,
+            Usage = DxBufferUsage.Vertex | DxBufferUsage.CopyDestination
+        });
+        using var readOnly = device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = 16,
+            Usage = DxBufferUsage.CopySource | DxBufferUsage.CopyDestination,
+            CpuAccess = DxCpuAccessFlags.Read
+        });
+        using var writeOnly = device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = 16,
+            Usage = DxBufferUsage.Vertex | DxBufferUsage.CopyDestination,
+            CpuAccess = DxCpuAccessFlags.Write
+        });
+
+        Assert.Throws<InvalidOperationException>(() => gpuOnly.Map(DxMapMode.Write));
+        Assert.Throws<InvalidOperationException>(() => gpuOnly.Map(DxMapMode.Read));
+        Assert.Throws<InvalidOperationException>(() => readOnly.Map(DxMapMode.Write));
+        Assert.Throws<InvalidOperationException>(() => writeOnly.Map(DxMapMode.Read));
+        Assert.Throws<ArgumentOutOfRangeException>(() => writeOnly.Map(DxMapMode.Write, offsetBytes: 15, sizeInBytes: 2));
+        Assert.Throws<ArgumentOutOfRangeException>(() => writeOnly.Map((DxMapMode)99));
+    }
+
+    [Fact]
+    public void BufferMapWriteUploadsGpuBackedRangeOnUnmap()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var buffer = device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = 16,
+            Usage = DxBufferUsage.Vertex | DxBufferUsage.CopySource | DxBufferUsage.CopyDestination,
+            CpuAccess = DxCpuAccessFlags.Write
+        });
+        using var context = device.CreateImmediateContext();
+
+        using var mapping = context.Map(buffer, DxMapMode.WriteDiscard);
+        mapping.Write<uint>([100, 200, 300, 400]);
+        mapping.Unmap();
+
+        Assert.Equal(0u, buffer.LastWriteOffsetInBytes);
+        Assert.Equal(16u, buffer.LastWriteSizeInBytes);
+        Assert.Equal(
+            [100u, 200u, 300u, 400u],
+            MemoryMarshal.Cast<byte, uint>(buffer.BackendBuffer!.ReadBytes(0, 16)).ToArray());
     }
 
     [Fact]

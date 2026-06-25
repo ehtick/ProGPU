@@ -448,6 +448,25 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
         });
     }
 
+    public ProGpuDirectXMappedSubresource Map(
+        ProGpuDirectXBuffer buffer,
+        DxMapMode mode,
+        DxMapFlags flags = DxMapFlags.None,
+        uint offsetBytes = 0,
+        uint? sizeInBytes = null)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(buffer);
+        return buffer.Map(mode, flags, offsetBytes, sizeInBytes);
+    }
+
+    public void Unmap(ProGpuDirectXMappedSubresource mapping)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(mapping);
+        mapping.Unmap();
+    }
+
     public ProGpuDirectXBindingSnapshot CreateBindingSnapshot(DxShaderStage stage, string? label = null)
     {
         return CreateBindingSnapshot(ToStageFlags(stage), label);
