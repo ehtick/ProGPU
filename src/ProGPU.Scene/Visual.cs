@@ -607,6 +607,8 @@ public abstract class EffectBase
 public sealed class WpfShaderEffect : EffectBase
 {
     private float _padding;
+    private string? _failedShaderKey;
+    private string? _failedShaderSourceKey;
 
     public WpfShaderEffect(WpfShaderEffectParams parameters)
     {
@@ -634,10 +636,35 @@ public sealed class WpfShaderEffect : EffectBase
 
     internal void UpdateDrawParameters(WpfShaderEffectParams target, GpuTexture sourceTexture, Rect rect)
     {
+        var currentShaderKey = Parameters.GetStableShaderKey();
+        var currentShaderSourceKey = Parameters.GetStableShaderSourceKey();
+        if (Parameters.IsFailed &&
+            (!string.Equals(_failedShaderKey, currentShaderKey, StringComparison.Ordinal) ||
+             !string.Equals(_failedShaderSourceKey, currentShaderSourceKey, StringComparison.Ordinal)))
+        {
+            Parameters.IsFailed = false;
+            Parameters.LastError = null;
+            _failedShaderKey = null;
+            _failedShaderSourceKey = null;
+        }
+
         if (target.IsFailed)
         {
-            Parameters.IsFailed = true;
-            Parameters.LastError = target.LastError;
+            var targetShaderKey = target.GetStableShaderKey();
+            var targetShaderSourceKey = target.GetStableShaderSourceKey();
+            if (string.Equals(targetShaderKey, currentShaderKey, StringComparison.Ordinal) &&
+                string.Equals(targetShaderSourceKey, currentShaderSourceKey, StringComparison.Ordinal))
+            {
+                Parameters.IsFailed = true;
+                Parameters.LastError = target.LastError;
+                _failedShaderKey = currentShaderKey;
+                _failedShaderSourceKey = currentShaderSourceKey;
+            }
+            else
+            {
+                target.IsFailed = false;
+                target.LastError = null;
+            }
         }
 
         target.Texture = sourceTexture;

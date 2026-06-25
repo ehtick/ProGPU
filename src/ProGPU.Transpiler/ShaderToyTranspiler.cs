@@ -2154,7 +2154,7 @@ namespace ProGPU.Transpiler
             if (name == "length" || name == "distance" || name == "dot") return "float";
             if (name == "cross") return "vec3";
             if (name == "reflect" || name == "refract") return argTypes.Count > 0 ? argTypes[0] : "vec3";
-            if (name == "min" || name == "max" || name == "clamp" || name == "mix" || name == "step" || name == "smoothstep")
+            if (name == "min" || name == "max" || name == "clamp" || name == "mix" || name == "step" || name == "smoothstep" || name == "mod")
             {
                 return GetVectorizedBuiltinReturnType(argTypes);
             }

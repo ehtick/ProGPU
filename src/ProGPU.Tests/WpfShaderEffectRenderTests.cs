@@ -652,6 +652,43 @@ fn wpf_effect_main(uv: vec2<f32>, inputColor: vec4<f32>) -> vec4<f32> {
         }
     }
 
+    [Fact]
+    public void WpfShaderEffectRetainedVisualRecoversAfterShaderSourceChange()
+    {
+        var window = HeadlessWindow.Shared;
+        window.Resize(32, 32);
+
+        var visual = new RecoveringShaderEffectSourceVisual();
+
+        try
+        {
+            window.Content = visual;
+            window.Render();
+            window.Render();
+            Assert.True(visual.ShaderEffect.IsFailed);
+            Assert.NotNull(visual.ShaderEffect.LastError);
+
+            visual.ShaderEffect.Parameters.ShaderSource = """
+fn wpf_effect_main(uv: vec2<f32>, inputColor: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(0.0, 1.0, 0.0, inputColor.a);
+}
+""";
+
+            window.Render();
+            Assert.False(visual.ShaderEffect.IsFailed, visual.ShaderEffect.LastError);
+
+            var pixel = ReadPixel(window.ReadPixels(), window.Width, x: 16, y: 16);
+            Assert.InRange(pixel.R, 0, 12);
+            Assert.InRange(pixel.G, 240, 255);
+            Assert.InRange(pixel.B, 0, 12);
+            Assert.Equal(255, pixel.A);
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
     private sealed class ShaderEffectVisual : FrameworkElement
     {
         private readonly WpfShaderEffectParams _effect;
@@ -775,6 +812,36 @@ fn wpf_effect_main(uv: vec2<f32>, inputColor: vec4<f32>) -> vec4<f32> {
                 new Rect(90f, 25f, 40f, 40f));
             context.DrawWpfShaderEffect(_masked);
             context.PopOpacityMask();
+        }
+    }
+
+    private sealed class RecoveringShaderEffectSourceVisual : FrameworkElement
+    {
+        public RecoveringShaderEffectSourceVisual()
+        {
+            Width = 32f;
+            Height = 32f;
+            ShaderEffect = new WpfShaderEffect(new WpfShaderEffectParams
+            {
+                ShaderKey = $"test_visual_wpf_shader_effect_recovery_{Guid.NewGuid():N}",
+                SamplingMode = TextureSamplingMode.Nearest,
+                ShaderSource = """
+fn wpf_effect_main(uv: vec2<f32>, inputColor: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(1.0, 0.0, 0.0, inputColor.a)
+}
+"""
+            });
+            Effect = ShaderEffect;
+        }
+
+        public WpfShaderEffect ShaderEffect { get; }
+
+        public override void OnRender(DrawingContext context)
+        {
+            context.DrawRectangle(
+                new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f)),
+                null,
+                new Rect(0f, 0f, 32f, 32f));
         }
     }
 

@@ -305,6 +305,23 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     }
 
     [Fact]
+    public void ShaderToyModVectorResultBroadcastsScalarAddition()
+    {
+        var wgsl = ShaderToyTranspiler.Translate(
+            """
+            void mainImage(out vec4 fragColor, in vec2 fragCoord)
+            {
+                vec2 wrapped = mod(fragCoord.xy, 1.0) + 1.0;
+                fragColor = vec4(wrapped, 0.0, 1.0);
+            }
+            """);
+
+        Assert.Contains("wgsl_mod_v2f(fragCoord.xy, 1.0)", wgsl, System.StringComparison.Ordinal);
+        Assert.Contains("wgsl_mod_v2f(fragCoord.xy, 1.0) + vec2<f32>(1.0)", wgsl, System.StringComparison.Ordinal);
+        Assert.DoesNotContain("wgsl_mod_v2f(fragCoord.xy, 1.0) + 1.0", wgsl, System.StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void GpuPictureRecorderEndRecordingTransfersRetainedResourceLeases()
     {
         var recorder = new GpuPictureRecorder();
