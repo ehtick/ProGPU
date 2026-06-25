@@ -33,6 +33,10 @@ internal static class ProGpuDirectXHlslTranslator
         @"(?<texture>[A-Za-z_]\w*)\.(?<method>SampleLevel|Sample)\s*\(",
         RegexOptions.Compiled);
 
+    private static readonly Regex s_hlslIntrinsicCallStartRegex = new(
+        @"(?<!\.)\b(?<name>saturate|lerp|frac|rsqrt|ddx|ddy)\s*\(",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     private static readonly Regex s_unsupportedRegex = new(
         @"\b(tbuffer|Texture(?!2D\b)\w*|Sampler(?!State\b)\w*|RWTexture\w*|StructuredBuffer|RWStructuredBuffer|ByteAddressBuffer|RWByteAddressBuffer)\b",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -584,6 +588,7 @@ internal static class ProGpuDirectXHlslTranslator
         }
 
         var translated = TranslateTextureSampleCalls(trimmed, constantBuffers, shaderResources);
+        translated = TranslateHlslIntrinsicCalls(translated, constantBuffers, shaderResources);
         translated = Regex.Replace(
             translated,
             @"\b(?<type>float|float2|float3|float4|uint|uint2|uint3|uint4|int|int2|int3|int4)\s*\(",
@@ -601,6 +606,93 @@ internal static class ProGpuDirectXHlslTranslator
         }
 
         return translated;
+    }
+
+    private static string TranslateHlslIntrinsicCalls(
+        string expression,
+        IReadOnlyList<HlslConstantBuffer> constantBuffers,
+        IReadOnlyList<HlslShaderResource> shaderResources)
+    {
+        var builder = new StringBuilder();
+        var searchIndex = 0;
+        while (searchIndex < expression.Length)
+        {
+            var match = s_hlslIntrinsicCallStartRegex.Match(expression, searchIndex);
+            if (!match.Success)
+            {
+                builder.Append(expression, searchIndex, expression.Length - searchIndex);
+                break;
+            }
+
+            builder.Append(expression, searchIndex, match.Index - searchIndex);
+            var name = match.Groups["name"].Value;
+            var openParen = match.Index + match.Length - 1;
+            var closeParen = FindMatchingParen(expression, openParen);
+            if (closeParen < 0)
+            {
+                throw new NotSupportedException($"HLSL intrinsic '{name}' call is missing a closing parenthesis.");
+            }
+
+            var arguments = SplitTopLevelArguments(expression[(openParen + 1)..closeParen])
+                .Select(argument => TranslateExpression(argument, constantBuffers, shaderResources))
+                .ToArray();
+            builder.Append(TranslateIntrinsic(name, arguments));
+            searchIndex = closeParen + 1;
+        }
+
+        return builder.ToString();
+    }
+
+    private static string TranslateIntrinsic(string name, IReadOnlyList<string> arguments)
+    {
+        if (string.Equals(name, "saturate", StringComparison.OrdinalIgnoreCase))
+        {
+            ValidateIntrinsicArgumentCount(name, arguments, 1);
+            return $"clamp({arguments[0]}, 0.0, 1.0)";
+        }
+
+        if (string.Equals(name, "lerp", StringComparison.OrdinalIgnoreCase))
+        {
+            ValidateIntrinsicArgumentCount(name, arguments, 3);
+            return $"mix({arguments[0]}, {arguments[1]}, {arguments[2]})";
+        }
+
+        if (string.Equals(name, "frac", StringComparison.OrdinalIgnoreCase))
+        {
+            ValidateIntrinsicArgumentCount(name, arguments, 1);
+            return $"fract({arguments[0]})";
+        }
+
+        if (string.Equals(name, "rsqrt", StringComparison.OrdinalIgnoreCase))
+        {
+            ValidateIntrinsicArgumentCount(name, arguments, 1);
+            return $"inverseSqrt({arguments[0]})";
+        }
+
+        if (string.Equals(name, "ddx", StringComparison.OrdinalIgnoreCase))
+        {
+            ValidateIntrinsicArgumentCount(name, arguments, 1);
+            return $"dpdx({arguments[0]})";
+        }
+
+        if (string.Equals(name, "ddy", StringComparison.OrdinalIgnoreCase))
+        {
+            ValidateIntrinsicArgumentCount(name, arguments, 1);
+            return $"dpdy({arguments[0]})";
+        }
+
+        throw new NotSupportedException($"HLSL intrinsic '{name}' is not supported.");
+    }
+
+    private static void ValidateIntrinsicArgumentCount(
+        string name,
+        IReadOnlyCollection<string> arguments,
+        int expectedCount)
+    {
+        if (arguments.Count != expectedCount)
+        {
+            throw new NotSupportedException($"HLSL intrinsic '{name}' requires {expectedCount} argument(s).");
+        }
     }
 
     private static string TranslateTextureSampleCalls(
