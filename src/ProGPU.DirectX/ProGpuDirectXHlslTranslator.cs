@@ -66,7 +66,7 @@ internal static class ProGpuDirectXHlslTranslator
         RegexOptions.Compiled | RegexOptions.Singleline);
 
     private static readonly Regex s_byteAddressBufferInterlockedStatementRegex = new(
-        @"^(?<buffer>[A-Za-z_]\w*)\.(?<method>Interlocked(?:Add|And|Or|Xor|Min|Max|Exchange))\s*\((?<arguments>.*)\)$",
+        @"^(?<buffer>[A-Za-z_]\w*)\.(?<method>Interlocked(?:Add|And|Or|Xor|Min|Max|Exchange|CompareExchange))\s*\((?<arguments>.*)\)$",
         RegexOptions.Compiled | RegexOptions.Singleline);
 
     private static readonly Regex s_hlslIntrinsicCallStartRegex = new(
@@ -152,7 +152,13 @@ internal static class ProGpuDirectXHlslTranslator
             throw new NotSupportedException("Vertex HLSL translation requires a struct return or SV_Position return semantic.");
         }
 
-        AppendTranslatedBody(builder, function.Body, constantBuffers, shaderResources, allowReturnValue: true);
+        AppendTranslatedBody(
+            builder,
+            function.Body,
+            constantBuffers,
+            shaderResources,
+            allowReturnValue: true,
+            allowDiscard: false);
         return builder.ToString();
     }
 
@@ -188,7 +194,13 @@ internal static class ProGpuDirectXHlslTranslator
             throw new NotSupportedException("Pixel HLSL translation requires a struct return or SV_Target return semantic.");
         }
 
-        AppendTranslatedBody(builder, function.Body, constantBuffers, shaderResources, allowReturnValue: true);
+        AppendTranslatedBody(
+            builder,
+            function.Body,
+            constantBuffers,
+            shaderResources,
+            allowReturnValue: true,
+            allowDiscard: true);
         return builder.ToString();
     }
 
@@ -222,7 +234,13 @@ internal static class ProGpuDirectXHlslTranslator
             .Append(TranslateParameters(function.Parameters, new Dictionary<string, HlslStruct>()))
             .Append(')');
 
-        AppendTranslatedBody(builder, function.Body, constantBuffers, shaderResources, allowReturnValue: false);
+        AppendTranslatedBody(
+            builder,
+            function.Body,
+            constantBuffers,
+            shaderResources,
+            allowReturnValue: false,
+            allowDiscard: false);
         return builder.ToString();
     }
 
@@ -406,7 +424,8 @@ internal static class ProGpuDirectXHlslTranslator
         string body,
         IReadOnlyList<HlslConstantBuffer> constantBuffers,
         IReadOnlyList<HlslShaderResource> shaderResources,
-        bool allowReturnValue)
+        bool allowReturnValue,
+        bool allowDiscard)
     {
         builder.Append(" {\n");
         foreach (var rawStatement in body.Split(';'))
@@ -432,6 +451,7 @@ internal static class ProGpuDirectXHlslTranslator
             }
 
             if (TryTranslateByteAddressBufferStoreStatement(builder, statement, constantBuffers, shaderResources) ||
+                TryTranslateClipStatement(builder, statement, constantBuffers, shaderResources, allowDiscard) ||
                 TryTranslateByteAddressBufferInterlockedStatement(builder, statement, constantBuffers, shaderResources))
             {
                 continue;
@@ -1166,6 +1186,86 @@ internal static class ProGpuDirectXHlslTranslator
         return true;
     }
 
+    private static bool TryTranslateClipStatement(
+        StringBuilder builder,
+        string statement,
+        IReadOnlyList<HlslConstantBuffer> constantBuffers,
+        IReadOnlyList<HlslShaderResource> shaderResources,
+        bool allowDiscard)
+    {
+        var match = Regex.Match(
+            statement,
+            @"^clip\s*\((?<argument>.*)\)$",
+            RegexOptions.Singleline);
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        if (!allowDiscard)
+        {
+            throw new NotSupportedException("HLSL clip(...) is currently supported only in pixel shaders.");
+        }
+
+        var argument = match.Groups["argument"].Value.Trim();
+        if (argument.Length == 0)
+        {
+            throw new NotSupportedException("HLSL clip(...) requires one argument.");
+        }
+
+        var value = TranslateExpression(argument, constantBuffers, shaderResources);
+        var vectorWidth = TryGetClipVectorWidth(argument, value);
+        builder.Append("    if (");
+        if (vectorWidth == 0)
+        {
+            builder
+                .Append('(')
+                .Append(value)
+                .Append(") < 0.0");
+        }
+        else
+        {
+            builder
+                .Append("any((")
+                .Append(value)
+                .Append(") < vec")
+                .Append(vectorWidth)
+                .Append("<f32>(0.0))");
+        }
+
+        builder.Append(") {\n        discard;\n    }\n");
+        return true;
+    }
+
+    private static int TryGetClipVectorWidth(string hlslArgument, string wgslValue)
+    {
+        var vectorConstructor = Regex.Match(
+            wgslValue,
+            @"^\s*vec(?<width>[234])<",
+            RegexOptions.Singleline);
+        if (vectorConstructor.Success)
+        {
+            return int.Parse(vectorConstructor.Groups["width"].Value);
+        }
+
+        var hlslConstructor = Regex.Match(
+            hlslArgument,
+            @"^\s*(?:float|half|double|int|uint|bool)(?<width>[234])\s*\(",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        if (hlslConstructor.Success)
+        {
+            return int.Parse(hlslConstructor.Groups["width"].Value);
+        }
+
+        var swizzle = Regex.Match(
+            hlslArgument,
+            @"\.(?<swizzle>[xyzwrgba]{2,4})\s*$",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        return swizzle.Success
+            ? swizzle.Groups["swizzle"].Value.Length
+            : 0;
+    }
+
     private static bool TryTranslateByteAddressBufferInterlockedStatement(
         StringBuilder builder,
         string statement,
@@ -1183,6 +1283,16 @@ internal static class ProGpuDirectXHlslTranslator
         ValidateByteAddressBufferResource(buffer, shaderResources, requireWritable: true);
 
         var arguments = SplitTopLevelArguments(match.Groups["arguments"].Value);
+        if (string.Equals(method, "InterlockedCompareExchange", StringComparison.Ordinal))
+        {
+            return TryTranslateByteAddressBufferCompareExchangeStatement(
+                builder,
+                buffer,
+                arguments,
+                constantBuffers,
+                shaderResources);
+        }
+
         if (arguments.Count is not (2 or 3))
         {
             throw new NotSupportedException($"HLSL RWByteAddressBuffer.{method} requires byte-offset, value, and optional original-value arguments.");
@@ -1219,6 +1329,38 @@ internal static class ProGpuDirectXHlslTranslator
         return true;
     }
 
+    private static bool TryTranslateByteAddressBufferCompareExchangeStatement(
+        StringBuilder builder,
+        string buffer,
+        IReadOnlyList<string> arguments,
+        IReadOnlyList<HlslConstantBuffer> constantBuffers,
+        IReadOnlyList<HlslShaderResource> shaderResources)
+    {
+        if (arguments.Count != 4)
+        {
+            throw new NotSupportedException("HLSL RWByteAddressBuffer.InterlockedCompareExchange requires byte-offset, compare-value, value, and original-value arguments.");
+        }
+
+        var original = ValidateAssignableByteAddressBufferInterlockedOriginal("InterlockedCompareExchange", arguments[3]);
+        var baseIndex = TranslateByteAddressBufferIndex(arguments[0], constantBuffers, shaderResources);
+        var compare = TranslateExpression(arguments[1], constantBuffers, shaderResources);
+        var value = TranslateExpression(arguments[2], constantBuffers, shaderResources);
+        builder
+            .Append("    ")
+            .Append(original)
+            .Append(" = atomicCompareExchangeWeak(&")
+            .Append(buffer)
+            .Append('[')
+            .Append(baseIndex)
+            .Append("], ")
+            .Append(compare)
+            .Append(", ")
+            .Append(value)
+            .Append(").old_value;\n");
+
+        return true;
+    }
+
     private static string TranslateByteAddressBufferRead(
         string buffer,
         string index,
@@ -1242,6 +1384,17 @@ internal static class ProGpuDirectXHlslTranslator
             "InterlockedExchange" => "atomicExchange",
             _ => throw new NotSupportedException($"HLSL RWByteAddressBuffer method '{method}' is not supported.")
         };
+    }
+
+    private static string ValidateAssignableByteAddressBufferInterlockedOriginal(string method, string argument)
+    {
+        var original = argument.Trim();
+        if (!Regex.IsMatch(original, @"^[A-Za-z_]\w*(?:(?:\[[^\]]+\])|(?:\.[A-Za-z_]\w*))*$"))
+        {
+            throw new NotSupportedException($"HLSL RWByteAddressBuffer.{method} original-value argument must be assignable.");
+        }
+
+        return original;
     }
 
     private static string TranslateByteAddressBufferIndex(

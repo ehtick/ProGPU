@@ -36,6 +36,9 @@ public sealed unsafe class ProGpuDirectXShader : IDisposable
 
     public string? BackendSource { get; }
 
+    internal bool UsesRwByteAddressBufferInterlockedCompareExchange =>
+        BackendSource?.Contains("atomicCompareExchangeWeak(", StringComparison.Ordinal) == true;
+
     public bool HasBackendShaderModule => _backendShaderModule != IntPtr.Zero;
 
     public IntPtr BackendShaderModuleHandle => _backendShaderModule;
@@ -525,6 +528,12 @@ public sealed unsafe class ProGpuDirectXComputePipeline : IDisposable
         PipelineKey = $"{descriptor.ComputeShader.SourceHash}|{descriptor.ComputeShader.EntryPoint}";
         if (device.Context is { } context && device.IsGpuBacked)
         {
+            if (descriptor.ComputeShader.UsesRwByteAddressBufferInterlockedCompareExchange &&
+                !device.Capabilities.SupportsRwByteAddressBufferInterlockedCompareExchange)
+            {
+                return;
+            }
+
             if (!descriptor.ComputeShader.HasBackendShaderModule)
             {
                 throw new InvalidOperationException("A GPU-backed DirectX compute pipeline requires a WGSL-backed compute shader.");

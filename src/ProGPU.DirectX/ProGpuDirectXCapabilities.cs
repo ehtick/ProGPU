@@ -14,11 +14,13 @@ public sealed class ProGpuDirectXCapabilities
     internal ProGpuDirectXCapabilities(
         bool isGpuBacked,
         uint maxTextureDimension2D,
-        bool supportsReadWriteStorageTextures)
+        bool supportsReadWriteStorageTextures,
+        bool supportsRwByteAddressBufferInterlockedCompareExchange)
     {
         IsGpuBacked = isGpuBacked;
         MaxTextureDimension2D = maxTextureDimension2D;
         SupportsReadWriteStorageTextures = supportsReadWriteStorageTextures;
+        SupportsRwByteAddressBufferInterlockedCompareExchange = supportsRwByteAddressBufferInterlockedCompareExchange;
     }
 
     public bool IsGpuBacked { get; }
@@ -30,6 +32,8 @@ public sealed class ProGpuDirectXCapabilities
     public uint MaxTextureDimension2D { get; }
 
     public bool SupportsReadWriteStorageTextures { get; }
+
+    public bool SupportsRwByteAddressBufferInterlockedCompareExchange { get; }
 
     public bool SupportsFeatureLevel(DxFeatureLevel featureLevel)
     {

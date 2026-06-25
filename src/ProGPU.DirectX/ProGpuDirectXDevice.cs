@@ -1,4 +1,5 @@
 using ProGPU.Backend;
+using System.Runtime.InteropServices;
 
 namespace ProGPU.DirectX;
 
@@ -13,7 +14,9 @@ public sealed class ProGpuDirectXDevice : IDisposable
         Capabilities = new ProGpuDirectXCapabilities(
             isGpuBacked: context is { IsDisposed: false, Device: not null, Queue: not null },
             maxTextureDimension2D: 16384,
-            supportsReadWriteStorageTextures: context?.SupportsReadOnlyAndReadWriteStorageTextures == true);
+            supportsReadWriteStorageTextures: context?.SupportsReadOnlyAndReadWriteStorageTextures == true,
+            supportsRwByteAddressBufferInterlockedCompareExchange: context is { IsDisposed: false, Device: not null, Queue: not null } &&
+                !RuntimeInformation.IsOSPlatform(OSPlatform.OSX));
 
         if (options.RequireGpuBackedResources && !Capabilities.IsGpuBacked)
         {

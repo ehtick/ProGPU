@@ -302,10 +302,34 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 }
 """;
 
+    private const string ByteAddressBufferCompareExchangeComputeHlsl = """
+RWByteAddressBuffer Output : register(u0);
+
+[numthreads(1, 1, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    Output.Store(0u, 12u);
+    uint compareOriginal;
+    Output.InterlockedCompareExchange(0u, 12u, 99u, compareOriginal);
+    Output.Store(4u, compareOriginal);
+    uint failedOriginal;
+    Output.InterlockedCompareExchange(0u, 12u, 1u, failedOriginal);
+    Output.Store(8u, failedOriginal);
+}
+""";
+
     private const string SolidGreenPixelHlsl = """
 float4 PSMain() : SV_Target
 {
     return float4(0.0, 1.0, 0.0, 1.0);
+}
+""";
+
+    private const string ClippedPixelHlsl = """
+float4 PSMain() : SV_Target
+{
+    clip(-1.0);
+    return float4(1.0, 0.0, 0.0, 1.0);
 }
 """;
 
@@ -614,6 +638,45 @@ float4 PSMain(float2 uv : TEXCOORD0) : SV_Target
     }
 
     [Fact]
+    public void HlslTextShaderTranslatesPixelClipToDiscard()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var shader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Pixel,
+            SourceKind = DxShaderSourceKind.HlslText,
+            Source = ClippedPixelHlsl,
+            EntryPoint = "PSMain"
+        });
+
+        Assert.NotNull(shader.BackendSource);
+        Assert.Contains("if ((-1.0) < 0.0) {\n        discard;\n    }", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("return vec4<f32>(1.0, 0.0, 0.0, 1.0);", shader.BackendSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void HlslTextShaderRejectsClipOutsidePixelShaders()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var shader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Compute,
+            SourceKind = DxShaderSourceKind.HlslText,
+            Source = """
+[numthreads(1, 1, 1)]
+void CSMain()
+{
+    clip(-1.0);
+}
+""",
+            EntryPoint = "CSMain"
+        });
+
+        Assert.False(shader.HasBackendShaderModule);
+        Assert.Null(shader.BackendSource);
+    }
+
+    [Fact]
     public void HlslTextShaderTranslatesStructuredBufferResources()
     {
         using var device = ProGpuDirectXDevice.CreateMetadataDevice();
@@ -748,6 +811,26 @@ float4 PSMain(float2 uv : TEXCOORD0) : SV_Target
         Assert.Contains("atomicStore(&Output[((4u) / 4u)], previous);", shader.BackendSource, StringComparison.Ordinal);
         Assert.Contains("atomicOr(&Output[((8u) / 4u)], 2u);", shader.BackendSource, StringComparison.Ordinal);
         Assert.Contains("atomicXor(&Output[((8u) / 4u)], 3u);", shader.BackendSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void HlslTextShaderTranslatesRwByteAddressBufferCompareExchange()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var shader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Compute,
+            SourceKind = DxShaderSourceKind.HlslText,
+            Source = ByteAddressBufferCompareExchangeComputeHlsl,
+            EntryPoint = "CSMain"
+        });
+
+        Assert.NotNull(shader.BackendSource);
+        Assert.Contains("@binding(1856) var<storage, read_write> Output: array<atomic<u32>>;", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("var compareOriginal: u32;", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("compareOriginal = atomicCompareExchangeWeak(&Output[((0u) / 4u)], 12u, 99u).old_value;", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("var failedOriginal: u32;", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("failedOriginal = atomicCompareExchangeWeak(&Output[((0u) / 4u)], 12u, 1u).old_value;", shader.BackendSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1051,6 +1134,99 @@ VertexOutput VSMain(VertexInput input)
         Assert.True(center.G < 50, $"Expected low green center pixel after HLSL DirectX draw, actual: {center}");
         Assert.True(center.B < 50, $"Expected low blue center pixel after HLSL DirectX draw, actual: {center}");
         Assert.True(center.A > 200, $"Expected opaque center pixel after HLSL DirectX draw, actual: {center}");
+    }
+
+    [Fact]
+    public void FlushSubmitsGpuBackedHlslPixelClipDiscardDrawCommands()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var target = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 32,
+            Height = 32,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.RenderTarget | DxTextureUsage.CopySource
+        });
+        using var vertexBuffer = device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = 84,
+            Usage = DxBufferUsage.Vertex | DxBufferUsage.CopyDestination,
+            StrideInBytes = 28
+        });
+        vertexBuffer.Write<float>(
+        [
+            -0.8f, -0.8f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+             0.8f, -0.8f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+             0.0f,  0.8f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f
+        ]);
+        using var vertexShader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Vertex,
+            SourceKind = DxShaderSourceKind.HlslText,
+            Source = PassthroughVertexHlsl,
+            EntryPoint = "VSMain",
+            Label = "HLSL Vertex"
+        });
+        using var pixelShader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Pixel,
+            SourceKind = DxShaderSourceKind.HlslText,
+            Source = ClippedPixelHlsl,
+            EntryPoint = "PSMain",
+            Label = "HLSL Clipped Pixel"
+        });
+        var inputLayout = device.CreateInputLayout(new DxInputLayoutDescriptor
+        {
+            Elements =
+            [
+                new DxInputElementDescriptor
+                {
+                    SemanticName = "POSITION",
+                    Format = DxResourceFormat.R32G32B32Float,
+                    AlignedByteOffset = 0,
+                    ShaderLocation = 0
+                },
+                new DxInputElementDescriptor
+                {
+                    SemanticName = "COLOR",
+                    Format = DxResourceFormat.R32G32B32A32Float,
+                    AlignedByteOffset = 12,
+                    ShaderLocation = 1
+                }
+            ]
+        });
+        using var pipeline = device.CreateGraphicsPipeline(new DxGraphicsPipelineDescriptor
+        {
+            VertexShader = vertexShader,
+            PixelShader = pixelShader,
+            InputLayout = inputLayout,
+            RenderTargetFormat = DxResourceFormat.R8G8B8A8Unorm,
+            BlendState = new DxBlendStateDescriptor { EnableBlend = false },
+            RasterizerState = new DxRasterizerStateDescriptor { CullMode = DxCullMode.None }
+        });
+        using var context = device.CreateImmediateContext();
+
+        context.SetRenderTargets(target);
+        context.SetViewport(new DxViewport(0, 0, 32, 32));
+        context.ClearRenderTarget(target, DxColor.Black);
+        context.SetGraphicsPipeline(pipeline);
+        context.SetVertexBuffer(vertexBuffer);
+        context.Draw(3);
+        context.Flush();
+
+        Assert.True(pixelShader.HasBackendShaderModule);
+        Assert.Contains("discard;", pixelShader.BackendSource!, StringComparison.Ordinal);
+        Assert.True(pipeline.HasBackendPipeline);
+        Assert.Equal(1ul, context.SubmittedDrawCount);
+
+        var pixels = target.BackendTexture!.ReadPixels();
+        var center = ReadRgbaPixel(pixels, 32, 16, 16);
+        Assert.True(center.R < 50, $"Expected clipped black center pixel after HLSL clip discard, actual: {center}");
+        Assert.True(center.G < 50, $"Expected clipped black center pixel after HLSL clip discard, actual: {center}");
+        Assert.True(center.B < 50, $"Expected clipped black center pixel after HLSL clip discard, actual: {center}");
+        Assert.True(center.A > 200, $"Expected opaque clear alpha after HLSL clip discard, actual: {center}");
     }
 
     [Fact]
@@ -2694,6 +2870,63 @@ VertexOutput VSMain(VertexInput input)
 
         var values = MemoryMarshal.Cast<byte, uint>(output.BackendBuffer!.ReadBytes(0, 12)).ToArray();
         Assert.Equal([15u, 10u, 1u], values);
+    }
+
+    [Fact]
+    public void GpuBackedRwByteAddressBufferCompareExchangePipelineHonorsBackendCapability()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var output = device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = 12,
+            Usage = DxBufferUsage.Structured | DxBufferUsage.UnorderedAccess | DxBufferUsage.CopySource,
+            StrideInBytes = 4,
+            Label = "RWByteAddressBuffer CompareExchange Output"
+        });
+        using var outputView = device.CreateUnorderedAccessView(
+            output,
+            new DxUnorderedAccessViewDescriptor
+            {
+                Dimension = DxResourceViewDimension.Buffer,
+                ElementCount = 3,
+                ElementStrideInBytes = 4,
+                Access = DxUnorderedAccessViewAccess.ReadWrite
+            });
+        using var computeShader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Compute,
+            SourceKind = DxShaderSourceKind.HlslText,
+            Source = ByteAddressBufferCompareExchangeComputeHlsl,
+            EntryPoint = "CSMain",
+            Label = "HLSL RWByteAddressBuffer CompareExchange Compute"
+        });
+        using var pipeline = device.CreateComputePipeline(new DxComputePipelineDescriptor
+        {
+            ComputeShader = computeShader
+        });
+
+        Assert.True(computeShader.HasBackendShaderModule);
+        Assert.Contains("compareOriginal = atomicCompareExchangeWeak(&Output[((0u) / 4u)], 12u, 99u).old_value;", computeShader.BackendSource!, StringComparison.Ordinal);
+
+        if (!device.Capabilities.SupportsRwByteAddressBufferInterlockedCompareExchange)
+        {
+            Assert.False(pipeline.HasBackendPipeline);
+            return;
+        }
+
+        using var context = device.CreateImmediateContext();
+        context.SetComputePipeline(pipeline);
+        context.SetUnorderedAccessView(0, outputView);
+        context.Dispatch(1, 1, 1);
+        context.Flush();
+
+        Assert.True(pipeline.HasBackendPipeline);
+        Assert.Equal(1ul, context.SubmittedDispatchCount);
+
+        var values = MemoryMarshal.Cast<byte, uint>(output.BackendBuffer!.ReadBytes(0, 12)).ToArray();
+        Assert.Equal([99u, 12u, 99u], values);
     }
 
     [Fact]
