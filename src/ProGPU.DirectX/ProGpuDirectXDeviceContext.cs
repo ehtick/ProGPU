@@ -471,6 +471,7 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
             throw new ArgumentException("Source buffer was not created with copy-source usage.", nameof(source));
         }
 
+        destination.CopyCpuShadowFrom(source);
         _commands.Add(new ProGpuDirectXCommand
         {
             Kind = ProGpuDirectXCommandKind.CopyBuffer,

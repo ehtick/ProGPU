@@ -444,7 +444,8 @@ fn fs_main() -> @location(0) vec4<f32> {
             Width = 16,
             Height = 16,
             Format = DxResourceFormat.R8G8B8A8Unorm,
-            Usage = DxTextureUsage.CopyDestination | DxTextureUsage.CopySource
+            Usage = DxTextureUsage.CopyDestination | DxTextureUsage.CopySource,
+            CpuAccess = DxCpuAccessFlags.Read
         });
         using var context = device.CreateImmediateContext();
 
@@ -456,12 +457,64 @@ fn fs_main() -> @location(0) vec4<f32> {
         Assert.Equal(1ul, context.SubmittedCopyCount);
         Assert.Empty(context.Commands);
 
-        var pixels = destination.BackendTexture!.ReadPixels();
+        var pixels = destination.ReadPixels();
         var center = ReadRgbaPixel(pixels, 16, 8, 8);
         Assert.True(center.R < 50, $"Expected low red copied pixel, actual: {center}");
         Assert.True(center.G > 200, $"Expected green copied pixel, actual: {center}");
         Assert.True(center.B < 50, $"Expected low blue copied pixel, actual: {center}");
         Assert.True(center.A > 200, $"Expected opaque copied pixel, actual: {center}");
+    }
+
+    [Fact]
+    public void CpuReadableBuffersSupportMetadataShadowCopies()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var source = device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = 16,
+            Usage = DxBufferUsage.CopySource | DxBufferUsage.CopyDestination,
+            CpuAccess = DxCpuAccessFlags.Read
+        });
+        using var destination = device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = 16,
+            Usage = DxBufferUsage.CopyDestination,
+            CpuAccess = DxCpuAccessFlags.Read
+        });
+        using var context = device.CreateImmediateContext();
+
+        source.Write<uint>([10, 20, 30, 40]);
+        context.CopyResource(destination, source);
+        context.Flush();
+
+        Assert.Equal([10u, 20u, 30u, 40u], destination.Read<uint>(4));
+    }
+
+    [Fact]
+    public void CpuReadableBuffersSupportGpuStagingCopies()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var source = device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = 16,
+            Usage = DxBufferUsage.CopySource | DxBufferUsage.CopyDestination
+        });
+        using var staging = device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = 16,
+            Usage = DxBufferUsage.CopyDestination,
+            CpuAccess = DxCpuAccessFlags.Read
+        });
+        using var context = device.CreateImmediateContext();
+
+        source.Write<uint>([1, 3, 5, 7]);
+        context.CopyResource(staging, source);
+        context.Flush();
+
+        Assert.Equal(1ul, context.SubmittedCopyCount);
+        Assert.Equal([1u, 3u, 5u, 7u], staging.Read<uint>(4));
     }
 
     [Fact]
@@ -734,6 +787,14 @@ fn fs_main() -> @location(0) vec4<f32> {
             }));
 
         Assert.Throws<ArgumentException>(() =>
+            device.CreateBuffer(new DxBufferDescriptor
+            {
+                SizeInBytes = 16,
+                Usage = DxBufferUsage.Vertex | DxBufferUsage.CopyDestination,
+                CpuAccess = DxCpuAccessFlags.Read
+            }));
+
+        Assert.Throws<ArgumentException>(() =>
             device.CreateShader(new DxShaderDescriptor
             {
                 Stage = DxShaderStage.Pixel,
@@ -748,6 +809,7 @@ fn fs_main() -> @location(0) vec4<f32> {
             Usage = DxTextureUsage.RenderTarget
         });
         Assert.Throws<ArgumentException>(() => device.CreateShaderResourceView(renderOnlyTexture));
+        Assert.Throws<InvalidOperationException>(() => renderOnlyTexture.ReadPixels());
 
         using var shaderBuffer = device.CreateBuffer(new DxBufferDescriptor
         {

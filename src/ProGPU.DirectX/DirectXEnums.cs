@@ -78,6 +78,14 @@ public enum DxBufferUsage
 }
 
 [Flags]
+public enum DxCpuAccessFlags
+{
+    None = 0,
+    Read = 1 << 0,
+    Write = 1 << 1
+}
+
+[Flags]
 public enum DxTextureUsage
 {
     None = 0,

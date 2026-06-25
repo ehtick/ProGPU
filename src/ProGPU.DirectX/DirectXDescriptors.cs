@@ -28,6 +28,7 @@ public sealed record DxBufferDescriptor
 {
     public required uint SizeInBytes { get; init; }
     public DxBufferUsage Usage { get; init; } = DxBufferUsage.Vertex | DxBufferUsage.CopyDestination;
+    public DxCpuAccessFlags CpuAccess { get; init; } = DxCpuAccessFlags.None;
     public uint StrideInBytes { get; init; }
     public string Label { get; init; } = "DirectXBuffer";
 }
@@ -38,6 +39,7 @@ public sealed record DxTexture2DDescriptor
     public required uint Height { get; init; }
     public DxResourceFormat Format { get; init; } = DxResourceFormat.B8G8R8A8Unorm;
     public DxTextureUsage Usage { get; init; } = DxTextureUsage.ShaderResource | DxTextureUsage.RenderTarget | DxTextureUsage.CopyDestination;
+    public DxCpuAccessFlags CpuAccess { get; init; } = DxCpuAccessFlags.None;
     public uint MipLevels { get; init; } = 1;
     public uint ArraySize { get; init; } = 1;
     public uint SampleCount { get; init; } = 1;

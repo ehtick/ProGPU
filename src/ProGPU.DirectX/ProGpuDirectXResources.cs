@@ -1,4 +1,5 @@
 using ProGPU.Backend;
+using System.Runtime.InteropServices;
 
 namespace ProGPU.DirectX;
 
@@ -46,22 +47,26 @@ public abstract class ProGpuDirectXResource : IDisposable
 public sealed class ProGpuDirectXBuffer : ProGpuDirectXResource
 {
     private readonly GpuBuffer? _backendBuffer;
+    private readonly byte[]? _cpuShadow;
 
     internal ProGpuDirectXBuffer(ProGpuDirectXDevice device, DxBufferDescriptor descriptor)
         : base(device, descriptor.Label)
     {
-        if (descriptor.SizeInBytes == 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(descriptor), "DirectX buffers must have a non-zero size.");
-        }
+        ValidateDescriptor(descriptor);
 
         Descriptor = descriptor;
+        if ((descriptor.CpuAccess & DxCpuAccessFlags.Read) != 0 ||
+            (descriptor.CpuAccess & DxCpuAccessFlags.Write) != 0)
+        {
+            _cpuShadow = new byte[descriptor.SizeInBytes];
+        }
+
         if (device.Context is { } context && device.IsGpuBacked)
         {
             _backendBuffer = new GpuBuffer(
                 context,
                 descriptor.SizeInBytes,
-                ProGpuDirectXFormatConverter.ToBufferUsage(descriptor.Usage),
+                ProGpuDirectXFormatConverter.ToBufferUsage(descriptor.Usage, descriptor.CpuAccess),
                 descriptor.Label);
         }
     }
@@ -82,7 +87,75 @@ public sealed class ProGpuDirectXBuffer : ProGpuDirectXResource
         }
 
         _backendBuffer?.Write(data, offsetBytes);
+        if (_cpuShadow is not null)
+        {
+            MemoryMarshal.AsBytes(data).CopyTo(_cpuShadow.AsSpan(checked((int)offsetBytes), checked((int)dataSize)));
+        }
+
         LastWriteSizeInBytes = dataSize;
+    }
+
+    public byte[] ReadBytes(uint offsetBytes = 0, uint? sizeInBytes = null)
+    {
+        ThrowIfDisposed();
+        if ((Descriptor.CpuAccess & DxCpuAccessFlags.Read) == 0)
+        {
+            throw new InvalidOperationException("Buffer was not created with CPU read access.");
+        }
+
+        var readSize = sizeInBytes ?? (Descriptor.SizeInBytes - offsetBytes);
+        ValidateReadRange(offsetBytes, readSize);
+
+        if (_backendBuffer is { BufferPtr: not null })
+        {
+            return _backendBuffer.ReadBytes(offsetBytes, readSize);
+        }
+
+        if (_cpuShadow is null)
+        {
+            throw new InvalidOperationException("Buffer does not have readable CPU storage.");
+        }
+
+        return _cpuShadow.AsSpan(checked((int)offsetBytes), checked((int)readSize)).ToArray();
+    }
+
+    public unsafe T[] Read<T>(uint elementCount, uint offsetBytes = 0) where T : unmanaged
+    {
+        var bytes = ReadBytes(offsetBytes, checked((uint)(elementCount * sizeof(T))));
+        return MemoryMarshal.Cast<byte, T>(bytes).ToArray();
+    }
+
+    internal void CopyCpuShadowFrom(ProGpuDirectXBuffer source)
+    {
+        if (_cpuShadow is null || source._cpuShadow is null)
+        {
+            return;
+        }
+
+        source._cpuShadow.AsSpan(0, checked((int)Math.Min(Descriptor.SizeInBytes, source.Descriptor.SizeInBytes)))
+            .CopyTo(_cpuShadow);
+    }
+
+    private static void ValidateDescriptor(DxBufferDescriptor descriptor)
+    {
+        if (descriptor.SizeInBytes == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(descriptor), "DirectX buffers must have a non-zero size.");
+        }
+
+        if ((descriptor.CpuAccess & DxCpuAccessFlags.Read) != 0 &&
+            (descriptor.Usage & ~(DxBufferUsage.CopySource | DxBufferUsage.CopyDestination)) != 0)
+        {
+            throw new ArgumentException("CPU-readable DirectX buffers must be staging/copy resources without bind flags.", nameof(descriptor));
+        }
+    }
+
+    private void ValidateReadRange(uint offsetBytes, uint sizeInBytes)
+    {
+        if (offsetBytes > Descriptor.SizeInBytes || sizeInBytes > Descriptor.SizeInBytes - offsetBytes)
+        {
+            throw new ArgumentOutOfRangeException(nameof(sizeInBytes), "Buffer read exceeds the DirectX buffer bounds.");
+        }
     }
 
     protected override void DisposeCore()
@@ -118,6 +191,22 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
         ThrowIfDisposed();
         _backendTexture?.WritePixels(pixels);
         Generation++;
+    }
+
+    public byte[] ReadPixels()
+    {
+        ThrowIfDisposed();
+        if ((Descriptor.CpuAccess & DxCpuAccessFlags.Read) == 0)
+        {
+            throw new InvalidOperationException("Texture was not created with CPU read access.");
+        }
+
+        if (_backendTexture is not { IsDisposed: false } texture)
+        {
+            throw new InvalidOperationException("Texture readback requires a GPU-backed texture.");
+        }
+
+        return texture.ReadPixels();
     }
 
     public void Resize(uint width, uint height)
