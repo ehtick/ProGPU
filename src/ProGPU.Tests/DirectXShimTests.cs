@@ -432,6 +432,143 @@ fn fs_main() -> @location(0) vec4<f32> {
     }
 
     [Fact]
+    public void FlushSubmitsGpuBackedWireframeTriangleDrawCommands()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var target = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 64,
+            Height = 64,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.RenderTarget | DxTextureUsage.CopySource
+        });
+        using var vertexShader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Vertex,
+            SourceKind = DxShaderSourceKind.Wgsl,
+            Source = SolidTriangleWgsl
+        });
+        using var pixelShader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Pixel,
+            SourceKind = DxShaderSourceKind.Wgsl,
+            Source = SolidTriangleWgsl
+        });
+        using var pipeline = device.CreateGraphicsPipeline(new DxGraphicsPipelineDescriptor
+        {
+            VertexShader = vertexShader,
+            PixelShader = pixelShader,
+            Topology = DxPrimitiveTopology.TriangleList,
+            RenderTargetFormat = DxResourceFormat.R8G8B8A8Unorm,
+            BlendState = new DxBlendStateDescriptor { EnableBlend = false },
+            RasterizerState = new DxRasterizerStateDescriptor
+            {
+                FillMode = DxFillMode.Wireframe,
+                CullMode = DxCullMode.None
+            }
+        });
+        using var context = device.CreateImmediateContext();
+
+        context.SetRenderTargets(target);
+        context.SetViewport(new DxViewport(0, 0, 64, 64));
+        context.ClearRenderTarget(target, DxColor.Black);
+        context.SetGraphicsPipeline(pipeline);
+        context.Draw(3);
+        context.Flush();
+
+        Assert.Equal(1ul, context.SubmittedClearCount);
+        Assert.Equal(1ul, context.SubmittedDrawCount);
+        Assert.Equal(1ul, context.SubmittedWireframeDrawCount);
+        Assert.Empty(context.Commands);
+
+        var pixels = target.BackendTexture!.ReadPixels();
+        Assert.Contains(
+            Enumerable.Range(0, 64 * 64),
+            index =>
+            {
+                var pixel = ReadRgbaPixel(pixels, 64, index % 64, index / 64);
+                return pixel.R > 150 && pixel.G < 50 && pixel.B < 50 && pixel.A > 200;
+            });
+
+        var center = ReadRgbaPixel(pixels, 64, 32, 32);
+        Assert.True(center.R < 50 && center.G < 50 && center.B < 50, $"Expected unfilled wireframe center, actual: {center}");
+    }
+
+    [Fact]
+    public void FlushSubmitsGpuBackedIndexedWireframeTriangleDrawCommands()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var target = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 64,
+            Height = 64,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.RenderTarget | DxTextureUsage.CopySource
+        });
+        using var indexBuffer = device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = 6,
+            Usage = DxBufferUsage.Index | DxBufferUsage.CopyDestination
+        });
+        indexBuffer.Write<ushort>([0, 1, 2]);
+        using var vertexShader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Vertex,
+            SourceKind = DxShaderSourceKind.Wgsl,
+            Source = SolidTriangleWgsl
+        });
+        using var pixelShader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Pixel,
+            SourceKind = DxShaderSourceKind.Wgsl,
+            Source = SolidTriangleWgsl
+        });
+        using var pipeline = device.CreateGraphicsPipeline(new DxGraphicsPipelineDescriptor
+        {
+            VertexShader = vertexShader,
+            PixelShader = pixelShader,
+            Topology = DxPrimitiveTopology.TriangleList,
+            RenderTargetFormat = DxResourceFormat.R8G8B8A8Unorm,
+            BlendState = new DxBlendStateDescriptor { EnableBlend = false },
+            RasterizerState = new DxRasterizerStateDescriptor
+            {
+                FillMode = DxFillMode.Wireframe,
+                CullMode = DxCullMode.None
+            }
+        });
+        using var context = device.CreateImmediateContext();
+
+        context.SetRenderTargets(target);
+        context.SetViewport(new DxViewport(0, 0, 64, 64));
+        context.ClearRenderTarget(target, DxColor.Black);
+        context.SetGraphicsPipeline(pipeline);
+        context.SetIndexBuffer(indexBuffer, DxIndexFormat.UInt16);
+        context.DrawIndexed(3, indexFormat: DxIndexFormat.UInt16);
+        context.Flush();
+
+        Assert.Equal(1ul, context.SubmittedClearCount);
+        Assert.Equal(1ul, context.SubmittedDrawCount);
+        Assert.Equal(1ul, context.SubmittedWireframeDrawCount);
+        Assert.Empty(context.Commands);
+
+        var pixels = target.BackendTexture!.ReadPixels();
+        Assert.Contains(
+            Enumerable.Range(0, 64 * 64),
+            index =>
+            {
+                var pixel = ReadRgbaPixel(pixels, 64, index % 64, index / 64);
+                return pixel.R > 150 && pixel.G < 50 && pixel.B < 50 && pixel.A > 200;
+            });
+
+        var center = ReadRgbaPixel(pixels, 64, 32, 32);
+        Assert.True(center.R < 50 && center.G < 50 && center.B < 50, $"Expected unfilled indexed wireframe center, actual: {center}");
+    }
+
+    [Fact]
     public void FlushSubmitsGpuBackedDepthClearAndDepthDrawCommands()
     {
         using var wgpu = new WgpuContext();

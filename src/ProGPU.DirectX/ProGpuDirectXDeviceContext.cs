@@ -1,5 +1,6 @@
 using Silk.NET.Core.Native;
 using Silk.NET.WebGPU;
+using System.Runtime.InteropServices;
 
 namespace ProGPU.DirectX;
 
@@ -97,7 +98,35 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
     private readonly Dictionary<DxShaderResourceBinding, ProGpuDirectXShaderResourceView?> _shaderResourceViews = new();
     private readonly Dictionary<DxShaderResourceBinding, ProGpuDirectXSamplerState?> _samplers = new();
     private readonly Dictionary<uint, ProGpuDirectXUnorderedAccessView?> _unorderedAccessViews = new();
+    private readonly Dictionary<WireframeIndexCacheKey, WireframeIndexCacheEntry> _wireframeIndexBuffers = new();
     private bool _isDisposed;
+
+    private readonly record struct WireframeIndexCacheKey(
+        ProGpuDirectXBuffer? SourceIndexBuffer,
+        ulong SourceGeneration,
+        bool IsIndexed,
+        DxPrimitiveTopology Topology,
+        DxIndexFormat SourceIndexFormat,
+        uint Count,
+        uint StartLocation);
+
+    private sealed class WireframeIndexCacheEntry : IDisposable
+    {
+        public WireframeIndexCacheEntry(ProGPU.Backend.GpuBuffer buffer, uint indexCount)
+        {
+            Buffer = buffer;
+            IndexCount = indexCount;
+        }
+
+        public ProGPU.Backend.GpuBuffer Buffer { get; }
+
+        public uint IndexCount { get; }
+
+        public void Dispose()
+        {
+            Buffer.Dispose();
+        }
+    }
 
     internal ProGpuDirectXDeviceContext(ProGpuDirectXDevice device)
     {
@@ -141,6 +170,8 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
     public IReadOnlyDictionary<uint, ProGpuDirectXUnorderedAccessView?> UnorderedAccessViews => _unorderedAccessViews;
 
     public ulong SubmittedDrawCount { get; private set; }
+
+    public ulong SubmittedWireframeDrawCount { get; private set; }
 
     public ulong SubmittedDispatchCount { get; private set; }
 
@@ -1234,7 +1265,31 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
                 }
             }
 
-            if (command.Kind == ProGpuDirectXCommandKind.DrawIndexed)
+            var isWireframeTriangleDraw = IsWireframeTriangleDraw(command);
+            if (TryGetWireframeIndexBuffer(context, command, out var wireframeIndexBuffer, out var wireframeBaseVertex, out var wireframeInstanceCount, out var wireframeStartInstance))
+            {
+                context.Wgpu.RenderPassEncoderSetIndexBuffer(
+                    pass,
+                    wireframeIndexBuffer.Buffer.BufferPtr,
+                    IndexFormat.Uint32,
+                    0,
+                    wireframeIndexBuffer.Buffer.Size);
+
+                context.Wgpu.RenderPassEncoderDrawIndexed(
+                    pass,
+                    wireframeIndexBuffer.IndexCount,
+                    wireframeInstanceCount,
+                    0,
+                    wireframeBaseVertex,
+                    wireframeStartInstance);
+
+                SubmittedWireframeDrawCount++;
+            }
+            else if (isWireframeTriangleDraw)
+            {
+                // A triangle-list/strip wireframe draw with fewer than one source triangle has no edges.
+            }
+            else if (command.Kind == ProGpuDirectXCommandKind.DrawIndexed)
             {
                 if (command.IndexBuffer?.BackendBuffer is not { BufferPtr: not null } indexBuffer ||
                     command.DrawIndexed is null)
@@ -1333,6 +1388,195 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
         {
             context.Wgpu.RenderPassEncoderSetScissorRect(pass, 0, 0, targetWidth, targetHeight);
         }
+    }
+
+    private bool TryGetWireframeIndexBuffer(
+        ProGPU.Backend.WgpuContext context,
+        ProGpuDirectXCommand command,
+        out WireframeIndexCacheEntry entry,
+        out int baseVertexLocation,
+        out uint instanceCount,
+        out uint startInstanceLocation)
+    {
+        entry = null!;
+        baseVertexLocation = 0;
+        instanceCount = 1;
+        startInstanceLocation = 0;
+
+        if (command.GraphicsPipeline?.Descriptor is not { } descriptor ||
+            descriptor.RasterizerState.FillMode != DxFillMode.Wireframe ||
+            descriptor.Topology is not (DxPrimitiveTopology.TriangleList or DxPrimitiveTopology.TriangleStrip))
+        {
+            return false;
+        }
+
+        uint[] lineIndices;
+        WireframeIndexCacheKey key;
+        if (command.Draw is { } draw)
+        {
+            key = new WireframeIndexCacheKey(
+                SourceIndexBuffer: null,
+                SourceGeneration: 0,
+                IsIndexed: false,
+                Topology: descriptor.Topology,
+                SourceIndexFormat: DxIndexFormat.UInt32,
+                Count: draw.VertexCount,
+                StartLocation: 0);
+            baseVertexLocation = checked((int)draw.StartVertexLocation);
+            instanceCount = draw.InstanceCount;
+            startInstanceLocation = draw.StartInstanceLocation;
+            if (_wireframeIndexBuffers.TryGetValue(key, out entry!))
+            {
+                return true;
+            }
+
+            lineIndices = CreateWireframeLineIndicesForSequentialVertices(descriptor.Topology, draw.VertexCount);
+            if (lineIndices.Length == 0)
+            {
+                return false;
+            }
+        }
+        else if (command.DrawIndexed is { } drawIndexed)
+        {
+            if (command.IndexBuffer is not { } sourceIndexBuffer)
+            {
+                throw new InvalidOperationException("GPU-backed DirectX wireframe DrawIndexed requires an index buffer.");
+            }
+
+            key = new WireframeIndexCacheKey(
+                SourceIndexBuffer: sourceIndexBuffer,
+                SourceGeneration: sourceIndexBuffer.Generation,
+                IsIndexed: true,
+                Topology: descriptor.Topology,
+                SourceIndexFormat: drawIndexed.IndexFormat,
+                Count: drawIndexed.IndexCount,
+                StartLocation: drawIndexed.StartIndexLocation);
+            baseVertexLocation = drawIndexed.BaseVertexLocation;
+            instanceCount = drawIndexed.InstanceCount;
+            startInstanceLocation = drawIndexed.StartInstanceLocation;
+            if (_wireframeIndexBuffers.TryGetValue(key, out entry!))
+            {
+                return true;
+            }
+
+            var sourceIndices = ReadSourceIndices(
+                sourceIndexBuffer,
+                drawIndexed.IndexFormat,
+                drawIndexed.StartIndexLocation,
+                drawIndexed.IndexCount);
+            lineIndices = CreateWireframeLineIndices(descriptor.Topology, sourceIndices);
+            if (lineIndices.Length == 0)
+            {
+                return false;
+            }
+        }
+        else
+        {
+            return false;
+        }
+
+        var buffer = new ProGPU.Backend.GpuBuffer(
+            context,
+            checked((uint)(lineIndices.Length * sizeof(uint))),
+            BufferUsage.Index | BufferUsage.CopyDst,
+            "ProGPU DirectX Wireframe Index Buffer");
+        buffer.Write(lineIndices);
+        entry = new WireframeIndexCacheEntry(buffer, checked((uint)lineIndices.Length));
+        _wireframeIndexBuffers.Add(key, entry);
+
+        return true;
+    }
+
+    private static bool IsWireframeTriangleDraw(ProGpuDirectXCommand command)
+    {
+        return command.GraphicsPipeline?.Descriptor is { } descriptor &&
+            descriptor.RasterizerState.FillMode == DxFillMode.Wireframe &&
+            descriptor.Topology is DxPrimitiveTopology.TriangleList or DxPrimitiveTopology.TriangleStrip;
+    }
+
+    private static uint[] ReadSourceIndices(
+        ProGpuDirectXBuffer sourceIndexBuffer,
+        DxIndexFormat format,
+        uint startIndexLocation,
+        uint indexCount)
+    {
+        var bytesPerIndex = format == DxIndexFormat.UInt16 ? 2u : 4u;
+        var bytes = sourceIndexBuffer.ReadWriteShadowBytes(
+            checked(startIndexLocation * bytesPerIndex),
+            checked(indexCount * bytesPerIndex));
+
+        if (format == DxIndexFormat.UInt16)
+        {
+            var source = MemoryMarshal.Cast<byte, ushort>(bytes);
+            var result = new uint[source.Length];
+            for (var i = 0; i < source.Length; i++)
+            {
+                result[i] = source[i];
+            }
+
+            return result;
+        }
+
+        return MemoryMarshal.Cast<byte, uint>(bytes).ToArray();
+    }
+
+    private static uint[] CreateWireframeLineIndicesForSequentialVertices(DxPrimitiveTopology topology, uint vertexCount)
+    {
+        if (vertexCount == 0)
+        {
+            return [];
+        }
+
+        var indices = new uint[vertexCount];
+        for (uint i = 0; i < vertexCount; i++)
+        {
+            indices[i] = i;
+        }
+
+        return CreateWireframeLineIndices(topology, indices);
+    }
+
+    private static uint[] CreateWireframeLineIndices(DxPrimitiveTopology topology, ReadOnlySpan<uint> sourceIndices)
+    {
+        var triangleCount = topology switch
+        {
+            DxPrimitiveTopology.TriangleList => sourceIndices.Length / 3,
+            DxPrimitiveTopology.TriangleStrip => Math.Max(0, sourceIndices.Length - 2),
+            _ => 0
+        };
+        if (triangleCount == 0)
+        {
+            return [];
+        }
+
+        var lineIndices = new uint[checked(triangleCount * 6)];
+        var write = 0;
+        if (topology == DxPrimitiveTopology.TriangleList)
+        {
+            for (var i = 0; i + 2 < sourceIndices.Length; i += 3)
+            {
+                WriteTriangleEdges(lineIndices, ref write, sourceIndices[i], sourceIndices[i + 1], sourceIndices[i + 2]);
+            }
+        }
+        else
+        {
+            for (var i = 0; i + 2 < sourceIndices.Length; i++)
+            {
+                WriteTriangleEdges(lineIndices, ref write, sourceIndices[i], sourceIndices[i + 1], sourceIndices[i + 2]);
+            }
+        }
+
+        return lineIndices;
+    }
+
+    private static void WriteTriangleEdges(uint[] destination, ref int offset, uint a, uint b, uint c)
+    {
+        destination[offset++] = a;
+        destination[offset++] = b;
+        destination[offset++] = b;
+        destination[offset++] = c;
+        destination[offset++] = c;
+        destination[offset++] = a;
     }
 
     private void ExecuteGpuBackedDispatchCommand(ProGPU.Backend.WgpuContext context, ProGpuDirectXCommand command)
@@ -1531,6 +1775,12 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
         _shaderResourceViews.Clear();
         _samplers.Clear();
         _unorderedAccessViews.Clear();
+        foreach (var entry in _wireframeIndexBuffers.Values)
+        {
+            entry.Dispose();
+        }
+
+        _wireframeIndexBuffers.Clear();
         _isDisposed = true;
     }
 }

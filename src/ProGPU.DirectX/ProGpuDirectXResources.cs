@@ -48,6 +48,7 @@ public sealed class ProGpuDirectXBuffer : ProGpuDirectXResource
 {
     private readonly GpuBuffer? _backendBuffer;
     private readonly byte[]? _cpuShadow;
+    private readonly byte[] _writeShadow;
 
     internal ProGpuDirectXBuffer(ProGpuDirectXDevice device, DxBufferDescriptor descriptor)
         : base(device, descriptor.Label)
@@ -60,6 +61,8 @@ public sealed class ProGpuDirectXBuffer : ProGpuDirectXResource
         {
             _cpuShadow = new byte[descriptor.SizeInBytes];
         }
+
+        _writeShadow = _cpuShadow ?? new byte[descriptor.SizeInBytes];
 
         if (device.Context is { } context && device.IsGpuBacked)
         {
@@ -77,6 +80,8 @@ public sealed class ProGpuDirectXBuffer : ProGpuDirectXResource
 
     public uint LastWriteSizeInBytes { get; private set; }
 
+    public ulong Generation { get; private set; }
+
     public unsafe void Write<T>(ReadOnlySpan<T> data, uint offsetBytes = 0) where T : unmanaged
     {
         ThrowIfDisposed();
@@ -87,12 +92,15 @@ public sealed class ProGpuDirectXBuffer : ProGpuDirectXResource
         }
 
         _backendBuffer?.Write(data, offsetBytes);
-        if (_cpuShadow is not null)
+        var bytes = MemoryMarshal.AsBytes(data);
+        bytes.CopyTo(_writeShadow.AsSpan(checked((int)offsetBytes), checked((int)dataSize)));
+        if (_cpuShadow is not null && !ReferenceEquals(_cpuShadow, _writeShadow))
         {
-            MemoryMarshal.AsBytes(data).CopyTo(_cpuShadow.AsSpan(checked((int)offsetBytes), checked((int)dataSize)));
+            bytes.CopyTo(_cpuShadow.AsSpan(checked((int)offsetBytes), checked((int)dataSize)));
         }
 
         LastWriteSizeInBytes = dataSize;
+        Generation++;
     }
 
     public byte[] ReadBytes(uint offsetBytes = 0, uint? sizeInBytes = null)
@@ -127,13 +135,21 @@ public sealed class ProGpuDirectXBuffer : ProGpuDirectXResource
 
     internal void CopyCpuShadowFrom(ProGpuDirectXBuffer source)
     {
-        if (_cpuShadow is null || source._cpuShadow is null)
+        var copySize = checked((int)Math.Min(Descriptor.SizeInBytes, source.Descriptor.SizeInBytes));
+        source._writeShadow.AsSpan(0, copySize).CopyTo(_writeShadow);
+        if (_cpuShadow is not null && !ReferenceEquals(_cpuShadow, _writeShadow))
         {
-            return;
+            _writeShadow.AsSpan(0, copySize).CopyTo(_cpuShadow);
         }
 
-        source._cpuShadow.AsSpan(0, checked((int)Math.Min(Descriptor.SizeInBytes, source.Descriptor.SizeInBytes)))
-            .CopyTo(_cpuShadow);
+        LastWriteSizeInBytes = Math.Min(source.LastWriteSizeInBytes, Descriptor.SizeInBytes);
+        Generation++;
+    }
+
+    internal byte[] ReadWriteShadowBytes(uint offsetBytes, uint sizeInBytes)
+    {
+        ValidateReadRange(offsetBytes, sizeInBytes);
+        return _writeShadow.AsSpan(checked((int)offsetBytes), checked((int)sizeInBytes)).ToArray();
     }
 
     private static void ValidateDescriptor(DxBufferDescriptor descriptor)

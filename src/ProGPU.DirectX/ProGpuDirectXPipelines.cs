@@ -233,11 +233,6 @@ public sealed unsafe class ProGpuDirectXGraphicsPipeline : IDisposable
             throw new InvalidOperationException("A GPU-backed DirectX graphics pipeline requires a WGSL-backed pixel shader when a pixel shader is supplied.");
         }
 
-        if (descriptor.RasterizerState.FillMode == DxFillMode.Wireframe)
-        {
-            throw new NotSupportedException("GPU-backed wireframe rasterizer state requires a backend wireframe emulation path.");
-        }
-
         var labelPtr = SilkMarshal.StringToPtr(descriptor.Label);
         var vsEntryPtr = SilkMarshal.StringToPtr(descriptor.VertexShader.EntryPoint);
         var fsEntryPtr = descriptor.PixelShader is null
@@ -369,7 +364,7 @@ public sealed unsafe class ProGpuDirectXGraphicsPipeline : IDisposable
                 Vertex = vertexState,
                 Primitive = new PrimitiveState
                 {
-                    Topology = ProGpuDirectXFormatConverter.ToPrimitiveTopology(descriptor.Topology),
+                    Topology = GetBackendPrimitiveTopology(descriptor),
                     StripIndexFormat = IndexFormat.Undefined,
                     FrontFace = ProGpuDirectXFormatConverter.ToFrontFace(descriptor.RasterizerState.FrontFace),
                     CullMode = ProGpuDirectXFormatConverter.ToCullMode(descriptor.RasterizerState.CullMode)
@@ -401,6 +396,17 @@ public sealed unsafe class ProGpuDirectXGraphicsPipeline : IDisposable
                 SilkMarshal.Free(fsEntryPtr);
             }
         }
+    }
+
+    private static PrimitiveTopology GetBackendPrimitiveTopology(DxGraphicsPipelineDescriptor descriptor)
+    {
+        if (descriptor.RasterizerState.FillMode == DxFillMode.Wireframe &&
+            descriptor.Topology is DxPrimitiveTopology.TriangleList or DxPrimitiveTopology.TriangleStrip)
+        {
+            return PrimitiveTopology.LineList;
+        }
+
+        return ProGpuDirectXFormatConverter.ToPrimitiveTopology(descriptor.Topology);
     }
 
     private static StencilFaceState CreateStencilFaceState()
