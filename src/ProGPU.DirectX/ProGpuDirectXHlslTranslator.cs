@@ -29,8 +29,8 @@ internal static class ProGpuDirectXHlslTranslator
         @"\bSamplerState\s+(?<name>[A-Za-z_]\w*)\s*:\s*register\s*\(\s*s(?<slot>\d+)\s*\)\s*;",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-    private static readonly Regex s_textureSampleCallStartRegex = new(
-        @"(?<texture>[A-Za-z_]\w*)\.(?<method>SampleLevel|Sample)\s*\(",
+    private static readonly Regex s_textureMethodCallStartRegex = new(
+        @"(?<texture>[A-Za-z_]\w*)\.(?<method>SampleLevel|Sample|Load)\s*\(",
         RegexOptions.Compiled);
 
     private static readonly Regex s_hlslIntrinsicCallStartRegex = new(
@@ -578,7 +578,7 @@ internal static class ProGpuDirectXHlslTranslator
         IReadOnlyList<HlslShaderResource> shaderResources)
     {
         var trimmed = expression.Trim();
-        var translated = TranslateTextureSampleCalls(trimmed, constantBuffers, shaderResources);
+        var translated = TranslateTextureMethodCalls(trimmed, constantBuffers, shaderResources);
         translated = TranslateHlslIntrinsicCalls(translated, constantBuffers, shaderResources);
         translated = Regex.Replace(
             translated,
@@ -731,7 +731,7 @@ internal static class ProGpuDirectXHlslTranslator
         }
     }
 
-    private static string TranslateTextureSampleCalls(
+    private static string TranslateTextureMethodCalls(
         string expression,
         IReadOnlyList<HlslConstantBuffer> constantBuffers,
         IReadOnlyList<HlslShaderResource> shaderResources)
@@ -740,7 +740,7 @@ internal static class ProGpuDirectXHlslTranslator
         var searchIndex = 0;
         while (searchIndex < expression.Length)
         {
-            var match = s_textureSampleCallStartRegex.Match(expression, searchIndex);
+            var match = s_textureMethodCallStartRegex.Match(expression, searchIndex);
             if (!match.Success)
             {
                 builder.Append(expression, searchIndex, expression.Length - searchIndex);
@@ -776,7 +776,7 @@ internal static class ProGpuDirectXHlslTranslator
                     .Append(TranslateExpression(arguments[1], constantBuffers, shaderResources))
                     .Append(')');
             }
-            else
+            else if (string.Equals(method, "SampleLevel", StringComparison.Ordinal))
             {
                 if (arguments.Count != 3)
                 {
@@ -794,6 +794,30 @@ internal static class ProGpuDirectXHlslTranslator
                     .Append(TranslateExpression(arguments[1], constantBuffers, shaderResources))
                     .Append(", ")
                     .Append(TranslateExpression(arguments[2], constantBuffers, shaderResources))
+                    .Append(')');
+            }
+            else
+            {
+                if (arguments.Count is not (1 or 2))
+                {
+                    throw new NotSupportedException("HLSL Texture2D.Load requires a location argument and optional texel offset.");
+                }
+
+                ValidateTextureResource(texture, shaderResources);
+                var location = TranslateExpression(arguments[0], constantBuffers, shaderResources);
+                var coordinates = AppendVectorMemberAccess(location, "xy");
+                if (arguments.Count == 2)
+                {
+                    coordinates = $"({coordinates} + {TranslateExpression(arguments[1], constantBuffers, shaderResources)})";
+                }
+
+                builder
+                    .Append("textureLoad(")
+                    .Append(texture)
+                    .Append(", ")
+                    .Append(coordinates)
+                    .Append(", ")
+                    .Append(AppendVectorMemberAccess(location, "z"))
                     .Append(')');
             }
 
@@ -857,15 +881,39 @@ internal static class ProGpuDirectXHlslTranslator
         string sampler,
         IReadOnlyList<HlslShaderResource> shaderResources)
     {
-        if (!shaderResources.Any(resource =>
-                resource.Kind == HlslShaderResourceKind.Texture2D &&
-                string.Equals(resource.Name, texture, StringComparison.Ordinal)) ||
+        if (!HasTextureResource(texture, shaderResources) ||
             !shaderResources.Any(resource =>
                 resource.Kind == HlslShaderResourceKind.SamplerState &&
                 string.Equals(resource.Name, sampler, StringComparison.Ordinal)))
         {
             throw new NotSupportedException("HLSL Texture2D sampling requires declared Texture2D and SamplerState resources.");
         }
+    }
+
+    private static void ValidateTextureResource(
+        string texture,
+        IReadOnlyList<HlslShaderResource> shaderResources)
+    {
+        if (!HasTextureResource(texture, shaderResources))
+        {
+            throw new NotSupportedException("HLSL Texture2D.Load requires a declared Texture2D resource.");
+        }
+    }
+
+    private static bool HasTextureResource(
+        string texture,
+        IReadOnlyList<HlslShaderResource> shaderResources)
+    {
+        return shaderResources.Any(resource =>
+            resource.Kind == HlslShaderResourceKind.Texture2D &&
+            string.Equals(resource.Name, texture, StringComparison.Ordinal));
+    }
+
+    private static string AppendVectorMemberAccess(string expression, string member)
+    {
+        return Regex.IsMatch(expression, @"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$")
+            ? $"{expression}.{member}"
+            : $"({expression}).{member}";
     }
 
     private static string GetFieldAttribute(string semantic, uint location)
