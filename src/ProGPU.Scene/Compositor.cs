@@ -522,8 +522,9 @@ public unsafe class Compositor : IDisposable
     {
         None = 0,
         Clip = 1,
-        Opacity = 2,
-        OpacityMask = 4
+        OuterClip = 2,
+        Opacity = 4,
+        OpacityMask = 8
     }
 
     private BatchType _currentBatchType = BatchType.None;
@@ -2258,7 +2259,7 @@ public unsafe class Compositor : IDisposable
         var globalTransform = localTransform * parentTransform;
 
         var visualScope = includeLocalVisualState
-            ? PushVisualCompositeScope(node, globalTransform)
+            ? PushVisualCompositeScope(node, globalTransform, parentTransform)
             : VisualCompositeScope.None;
 
         bool isTemplated = node.HasTemplate;
@@ -5965,7 +5966,7 @@ public unsafe class Compositor : IDisposable
 
         var compositeTransform = fe.GetLocalTransform() * parentTransform;
         var paddedRect = new Rect(-padding, -padding, logicalWidth, logicalHeight);
-        var compositeScope = PushVisualCompositeScope(fe, compositeTransform);
+        var compositeScope = PushVisualCompositeScope(fe, compositeTransform, parentTransform);
         try
         {
             // Draw the cached texture onto the main swapchain.
@@ -6066,7 +6067,7 @@ public unsafe class Compositor : IDisposable
 
         var controlRect = new Rect(Vector2.Zero, node.Size);
         var compositeTransform = node.GetLocalTransform() * parentTransform;
-        var compositeScope = PushVisualCompositeScope(node, compositeTransform);
+        var compositeScope = PushVisualCompositeScope(node, compositeTransform, parentTransform);
         try
         {
             // Draw the cached layer texture onto the main swapchain.
@@ -6080,13 +6081,22 @@ public unsafe class Compositor : IDisposable
         node.IsDirty = false;
     }
 
-    private VisualCompositeScope PushVisualCompositeScope(Visual node, Matrix4x4 compositeTransform)
+    private VisualCompositeScope PushVisualCompositeScope(
+        Visual node,
+        Matrix4x4 compositeTransform,
+        Matrix4x4 parentTransform)
     {
         var scope = VisualCompositeScope.None;
         if (node.ClipBounds.HasValue)
         {
             PushClipRect(node.ClipBounds.Value, compositeTransform);
             scope |= VisualCompositeScope.Clip;
+        }
+
+        if (node.OuterClipBounds.HasValue)
+        {
+            PushClipRect(node.OuterClipBounds.Value, parentTransform);
+            scope |= VisualCompositeScope.OuterClip;
         }
 
         if (node.Opacity < 1.0f)
@@ -6114,6 +6124,11 @@ public unsafe class Compositor : IDisposable
         if ((scope & VisualCompositeScope.Opacity) != 0)
         {
             PopOpacityValue();
+        }
+
+        if ((scope & VisualCompositeScope.OuterClip) != 0)
+        {
+            PopClipRect();
         }
 
         if ((scope & VisualCompositeScope.Clip) != 0)

@@ -100,6 +100,34 @@ public sealed class CompositorClipTests
     }
 
     [Fact]
+    public void OuterClipBoundsUseParentCoordinateSpace()
+    {
+        var window = HeadlessWindow.Shared;
+        window.Resize(140, 100);
+        window.Content = new OuterClipOffsetVisual();
+
+        try
+        {
+            window.Render();
+
+            var pixels = window.ReadPixels();
+            var inside = ReadPixel(pixels, window.Width, x: 45, y: 35);
+            var outside = ReadPixel(pixels, window.Width, x: 85, y: 65);
+
+            Assert.True(
+                inside.Y > 180f && inside.X < 80f && inside.Z < 80f && inside.W == 255f,
+                $"Expected outer clip to keep parent-space probe painted, found RGBA({inside.X}, {inside.Y}, {inside.Z}, {inside.W}).");
+            Assert.False(
+                outside.Y > 180f && outside.X < 80f && outside.Z < 80f,
+                $"Expected outer clip to reject offset-space probe, found RGBA({outside.X}, {outside.Y}, {outside.Z}, {outside.W}).");
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
+    [Fact]
     public void PopOpacityRestoresAfterZeroOpacityScope()
     {
         var window = HeadlessWindow.Shared;
@@ -267,6 +295,24 @@ public sealed class CompositorClipTests
             context.DrawRectangle(_red, null, new Rect(10f, 10f, 60f, 60f));
             context.PopOpacity();
             context.DrawRectangle(_green, null, new Rect(10f, 10f, 60f, 60f));
+        }
+    }
+
+    private sealed class OuterClipOffsetVisual : FrameworkElement
+    {
+        private readonly SolidColorBrush _green = new(new Vector4(0f, 1f, 0f, 1f));
+
+        public OuterClipOffsetVisual()
+        {
+            Width = 140f;
+            Height = 100f;
+            Offset = new Vector2(40f, 30f);
+            OuterClipBounds = new Rect(30f, 25f, 40f, 40f);
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            context.DrawRectangle(_green, null, new Rect(-200f, -200f, 500f, 500f));
         }
     }
 

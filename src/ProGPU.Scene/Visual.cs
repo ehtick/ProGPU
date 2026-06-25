@@ -24,6 +24,7 @@ public class Visual
     private Vector2 _renderTransformOrigin = new Vector2(0.5f, 0.5f);
     private readonly Dictionary<string, CompositionAnimation> _activeAnimations = new();
     private Rect? _clipBounds;
+    private Rect? _outerClipBounds;
     private Brush? _opacityMask;
     private Rect? _opacityMaskBounds;
 
@@ -221,6 +222,19 @@ public class Visual
             if (_clipBounds != value)
             {
                 _clipBounds = value;
+                Invalidate();
+            }
+        }
+    }
+
+    public Rect? OuterClipBounds
+    {
+        get => _outerClipBounds;
+        set
+        {
+            if (_outerClipBounds != value)
+            {
+                _outerClipBounds = value;
                 Invalidate();
             }
         }

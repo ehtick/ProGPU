@@ -87,6 +87,25 @@ public sealed class VisualChangeVersionTests
     }
 
     [Fact]
+    public void OuterClipBoundsChangeIncrementsVisualAndParentChangeVersion()
+    {
+        var parent = new ContainerVisual();
+        var child = new Visual();
+        parent.AddChild(child);
+        parent.IsDirty = false;
+        child.IsDirty = false;
+        var parentVersion = parent.ChangeVersion;
+        var childVersion = child.ChangeVersion;
+
+        child.OuterClipBounds = new Rect(1f, 2f, 30f, 40f);
+
+        Assert.True(child.IsDirty);
+        Assert.True(parent.IsDirty);
+        Assert.True(child.ChangeVersion > childVersion);
+        Assert.True(parent.ChangeVersion > parentVersion);
+    }
+
+    [Fact]
     public void OpacityMaskChangesIncrementVisualAndParentChangeVersion()
     {
         var parent = new ContainerVisual();
