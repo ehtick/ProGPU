@@ -21,6 +21,13 @@ public sealed unsafe class ProGpuDirectXShader : IDisposable
         BytecodeInfo = Descriptor.SourceKind == DxShaderSourceKind.HlslBytecode
             ? ProGpuDirectXShaderBytecodeParser.Parse(Descriptor.Bytecode.Span)
             : null;
+        ReflectedBindingRequirements = ResolveReflectedBindingRequirements(
+            Descriptor,
+            BytecodeInfo,
+            out var reflectedBindingRequirementsSupported,
+            out var reflectedBindingRequirementsFailureReason);
+        ReflectedBindingRequirementsSupported = reflectedBindingRequirementsSupported;
+        ReflectedBindingRequirementsFailureReason = reflectedBindingRequirementsFailureReason;
         BackendSource = ResolveBackendSource(Descriptor);
 
         if (device.Context is { } context &&
@@ -38,6 +45,14 @@ public sealed unsafe class ProGpuDirectXShader : IDisposable
     public string SourceHash { get; }
 
     public ProGpuDirectXShaderBytecodeInfo? BytecodeInfo { get; }
+
+    public IReadOnlyList<DxReflectedShaderBindingRequirement> ReflectedBindingRequirements { get; }
+
+    public bool HasReflectedBindingRequirements => ReflectedBindingRequirements.Count > 0;
+
+    public bool ReflectedBindingRequirementsSupported { get; }
+
+    public string? ReflectedBindingRequirementsFailureReason { get; }
 
     public string? BackendSource { get; }
 
@@ -146,6 +161,37 @@ public sealed unsafe class ProGpuDirectXShader : IDisposable
             : null;
     }
 
+    private static IReadOnlyList<DxReflectedShaderBindingRequirement> ResolveReflectedBindingRequirements(
+        DxShaderDescriptor descriptor,
+        ProGpuDirectXShaderBytecodeInfo? bytecodeInfo,
+        out bool supported,
+        out string? failureReason)
+    {
+        supported = true;
+        failureReason = null;
+
+        if (descriptor.SourceKind != DxShaderSourceKind.HlslBytecode || bytecodeInfo is null)
+        {
+            return Array.Empty<DxReflectedShaderBindingRequirement>();
+        }
+
+        if (!bytecodeInfo.IsValid)
+        {
+            supported = false;
+            failureReason = bytecodeInfo.FailureReason;
+            return Array.Empty<DxReflectedShaderBindingRequirement>();
+        }
+
+        if (!bytecodeInfo.TryCreateBindingRequirements(descriptor.Stage, out var requirements))
+        {
+            supported = false;
+            failureReason = "Shader bytecode contains unsupported resource binding types.";
+            return Array.Empty<DxReflectedShaderBindingRequirement>();
+        }
+
+        return requirements;
+    }
+
     public void Dispose()
     {
         if (_isDisposed)
@@ -231,6 +277,15 @@ public sealed unsafe class ProGpuDirectXGraphicsPipeline : IDisposable
         Descriptor = descriptor;
         ValidateDescriptor(descriptor);
         PipelineKey = CreatePipelineKey(descriptor);
+        ReflectedBindingRequirements = CombineReflectedBindingRequirements(
+            descriptor.VertexShader,
+            descriptor.PixelShader);
+        ReflectedBindingRequirementsSupported = AreReflectedBindingRequirementsSupported(
+            descriptor.VertexShader,
+            descriptor.PixelShader);
+        ReflectedBindingRequirementsFailureReason = GetReflectedBindingRequirementsFailureReason(
+            descriptor.VertexShader,
+            descriptor.PixelShader);
 
         if (device.Context is { } context && device.IsGpuBacked)
         {
@@ -247,6 +302,14 @@ public sealed unsafe class ProGpuDirectXGraphicsPipeline : IDisposable
     public DxGraphicsPipelineDescriptor Descriptor { get; }
 
     public string PipelineKey { get; }
+
+    public IReadOnlyList<DxReflectedShaderBindingRequirement> ReflectedBindingRequirements { get; }
+
+    public bool HasReflectedBindingRequirements => ReflectedBindingRequirements.Count > 0;
+
+    public bool ReflectedBindingRequirementsSupported { get; }
+
+    public string? ReflectedBindingRequirementsFailureReason { get; }
 
     public bool HasBackendPipeline => _backendPipeline != IntPtr.Zero;
 
@@ -508,6 +571,32 @@ public sealed unsafe class ProGpuDirectXGraphicsPipeline : IDisposable
             descriptor.DepthStencilState);
     }
 
+    private static IReadOnlyList<DxReflectedShaderBindingRequirement> CombineReflectedBindingRequirements(
+        params ProGpuDirectXShader?[] shaders)
+    {
+        return shaders
+            .Where(shader => shader is not null)
+            .SelectMany(shader => shader!.ReflectedBindingRequirements)
+            .OrderBy(requirement => requirement.NativeBinding)
+            .ThenBy(requirement => requirement.Stage)
+            .ThenBy(requirement => requirement.Kind)
+            .ThenBy(requirement => requirement.Slot)
+            .ToArray();
+    }
+
+    private static bool AreReflectedBindingRequirementsSupported(params ProGpuDirectXShader?[] shaders)
+    {
+        return shaders.All(shader => shader is null || shader.ReflectedBindingRequirementsSupported);
+    }
+
+    private static string? GetReflectedBindingRequirementsFailureReason(params ProGpuDirectXShader?[] shaders)
+    {
+        return shaders
+            .Where(shader => shader is { ReflectedBindingRequirementsSupported: false })
+            .Select(shader => shader!.ReflectedBindingRequirementsFailureReason)
+            .FirstOrDefault(reason => !string.IsNullOrWhiteSpace(reason));
+    }
+
     public void Dispose()
     {
         if (_isDisposed)
@@ -541,6 +630,9 @@ public sealed unsafe class ProGpuDirectXComputePipeline : IDisposable
         }
 
         PipelineKey = $"{descriptor.ComputeShader.SourceHash}|{descriptor.ComputeShader.EntryPoint}";
+        ReflectedBindingRequirements = descriptor.ComputeShader.ReflectedBindingRequirements;
+        ReflectedBindingRequirementsSupported = descriptor.ComputeShader.ReflectedBindingRequirementsSupported;
+        ReflectedBindingRequirementsFailureReason = descriptor.ComputeShader.ReflectedBindingRequirementsFailureReason;
         if (device.Context is { } context && device.IsGpuBacked)
         {
             if (descriptor.ComputeShader.UsesRwByteAddressBufferInterlockedCompareExchange &&
@@ -561,6 +653,14 @@ public sealed unsafe class ProGpuDirectXComputePipeline : IDisposable
     public DxComputePipelineDescriptor Descriptor { get; }
 
     public string PipelineKey { get; }
+
+    public IReadOnlyList<DxReflectedShaderBindingRequirement> ReflectedBindingRequirements { get; }
+
+    public bool HasReflectedBindingRequirements => ReflectedBindingRequirements.Count > 0;
+
+    public bool ReflectedBindingRequirementsSupported { get; }
+
+    public string? ReflectedBindingRequirementsFailureReason { get; }
 
     public bool HasBackendPipeline => _backendPipeline != IntPtr.Zero;
 
