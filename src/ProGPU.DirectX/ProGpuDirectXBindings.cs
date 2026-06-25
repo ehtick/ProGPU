@@ -208,8 +208,14 @@ public sealed unsafe class ProGpuDirectXBindingSnapshot : IDisposable
                     }
                     break;
                 case ProGpuDirectXBindingKind.UnorderedAccessView:
-                    if (entry.UnorderedAccessView is { Texture: not null, BackendTextureView: not null })
+                    if (entry.UnorderedAccessView is { Texture: not null, BackendTextureView: not null } textureView)
                     {
+                        if (RequiresReadWriteStorageTextureFeature(textureView.Descriptor.Access) &&
+                            !textureView.Device.Capabilities.SupportsReadWriteStorageTextures)
+                        {
+                            return false;
+                        }
+
                         break;
                     }
 
@@ -283,7 +289,7 @@ public sealed unsafe class ProGpuDirectXBindingSnapshot : IDisposable
                 Visibility = ToShaderStage(entry.Stage),
                 StorageTexture = new StorageTextureBindingLayout
                 {
-                    Access = StorageTextureAccess.WriteOnly,
+                    Access = ProGpuDirectXFormatConverter.ToStorageTextureAccess(entry.UnorderedAccessView.Descriptor.Access),
                     Format = ProGpuDirectXFormatConverter.ToTextureFormat(entry.UnorderedAccessView.Format),
                     ViewDimension = texture.Descriptor.ArraySize > 1
                         ? TextureViewDimension.Dimension2DArray
@@ -303,6 +309,11 @@ public sealed unsafe class ProGpuDirectXBindingSnapshot : IDisposable
             },
             _ => throw new InvalidOperationException($"Unsupported DirectX binding entry '{entry.Kind}'.")
         };
+    }
+
+    private static bool RequiresReadWriteStorageTextureFeature(DxUnorderedAccessViewAccess access)
+    {
+        return access is DxUnorderedAccessViewAccess.ReadOnly or DxUnorderedAccessViewAccess.ReadWrite;
     }
 
     private static BindGroupEntry CreateBindGroupEntry(ProGpuDirectXBindingEntry entry)

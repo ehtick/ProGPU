@@ -184,6 +184,7 @@ public sealed record DxUnorderedAccessViewDescriptor
 {
     public DxResourceViewDimension Dimension { get; init; } = DxResourceViewDimension.Texture2D;
     public DxResourceFormat Format { get; init; } = DxResourceFormat.Unknown;
+    public DxUnorderedAccessViewAccess Access { get; init; } = DxUnorderedAccessViewAccess.WriteOnly;
     public uint MipSlice { get; init; }
     public uint FirstArraySlice { get; init; }
     public uint ArraySize { get; init; } = 1;

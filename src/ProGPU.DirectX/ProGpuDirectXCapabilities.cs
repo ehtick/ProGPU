@@ -11,10 +11,14 @@ public sealed class ProGpuDirectXCapabilities
         DxFeatureLevel.Direct3D9_3
     ];
 
-    internal ProGpuDirectXCapabilities(bool isGpuBacked, uint maxTextureDimension2D)
+    internal ProGpuDirectXCapabilities(
+        bool isGpuBacked,
+        uint maxTextureDimension2D,
+        bool supportsReadWriteStorageTextures)
     {
         IsGpuBacked = isGpuBacked;
         MaxTextureDimension2D = maxTextureDimension2D;
+        SupportsReadWriteStorageTextures = supportsReadWriteStorageTextures;
     }
 
     public bool IsGpuBacked { get; }
@@ -24,6 +28,8 @@ public sealed class ProGpuDirectXCapabilities
     public DxFeatureLevel HighestFeatureLevel => s_featureLevels[0];
 
     public uint MaxTextureDimension2D { get; }
+
+    public bool SupportsReadWriteStorageTextures { get; }
 
     public bool SupportsFeatureLevel(DxFeatureLevel featureLevel)
     {

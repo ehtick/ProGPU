@@ -270,6 +270,8 @@ public sealed class ProGpuDirectXUnorderedAccessView : ProGpuDirectXView
             throw new ArgumentException("Texture was not created with unordered-access usage.", nameof(texture));
         }
 
+        ValidateAccess(descriptor.Access);
+
         if (descriptor.MipSlice >= texture.Descriptor.MipLevels)
         {
             throw new ArgumentOutOfRangeException(nameof(descriptor), "Unordered-access view mip slice exceeds the texture.");
@@ -292,9 +294,19 @@ public sealed class ProGpuDirectXUnorderedAccessView : ProGpuDirectXView
             throw new ArgumentException("Buffer was not created with unordered-access usage.", nameof(buffer));
         }
 
+        ValidateAccess(descriptor.Access);
+
         if (descriptor.ElementCount == 0)
         {
             throw new ArgumentOutOfRangeException(nameof(descriptor), "Buffer unordered-access views must expose at least one element.");
+        }
+    }
+
+    private static void ValidateAccess(DxUnorderedAccessViewAccess access)
+    {
+        if (!Enum.IsDefined(access))
+        {
+            throw new ArgumentOutOfRangeException(nameof(access), "Unknown DirectX unordered-access view access mode.");
         }
     }
 }

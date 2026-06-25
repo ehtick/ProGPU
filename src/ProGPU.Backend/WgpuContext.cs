@@ -26,6 +26,7 @@ public unsafe class WgpuContext : IDisposable
     public uint MaxSampledTexturesPerShaderStage { get; private set; } = 16;
     public uint MaxSamplersPerShaderStage { get; private set; } = 16;
     public uint MaxBindGroups { get; private set; } = 4;
+    public bool SupportsReadOnlyAndReadWriteStorageTextures { get; private set; }
 
     public static event Action<ErrorType, string>? OnWebGpuError;
 
@@ -475,6 +476,7 @@ public unsafe class WgpuContext : IDisposable
         MaxSampledTexturesPerShaderStage = Math.Max(16, deviceLimits.Limits.MaxSampledTexturesPerShaderStage);
         MaxSamplersPerShaderStage = Math.Max(16, deviceLimits.Limits.MaxSamplersPerShaderStage);
         MaxBindGroups = Math.Max(4, deviceLimits.Limits.MaxBindGroups);
+        SupportsReadOnlyAndReadWriteStorageTextures = IsReadWriteStorageTextureSupportEnabled();
 
         // 5. Retrieve Default Queue
         SafeLog("[WGPUCONTEXT] Getting Default Queue\n");
@@ -639,6 +641,14 @@ public unsafe class WgpuContext : IDisposable
         }
 
         return requiredLimits;
+    }
+
+    private static bool IsReadWriteStorageTextureSupportEnabled()
+    {
+        // wgpuInstanceHasWGSLLanguageFeature aborts in the current wgpu-native build, so keep this explicit.
+        var value = Environment.GetEnvironmentVariable("PROGPU_ENABLE_READWRITE_STORAGE_TEXTURES");
+        return string.Equals(value, "1", StringComparison.Ordinal) ||
+               string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
     }
 
     public void ReconfigureIfNeeded(uint width, uint height)

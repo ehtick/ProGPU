@@ -1498,6 +1498,7 @@ fn fs_main() -> @location(0) vec4<f32> {
         using var snapshot = context.CreateBindingSnapshot(DxShaderStage.Compute, "Texture UAV Snapshot");
 
         Assert.True(uav.HasBackendTextureView);
+        Assert.Equal(DxUnorderedAccessViewAccess.WriteOnly, uav.Descriptor.Access);
         Assert.True(snapshot.HasBackendBindGroup);
         Assert.Single(snapshot.Entries);
         Assert.Contains(snapshot.Entries, entry =>
@@ -1506,6 +1507,86 @@ fn fs_main() -> @location(0) vec4<f32> {
             entry.Slot == 0 &&
             ReferenceEquals(entry.UnorderedAccessView, uav));
         Assert.Contains("uav-texture", snapshot.BindingKey, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void UnorderedAccessViewsPreserveAccessMetadata()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var texture = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 16,
+            Height = 16,
+            Format = DxResourceFormat.R32Float,
+            Usage = DxTextureUsage.UnorderedAccess | DxTextureUsage.ShaderResource
+        });
+        using var buffer = device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = 64,
+            Usage = DxBufferUsage.UnorderedAccess,
+            StrideInBytes = 4
+        });
+
+        using var readOnlyTextureUav = device.CreateUnorderedAccessView(
+            texture,
+            new DxUnorderedAccessViewDescriptor
+            {
+                Format = DxResourceFormat.R32Float,
+                Access = DxUnorderedAccessViewAccess.ReadOnly,
+                Label = "ReadOnlyTextureUav"
+            });
+        using var readWriteBufferUav = device.CreateUnorderedAccessView(
+            buffer,
+            new DxUnorderedAccessViewDescriptor
+            {
+                Dimension = DxResourceViewDimension.Buffer,
+                Access = DxUnorderedAccessViewAccess.ReadWrite,
+                ElementCount = 16,
+                ElementStrideInBytes = 4,
+                Label = "ReadWriteBufferUav"
+            });
+
+        Assert.Equal(DxUnorderedAccessViewAccess.ReadOnly, readOnlyTextureUav.Descriptor.Access);
+        Assert.Equal(DxUnorderedAccessViewAccess.ReadWrite, readWriteBufferUav.Descriptor.Access);
+    }
+
+    [Fact]
+    public void ReadWriteTextureUnorderedAccessViewsRespectDeviceFeature()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var texture = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 16,
+            Height = 16,
+            Format = DxResourceFormat.R32Float,
+            Usage = DxTextureUsage.UnorderedAccess | DxTextureUsage.ShaderResource | DxTextureUsage.CopySource
+        });
+        using var uav = device.CreateUnorderedAccessView(
+            texture,
+            new DxUnorderedAccessViewDescriptor
+            {
+                Format = DxResourceFormat.R32Float,
+                Access = DxUnorderedAccessViewAccess.ReadWrite,
+                Label = "ReadWriteTextureUav"
+            });
+        using var context = device.CreateImmediateContext();
+
+        context.SetUnorderedAccessView(0, uav);
+        using var snapshot = context.CreateBindingSnapshot(DxShaderStage.Compute, "ReadWrite Texture UAV Snapshot");
+
+        Assert.True(uav.HasBackendTextureView);
+        Assert.Equal(
+            device.Context!.SupportsReadOnlyAndReadWriteStorageTextures,
+            device.Capabilities.SupportsReadWriteStorageTextures);
+        Assert.Equal(device.Capabilities.SupportsReadWriteStorageTextures, snapshot.HasBackendBindGroup);
+        Assert.Contains(snapshot.Entries, entry =>
+            entry.Kind == ProGpuDirectXBindingKind.UnorderedAccessView &&
+            entry.Stage == DxShaderStage.Compute &&
+            entry.Slot == 0 &&
+            entry.UnorderedAccessView?.Descriptor.Access == DxUnorderedAccessViewAccess.ReadWrite &&
+            ReferenceEquals(entry.UnorderedAccessView, uav));
     }
 
     [Fact]
@@ -1580,6 +1661,36 @@ fn fs_main() -> @location(0) vec4<f32> {
                 {
                     Dimension = DxResourceViewDimension.Buffer,
                     ElementCount = 0
+                }));
+
+        using var unorderedTexture = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 16,
+            Height = 16,
+            Usage = DxTextureUsage.UnorderedAccess
+        });
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            device.CreateUnorderedAccessView(
+                unorderedTexture,
+                new DxUnorderedAccessViewDescriptor
+                {
+                    Access = (DxUnorderedAccessViewAccess)99
+                }));
+
+        using var unorderedBuffer = device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = 64,
+            Usage = DxBufferUsage.UnorderedAccess
+        });
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            device.CreateUnorderedAccessView(
+                unorderedBuffer,
+                new DxUnorderedAccessViewDescriptor
+                {
+                    Dimension = DxResourceViewDimension.Buffer,
+                    Access = (DxUnorderedAccessViewAccess)99,
+                    ElementCount = 16,
+                    ElementStrideInBytes = 4
                 }));
 
         using var copySource = device.CreateTexture2D(new DxTexture2DDescriptor

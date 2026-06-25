@@ -12,7 +12,8 @@ public sealed class ProGpuDirectXDevice : IDisposable
         Options = options;
         Capabilities = new ProGpuDirectXCapabilities(
             isGpuBacked: context is { IsDisposed: false, Device: not null, Queue: not null },
-            maxTextureDimension2D: 16384);
+            maxTextureDimension2D: 16384,
+            supportsReadWriteStorageTextures: context?.SupportsReadOnlyAndReadWriteStorageTextures == true);
 
         if (options.RequireGpuBackedResources && !Capabilities.IsGpuBacked)
         {

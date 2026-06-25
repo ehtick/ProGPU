@@ -232,6 +232,13 @@ public enum DxResourceViewDimension
     Texture2DArray
 }
 
+public enum DxUnorderedAccessViewAccess
+{
+    WriteOnly,
+    ReadOnly,
+    ReadWrite
+}
+
 public enum DxFilter
 {
     MinMagMipPoint,

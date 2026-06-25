@@ -205,6 +205,16 @@ internal static class ProGpuDirectXFormatConverter
         };
     }
 
+    public static StorageTextureAccess ToStorageTextureAccess(DxUnorderedAccessViewAccess access)
+    {
+        return access switch
+        {
+            DxUnorderedAccessViewAccess.ReadOnly => StorageTextureAccess.ReadOnly,
+            DxUnorderedAccessViewAccess.ReadWrite => StorageTextureAccess.ReadWrite,
+            _ => StorageTextureAccess.WriteOnly
+        };
+    }
+
     public static BlendFactor ToBlendFactor(DxBlendFactor factor)
     {
         return factor switch
