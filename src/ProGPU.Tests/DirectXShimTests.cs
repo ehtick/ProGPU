@@ -732,6 +732,80 @@ fn fs_main() -> @location(0) vec4<f32> {
     }
 
     [Fact]
+    public void SciChartRenderContextRecordsPenAwareLineBatches()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var renderContext = new ProGpuDirectXSciChartRenderContext2D(device, 64, 32);
+        var pen = renderContext.CreatePen(0xFF00FF00, strokeThickness: 3f, isAntiAliased: false);
+        ProGpuDirectXSciChartColorVertex[] vertices =
+        [
+            new(0, 4, 0, 0),
+            new(8, 12, 0, 0),
+            new(16, 12, 0, 0xFFFF0000),
+            new(24, 12, 0, 0xFFFF0000),
+            new(32, 12, 0, 0xFF0000FF)
+        ];
+
+        renderContext.DrawLinesBatch(
+            vertices,
+            count: vertices.Length,
+            pen,
+            isStrips: false,
+            isDigital: true,
+            isDrawNanAsGaps: false,
+            transform: new ProGpuDirectXSciChartVertexTransform());
+
+        Assert.Single(renderContext.LineBatchDraws);
+        Assert.Equal(pen, renderContext.LineBatchDraws[0].Pen);
+        Assert.False(renderContext.LineBatchDraws[0].IsStrips);
+        Assert.True(renderContext.LineBatchDraws[0].IsDigital);
+        Assert.False(renderContext.LineBatchDraws[0].IsDrawNanAsGaps);
+        Assert.Equal(vertices.Length, renderContext.LineBatchDraws[0].Vertices.Count);
+        Assert.Equal(DxPrimitiveTopology.TriangleList, renderContext.ImmediateContext.GraphicsPipeline?.Descriptor.Topology);
+        var draw = renderContext.ImmediateContext.Commands[^1].Draw ?? throw new InvalidOperationException("Expected SciChart pen-aware line draw command payload.");
+        Assert.Equal(18u, draw.VertexCount);
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            renderContext.CreatePen(0xFF00FF00, strokeThickness: 0f));
+    }
+
+    [Fact]
+    public void SciChartRenderContextLineBatchHonorsNanGapPolicy()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var renderContext = new ProGpuDirectXSciChartRenderContext2D(device, 64, 32);
+        ProGpuDirectXSciChartColorVertex[] vertices =
+        [
+            new(0, 8, 0, 0xFF00FF00),
+            new(float.NaN, float.NaN, 0, 0xFF00FF00),
+            new(16, 8, 0, 0xFF00FF00),
+            new(32, 8, 0, 0xFF00FF00)
+        ];
+
+        renderContext.DrawLinesBatch(
+            vertices,
+            count: vertices.Length,
+            ProGpuDirectXSciChartPen2D.Default,
+            isStrips: true,
+            isDigital: false,
+            isDrawNanAsGaps: true,
+            transform: new ProGpuDirectXSciChartVertexTransform());
+        var gapDraw = renderContext.ImmediateContext.Commands[^1].Draw ?? throw new InvalidOperationException("Expected SciChart gap line draw command payload.");
+        Assert.Equal(2u, gapDraw.VertexCount);
+
+        renderContext.BeginFrame();
+        renderContext.DrawLinesBatch(
+            vertices,
+            count: vertices.Length,
+            ProGpuDirectXSciChartPen2D.Default,
+            isStrips: true,
+            isDigital: false,
+            isDrawNanAsGaps: false,
+            transform: new ProGpuDirectXSciChartVertexTransform());
+        var closedDraw = renderContext.ImmediateContext.Commands[^1].Draw ?? throw new InvalidOperationException("Expected SciChart closed line draw command payload.");
+        Assert.Equal(4u, closedDraw.VertexCount);
+    }
+
+    [Fact]
     public void SciChartRenderContextRecordsColumnBatchesAndClip()
     {
         using var device = ProGpuDirectXDevice.CreateMetadataDevice();
@@ -2452,6 +2526,59 @@ VertexOutput VSMain(VertexInput input)
                 var pixel = ReadRgbaPixel(targetPixels, 16, 8 + (index % 8), index / 8);
                 return pixel.R < 50 && pixel.G > 150 && pixel.B < 50 && pixel.A > 200;
             });
+    }
+
+    [Fact]
+    public void FlushSubmitsGpuBackedSciChartThickLineBatchCommands()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var renderContext = new ProGpuDirectXSciChartRenderContext2D(
+            device,
+            16,
+            16,
+            DxResourceFormat.R8G8B8A8Unorm);
+        var pen = renderContext.CreatePen(0xFF00FF00, strokeThickness: 5f);
+        ProGpuDirectXSciChartColorVertex[] vertices =
+        [
+            new(8, 0, 0, 0),
+            new(8, 15, 0, 0)
+        ];
+
+        renderContext.Clear(DxColor.Black);
+        renderContext.DrawLinesBatch(
+            vertices,
+            count: vertices.Length,
+            pen,
+            isStrips: true,
+            isDigital: false,
+            isDrawNanAsGaps: true,
+            transform: new ProGpuDirectXSciChartVertexTransform());
+        renderContext.Flush();
+
+        Assert.Single(renderContext.LineBatchDraws);
+        Assert.Equal(pen, renderContext.LineBatchDraws[0].Pen);
+        Assert.Equal(1ul, renderContext.ImmediateContext.SubmittedDrawCount);
+
+        var targetPixels = renderContext.ReadTargetPixels();
+        var center = ReadRgbaPixel(targetPixels, 16, 8, 8);
+        Assert.True(center.R < 50, $"Expected thick line low red center pixel, actual: {center}");
+        Assert.True(center.G > 150, $"Expected thick line green center pixel, actual: {center}");
+        Assert.True(center.B < 50, $"Expected thick line low blue center pixel, actual: {center}");
+        Assert.True(center.A > 200, $"Expected thick line opaque center pixel, actual: {center}");
+
+        var edge = ReadRgbaPixel(targetPixels, 16, 9, 8);
+        Assert.True(edge.R < 50, $"Expected thick line low red edge pixel, actual: {edge}");
+        Assert.True(edge.G > 150, $"Expected thick line green edge pixel, actual: {edge}");
+        Assert.True(edge.B < 50, $"Expected thick line low blue edge pixel, actual: {edge}");
+        Assert.True(edge.A > 200, $"Expected thick line opaque edge pixel, actual: {edge}");
+
+        var outside = ReadRgbaPixel(targetPixels, 16, 12, 8);
+        Assert.True(outside.R < 50, $"Expected black outside thick line, actual: {outside}");
+        Assert.True(outside.G < 50, $"Expected black outside thick line, actual: {outside}");
+        Assert.True(outside.B < 50, $"Expected black outside thick line, actual: {outside}");
+        Assert.True(outside.A > 200, $"Expected opaque clear alpha outside thick line, actual: {outside}");
     }
 
     [Fact]

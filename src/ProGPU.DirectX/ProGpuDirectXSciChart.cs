@@ -27,6 +27,32 @@ public enum ProGpuDirectXSciChartSpriteAnchor
     BottomRight
 }
 
+public sealed record ProGpuDirectXSciChartPen2D
+{
+    public static ProGpuDirectXSciChartPen2D Default { get; } = new(0xFFFFFFFF, 1f);
+
+    public ProGpuDirectXSciChartPen2D(
+        uint colorArgb,
+        float strokeThickness = 1f,
+        bool isAntiAliased = true)
+    {
+        if (!float.IsFinite(strokeThickness) || strokeThickness <= 0f)
+        {
+            throw new ArgumentOutOfRangeException(nameof(strokeThickness), "SciChart pens require a finite positive stroke thickness.");
+        }
+
+        ColorArgb = colorArgb;
+        StrokeThickness = strokeThickness;
+        IsAntiAliased = isAntiAliased;
+    }
+
+    public uint ColorArgb { get; init; }
+
+    public float StrokeThickness { get; init; }
+
+    public bool IsAntiAliased { get; init; }
+}
+
 public enum ProGpuDirectXSciChartFinancialBatchKind
 {
     Candles,
@@ -86,6 +112,10 @@ public readonly record struct ProGpuDirectXSciChartVertexTransform(bool SwapAxis
 
 public sealed record ProGpuDirectXSciChartLineBatchDraw(
     IReadOnlyList<ProGpuDirectXSciChartColorVertex> Vertices,
+    ProGpuDirectXSciChartPen2D Pen,
+    bool IsStrips,
+    bool IsDigital,
+    bool? IsDrawNanAsGaps,
     ProGpuDirectXSciChartVertexTransform Transform,
     DxRect? ClipRect);
 
@@ -437,6 +467,15 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
         return new ProGpuDirectXSciChartSprite2D(CreateTexture(width, height));
     }
 
+    public ProGpuDirectXSciChartPen2D CreatePen(
+        uint colorArgb,
+        float strokeThickness = 1f,
+        bool isAntiAliased = true)
+    {
+        ThrowIfDisposed();
+        return new ProGpuDirectXSciChartPen2D(colorArgb, strokeThickness, isAntiAliased);
+    }
+
     public void Clear(DxColor color)
     {
         ThrowIfDisposed();
@@ -519,8 +558,28 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
         int count,
         ProGpuDirectXSciChartVertexTransform transform)
     {
+        DrawLinesBatch(
+            vertices,
+            count,
+            ProGpuDirectXSciChartPen2D.Default,
+            isStrips: true,
+            isDigital: false,
+            isDrawNanAsGaps: true,
+            transform);
+    }
+
+    public void DrawLinesBatch(
+        ReadOnlySpan<ProGpuDirectXSciChartColorVertex> vertices,
+        int count,
+        ProGpuDirectXSciChartPen2D? pen,
+        bool isStrips,
+        bool isDigital,
+        bool? isDrawNanAsGaps,
+        ProGpuDirectXSciChartVertexTransform transform)
+    {
         ThrowIfDisposed();
         ValidateLineVertexRange(vertices.Length, count);
+        pen ??= ProGpuDirectXSciChartPen2D.Default;
 
         if (HasEmptyClip)
         {
@@ -528,13 +587,23 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
         }
 
         var copiedVertices = vertices[..count].ToArray();
-        var vertexBuffer = CreateLineBatchVertexBuffer(copiedVertices, transform, out var submittedVertexCount);
+        var vertexBuffer = CreateLineBatchVertexBuffer(
+            copiedVertices,
+            transform,
+            pen,
+            isStrips,
+            isDigital,
+            isDrawNanAsGaps,
+            out var submittedVertexCount,
+            out var usesTriangleTopology);
         if (vertexBuffer is null)
         {
             return;
         }
 
-        var pipeline = GetLinePipeline(RenderTarget.Descriptor.Format);
+        var pipeline = usesTriangleTopology
+            ? GetColumnFillPipeline(RenderTarget.Descriptor.Format)
+            : GetLinePipeline(RenderTarget.Descriptor.Format);
         _context.SetRenderTargets(RenderTarget);
         _context.SetViewport(new DxViewport(0, 0, RenderTarget.Width, RenderTarget.Height));
         _context.SetScissorRect(_clipRect ?? FullRenderTargetRect);
@@ -548,6 +617,10 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
 
         _lineBatchDraws.Add(new ProGpuDirectXSciChartLineBatchDraw(
             copiedVertices,
+            pen,
+            isStrips,
+            isDigital,
+            isDrawNanAsGaps,
             transform,
             _clipRect));
         _transientResources.Add(vertexBuffer);
@@ -1337,48 +1410,227 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
     private ProGpuDirectXBuffer? CreateLineBatchVertexBuffer(
         ReadOnlySpan<ProGpuDirectXSciChartColorVertex> vertices,
         ProGpuDirectXSciChartVertexTransform transform,
-        out uint submittedVertexCount)
+        ProGpuDirectXSciChartPen2D pen,
+        bool isStrips,
+        bool isDigital,
+        bool? isDrawNanAsGaps,
+        out uint submittedVertexCount,
+        out bool usesTriangleTopology)
     {
-        var vertexData = new List<float>(checked((vertices.Length - 1) * 12));
-        for (var i = 0; i < vertices.Length - 1; i++)
+        usesTriangleTopology = pen.StrokeThickness > 1f;
+        var vertexData = new List<float>(checked(vertices.Length * (usesTriangleTopology ? 36 : 12)));
+        if (isStrips)
         {
-            var start = vertices[i];
-            var end = vertices[i + 1];
-            if (!HasFiniteLinePosition(start) || !HasFiniteLinePosition(end))
+            AppendStripLineSegments(
+                vertexData,
+                vertices,
+                transform,
+                pen,
+                isDigital,
+                isDrawNanAsGaps,
+                usesTriangleTopology);
+        }
+        else
+        {
+            AppendPairLineSegments(
+                vertexData,
+                vertices,
+                transform,
+                pen,
+                isDigital,
+                usesTriangleTopology);
+        }
+
+        return CreateSolidColorVertexBuffer(vertexData, "SciChartLineBatchVertices", out submittedVertexCount);
+    }
+
+    private void AppendStripLineSegments(
+        List<float> vertexData,
+        ReadOnlySpan<ProGpuDirectXSciChartColorVertex> vertices,
+        ProGpuDirectXSciChartVertexTransform transform,
+        ProGpuDirectXSciChartPen2D pen,
+        bool isDigital,
+        bool? isDrawNanAsGaps,
+        bool usesTriangleTopology)
+    {
+        var resetOnInvalid = isDrawNanAsGaps != false;
+        var hasPrevious = false;
+        float previousX = 0f;
+        float previousY = 0f;
+        uint previousColor = 0;
+
+        foreach (var vertex in vertices)
+        {
+            if (!TryGetLinePoint(vertex, transform, pen, out var x, out var y, out var color))
+            {
+                if (resetOnInvalid)
+                {
+                    hasPrevious = false;
+                }
+
+                continue;
+            }
+
+            if (hasPrevious)
+            {
+                AppendLineSegment(
+                    vertexData,
+                    previousX,
+                    previousY,
+                    previousColor,
+                    x,
+                    y,
+                    color,
+                    pen.StrokeThickness,
+                    isDigital,
+                    usesTriangleTopology);
+            }
+
+            previousX = x;
+            previousY = y;
+            previousColor = color;
+            hasPrevious = true;
+        }
+    }
+
+    private void AppendPairLineSegments(
+        List<float> vertexData,
+        ReadOnlySpan<ProGpuDirectXSciChartColorVertex> vertices,
+        ProGpuDirectXSciChartVertexTransform transform,
+        ProGpuDirectXSciChartPen2D pen,
+        bool isDigital,
+        bool usesTriangleTopology)
+    {
+        for (var i = 0; i < vertices.Length - 1; i += 2)
+        {
+            if (!TryGetLinePoint(vertices[i], transform, pen, out var x0, out var y0, out var color0) ||
+                !TryGetLinePoint(vertices[i + 1], transform, pen, out var x1, out var y1, out var color1))
             {
                 continue;
             }
 
-            AppendLineVertex(vertexData, start, transform);
-            AppendLineVertex(vertexData, end, transform);
+            AppendLineSegment(
+                vertexData,
+                x0,
+                y0,
+                color0,
+                x1,
+                y1,
+                color1,
+                pen.StrokeThickness,
+                isDigital,
+                usesTriangleTopology);
         }
-
-        submittedVertexCount = checked((uint)(vertexData.Count / 6));
-        if (submittedVertexCount == 0)
-        {
-            return null;
-        }
-
-        var vertexArray = vertexData.ToArray();
-        var vertexBuffer = _device.CreateBuffer(new DxBufferDescriptor
-        {
-            SizeInBytes = checked((uint)(vertexArray.Length * sizeof(float))),
-            Usage = DxBufferUsage.Vertex | DxBufferUsage.CopyDestination,
-            StrideInBytes = 24,
-            Label = $"SciChartLineBatchVertices {submittedVertexCount}"
-        });
-        vertexBuffer.Write(vertexArray);
-        return vertexBuffer;
     }
 
-    private void AppendLineVertex(
+    private void AppendLineSegment(
         List<float> vertexData,
-        ProGpuDirectXSciChartColorVertex source,
-        ProGpuDirectXSciChartVertexTransform transform)
+        float x0,
+        float y0,
+        uint color0,
+        float x1,
+        float y1,
+        uint color1,
+        float strokeThickness,
+        bool isDigital,
+        bool usesTriangleTopology)
     {
-        var x = transform.SwapAxis ? source.Y : source.X;
-        var y = transform.SwapAxis ? source.X : source.Y;
-        AppendSolidColorVertex(vertexData, x, y, source.ColorArgb);
+        if (isDigital &&
+            x0 != x1 &&
+            y0 != y1)
+        {
+            AppendStraightLineSegment(
+                vertexData,
+                x0,
+                y0,
+                color0,
+                x1,
+                y0,
+                color0,
+                strokeThickness,
+                usesTriangleTopology);
+            AppendStraightLineSegment(
+                vertexData,
+                x1,
+                y0,
+                color0,
+                x1,
+                y1,
+                color1,
+                strokeThickness,
+                usesTriangleTopology);
+            return;
+        }
+
+        AppendStraightLineSegment(
+            vertexData,
+            x0,
+            y0,
+            color0,
+            x1,
+            y1,
+            color1,
+            strokeThickness,
+            usesTriangleTopology);
+    }
+
+    private void AppendStraightLineSegment(
+        List<float> vertexData,
+        float x0,
+        float y0,
+        uint color0,
+        float x1,
+        float y1,
+        uint color1,
+        float strokeThickness,
+        bool usesTriangleTopology)
+    {
+        if (usesTriangleTopology)
+        {
+            AppendThickLineQuad(vertexData, x0, y0, color0, x1, y1, color1, strokeThickness);
+            return;
+        }
+
+        AppendSolidColorVertex(vertexData, x0, y0, color0);
+        AppendSolidColorVertex(vertexData, x1, y1, color1);
+    }
+
+    private void AppendThickLineQuad(
+        List<float> vertexData,
+        float x0,
+        float y0,
+        uint color0,
+        float x1,
+        float y1,
+        uint color1,
+        float strokeThickness)
+    {
+        var dx = x1 - x0;
+        var dy = y1 - y0;
+        var length = MathF.Sqrt(dx * dx + dy * dy);
+        if (length <= float.Epsilon)
+        {
+            return;
+        }
+
+        var halfThickness = strokeThickness / 2f;
+        var nx = -dy / length * halfThickness;
+        var ny = dx / length * halfThickness;
+        var x0a = x0 + nx;
+        var y0a = y0 + ny;
+        var x0b = x0 - nx;
+        var y0b = y0 - ny;
+        var x1a = x1 + nx;
+        var y1a = y1 + ny;
+        var x1b = x1 - nx;
+        var y1b = y1 - ny;
+
+        AppendSolidColorVertex(vertexData, x0a, y0a, color0);
+        AppendSolidColorVertex(vertexData, x1a, y1a, color1);
+        AppendSolidColorVertex(vertexData, x1b, y1b, color1);
+        AppendSolidColorVertex(vertexData, x0a, y0a, color0);
+        AppendSolidColorVertex(vertexData, x1b, y1b, color1);
+        AppendSolidColorVertex(vertexData, x0b, y0b, color0);
     }
 
     private void AppendFinancialLine(
@@ -2131,6 +2383,29 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
         return float.IsFinite(vertex.X)
             && float.IsFinite(vertex.Y)
             && float.IsFinite(vertex.Offset);
+    }
+
+    private static bool TryGetLinePoint(
+        ProGpuDirectXSciChartColorVertex vertex,
+        ProGpuDirectXSciChartVertexTransform transform,
+        ProGpuDirectXSciChartPen2D pen,
+        out float x,
+        out float y,
+        out uint colorArgb)
+    {
+        if (!HasFiniteLinePosition(vertex))
+        {
+            x = y = 0f;
+            colorArgb = 0;
+            return false;
+        }
+
+        x = transform.SwapAxis ? vertex.Y : vertex.X;
+        y = transform.SwapAxis ? vertex.X : vertex.Y;
+        colorArgb = vertex.ColorArgb == 0
+            ? pen.ColorArgb
+            : vertex.ColorArgb;
+        return HasVisibleColor(colorArgb);
     }
 
     private static bool HasFiniteFinancialVertex(ProGpuDirectXSciChartOhlcCandleVertex vertex)
