@@ -79,6 +79,7 @@ public static class DataVirtualizationPage
             };
     
             // Populate logs
+            AppState.EnsureLogItemsGenerated();
             foreach (var log in AppState._logItems)
             {
                 dataGrid.AddItem(log);

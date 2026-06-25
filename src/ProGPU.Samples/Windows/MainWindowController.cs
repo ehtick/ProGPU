@@ -54,8 +54,6 @@ public static unsafe class MainWindowController
             TextureUsage.TextureBinding | TextureUsage.StorageBinding,
             alphaMode: GpuTextureAlphaMode.Premultiplied);
 
-        AppState.GenerateLogItems();
-
         ObjModels.EnsureSamplesExist("models");
 
         BuildSceneGraph();
@@ -99,8 +97,6 @@ public static unsafe class MainWindowController
         AppState._canvasShadowTexture = new GpuTexture(AppState._wgpuContext!, 600, 600, TextureFormat.Rgba8Unorm, 
             TextureUsage.TextureBinding | TextureUsage.StorageBinding,
             alphaMode: GpuTextureAlphaMode.Premultiplied);
-
-        AppState.GenerateLogItems();
 
         BuildSceneGraph();
 

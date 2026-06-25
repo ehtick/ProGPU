@@ -329,6 +329,17 @@ public class SamplePagesTests : IDisposable
     }
 
     [Fact]
+    public void Test_DataVirtualizationPage_GeneratesLogsOnDemand()
+    {
+        EnsureFontsAndStateLoaded();
+        AppState._logItems.Clear();
+
+        _ = DataVirtualizationPage.Create();
+
+        Assert.Equal(10000, AppState._logItems.Count);
+    }
+
+    [Fact]
     public void Test_FrameworkEffectsPage_Renders()
     {
         RunPageTest(FrameworkEffectsPage.Create(), "Framework Effects");

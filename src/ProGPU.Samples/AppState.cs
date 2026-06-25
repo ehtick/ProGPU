@@ -112,4 +112,12 @@ public static class AppState
             });
         }
     }
+
+    public static void EnsureLogItemsGenerated()
+    {
+        if (_logItems.Count == 0)
+        {
+            GenerateLogItems();
+        }
+    }
 }
