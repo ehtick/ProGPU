@@ -10,7 +10,7 @@ internal static class ProGpuDirectXHlslTranslator
         RegexOptions.Compiled | RegexOptions.Singleline);
 
     private static readonly Regex s_fieldRegex = new(
-        @"\b(?<type>[A-Za-z_]\w*)\s+(?<name>[A-Za-z_]\w*)\s*:\s*(?<semantic>[A-Za-z_]\w*)\s*;",
+        @"\b(?<type>[A-Za-z_]\w*)\s+(?<name>[A-Za-z_]\w*)\s*(?::\s*(?<semantic>[A-Za-z_]\w*))?\s*;",
         RegexOptions.Compiled);
 
     private static readonly Regex s_cbufferRegex = new(
@@ -64,8 +64,8 @@ internal static class ProGpuDirectXHlslTranslator
         try
         {
             var constantBuffers = ParseConstantBuffers(source);
-            var shaderResources = ParseShaderResources(source);
             var structs = ParseStructs(source);
+            var shaderResources = ParseShaderResources(source, structs);
             if (!TryParseFunction(source, descriptor.EntryPoint!, out var function))
             {
                 return false;
@@ -75,7 +75,7 @@ internal static class ProGpuDirectXHlslTranslator
             {
                 DxShaderStage.Vertex => TranslateVertexShader(descriptor.Stage, constantBuffers, shaderResources, structs, function),
                 DxShaderStage.Pixel => TranslatePixelShader(descriptor.Stage, constantBuffers, shaderResources, structs, function),
-                DxShaderStage.Compute => TranslateComputeShader(descriptor.Stage, constantBuffers, shaderResources, function),
+                DxShaderStage.Compute => TranslateComputeShader(descriptor.Stage, constantBuffers, shaderResources, structs, function),
                 _ => string.Empty
             };
 
@@ -97,8 +97,8 @@ internal static class ProGpuDirectXHlslTranslator
     {
         var builder = new StringBuilder();
         AppendConstantBuffers(builder, stage, constantBuffers);
-        AppendShaderResources(builder, stage, shaderResources);
         AppendStructs(builder, structs);
+        AppendShaderResources(builder, stage, shaderResources, structs);
         builder.Append("@vertex\n");
         builder
             .Append("fn ")
@@ -133,8 +133,8 @@ internal static class ProGpuDirectXHlslTranslator
     {
         var builder = new StringBuilder();
         AppendConstantBuffers(builder, stage, constantBuffers);
-        AppendShaderResources(builder, stage, shaderResources);
         AppendStructs(builder, structs);
+        AppendShaderResources(builder, stage, shaderResources, structs);
         builder.Append("@fragment\n");
         builder
             .Append("fn ")
@@ -164,6 +164,7 @@ internal static class ProGpuDirectXHlslTranslator
         DxShaderStage stage,
         IReadOnlyList<HlslConstantBuffer> constantBuffers,
         IReadOnlyList<HlslShaderResource> shaderResources,
+        IReadOnlyDictionary<string, HlslStruct> structs,
         HlslFunction function)
     {
         if (!string.Equals(function.ReturnType, "void", StringComparison.Ordinal))
@@ -174,7 +175,8 @@ internal static class ProGpuDirectXHlslTranslator
         var (x, y, z) = function.NumThreads ?? (1u, 1u, 1u);
         var builder = new StringBuilder();
         AppendConstantBuffers(builder, stage, constantBuffers);
-        AppendShaderResources(builder, stage, shaderResources);
+        AppendStructs(builder, structs);
+        AppendShaderResources(builder, stage, shaderResources, structs);
         builder
             .Append("@compute @workgroup_size(")
             .Append(x)
@@ -225,7 +227,8 @@ internal static class ProGpuDirectXHlslTranslator
     private static void AppendShaderResources(
         StringBuilder builder,
         DxShaderStage stage,
-        IReadOnlyList<HlslShaderResource> shaderResources)
+        IReadOnlyList<HlslShaderResource> shaderResources,
+        IReadOnlyDictionary<string, HlslStruct> structs)
     {
         foreach (var resource in shaderResources)
         {
@@ -246,7 +249,7 @@ internal static class ProGpuDirectXHlslTranslator
                         .Append(") var<storage, read> ")
                         .Append(resource.Name)
                         .Append(": array<")
-                        .Append(MapType(resource.ElementType!))
+                        .Append(MapResourceElementType(resource.ElementType!, structs))
                         .Append(">;\n");
                     break;
                 case HlslShaderResourceKind.SamplerState:
@@ -276,19 +279,24 @@ internal static class ProGpuDirectXHlslTranslator
             var location = 0u;
             foreach (var field in hlslStruct.Fields)
             {
+                builder.Append("    ");
+                if (!string.IsNullOrWhiteSpace(field.Semantic))
+                {
+                    builder
+                        .Append(GetFieldAttribute(field.Semantic, location))
+                        .Append(' ');
+
+                    if (!IsBuiltinSemantic(field.Semantic))
+                    {
+                        location++;
+                    }
+                }
+
                 builder
-                    .Append("    ")
-                    .Append(GetFieldAttribute(field.Semantic, location))
-                    .Append(' ')
                     .Append(field.Name)
                     .Append(": ")
-                    .Append(MapType(field.Type))
+                    .Append(MapTypeOrIdentifier(field.Type))
                     .Append(",\n");
-
-                if (!IsBuiltinSemantic(field.Semantic))
-                {
-                    location++;
-                }
             }
 
             builder.Append("}\n\n");
@@ -432,7 +440,9 @@ internal static class ProGpuDirectXHlslTranslator
         return constantBuffers;
     }
 
-    private static List<HlslShaderResource> ParseShaderResources(string source)
+    private static List<HlslShaderResource> ParseShaderResources(
+        string source,
+        IReadOnlyDictionary<string, HlslStruct> structs)
     {
         var resources = new List<HlslShaderResource>();
         foreach (Match match in s_texture2DResourceRegex.Matches(source))
@@ -452,7 +462,7 @@ internal static class ProGpuDirectXHlslTranslator
         foreach (Match match in s_structuredBufferResourceRegex.Matches(source))
         {
             var elementType = match.Groups["type"].Value;
-            _ = MapType(elementType);
+            _ = MapResourceElementType(elementType, structs);
             resources.Add(new HlslShaderResource(
                 HlslShaderResourceKind.StructuredBuffer,
                 match.Groups["name"].Value,
@@ -486,12 +496,12 @@ internal static class ProGpuDirectXHlslTranslator
                 fields.Add(new HlslField(
                     fieldMatch.Groups["type"].Value,
                     fieldMatch.Groups["name"].Value,
-                    fieldMatch.Groups["semantic"].Value));
+                    fieldMatch.Groups["semantic"].Success ? fieldMatch.Groups["semantic"].Value : null));
             }
 
             if (fields.Count == 0)
             {
-                throw new NotSupportedException($"HLSL struct '{name}' has no translatable semantic fields.");
+                throw new NotSupportedException($"HLSL struct '{name}' has no translatable fields.");
             }
 
             structs[name] = new HlslStruct(name, fields);
@@ -1064,6 +1074,17 @@ internal static class ProGpuDirectXHlslTranslator
         return IsKnownScalarOrVectorType(type) ? MapType(type) : type;
     }
 
+    private static string MapResourceElementType(
+        string type,
+        IReadOnlyDictionary<string, HlslStruct> structs)
+    {
+        return IsKnownScalarOrVectorType(type)
+            ? MapType(type)
+            : structs.ContainsKey(type)
+                ? type
+                : throw new NotSupportedException($"Unsupported HLSL StructuredBuffer element type '{type}'.");
+    }
+
     private static string MapType(string type)
     {
         return type switch
@@ -1112,7 +1133,7 @@ internal static class ProGpuDirectXHlslTranslator
 
     private sealed record HlslStruct(string Name, IReadOnlyList<HlslField> Fields);
 
-    private sealed record HlslField(string Type, string Name, string Semantic);
+    private sealed record HlslField(string Type, string Name, string? Semantic);
 
     private sealed record HlslConstantBuffer(
         string Name,
