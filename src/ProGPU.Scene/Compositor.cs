@@ -1908,10 +1908,12 @@ public unsafe class Compositor : IDisposable
 
     private bool IsTextureBindable(GpuTexture? texture)
     {
+        var textureContext = texture?.Context;
         return texture != null
             && !texture.IsDisposed
-            && !texture.Context.IsDisposed
-            && ReferenceEquals(texture.Context, _context)
+            && textureContext != null
+            && !textureContext.IsDisposed
+            && ReferenceEquals(textureContext, _context)
             && texture.TexturePtr != null
             && texture.ViewPtr != null;
     }
@@ -8264,8 +8266,10 @@ public unsafe class Compositor : IDisposable
 
     private bool CanReuseMaskTexture(GpuTexture texture)
     {
+        var textureContext = texture.Context;
         return !texture.IsDisposed
-            && ReferenceEquals(texture.Context, _context)
+            && textureContext != null
+            && ReferenceEquals(textureContext, _context)
             && texture.TexturePtr != null
             && texture.ViewPtr != null;
     }
