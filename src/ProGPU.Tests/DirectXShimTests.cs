@@ -184,6 +184,23 @@ float4 PSMain(VertexOutput input) : SV_Target
 }
 """;
 
+    private const string StructuredBufferVertexHlsl = """
+StructuredBuffer<float4> Positions : register(t0);
+
+float4 VSMain(uint vertexId : SV_VertexID) : SV_Position
+{
+    float4 position = Positions[vertexId];
+    return float4(position.xy, 0.0, 1.0);
+}
+""";
+
+    private const string SolidGreenPixelHlsl = """
+float4 PSMain() : SV_Target
+{
+    return float4(0.0, 1.0, 0.0, 1.0);
+}
+""";
+
     private const string SolidLineWgsl = """
 @vertex
 fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> @builtin(position) vec4<f32> {
@@ -486,6 +503,25 @@ float4 PSMain(float2 uv : TEXCOORD0) : SV_Target
         Assert.Contains("var falloff: f32 = pow(sqrt(light), 1.0);", shader.BackendSource, StringComparison.Ordinal);
         Assert.Contains("var mask: f32 = clamp(mix(0.0, sampled.r * 2.0, fract(1.5)) * falloff * loaded.r * biased.r * grad.r, 0.0, 1.0);", shader.BackendSource, StringComparison.Ordinal);
         Assert.Contains("textureSampleLevel(SourceTexture, SourceSampler, uv, 0.0) * vec4<f32>(0.0, 0.5, 0.25, 0.0)", shader.BackendSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void HlslTextShaderTranslatesStructuredBufferResources()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var shader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Vertex,
+            SourceKind = DxShaderSourceKind.HlslText,
+            Source = StructuredBufferVertexHlsl,
+            EntryPoint = "VSMain"
+        });
+
+        Assert.NotNull(shader.BackendSource);
+        Assert.Contains("@binding(64) var<storage, read> Positions: array<vec4<f32>>;", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("@vertex\nfn VSMain(@builtin(vertex_index) vertexId: u32) -> @builtin(position) vec4<f32>", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("var position: vec4<f32> = Positions[vertexId];", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("return vec4<f32>(position.xy, 0.0, 1.0);", shader.BackendSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1002,6 +1038,87 @@ VertexOutput VSMain(VertexInput input)
         Assert.True(center.G < 50, $"Expected low green center pixel after HLSL texture sample draw, actual: {center}");
         Assert.True(center.B < 50, $"Expected low blue center pixel after HLSL texture sample draw, actual: {center}");
         Assert.True(center.A > 200, $"Expected opaque center pixel after HLSL texture sample draw, actual: {center}");
+    }
+
+    [Fact]
+    public void FlushSubmitsGpuBackedHlslStructuredBufferDrawCommands()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var target = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 32,
+            Height = 32,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.RenderTarget | DxTextureUsage.CopySource
+        });
+        using var positions = device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = 48,
+            Usage = DxBufferUsage.Structured | DxBufferUsage.ShaderResource | DxBufferUsage.CopyDestination,
+            StrideInBytes = 16,
+            Label = "Structured Positions"
+        });
+        positions.Write<float>(
+        [
+            -0.8f, -0.8f, 0.0f, 1.0f,
+             0.8f, -0.8f, 0.0f, 1.0f,
+             0.0f,  0.8f, 0.0f, 1.0f
+        ]);
+        using var positionsView = device.CreateShaderResourceView(
+            positions,
+            new DxShaderResourceViewDescriptor
+            {
+                Dimension = DxResourceViewDimension.Buffer,
+                ElementCount = 3,
+                ElementStrideInBytes = 16
+            });
+        using var vertexShader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Vertex,
+            SourceKind = DxShaderSourceKind.HlslText,
+            Source = StructuredBufferVertexHlsl,
+            EntryPoint = "VSMain",
+            Label = "HLSL StructuredBuffer Vertex"
+        });
+        using var pixelShader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Pixel,
+            SourceKind = DxShaderSourceKind.HlslText,
+            Source = SolidGreenPixelHlsl,
+            EntryPoint = "PSMain",
+            Label = "HLSL Green Pixel"
+        });
+        using var pipeline = device.CreateGraphicsPipeline(new DxGraphicsPipelineDescriptor
+        {
+            VertexShader = vertexShader,
+            PixelShader = pixelShader,
+            RenderTargetFormat = DxResourceFormat.R8G8B8A8Unorm,
+            BlendState = new DxBlendStateDescriptor { EnableBlend = false },
+            RasterizerState = new DxRasterizerStateDescriptor { CullMode = DxCullMode.None }
+        });
+        using var context = device.CreateImmediateContext();
+
+        context.SetRenderTargets(target);
+        context.SetViewport(new DxViewport(0, 0, 32, 32));
+        context.ClearRenderTarget(target, DxColor.Black);
+        context.SetGraphicsPipeline(pipeline);
+        context.SetShaderResource(DxShaderStage.Vertex, 0, positionsView);
+        context.Draw(3);
+        context.Flush();
+
+        Assert.True(vertexShader.HasBackendShaderModule);
+        Assert.Contains("@binding(64) var<storage, read> Positions: array<vec4<f32>>;", vertexShader.BackendSource!, StringComparison.Ordinal);
+        Assert.True(pipeline.HasBackendPipeline);
+        Assert.Equal(1ul, context.SubmittedDrawCount);
+
+        var pixels = target.BackendTexture!.ReadPixels();
+        var center = ReadRgbaPixel(pixels, 32, 16, 16);
+        Assert.True(center.R < 50, $"Expected low red center pixel after structured-buffer draw, actual: {center}");
+        Assert.True(center.G > 200, $"Expected green center pixel after structured-buffer draw, actual: {center}");
+        Assert.True(center.B < 50, $"Expected low blue center pixel after structured-buffer draw, actual: {center}");
+        Assert.True(center.A > 200, $"Expected opaque center pixel after structured-buffer draw, actual: {center}");
     }
 
     [Fact]

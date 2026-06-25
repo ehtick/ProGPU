@@ -25,6 +25,10 @@ internal static class ProGpuDirectXHlslTranslator
         @"\bTexture2D(?:\s*<\s*(?<type>[A-Za-z_]\w*)\s*>)?\s+(?<name>[A-Za-z_]\w*)\s*:\s*register\s*\(\s*t(?<slot>\d+)\s*\)\s*;",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+    private static readonly Regex s_structuredBufferResourceRegex = new(
+        @"\bStructuredBuffer\s*<\s*(?<type>[A-Za-z_]\w*)\s*>\s+(?<name>[A-Za-z_]\w*)\s*:\s*register\s*\(\s*t(?<slot>\d+)\s*\)\s*;",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     private static readonly Regex s_samplerStateResourceRegex = new(
         @"\bSamplerState\s+(?<name>[A-Za-z_]\w*)\s*:\s*register\s*\(\s*s(?<slot>\d+)\s*\)\s*;",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -38,7 +42,7 @@ internal static class ProGpuDirectXHlslTranslator
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex s_unsupportedRegex = new(
-        @"\b(tbuffer|Texture(?!2D\b)\w*|Sampler(?!State\b)\w*|RWTexture\w*|StructuredBuffer|RWStructuredBuffer|ByteAddressBuffer|RWByteAddressBuffer)\b",
+        @"\b(tbuffer|Texture(?!2D\b)\w*|Sampler(?!State\b)\w*|RWTexture\w*|RWStructuredBuffer|ByteAddressBuffer|RWByteAddressBuffer)\b",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     public static bool TryTranslate(DxShaderDescriptor descriptor, out string wgsl)
@@ -234,6 +238,16 @@ internal static class ProGpuDirectXHlslTranslator
                         .Append(") var ")
                         .Append(resource.Name)
                         .Append(": texture_2d<f32>;\n");
+                    break;
+                case HlslShaderResourceKind.StructuredBuffer:
+                    builder
+                        .Append("@group(0) @binding(")
+                        .Append(ProGpuDirectXNativeBindingMap.GetShaderResourceBinding(stage, resource.Register))
+                        .Append(") var<storage, read> ")
+                        .Append(resource.Name)
+                        .Append(": array<")
+                        .Append(MapType(resource.ElementType!))
+                        .Append(">;\n");
                     break;
                 case HlslShaderResourceKind.SamplerState:
                     builder
@@ -433,6 +447,17 @@ internal static class ProGpuDirectXHlslTranslator
                 HlslShaderResourceKind.Texture2D,
                 match.Groups["name"].Value,
                 uint.Parse(match.Groups["slot"].Value)));
+        }
+
+        foreach (Match match in s_structuredBufferResourceRegex.Matches(source))
+        {
+            var elementType = match.Groups["type"].Value;
+            _ = MapType(elementType);
+            resources.Add(new HlslShaderResource(
+                HlslShaderResourceKind.StructuredBuffer,
+                match.Groups["name"].Value,
+                uint.Parse(match.Groups["slot"].Value),
+                elementType));
         }
 
         foreach (Match match in s_samplerStateResourceRegex.Matches(source))
@@ -1100,11 +1125,13 @@ internal static class ProGpuDirectXHlslTranslator
     private sealed record HlslShaderResource(
         HlslShaderResourceKind Kind,
         string Name,
-        uint Register);
+        uint Register,
+        string? ElementType = null);
 
     private enum HlslShaderResourceKind
     {
         Texture2D,
+        StructuredBuffer,
         SamplerState
     }
 
