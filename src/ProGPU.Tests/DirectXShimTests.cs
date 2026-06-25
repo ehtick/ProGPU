@@ -98,7 +98,7 @@ struct VertexOutput
 VertexOutput VSMain(VertexInput input)
 {
     VertexOutput output;
-    output.position = mul(WorldViewProjection, float4(input.position, 1.0));
+    output.position = mul(float4(input.position, 1.0), WorldViewProjection);
     output.color = input.color;
     return output;
 }
@@ -480,6 +480,48 @@ float4 PSMain(float2 uv : TEXCOORD0) : SV_Target
     }
 
     [Fact]
+    public void HlslTextShaderTranslatesVectorFirstMulAndMatrixTypes()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var shader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Vertex,
+            SourceKind = DxShaderSourceKind.HlslText,
+            Source = """
+cbuffer Transform : register(b0)
+{
+    float3x3 NormalMatrix;
+};
+
+struct VertexInput
+{
+    float4 position : POSITION;
+    float3 normal : NORMAL0;
+};
+
+struct VertexOutput
+{
+    float4 position : SV_Position;
+    float3 normal : NORMAL0;
+};
+
+VertexOutput VSMain(VertexInput input)
+{
+    VertexOutput output;
+    output.position = input.position;
+    output.normal = normalize(mul(input.normal, NormalMatrix));
+    return output;
+}
+""",
+            EntryPoint = "VSMain"
+        });
+
+        Assert.NotNull(shader.BackendSource);
+        Assert.Contains("NormalMatrix: mat3x3<f32>", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("output.normal = normalize((input.normal * transform.NormalMatrix));", shader.BackendSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void RejectsMismatchedPipelineShaderStages()
     {
         using var device = ProGpuDirectXDevice.CreateMetadataDevice();
@@ -807,6 +849,7 @@ float4 PSMain(float2 uv : TEXCOORD0) : SV_Target
         Assert.True(vertexShader.HasBackendShaderModule);
         Assert.Contains("@binding(0)", vertexShader.BackendSource!, StringComparison.Ordinal);
         Assert.Contains("transform.WorldViewProjection", vertexShader.BackendSource!, StringComparison.Ordinal);
+        Assert.Contains("output.position = (vec4<f32>(input.position, 1.0) * transform.WorldViewProjection);", vertexShader.BackendSource!, StringComparison.Ordinal);
         Assert.True(pipeline.HasBackendPipeline);
         Assert.Equal(1ul, context.SubmittedDrawCount);
 

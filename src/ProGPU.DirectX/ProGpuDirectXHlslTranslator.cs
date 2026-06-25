@@ -34,7 +34,7 @@ internal static class ProGpuDirectXHlslTranslator
         RegexOptions.Compiled);
 
     private static readonly Regex s_hlslIntrinsicCallStartRegex = new(
-        @"(?<!\.)\b(?<name>abs|acos|asin|atan|atan2|ceil|clamp|cos|cross|ddx|ddy|distance|dot|exp|exp2|floor|frac|length|lerp|log|log2|mad|max|min|normalize|pow|rcp|reflect|refract|round|rsqrt|saturate|sign|sin|smoothstep|sqrt|tan)\s*\(",
+        @"(?<!\.)\b(?<name>abs|acos|asin|atan|atan2|ceil|clamp|cos|cross|ddx|ddy|distance|dot|exp|exp2|floor|frac|length|lerp|log|log2|mad|max|min|mul|normalize|pow|rcp|reflect|refract|round|rsqrt|saturate|sign|sin|smoothstep|sqrt|tan)\s*\(",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex s_unsupportedRegex = new(
@@ -578,20 +578,11 @@ internal static class ProGpuDirectXHlslTranslator
         IReadOnlyList<HlslShaderResource> shaderResources)
     {
         var trimmed = expression.Trim();
-        var mul = Regex.Match(
-            trimmed,
-            @"^mul\s*\(\s*(?<left>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\s*,\s*(?<right>.+)\s*\)$",
-            RegexOptions.Singleline);
-        if (mul.Success)
-        {
-            return $"{TranslateExpression(mul.Groups["left"].Value, constantBuffers, shaderResources)} * {TranslateExpression(mul.Groups["right"].Value, constantBuffers, shaderResources)}";
-        }
-
         var translated = TranslateTextureSampleCalls(trimmed, constantBuffers, shaderResources);
         translated = TranslateHlslIntrinsicCalls(translated, constantBuffers, shaderResources);
         translated = Regex.Replace(
             translated,
-            @"\b(?<type>float|float2|float3|float4|uint|uint2|uint3|uint4|int|int2|int3|int4)\s*\(",
+            @"\b(?<type>float|float2|float3|float4|float2x2|float2x3|float2x4|float3x2|float3x3|float3x4|float4x2|float4x3|float4x4|uint|uint2|uint3|uint4|int|int2|int3|int4)\s*\(",
             match => $"{MapType(match.Groups["type"].Value)}(");
 
         foreach (var constantBuffer in constantBuffers)
@@ -674,6 +665,10 @@ internal static class ProGpuDirectXHlslTranslator
             case "mad":
                 ValidateIntrinsicArgumentCount(name, arguments, 3);
                 return $"(({arguments[0]}) * ({arguments[1]}) + ({arguments[2]}))";
+
+            case "mul":
+                ValidateIntrinsicArgumentCount(name, arguments, 2);
+                return $"({arguments[0]} * {arguments[1]})";
 
             case "rcp":
                 ValidateIntrinsicArgumentCount(name, arguments, 1);
@@ -962,6 +957,14 @@ internal static class ProGpuDirectXHlslTranslator
             "float2" => "vec2<f32>",
             "float3" => "vec3<f32>",
             "float4" => "vec4<f32>",
+            "float2x2" => "mat2x2<f32>",
+            "float2x3" => "mat2x3<f32>",
+            "float2x4" => "mat2x4<f32>",
+            "float3x2" => "mat3x2<f32>",
+            "float3x3" => "mat3x3<f32>",
+            "float3x4" => "mat3x4<f32>",
+            "float4x2" => "mat4x2<f32>",
+            "float4x3" => "mat4x3<f32>",
             "float4x4" => "mat4x4<f32>",
             "uint" => "u32",
             "uint2" => "vec2<u32>",
@@ -978,7 +981,9 @@ internal static class ProGpuDirectXHlslTranslator
     private static bool IsKnownScalarOrVectorType(string type)
     {
         return type is "float" or "float2" or "float3" or "float4" or
-            "float4x4" or
+            "float2x2" or "float2x3" or "float2x4" or
+            "float3x2" or "float3x3" or "float3x4" or
+            "float4x2" or "float4x3" or "float4x4" or
             "uint" or "uint2" or "uint3" or "uint4" or
             "int" or "int2" or "int3" or "int4";
     }
