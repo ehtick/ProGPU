@@ -769,6 +769,42 @@ fn fs_main() -> @location(0) vec4<f32> {
     }
 
     [Fact]
+    public void TextureUnorderedAccessViewsCreateGpuBackedBindGroups()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var texture = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 16,
+            Height = 16,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.UnorderedAccess | DxTextureUsage.ShaderResource | DxTextureUsage.CopySource
+        });
+        using var uav = device.CreateUnorderedAccessView(
+            texture,
+            new DxUnorderedAccessViewDescriptor
+            {
+                Format = DxResourceFormat.R8G8B8A8Unorm,
+                Label = "GpuTextureUav"
+            });
+        using var context = device.CreateImmediateContext();
+
+        context.SetUnorderedAccessView(0, uav);
+        using var snapshot = context.CreateBindingSnapshot(DxShaderStage.Compute, "Texture UAV Snapshot");
+
+        Assert.True(uav.HasBackendTextureView);
+        Assert.True(snapshot.HasBackendBindGroup);
+        Assert.Single(snapshot.Entries);
+        Assert.Contains(snapshot.Entries, entry =>
+            entry.Kind == ProGpuDirectXBindingKind.UnorderedAccessView &&
+            entry.Stage == DxShaderStage.Compute &&
+            entry.Slot == 0 &&
+            ReferenceEquals(entry.UnorderedAccessView, uav));
+        Assert.Contains("uav-texture", snapshot.BindingKey, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void InvalidDescriptorsAreRejected()
     {
         using var device = ProGpuDirectXDevice.CreateMetadataDevice();

@@ -208,11 +208,17 @@ public sealed unsafe class ProGpuDirectXBindingSnapshot : IDisposable
                     }
                     break;
                 case ProGpuDirectXBindingKind.UnorderedAccessView:
-                    if (entry.UnorderedAccessView is not { Buffer.BackendBuffer.BufferPtr: not null })
+                    if (entry.UnorderedAccessView is { Texture: not null, BackendTextureView: not null })
                     {
-                        return false;
+                        break;
                     }
-                    break;
+
+                    if (entry.UnorderedAccessView is { Buffer.BackendBuffer.BufferPtr: not null })
+                    {
+                        break;
+                    }
+
+                    return false;
                 default:
                     return false;
             }
@@ -271,6 +277,19 @@ public sealed unsafe class ProGpuDirectXBindingSnapshot : IDisposable
                         : SamplerBindingType.Filtering
                 }
             },
+            ProGpuDirectXBindingKind.UnorderedAccessView when entry.UnorderedAccessView?.Texture is { } texture => new BindGroupLayoutEntry
+            {
+                Binding = entry.NativeBinding,
+                Visibility = ToShaderStage(entry.Stage),
+                StorageTexture = new StorageTextureBindingLayout
+                {
+                    Access = StorageTextureAccess.WriteOnly,
+                    Format = ProGpuDirectXFormatConverter.ToTextureFormat(entry.UnorderedAccessView.Format),
+                    ViewDimension = texture.Descriptor.ArraySize > 1
+                        ? TextureViewDimension.Dimension2DArray
+                        : TextureViewDimension.Dimension2D
+                }
+            },
             ProGpuDirectXBindingKind.UnorderedAccessView when entry.UnorderedAccessView?.Buffer is not null => new BindGroupLayoutEntry
             {
                 Binding = entry.NativeBinding,
@@ -313,6 +332,11 @@ public sealed unsafe class ProGpuDirectXBindingSnapshot : IDisposable
             {
                 Binding = entry.NativeBinding,
                 Sampler = sampler.BackendSampler
+            },
+            ProGpuDirectXBindingKind.UnorderedAccessView when entry.UnorderedAccessView?.Texture is not null => new BindGroupEntry
+            {
+                Binding = entry.NativeBinding,
+                TextureView = entry.UnorderedAccessView.BackendTextureView
             },
             ProGpuDirectXBindingKind.UnorderedAccessView when entry.UnorderedAccessView is { Buffer.BackendBuffer: { } buffer } view => new BindGroupEntry
             {
