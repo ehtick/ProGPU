@@ -343,6 +343,23 @@ internal static class ProGpuDirectXHlslTranslator
                 continue;
             }
 
+            var initializedDeclaration = Regex.Match(
+                statement,
+                @"^(?<type>[A-Za-z_]\w*)\s+(?<name>[A-Za-z_]\w*)\s*=\s*(?<right>.+)$",
+                RegexOptions.Singleline);
+            if (initializedDeclaration.Success)
+            {
+                builder
+                    .Append("    var ")
+                    .Append(initializedDeclaration.Groups["name"].Value)
+                    .Append(": ")
+                    .Append(MapTypeOrIdentifier(initializedDeclaration.Groups["type"].Value))
+                    .Append(" = ")
+                    .Append(TranslateExpression(initializedDeclaration.Groups["right"].Value.Trim(), constantBuffers, shaderResources))
+                    .Append(";\n");
+                continue;
+            }
+
             var assignment = Regex.Match(
                 statement,
                 @"^(?<left>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*=\s*(?<right>.+)$",

@@ -172,7 +172,8 @@ struct VertexOutput
 
 float4 PSMain(VertexOutput input) : SV_Target
 {
-    return SourceTexture.SampleLevel(SourceSampler, input.uv, 0.0) * float4(1.0, 0.0, 0.0, 1.0);
+    float4 sampled = SourceTexture.SampleLevel(SourceSampler, input.uv, 0.0);
+    return sampled * float4(1.0, 0.0, 0.0, 1.0);
 }
 """;
 
@@ -454,14 +455,15 @@ SamplerState SourceSampler : register(s0);
 
 float4 PSMain(float2 uv : TEXCOORD0) : SV_Target
 {
-    return SourceTexture.Sample(SourceSampler, float2(uv.x, uv.y)) + SourceTexture.SampleLevel(SourceSampler, uv, 0.0) * float4(1.0, 0.5, 0.25, 1.0);
+    float4 sampled = SourceTexture.Sample(SourceSampler, float2(uv.x, uv.y));
+    return sampled + SourceTexture.SampleLevel(SourceSampler, uv, 0.0) * float4(1.0, 0.5, 0.25, 1.0);
 }
 """,
             EntryPoint = "PSMain"
         });
 
         Assert.NotNull(shader.BackendSource);
-        Assert.Contains("textureSample(SourceTexture, SourceSampler, vec2<f32>(uv.x, uv.y))", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("var sampled: vec4<f32> = textureSample(SourceTexture, SourceSampler, vec2<f32>(uv.x, uv.y));", shader.BackendSource, StringComparison.Ordinal);
         Assert.Contains("textureSampleLevel(SourceTexture, SourceSampler, uv, 0.0) * vec4<f32>(1.0, 0.5, 0.25, 1.0)", shader.BackendSource, StringComparison.Ordinal);
     }
 
@@ -919,7 +921,7 @@ float4 PSMain(float2 uv : TEXCOORD0) : SV_Target
         Assert.True(pixelShader.HasBackendShaderModule);
         Assert.Contains("@binding(576)", pixelShader.BackendSource!, StringComparison.Ordinal);
         Assert.Contains("@binding(768)", pixelShader.BackendSource!, StringComparison.Ordinal);
-        Assert.Contains("textureSampleLevel(SourceTexture, SourceSampler, input.uv, 0.0) * vec4<f32>(1.0, 0.0, 0.0, 1.0)", pixelShader.BackendSource!, StringComparison.Ordinal);
+        Assert.Contains("var sampled: vec4<f32> = textureSampleLevel(SourceTexture, SourceSampler, input.uv, 0.0);", pixelShader.BackendSource!, StringComparison.Ordinal);
         Assert.True(pipeline.HasBackendPipeline);
         Assert.Equal(1ul, context.SubmittedDrawCount);
 
