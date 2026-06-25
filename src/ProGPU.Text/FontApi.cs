@@ -19,6 +19,9 @@ public class FontInfo
 
 public static class FontApi
 {
+    private static readonly object s_cachedSystemFontsLock = new();
+    private static List<FontInfo>? s_cachedSystemFonts;
+
     public static List<FontInfo> GetSystemFonts()
     {
         var list = new List<FontInfo>();
@@ -60,6 +63,47 @@ public static class FontApi
 
         uniqueList.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
         return uniqueList;
+    }
+
+    public static FontInfo? FindSystemFont(params string[] familyOrFullNames)
+    {
+        if (familyOrFullNames.Length == 0)
+        {
+            return null;
+        }
+
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var name in familyOrFullNames)
+        {
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                names.Add(name.Trim());
+            }
+        }
+
+        if (names.Count == 0)
+        {
+            return null;
+        }
+
+        foreach (var font in GetCachedSystemFonts())
+        {
+            if (names.Contains(font.FamilyName) || names.Contains(font.Name))
+            {
+                return font;
+            }
+        }
+
+        return null;
+    }
+
+    private static IReadOnlyList<FontInfo> GetCachedSystemFonts()
+    {
+        lock (s_cachedSystemFontsLock)
+        {
+            s_cachedSystemFonts ??= GetSystemFonts();
+            return s_cachedSystemFonts;
+        }
     }
 
     public static FontInfo? ParseFontInfo(string file)

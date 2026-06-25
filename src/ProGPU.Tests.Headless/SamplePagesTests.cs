@@ -9,7 +9,6 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Documents;
-using ProGPU.Text;
 using ProGPU.Tests.Headless;
 using ProGPU.Samples;
 using Xunit;
@@ -32,37 +31,10 @@ public class SamplePagesTests : IDisposable
 
     private static void EnsureFontsAndStateLoaded()
     {
-        if (PopupService.DefaultFont != null) return;
-
-        string fontPath = "/System/Library/Fonts/Supplemental/Arial.ttf";
-        if (!File.Exists(fontPath))
+        if (PopupService.DefaultFont == null || AppState._font == null)
         {
-            fontPath = "Arial.ttf";
+            SampleFontLoader.EnsureLoaded("[ProGPU.Tests.Headless]");
         }
-
-        if (File.Exists(fontPath))
-        {
-            var font = new TtfFont(fontPath);
-            PopupService.DefaultFont = font;
-            AppState._font = font;
-        }
-        else
-        {
-            throw new FileNotFoundException("Arial.ttf is required to execute typography tests.");
-        }
-
-        // Load supplemental fonts safely with fallbacks
-        string timesPath = "/System/Library/Fonts/Supplemental/Times New Roman.ttf";
-        AppState._fontTimes = File.Exists(timesPath) ? new TtfFont(timesPath) : AppState._font;
-
-        string courierPath = "/System/Library/Fonts/Supplemental/Courier New.ttf";
-        AppState._fontCourier = File.Exists(courierPath) ? new TtfFont(courierPath) : AppState._font;
-
-        string georgiaPath = "/System/Library/Fonts/Supplemental/Georgia.ttf";
-        AppState._fontGeorgia = File.Exists(georgiaPath) ? new TtfFont(georgiaPath) : AppState._font;
-
-        string comicPath = "/System/Library/Fonts/Supplemental/Comic Sans MS.ttf";
-        AppState._fontComic = File.Exists(comicPath) ? new TtfFont(comicPath) : AppState._font;
 
         // Populate virtualized data
         AppState.GenerateLogItems();

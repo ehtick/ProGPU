@@ -1,7 +1,6 @@
 using Thickness = Microsoft.UI.Xaml.Thickness;
 using System;
 using System.Diagnostics;
-using System.IO;
 using System.Numerics;
 using Silk.NET.Windowing;
 using Silk.NET.Input;
@@ -40,38 +39,7 @@ public static unsafe class MainWindowController
         AppState._offscreenCompositor = new Compositor(AppState._wgpuContext!, TextureFormat.Rgba8Unorm);
         AppState._compute = new ComputeAccelerator(AppState._wgpuContext!);
 
-        string fontPath = "/System/Library/Fonts/Supplemental/Arial.ttf";
-        if (!File.Exists(fontPath))
-        {
-            fontPath = "Arial.ttf";
-        }
-
-        if (File.Exists(fontPath))
-        {
-            Console.WriteLine($"[ProGPU.Samples] Loading System Font: {fontPath}");
-            AppState._font = new TtfFont(fontPath);
-            Microsoft.UI.Xaml.Controls.PopupService.DefaultFont = AppState._font;
-        }
-        else
-        {
-            throw new FileNotFoundException("Arial.ttf is required to execute typography.");
-        }
-
-        string timesPath = "/System/Library/Fonts/Supplemental/Times New Roman.ttf";
-        if (File.Exists(timesPath)) AppState._fontTimes = new TtfFont(timesPath);
-        else AppState._fontTimes = AppState._font;
-
-        string courierPath = "/System/Library/Fonts/Supplemental/Courier New.ttf";
-        if (File.Exists(courierPath)) AppState._fontCourier = new TtfFont(courierPath);
-        else AppState._fontCourier = AppState._font;
-
-        string georgiaPath = "/System/Library/Fonts/Supplemental/Georgia.ttf";
-        if (File.Exists(georgiaPath)) AppState._fontGeorgia = new TtfFont(georgiaPath);
-        else AppState._fontGeorgia = AppState._font;
-
-        string comicPath = "/System/Library/Fonts/Supplemental/Comic Sans MS.ttf";
-        if (File.Exists(comicPath)) AppState._fontComic = new TtfFont(comicPath);
-        else AppState._fontComic = AppState._font;
+        SampleFontLoader.EnsureLoaded();
 
         AppState._canvasSourceTexture = new GpuTexture(AppState._wgpuContext!, 600, 600, TextureFormat.Rgba8Unorm, 
             TextureUsage.RenderAttachment | TextureUsage.TextureBinding | TextureUsage.StorageBinding | TextureUsage.CopySrc,
@@ -117,38 +85,7 @@ public static unsafe class MainWindowController
         AppState._offscreenCompositor = new Compositor(AppState._wgpuContext!, TextureFormat.Rgba8Unorm);
         AppState._compute = new ComputeAccelerator(AppState._wgpuContext!);
 
-        string fontPath = "/System/Library/Fonts/Supplemental/Arial.ttf";
-        if (!File.Exists(fontPath))
-        {
-            fontPath = "Arial.ttf";
-        }
-
-        if (File.Exists(fontPath))
-        {
-            Console.WriteLine($"[ProGPU.Samples] Loading Embedded System Font: {fontPath}");
-            AppState._font = new TtfFont(fontPath);
-            Microsoft.UI.Xaml.Controls.PopupService.DefaultFont = AppState._font;
-        }
-        else
-        {
-            throw new FileNotFoundException("Arial.ttf is required to execute typography.");
-        }
-
-        string timesPath = "/System/Library/Fonts/Supplemental/Times New Roman.ttf";
-        if (File.Exists(timesPath)) AppState._fontTimes = new TtfFont(timesPath);
-        else AppState._fontTimes = AppState._font;
-
-        string courierPath = "/System/Library/Fonts/Supplemental/Courier New.ttf";
-        if (File.Exists(courierPath)) AppState._fontCourier = new TtfFont(courierPath);
-        else AppState._fontCourier = AppState._font;
-
-        string georgiaPath = "/System/Library/Fonts/Supplemental/Georgia.ttf";
-        if (File.Exists(georgiaPath)) AppState._fontGeorgia = new TtfFont(georgiaPath);
-        else AppState._fontGeorgia = AppState._font;
-
-        string comicPath = "/System/Library/Fonts/Supplemental/Comic Sans MS.ttf";
-        if (File.Exists(comicPath)) AppState._fontComic = new TtfFont(comicPath);
-        else AppState._fontComic = AppState._font;
+        SampleFontLoader.EnsureLoaded("[ProGPU.Samples.Embedded]");
 
         AppState._canvasSourceTexture = new GpuTexture(AppState._wgpuContext!, 600, 600, TextureFormat.Rgba8Unorm, 
             TextureUsage.RenderAttachment | TextureUsage.TextureBinding | TextureUsage.StorageBinding | TextureUsage.CopySrc,
