@@ -507,10 +507,13 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
         }
 
         _backendTexture?.WritePixels(pixels);
-        bytes.Slice(0, checked((int)expectedSize)).CopyTo(_writeShadow);
-        if (_cpuShadow is not null && !ReferenceEquals(_cpuShadow, _writeShadow))
+        if (_writeShadow.Length > 0)
         {
-            _writeShadow.CopyTo(_cpuShadow, 0);
+            bytes.Slice(0, checked((int)expectedSize)).CopyTo(_writeShadow);
+            if (_cpuShadow is not null && !ReferenceEquals(_cpuShadow, _writeShadow))
+            {
+                _writeShadow.CopyTo(_cpuShadow, 0);
+            }
         }
 
         LastWriteSizeInBytes = expectedSize;

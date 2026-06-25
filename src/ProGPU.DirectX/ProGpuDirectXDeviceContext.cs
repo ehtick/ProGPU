@@ -751,18 +751,14 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
             AddStageBindings(entries, stage);
         }
 
-        var ordered = entries
-            .OrderBy(entry => entry.Stage)
-            .ThenBy(entry => entry.Slot)
-            .ThenBy(entry => entry.Kind)
+        return entries
+            .Select(entry => entry with
+            {
+                NativeBinding = ProGpuDirectXNativeBindingMap.GetNativeBinding(entry.Stage, entry.Kind, entry.Slot)
+            })
+            .OrderBy(entry => entry.NativeBinding)
+            .ThenBy(entry => entry.Stage)
             .ToArray();
-
-        for (var i = 0; i < ordered.Length; i++)
-        {
-            ordered[i] = ordered[i] with { NativeBinding = (uint)i };
-        }
-
-        return ordered;
     }
 
     private void AddStageBindings(List<ProGpuDirectXBindingEntry> entries, DxShaderStage stage)
