@@ -34,7 +34,7 @@ internal static class ProGpuDirectXHlslTranslator
         RegexOptions.Compiled);
 
     private static readonly Regex s_hlslIntrinsicCallStartRegex = new(
-        @"(?<!\.)\b(?<name>saturate|lerp|frac|rsqrt|ddx|ddy)\s*\(",
+        @"(?<!\.)\b(?<name>abs|acos|asin|atan|atan2|ceil|clamp|cos|cross|ddx|ddy|distance|dot|exp|exp2|floor|frac|length|lerp|log|log2|mad|max|min|normalize|pow|rcp|reflect|refract|round|rsqrt|saturate|sign|sin|smoothstep|sqrt|tan)\s*\(",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex s_unsupportedRegex = new(
@@ -645,43 +645,84 @@ internal static class ProGpuDirectXHlslTranslator
 
     private static string TranslateIntrinsic(string name, IReadOnlyList<string> arguments)
     {
-        if (string.Equals(name, "saturate", StringComparison.OrdinalIgnoreCase))
+        switch (name.ToLowerInvariant())
         {
-            ValidateIntrinsicArgumentCount(name, arguments, 1);
-            return $"clamp({arguments[0]}, 0.0, 1.0)";
-        }
+            case "saturate":
+                ValidateIntrinsicArgumentCount(name, arguments, 1);
+                return $"clamp({arguments[0]}, 0.0, 1.0)";
 
-        if (string.Equals(name, "lerp", StringComparison.OrdinalIgnoreCase))
-        {
-            ValidateIntrinsicArgumentCount(name, arguments, 3);
-            return $"mix({arguments[0]}, {arguments[1]}, {arguments[2]})";
-        }
+            case "lerp":
+                ValidateIntrinsicArgumentCount(name, arguments, 3);
+                return $"mix({arguments[0]}, {arguments[1]}, {arguments[2]})";
 
-        if (string.Equals(name, "frac", StringComparison.OrdinalIgnoreCase))
-        {
-            ValidateIntrinsicArgumentCount(name, arguments, 1);
-            return $"fract({arguments[0]})";
-        }
+            case "frac":
+                ValidateIntrinsicArgumentCount(name, arguments, 1);
+                return $"fract({arguments[0]})";
 
-        if (string.Equals(name, "rsqrt", StringComparison.OrdinalIgnoreCase))
-        {
-            ValidateIntrinsicArgumentCount(name, arguments, 1);
-            return $"inverseSqrt({arguments[0]})";
-        }
+            case "rsqrt":
+                ValidateIntrinsicArgumentCount(name, arguments, 1);
+                return $"inverseSqrt({arguments[0]})";
 
-        if (string.Equals(name, "ddx", StringComparison.OrdinalIgnoreCase))
-        {
-            ValidateIntrinsicArgumentCount(name, arguments, 1);
-            return $"dpdx({arguments[0]})";
-        }
+            case "ddx":
+                ValidateIntrinsicArgumentCount(name, arguments, 1);
+                return $"dpdx({arguments[0]})";
 
-        if (string.Equals(name, "ddy", StringComparison.OrdinalIgnoreCase))
-        {
-            ValidateIntrinsicArgumentCount(name, arguments, 1);
-            return $"dpdy({arguments[0]})";
-        }
+            case "ddy":
+                ValidateIntrinsicArgumentCount(name, arguments, 1);
+                return $"dpdy({arguments[0]})";
 
-        throw new NotSupportedException($"HLSL intrinsic '{name}' is not supported.");
+            case "mad":
+                ValidateIntrinsicArgumentCount(name, arguments, 3);
+                return $"(({arguments[0]}) * ({arguments[1]}) + ({arguments[2]}))";
+
+            case "rcp":
+                ValidateIntrinsicArgumentCount(name, arguments, 1);
+                return $"(1.0 / ({arguments[0]}))";
+
+            case "abs":
+            case "acos":
+            case "asin":
+            case "atan":
+            case "ceil":
+            case "cos":
+            case "exp":
+            case "exp2":
+            case "floor":
+            case "length":
+            case "log":
+            case "log2":
+            case "normalize":
+            case "round":
+            case "sign":
+            case "sin":
+            case "sqrt":
+            case "tan":
+                return TranslateSameNameIntrinsic(name, arguments, 1);
+
+            case "atan2":
+            case "cross":
+            case "distance":
+            case "dot":
+            case "max":
+            case "min":
+            case "pow":
+            case "reflect":
+                return TranslateSameNameIntrinsic(name, arguments, 2);
+
+            case "clamp":
+            case "refract":
+            case "smoothstep":
+                return TranslateSameNameIntrinsic(name, arguments, 3);
+
+            default:
+                throw new NotSupportedException($"HLSL intrinsic '{name}' is not supported.");
+        }
+    }
+
+    private static string TranslateSameNameIntrinsic(string name, IReadOnlyList<string> arguments, int expectedCount)
+    {
+        ValidateIntrinsicArgumentCount(name, arguments, expectedCount);
+        return $"{name.ToLowerInvariant()}({string.Join(", ", arguments)})";
     }
 
     private static void ValidateIntrinsicArgumentCount(

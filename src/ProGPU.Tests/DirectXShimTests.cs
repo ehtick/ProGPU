@@ -173,7 +173,10 @@ struct VertexOutput
 float4 PSMain(VertexOutput input) : SV_Target
 {
     float4 sampled = SourceTexture.SampleLevel(SourceSampler, input.uv, 0.0);
-    float mask = saturate(lerp(0.0, sampled.r * 2.0, frac(1.5)));
+    float3 normal = normalize(float3(sampled.r, sampled.g, sampled.b));
+    float light = max(dot(normal, normalize(float3(1.0, 1.0, 1.0))), 0.0);
+    float falloff = pow(sqrt(light), 1.0);
+    float mask = saturate(lerp(0.0, sampled.r * 2.0, frac(1.5)) * falloff);
     return float4(mask, 0.0, 0.0, sampled.a);
 }
 """;
@@ -457,7 +460,10 @@ SamplerState SourceSampler : register(s0);
 float4 PSMain(float2 uv : TEXCOORD0) : SV_Target
 {
     float4 sampled = SourceTexture.Sample(SourceSampler, float2(uv.x, uv.y));
-    float mask = saturate(lerp(0.0, sampled.r * 2.0, frac(1.5)));
+    float3 normal = normalize(float3(sampled.r, sampled.g, sampled.b));
+    float light = max(dot(normal, normalize(float3(1.0, 1.0, 1.0))), 0.0);
+    float falloff = pow(sqrt(light), 1.0);
+    float mask = saturate(lerp(0.0, sampled.r * 2.0, frac(1.5)) * falloff);
     return float4(mask, 0.0, 0.0, sampled.a) + SourceTexture.SampleLevel(SourceSampler, uv, 0.0) * float4(0.0, 0.5, 0.25, 0.0);
 }
 """,
@@ -466,7 +472,10 @@ float4 PSMain(float2 uv : TEXCOORD0) : SV_Target
 
         Assert.NotNull(shader.BackendSource);
         Assert.Contains("var sampled: vec4<f32> = textureSample(SourceTexture, SourceSampler, vec2<f32>(uv.x, uv.y));", shader.BackendSource, StringComparison.Ordinal);
-        Assert.Contains("var mask: f32 = clamp(mix(0.0, sampled.r * 2.0, fract(1.5)), 0.0, 1.0);", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("var normal: vec3<f32> = normalize(vec3<f32>(sampled.r, sampled.g, sampled.b));", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("var light: f32 = max(dot(normal, normalize(vec3<f32>(1.0, 1.0, 1.0))), 0.0);", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("var falloff: f32 = pow(sqrt(light), 1.0);", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("var mask: f32 = clamp(mix(0.0, sampled.r * 2.0, fract(1.5)) * falloff, 0.0, 1.0);", shader.BackendSource, StringComparison.Ordinal);
         Assert.Contains("textureSampleLevel(SourceTexture, SourceSampler, uv, 0.0) * vec4<f32>(0.0, 0.5, 0.25, 0.0)", shader.BackendSource, StringComparison.Ordinal);
     }
 
@@ -925,7 +934,10 @@ float4 PSMain(float2 uv : TEXCOORD0) : SV_Target
         Assert.Contains("@binding(576)", pixelShader.BackendSource!, StringComparison.Ordinal);
         Assert.Contains("@binding(768)", pixelShader.BackendSource!, StringComparison.Ordinal);
         Assert.Contains("var sampled: vec4<f32> = textureSampleLevel(SourceTexture, SourceSampler, input.uv, 0.0);", pixelShader.BackendSource!, StringComparison.Ordinal);
-        Assert.Contains("var mask: f32 = clamp(mix(0.0, sampled.r * 2.0, fract(1.5)), 0.0, 1.0);", pixelShader.BackendSource!, StringComparison.Ordinal);
+        Assert.Contains("var normal: vec3<f32> = normalize(vec3<f32>(sampled.r, sampled.g, sampled.b));", pixelShader.BackendSource!, StringComparison.Ordinal);
+        Assert.Contains("var light: f32 = max(dot(normal, normalize(vec3<f32>(1.0, 1.0, 1.0))), 0.0);", pixelShader.BackendSource!, StringComparison.Ordinal);
+        Assert.Contains("var falloff: f32 = pow(sqrt(light), 1.0);", pixelShader.BackendSource!, StringComparison.Ordinal);
+        Assert.Contains("var mask: f32 = clamp(mix(0.0, sampled.r * 2.0, fract(1.5)) * falloff, 0.0, 1.0);", pixelShader.BackendSource!, StringComparison.Ordinal);
         Assert.True(pipeline.HasBackendPipeline);
         Assert.Equal(1ul, context.SubmittedDrawCount);
 
