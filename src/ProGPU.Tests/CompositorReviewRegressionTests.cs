@@ -491,6 +491,44 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     }
 
     [Fact]
+    public void ShaderToyCacheKeysIncludeStableSourceHash()
+    {
+        var sourceKeyMethod = typeof(ShaderToyExtensionPipeline).GetMethod(
+            "GetStableShaderSourceKey",
+            BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected ShaderToy source key helper.");
+        var shaderKeyMethod = typeof(ShaderToyExtensionPipeline).GetMethod(
+            "GetShaderKey",
+            BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected ShaderToy shader key helper.");
+        var pipelineKeyMethod = typeof(ShaderToyExtensionPipeline).GetMethod(
+            "GetPipelineKey",
+            BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Expected ShaderToy pipeline key helper.");
+
+        var firstSourceKey = Assert.IsType<string>(sourceKeyMethod.Invoke(null, ["return vec4<f32>(1.0);"]));
+        var secondSourceKey = Assert.IsType<string>(sourceKeyMethod.Invoke(null, ["return vec4<f32>(0.0);"]));
+        var firstShaderKey = Assert.IsType<string>(shaderKeyMethod.Invoke(
+            null,
+            ["chart", firstSourceKey, GpuTextureAlphaMode.Straight]));
+        var secondShaderKey = Assert.IsType<string>(shaderKeyMethod.Invoke(
+            null,
+            ["chart", secondSourceKey, GpuTextureAlphaMode.Straight]));
+        var firstPipelineKey = Assert.IsType<string>(pipelineKeyMethod.Invoke(
+            null,
+            ["chart", firstSourceKey, false, GpuBlendMode.SrcOver, GpuTextureAlphaMode.Straight]));
+        var secondPipelineKey = Assert.IsType<string>(pipelineKeyMethod.Invoke(
+            null,
+            ["chart", secondSourceKey, false, GpuBlendMode.SrcOver, GpuTextureAlphaMode.Straight]));
+
+        Assert.NotEqual(firstSourceKey, secondSourceKey);
+        Assert.NotEqual(firstShaderKey, secondShaderKey);
+        Assert.NotEqual(firstPipelineKey, secondPipelineKey);
+        Assert.Contains(firstSourceKey, firstShaderKey, StringComparison.Ordinal);
+        Assert.Contains(firstSourceKey, firstPipelineKey, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void GdiBitmapFlushUsesOwningContextWhenAmbientContextChanges()
     {
         var previous = WgpuContext.Current;

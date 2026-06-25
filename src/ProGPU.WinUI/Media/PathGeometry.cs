@@ -218,6 +218,9 @@ public class PathGeometry : Geometry
 
         // Parse using lower-level SVG parser
         var internalGeom = ProGPU.Vector.PathGeometry.Parse(svgPathData);
+        geom.FillRule = internalGeom.FillRule == ProGPU.Vector.FillRule.EvenOdd
+            ? FillRule.EvenOdd
+            : FillRule.Nonzero;
         foreach (var internalFig in internalGeom.Figures)
         {
             var fig = new PathFigure

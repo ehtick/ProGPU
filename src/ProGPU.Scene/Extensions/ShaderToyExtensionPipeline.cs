@@ -147,12 +147,38 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                 : StraightFragmentWrapperShader;
         }
 
-        private static string GetShaderKey(string shaderKey, GpuTextureAlphaMode pipelineSourceAlphaMode)
+        private static string GetStableShaderSourceKey(string shaderSource)
+        {
+            const ulong fnvOffsetBasis = 14695981039346656037UL;
+            const ulong fnvPrime = 1099511628211UL;
+
+            var hash = fnvOffsetBasis;
+            foreach (var c in shaderSource)
+            {
+                hash ^= c;
+                hash *= fnvPrime;
+            }
+
+            return hash.ToString("x16");
+        }
+
+        private static string GetShaderKey(string shaderKey, string shaderSourceKey, GpuTextureAlphaMode pipelineSourceAlphaMode)
+        {
+            return $"{shaderKey}_src_{shaderSourceKey}_{pipelineSourceAlphaMode}";
+        }
+
+        private static string GetLegacyShaderKey(string shaderKey, GpuTextureAlphaMode pipelineSourceAlphaMode)
         {
             return $"{shaderKey}_{pipelineSourceAlphaMode}";
         }
 
-        private static string GetPipelineKey(string shaderKey, bool isOffscreen, GpuBlendMode blendMode, GpuTextureAlphaMode pipelineSourceAlphaMode)
+        private static string GetPipelineKey(string shaderKey, string shaderSourceKey, bool isOffscreen, GpuBlendMode blendMode, GpuTextureAlphaMode pipelineSourceAlphaMode)
+        {
+            var target = isOffscreen ? "offscreen" : "onscreen";
+            return $"{shaderKey}_src_{shaderSourceKey}_{target}_{blendMode}_{pipelineSourceAlphaMode}";
+        }
+
+        private static string GetLegacyPipelineKey(string shaderKey, bool isOffscreen, GpuBlendMode blendMode, GpuTextureAlphaMode pipelineSourceAlphaMode)
         {
             var target = isOffscreen ? "offscreen" : "onscreen";
             return $"{shaderKey}_{target}_{blendMode}_{pipelineSourceAlphaMode}";
@@ -346,22 +372,23 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                 foreach (GpuBlendMode blendMode in Enum.GetValues<GpuBlendMode>())
                 {
                     var oldPipelineSourceAlphaMode = GetPipelineSourceAlphaMode(blendMode);
-                    compositor.PipelineCache.ReleaseRenderPipeline(GetPipelineKey(p.OldShaderKey, isOffscreen: false, blendMode, oldPipelineSourceAlphaMode));
-                    compositor.PipelineCache.ReleaseRenderPipeline(GetPipelineKey(p.OldShaderKey, isOffscreen: true, blendMode, oldPipelineSourceAlphaMode));
+                    compositor.PipelineCache.ReleaseRenderPipeline(GetLegacyPipelineKey(p.OldShaderKey, isOffscreen: false, blendMode, oldPipelineSourceAlphaMode));
+                    compositor.PipelineCache.ReleaseRenderPipeline(GetLegacyPipelineKey(p.OldShaderKey, isOffscreen: true, blendMode, oldPipelineSourceAlphaMode));
                 }
 
                 compositor.PipelineCache.ReleaseRenderPipeline(p.OldShaderKey + "_offscreen");
                 compositor.PipelineCache.ReleaseRenderPipeline(p.OldShaderKey + "_onscreen");
                 compositor.PipelineCache.ReleaseShader(p.OldShaderKey);
-                compositor.PipelineCache.ReleaseShader(GetShaderKey(p.OldShaderKey, GpuTextureAlphaMode.Straight));
-                compositor.PipelineCache.ReleaseShader(GetShaderKey(p.OldShaderKey, GpuTextureAlphaMode.Premultiplied));
+                compositor.PipelineCache.ReleaseShader(GetLegacyShaderKey(p.OldShaderKey, GpuTextureAlphaMode.Straight));
+                compositor.PipelineCache.ReleaseShader(GetLegacyShaderKey(p.OldShaderKey, GpuTextureAlphaMode.Premultiplied));
                 p.OldShaderKey = string.Empty;
             }
 
             // 2. Fetch or Compile Shader module & Pipeline
             var pipelineSourceAlphaMode = GetPipelineSourceAlphaMode(dc.BlendMode);
-            string shaderKey = GetShaderKey(p.ShaderKey, pipelineSourceAlphaMode);
-            string pipelineKey = GetPipelineKey(p.ShaderKey, isOffscreen, dc.BlendMode, pipelineSourceAlphaMode);
+            string shaderSourceKey = GetStableShaderSourceKey(p.ShaderSource);
+            string shaderKey = GetShaderKey(p.ShaderKey, shaderSourceKey, pipelineSourceAlphaMode);
+            string pipelineKey = GetPipelineKey(p.ShaderKey, shaderSourceKey, isOffscreen, dc.BlendMode, pipelineSourceAlphaMode);
             RenderPipeline* activePipeline = null;
 
             var cache = compositor.PipelineCache;
