@@ -186,6 +186,11 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
 
     public uint Generation { get; private set; }
 
+    internal void MarkBackendContentsChanged()
+    {
+        Generation++;
+    }
+
     public unsafe void WritePixels<T>(ReadOnlySpan<T> pixels) where T : unmanaged
     {
         ThrowIfDisposed();

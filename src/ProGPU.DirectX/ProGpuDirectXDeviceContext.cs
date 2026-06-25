@@ -28,6 +28,7 @@ public enum ProGpuDirectXCommandKind
     SetUnorderedAccessView,
     CopyTexture,
     CopyBuffer,
+    ResolveTexture,
     ClearRenderTarget,
     ClearDepthStencil,
     Draw,
@@ -72,6 +73,7 @@ public sealed record ProGpuDirectXCommand
     public ProGpuDirectXBuffer? SourceBuffer { get; init; }
     public ProGpuDirectXBuffer? DestinationBuffer { get; init; }
     public DxCopyResourceCall? Copy { get; init; }
+    public DxResolveSubresourceCall? Resolve { get; init; }
 }
 
 public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
@@ -143,6 +145,8 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
     public ulong SubmittedDispatchCount { get; private set; }
 
     public ulong SubmittedCopyCount { get; private set; }
+
+    public ulong SubmittedResolveCount { get; private set; }
 
     public ulong SubmittedClearCount { get; private set; }
 
@@ -481,6 +485,32 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
         });
     }
 
+    public void ResolveResource(ProGpuDirectXTexture2D destination, ProGpuDirectXTexture2D source)
+    {
+        ResolveSubresource(destination, 0, source, 0, source.Descriptor.Format);
+    }
+
+    public void ResolveSubresource(
+        ProGpuDirectXTexture2D destination,
+        uint destinationSubresource,
+        ProGpuDirectXTexture2D source,
+        uint sourceSubresource,
+        DxResourceFormat format)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(destination);
+        ArgumentNullException.ThrowIfNull(source);
+        ValidateTextureResolve(destination, source, destinationSubresource, sourceSubresource, format);
+
+        _commands.Add(new ProGpuDirectXCommand
+        {
+            Kind = ProGpuDirectXCommandKind.ResolveTexture,
+            DestinationTexture = destination,
+            SourceTexture = source,
+            Resolve = new DxResolveSubresourceCall(destinationSubresource, sourceSubresource, format)
+        });
+    }
+
     public void ClearRenderTarget(ProGpuDirectXTexture2D renderTarget, DxColor color)
     {
         ThrowIfDisposed();
@@ -789,6 +819,9 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
                 case ProGpuDirectXCommandKind.CopyBuffer:
                     ExecuteGpuBackedCopyBufferCommand(context, command);
                     break;
+                case ProGpuDirectXCommandKind.ResolveTexture:
+                    ExecuteGpuBackedResolveTextureCommand(context, command);
+                    break;
                 case ProGpuDirectXCommandKind.Draw:
                 case ProGpuDirectXCommandKind.DrawIndexed:
                     ExecuteGpuBackedDrawCommand(context, command);
@@ -933,14 +966,94 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
 
     private void ExecuteGpuBackedCopyTextureCommand(ProGpuDirectXCommand command)
     {
-        if (command.SourceTexture?.BackendTexture is not { IsDisposed: false } source ||
-            command.DestinationTexture?.BackendTexture is not { IsDisposed: false } destination)
+        var sourceResource = command.SourceTexture;
+        var destinationResource = command.DestinationTexture;
+        if (sourceResource?.BackendTexture is not { IsDisposed: false } source ||
+            destinationResource?.BackendTexture is not { IsDisposed: false } destination)
         {
             return;
         }
 
         destination.CopyFrom(source);
+        destinationResource.MarkBackendContentsChanged();
         SubmittedCopyCount++;
+    }
+
+    private void ExecuteGpuBackedResolveTextureCommand(ProGPU.Backend.WgpuContext context, ProGpuDirectXCommand command)
+    {
+        var destinationResource = command.DestinationTexture;
+        if (command.SourceTexture?.BackendTexture is not { IsDisposed: false, ViewPtr: not null } source ||
+            destinationResource?.BackendTexture is not { IsDisposed: false, ViewPtr: not null } destination)
+        {
+            return;
+        }
+
+        var labelPtr = SilkMarshal.StringToPtr("ProGPU DirectX ResolveTexture Encoder");
+        CommandEncoder* encoder = null;
+        RenderPassEncoder* pass = null;
+        CommandBuffer* commandBuffer = null;
+        try
+        {
+            var encoderDesc = new CommandEncoderDescriptor { Label = (byte*)labelPtr };
+            encoder = context.Wgpu.DeviceCreateCommandEncoder(context.Device, &encoderDesc);
+            if (encoder == null)
+            {
+                return;
+            }
+
+            var colorAttachment = new RenderPassColorAttachment
+            {
+                View = source.ViewPtr,
+                ResolveTarget = destination.ViewPtr,
+                LoadOp = LoadOp.Load,
+                StoreOp = StoreOp.Store,
+                ClearValue = new Silk.NET.WebGPU.Color()
+            };
+
+            var passDesc = new RenderPassDescriptor
+            {
+                ColorAttachmentCount = 1,
+                ColorAttachments = &colorAttachment
+            };
+
+            pass = context.Wgpu.CommandEncoderBeginRenderPass(encoder, &passDesc);
+            if (pass == null)
+            {
+                return;
+            }
+
+            context.Wgpu.RenderPassEncoderEnd(pass);
+            context.Wgpu.RenderPassEncoderRelease(pass);
+            pass = null;
+
+            var commandBufferDesc = new CommandBufferDescriptor();
+            commandBuffer = context.Wgpu.CommandEncoderFinish(encoder, &commandBufferDesc);
+            if (commandBuffer != null)
+            {
+                context.Wgpu.QueueSubmit(context.Queue, 1, &commandBuffer);
+                destinationResource.MarkBackendContentsChanged();
+                SubmittedResolveCount++;
+            }
+        }
+        finally
+        {
+            if (commandBuffer != null)
+            {
+                context.Wgpu.CommandBufferRelease(commandBuffer);
+            }
+
+            if (pass != null)
+            {
+                context.Wgpu.RenderPassEncoderRelease(pass);
+            }
+
+            if (encoder != null)
+            {
+                context.Wgpu.CommandEncoderRelease(encoder);
+            }
+
+            SilkMarshal.Free(labelPtr);
+        }
     }
 
     private void ExecuteGpuBackedClearDepthStencilCommand(ProGPU.Backend.WgpuContext context, ProGpuDirectXCommand command)
@@ -1340,6 +1453,59 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
         if ((source.Descriptor.Usage & DxTextureUsage.CopySource) == 0)
         {
             throw new ArgumentException("Source texture was not created with copy-source usage.", nameof(source));
+        }
+    }
+
+    private static void ValidateTextureResolve(
+        ProGpuDirectXTexture2D destination,
+        ProGpuDirectXTexture2D source,
+        uint destinationSubresource,
+        uint sourceSubresource,
+        DxResourceFormat format)
+    {
+        if (destinationSubresource != 0 || sourceSubresource != 0)
+        {
+            throw new NotSupportedException("DirectX texture resolve currently supports only subresource 0.");
+        }
+
+        if (destination.Width != source.Width || destination.Height != source.Height)
+        {
+            throw new ArgumentOutOfRangeException(nameof(destination), "Texture resolves require matching dimensions.");
+        }
+
+        if (destination.Descriptor.Format != source.Descriptor.Format)
+        {
+            throw new ArgumentException("Texture resolves require matching resource formats.", nameof(destination));
+        }
+
+        if (format != DxResourceFormat.Unknown && format != source.Descriptor.Format)
+        {
+            throw new ArgumentException("Texture resolve format must match the source resource format.", nameof(format));
+        }
+
+        if (source.Descriptor.SampleCount <= 1)
+        {
+            throw new ArgumentException("Texture resolve source must be multisampled.", nameof(source));
+        }
+
+        if (destination.Descriptor.SampleCount != 1)
+        {
+            throw new ArgumentException("Texture resolve destination must be single-sampled.", nameof(destination));
+        }
+
+        if ((source.Descriptor.Usage & DxTextureUsage.RenderTarget) == 0)
+        {
+            throw new ArgumentException("Texture resolve source must be a render-target texture.", nameof(source));
+        }
+
+        if ((destination.Descriptor.Usage & DxTextureUsage.RenderTarget) == 0)
+        {
+            throw new ArgumentException("Texture resolve destination must be a render-target texture.", nameof(destination));
+        }
+
+        if (source.Descriptor.Format is DxResourceFormat.D24UnormS8UInt or DxResourceFormat.D32Float)
+        {
+            throw new ArgumentException("Texture resolve currently supports color render-target formats only.", nameof(source));
         }
     }
 

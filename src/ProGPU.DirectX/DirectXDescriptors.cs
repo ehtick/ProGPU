@@ -198,3 +198,8 @@ public sealed record DxConstantBufferBinding(DxShaderStage Stage, uint Slot);
 public sealed record DxShaderResourceBinding(DxShaderStage Stage, uint Slot);
 
 public sealed record DxCopyResourceCall(string Kind);
+
+public sealed record DxResolveSubresourceCall(
+    uint DestinationSubresource,
+    uint SourceSubresource,
+    DxResourceFormat Format);

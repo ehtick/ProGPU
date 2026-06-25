@@ -466,6 +466,76 @@ fn fs_main() -> @location(0) vec4<f32> {
     }
 
     [Fact]
+    public void ResolveSubresourceRecordsDirectXResolveMetadata()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var source = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 32,
+            Height = 32,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.RenderTarget,
+            SampleCount = 4
+        });
+        using var destination = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 32,
+            Height = 32,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.RenderTarget | DxTextureUsage.ShaderResource
+        });
+        using var context = device.CreateImmediateContext();
+
+        context.ResolveSubresource(destination, 0, source, 0, DxResourceFormat.R8G8B8A8Unorm);
+
+        var command = Assert.Single(context.Commands);
+        Assert.Equal(ProGpuDirectXCommandKind.ResolveTexture, command.Kind);
+        Assert.Same(source, command.SourceTexture);
+        Assert.Same(destination, command.DestinationTexture);
+        Assert.Equal(new DxResolveSubresourceCall(0, 0, DxResourceFormat.R8G8B8A8Unorm), command.Resolve);
+    }
+
+    [Fact]
+    public void FlushSubmitsGpuBackedMultisampleResolveCommands()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var source = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 16,
+            Height = 16,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.RenderTarget,
+            SampleCount = 4
+        });
+        using var destination = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 16,
+            Height = 16,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.RenderTarget | DxTextureUsage.CopySource,
+            CpuAccess = DxCpuAccessFlags.Read
+        });
+        using var context = device.CreateImmediateContext();
+
+        context.ClearRenderTarget(source, new DxColor(0f, 1f, 0f, 1f));
+        context.ResolveResource(destination, source);
+        context.Flush();
+
+        Assert.Equal(1ul, context.SubmittedClearCount);
+        Assert.Equal(1ul, context.SubmittedResolveCount);
+        Assert.Empty(context.Commands);
+
+        var pixels = destination.ReadPixels();
+        var center = ReadRgbaPixel(pixels, 16, 8, 8);
+        Assert.True(center.R < 50, $"Expected low red resolved pixel, actual: {center}");
+        Assert.True(center.G > 200, $"Expected green resolved pixel, actual: {center}");
+        Assert.True(center.B < 50, $"Expected low blue resolved pixel, actual: {center}");
+        Assert.True(center.A > 200, $"Expected opaque resolved pixel, actual: {center}");
+    }
+
+    [Fact]
     public void CpuReadableBuffersSupportMetadataShadowCopies()
     {
         using var device = ProGpuDirectXDevice.CreateMetadataDevice();
