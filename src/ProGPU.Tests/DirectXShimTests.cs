@@ -1416,6 +1416,114 @@ fn fs_main() -> @location(0) vec4<f32> {
     }
 
     [Fact]
+    public void HlslBytecodeGraphicsPipelineUsesReflectedInputLayoutWhenDescriptorOmitsOne()
+    {
+        var bytecode = CreateDxbcBytecode(
+            ("ISGN", CreateSignatureChunk(
+                ("POSITION", 0u, 0u, 3u, 0u, 0x7u, 0x7u),
+                ("COLOR", 0u, 0u, 3u, 1u, 0xFu, 0xFu))),
+            ("SHEX", CreateProgramChunk(DxShaderProgramKind.Vertex, 5, 0)));
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var shader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Vertex,
+            SourceKind = DxShaderSourceKind.HlslBytecode,
+            Bytecode = bytecode
+        });
+        using var pipeline = device.CreateGraphicsPipeline(new DxGraphicsPipelineDescriptor
+        {
+            VertexShader = shader
+        });
+
+        Assert.Null(pipeline.Descriptor.InputLayout);
+        Assert.True(pipeline.UsesReflectedInputLayout);
+        Assert.True(pipeline.ReflectedInputLayoutSupported);
+        Assert.Null(pipeline.ReflectedInputLayoutFailureReason);
+        Assert.NotNull(pipeline.EffectiveInputLayout);
+        Assert.Equal(2, pipeline.EffectiveInputLayout.Elements.Count);
+        Assert.Equal("POSITION", pipeline.EffectiveInputLayout.Elements[0].SemanticName);
+        Assert.Equal(DxResourceFormat.R32G32B32Float, pipeline.EffectiveInputLayout.Elements[0].Format);
+        Assert.Equal(0u, pipeline.EffectiveInputLayout.Elements[0].ShaderLocation);
+        Assert.Equal("COLOR", pipeline.EffectiveInputLayout.Elements[1].SemanticName);
+        Assert.Equal(DxResourceFormat.R32G32B32A32Float, pipeline.EffectiveInputLayout.Elements[1].Format);
+        Assert.Equal(1u, pipeline.EffectiveInputLayout.Elements[1].ShaderLocation);
+        Assert.Contains("POSITION0", pipeline.PipelineKey, StringComparison.Ordinal);
+        Assert.DoesNotContain("no-layout", pipeline.PipelineKey, StringComparison.Ordinal);
+
+        using var context = device.CreateImmediateContext();
+        context.SetGraphicsPipeline(pipeline);
+
+        Assert.Same(pipeline.EffectiveInputLayout, context.InputLayout);
+    }
+
+    [Fact]
+    public void ExplicitGraphicsPipelineInputLayoutOverridesReflectedInputLayout()
+    {
+        var bytecode = CreateDxbcBytecode(
+            ("ISGN", CreateSignatureChunk(
+                ("POSITION", 0u, 0u, 3u, 0u, 0x7u, 0x7u),
+                ("COLOR", 0u, 0u, 3u, 1u, 0xFu, 0xFu))),
+            ("SHEX", CreateProgramChunk(DxShaderProgramKind.Vertex, 5, 0)));
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var shader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Vertex,
+            SourceKind = DxShaderSourceKind.HlslBytecode,
+            Bytecode = bytecode
+        });
+        var explicitInputLayout = device.CreateInputLayout(new DxInputLayoutDescriptor
+        {
+            Elements =
+            [
+                new DxInputElementDescriptor
+                {
+                    SemanticName = "TEXCOORD",
+                    Format = DxResourceFormat.R32G32Float,
+                    InputSlot = 2,
+                    ShaderLocation = 5
+                }
+            ]
+        });
+        using var pipeline = device.CreateGraphicsPipeline(new DxGraphicsPipelineDescriptor
+        {
+            VertexShader = shader,
+            InputLayout = explicitInputLayout
+        });
+
+        Assert.False(pipeline.UsesReflectedInputLayout);
+        Assert.True(pipeline.ReflectedInputLayoutSupported);
+        Assert.Null(pipeline.ReflectedInputLayoutFailureReason);
+        Assert.Same(explicitInputLayout, pipeline.EffectiveInputLayout);
+        Assert.Contains("TEXCOORD0", pipeline.PipelineKey, StringComparison.Ordinal);
+        Assert.DoesNotContain("POSITION0", pipeline.PipelineKey, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void HlslBytecodeGraphicsPipelineReportsUnsupportedReflectedInputLayout()
+    {
+        var bytecode = CreateDxbcBytecode(
+            ("ISGN", CreateSignatureChunk(("TEXCOORD", 0u, 0u, 3u, 0u, 0x5u, 0x5u))),
+            ("SHEX", CreateProgramChunk(DxShaderProgramKind.Vertex, 5, 0)));
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var shader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Vertex,
+            SourceKind = DxShaderSourceKind.HlslBytecode,
+            Bytecode = bytecode
+        });
+        using var pipeline = device.CreateGraphicsPipeline(new DxGraphicsPipelineDescriptor
+        {
+            VertexShader = shader
+        });
+
+        Assert.False(pipeline.UsesReflectedInputLayout);
+        Assert.False(pipeline.ReflectedInputLayoutSupported);
+        Assert.Contains("unsupported", pipeline.ReflectedInputLayoutFailureReason, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(pipeline.EffectiveInputLayout);
+        Assert.Contains("no-layout", pipeline.PipelineKey, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void UnsupportedHlslTextShadersRemainMetadata()
     {
         using var device = ProGpuDirectXDevice.CreateMetadataDevice();

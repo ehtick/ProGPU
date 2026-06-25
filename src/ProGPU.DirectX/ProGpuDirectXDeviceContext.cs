@@ -387,7 +387,7 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
         ArgumentNullException.ThrowIfNull(pipeline);
         _graphicsPipeline = pipeline;
         _topology = pipeline.Descriptor.Topology;
-        _inputLayout = pipeline.Descriptor.InputLayout;
+        _inputLayout = pipeline.EffectiveInputLayout;
         _vertexShader = pipeline.Descriptor.VertexShader;
         _pixelShader = pipeline.Descriptor.PixelShader;
         _commands.Add(new ProGpuDirectXCommand

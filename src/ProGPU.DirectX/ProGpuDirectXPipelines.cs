@@ -276,7 +276,15 @@ public sealed unsafe class ProGpuDirectXGraphicsPipeline : IDisposable
         _device = device;
         Descriptor = descriptor;
         ValidateDescriptor(descriptor);
-        PipelineKey = CreatePipelineKey(descriptor);
+        EffectiveInputLayout = ResolveEffectiveInputLayout(
+            descriptor,
+            out var usesReflectedInputLayout,
+            out var reflectedInputLayoutSupported,
+            out var reflectedInputLayoutFailureReason);
+        UsesReflectedInputLayout = usesReflectedInputLayout;
+        ReflectedInputLayoutSupported = reflectedInputLayoutSupported;
+        ReflectedInputLayoutFailureReason = reflectedInputLayoutFailureReason;
+        PipelineKey = CreatePipelineKey(descriptor, EffectiveInputLayout);
         ReflectedBindingRequirements = CombineReflectedBindingRequirements(
             descriptor.VertexShader,
             descriptor.PixelShader);
@@ -295,11 +303,19 @@ public sealed unsafe class ProGpuDirectXGraphicsPipeline : IDisposable
                 return;
             }
 
-            _backendPipeline = (IntPtr)CreateBackendPipeline(context, descriptor, PipelineKey);
+            _backendPipeline = (IntPtr)CreateBackendPipeline(context, descriptor, EffectiveInputLayout, PipelineKey);
         }
     }
 
     public DxGraphicsPipelineDescriptor Descriptor { get; }
+
+    public ProGpuDirectXInputLayout? EffectiveInputLayout { get; }
+
+    public bool UsesReflectedInputLayout { get; }
+
+    public bool ReflectedInputLayoutSupported { get; }
+
+    public string? ReflectedInputLayoutFailureReason { get; }
 
     public string PipelineKey { get; }
 
@@ -320,6 +336,7 @@ public sealed unsafe class ProGpuDirectXGraphicsPipeline : IDisposable
     private static RenderPipeline* CreateBackendPipeline(
         WgpuContext context,
         DxGraphicsPipelineDescriptor descriptor,
+        ProGpuDirectXInputLayout? effectiveInputLayout,
         string pipelineKey)
     {
         if (!descriptor.VertexShader.HasBackendShaderModule)
@@ -340,7 +357,7 @@ public sealed unsafe class ProGpuDirectXGraphicsPipeline : IDisposable
 
         try
         {
-            var vertexElements = descriptor.InputLayout?.Elements ?? Array.Empty<DxInputElementDescriptor>();
+            var vertexElements = effectiveInputLayout?.Elements ?? Array.Empty<DxInputElementDescriptor>();
             var inputSlots = vertexElements
                 .Select(e => e.InputSlot)
                 .Distinct()
@@ -553,7 +570,54 @@ public sealed unsafe class ProGpuDirectXGraphicsPipeline : IDisposable
         }
     }
 
-    private static string CreatePipelineKey(DxGraphicsPipelineDescriptor descriptor)
+    private static ProGpuDirectXInputLayout? ResolveEffectiveInputLayout(
+        DxGraphicsPipelineDescriptor descriptor,
+        out bool usesReflectedInputLayout,
+        out bool reflectedInputLayoutSupported,
+        out string? reflectedInputLayoutFailureReason)
+    {
+        usesReflectedInputLayout = false;
+        reflectedInputLayoutSupported = true;
+        reflectedInputLayoutFailureReason = null;
+
+        if (descriptor.InputLayout is not null)
+        {
+            return descriptor.InputLayout;
+        }
+
+        var bytecodeInfo = descriptor.VertexShader.BytecodeInfo;
+        if (bytecodeInfo is null)
+        {
+            return null;
+        }
+
+        if (!bytecodeInfo.IsValid)
+        {
+            reflectedInputLayoutSupported = false;
+            reflectedInputLayoutFailureReason = bytecodeInfo.FailureReason;
+            return null;
+        }
+
+        if (!bytecodeInfo.HasInputSignature)
+        {
+            return null;
+        }
+
+        if (!bytecodeInfo.TryCreateInputLayoutDescriptor(out var inputLayoutDescriptor) ||
+            inputLayoutDescriptor is null)
+        {
+            reflectedInputLayoutSupported = false;
+            reflectedInputLayoutFailureReason = "Vertex shader bytecode input signature contains unsupported input-layout metadata.";
+            return null;
+        }
+
+        usesReflectedInputLayout = true;
+        return new ProGpuDirectXInputLayout(inputLayoutDescriptor);
+    }
+
+    private static string CreatePipelineKey(
+        DxGraphicsPipelineDescriptor descriptor,
+        ProGpuDirectXInputLayout? effectiveInputLayout)
     {
         return string.Join(
             "|",
@@ -561,7 +625,7 @@ public sealed unsafe class ProGpuDirectXGraphicsPipeline : IDisposable
             descriptor.VertexShader.EntryPoint,
             descriptor.PixelShader?.SourceHash ?? "no-ps",
             descriptor.PixelShader?.EntryPoint ?? "no-ps",
-            descriptor.InputLayout?.LayoutKey ?? "no-layout",
+            effectiveInputLayout?.LayoutKey ?? "no-layout",
             descriptor.Topology,
             descriptor.RenderTargetFormat,
             descriptor.DepthStencilFormat,
