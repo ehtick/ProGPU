@@ -460,6 +460,17 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
         return buffer.Map(mode, flags, offsetBytes, sizeInBytes);
     }
 
+    public ProGpuDirectXMappedSubresource Map(
+        ProGpuDirectXTexture2D texture,
+        DxMapMode mode,
+        DxMapFlags flags = DxMapFlags.None,
+        uint subresource = 0)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(texture);
+        return texture.Map(mode, flags, subresource);
+    }
+
     public void Unmap(ProGpuDirectXMappedSubresource mapping)
     {
         ThrowIfDisposed();
