@@ -29,6 +29,10 @@ internal static class ProGpuDirectXHlslTranslator
         @"\bStructuredBuffer\s*<\s*(?<type>[A-Za-z_]\w*)\s*>\s+(?<name>[A-Za-z_]\w*)\s*:\s*register\s*\(\s*t(?<slot>\d+)\s*\)\s*;",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+    private static readonly Regex s_rwStructuredBufferResourceRegex = new(
+        @"\bRWStructuredBuffer\s*<\s*(?<type>[A-Za-z_]\w*)\s*>\s+(?<name>[A-Za-z_]\w*)\s*:\s*register\s*\(\s*u(?<slot>\d+)\s*\)\s*;",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     private static readonly Regex s_samplerStateResourceRegex = new(
         @"\bSamplerState\s+(?<name>[A-Za-z_]\w*)\s*:\s*register\s*\(\s*s(?<slot>\d+)\s*\)\s*;",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -42,7 +46,7 @@ internal static class ProGpuDirectXHlslTranslator
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex s_unsupportedRegex = new(
-        @"\b(tbuffer|Texture(?!2D\b)\w*|Sampler(?!State\b)\w*|RWTexture\w*|RWStructuredBuffer|ByteAddressBuffer|RWByteAddressBuffer)\b",
+        @"\b(tbuffer|Texture(?!2D\b)\w*|Sampler(?!State\b)\w*|RWTexture\w*|ByteAddressBuffer|RWByteAddressBuffer)\b",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     public static bool TryTranslate(DxShaderDescriptor descriptor, out string wgsl)
@@ -252,6 +256,24 @@ internal static class ProGpuDirectXHlslTranslator
                         .Append(MapResourceElementType(resource.ElementType!, structs))
                         .Append(">;\n");
                     break;
+                case HlslShaderResourceKind.RWStructuredBuffer:
+                    if (stage != DxShaderStage.Compute)
+                    {
+                        throw new NotSupportedException("HLSL RWStructuredBuffer resources are currently supported only for compute shaders.");
+                    }
+
+                    builder
+                        .Append("@group(0) @binding(")
+                        .Append(ProGpuDirectXNativeBindingMap.GetNativeBinding(
+                            stage,
+                            ProGpuDirectXBindingKind.UnorderedAccessView,
+                            resource.Register))
+                        .Append(") var<storage, read_write> ")
+                        .Append(resource.Name)
+                        .Append(": array<")
+                        .Append(MapResourceElementType(resource.ElementType!, structs))
+                        .Append(">;\n");
+                    break;
                 case HlslShaderResourceKind.SamplerState:
                     builder
                         .Append("@group(0) @binding(")
@@ -388,7 +410,7 @@ internal static class ProGpuDirectXHlslTranslator
 
             var assignment = Regex.Match(
                 statement,
-                @"^(?<left>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*=\s*(?<right>.+)$",
+                @"^(?<left>[A-Za-z_]\w*(?:(?:\[[^\]]+\])|(?:\.[A-Za-z_]\w*))*)\s*=\s*(?<right>.+)$",
                 RegexOptions.Singleline);
             if (assignment.Success)
             {
@@ -465,6 +487,17 @@ internal static class ProGpuDirectXHlslTranslator
             _ = MapResourceElementType(elementType, structs);
             resources.Add(new HlslShaderResource(
                 HlslShaderResourceKind.StructuredBuffer,
+                match.Groups["name"].Value,
+                uint.Parse(match.Groups["slot"].Value),
+                elementType));
+        }
+
+        foreach (Match match in s_rwStructuredBufferResourceRegex.Matches(source))
+        {
+            var elementType = match.Groups["type"].Value;
+            _ = MapResourceElementType(elementType, structs);
+            resources.Add(new HlslShaderResource(
+                HlslShaderResourceKind.RWStructuredBuffer,
                 match.Groups["name"].Value,
                 uint.Parse(match.Groups["slot"].Value),
                 elementType));
@@ -1153,6 +1186,7 @@ internal static class ProGpuDirectXHlslTranslator
     {
         Texture2D,
         StructuredBuffer,
+        RWStructuredBuffer,
         SamplerState
     }
 

@@ -38,6 +38,16 @@ fn cs_main() {
 }
 """;
 
+    private const string RwStructuredBufferComputeHlsl = """
+RWStructuredBuffer<float4> Output : register(u0);
+
+[numthreads(1, 1, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    Output[id.x] = float4(0.0, 1.0, 0.0, 1.0);
+}
+""";
+
     private const string SolidTriangleWgsl = """
 @vertex
 fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> @builtin(position) vec4<f32> {
@@ -568,6 +578,24 @@ float4 PSMain(float2 uv : TEXCOORD0) : SV_Target
         Assert.Contains("@location(0) color: vec4<f32>", shader.BackendSource, StringComparison.Ordinal);
         Assert.Contains("var point: ChartPoint = Points[vertexId];", shader.BackendSource, StringComparison.Ordinal);
         Assert.Contains("output.position = vec4<f32>(point.position.xy, 0.0, 1.0);", shader.BackendSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void HlslTextShaderTranslatesRwStructuredBufferResources()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var shader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Compute,
+            SourceKind = DxShaderSourceKind.HlslText,
+            Source = RwStructuredBufferComputeHlsl,
+            EntryPoint = "CSMain"
+        });
+
+        Assert.NotNull(shader.BackendSource);
+        Assert.Contains("@binding(1856) var<storage, read_write> Output: array<vec4<f32>>;", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("@compute @workgroup_size(1, 1, 1)\nfn CSMain(@builtin(global_invocation_id) id: vec3<u32>)", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("Output[id.x] = vec4<f32>(0.0, 1.0, 0.0, 1.0);", shader.BackendSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -2063,6 +2091,56 @@ VertexOutput VSMain(VertexInput input)
 
         Assert.Equal(1ul, context.SubmittedDispatchCount);
         Assert.Empty(context.Commands);
+    }
+
+    [Fact]
+    public void FlushSubmitsGpuBackedHlslRwStructuredBufferDispatchCommands()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var output = device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = 16,
+            Usage = DxBufferUsage.Structured | DxBufferUsage.UnorderedAccess | DxBufferUsage.CopySource,
+            StrideInBytes = 16,
+            Label = "RWStructuredBuffer Output"
+        });
+        using var outputView = device.CreateUnorderedAccessView(
+            output,
+            new DxUnorderedAccessViewDescriptor
+            {
+                Dimension = DxResourceViewDimension.Buffer,
+                ElementCount = 1,
+                ElementStrideInBytes = 16,
+                Access = DxUnorderedAccessViewAccess.ReadWrite
+            });
+        using var computeShader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Compute,
+            SourceKind = DxShaderSourceKind.HlslText,
+            Source = RwStructuredBufferComputeHlsl,
+            EntryPoint = "CSMain",
+            Label = "HLSL RWStructuredBuffer Compute"
+        });
+        using var pipeline = device.CreateComputePipeline(new DxComputePipelineDescriptor
+        {
+            ComputeShader = computeShader
+        });
+        using var context = device.CreateImmediateContext();
+
+        context.SetComputePipeline(pipeline);
+        context.SetUnorderedAccessView(0, outputView);
+        context.Dispatch(1, 1, 1);
+        context.Flush();
+
+        Assert.True(computeShader.HasBackendShaderModule);
+        Assert.Contains("@binding(1856) var<storage, read_write> Output: array<vec4<f32>>;", computeShader.BackendSource!, StringComparison.Ordinal);
+        Assert.True(pipeline.HasBackendPipeline);
+        Assert.Equal(1ul, context.SubmittedDispatchCount);
+
+        var values = MemoryMarshal.Cast<byte, float>(output.BackendBuffer!.ReadBytes(0, 16)).ToArray();
+        Assert.Equal([0f, 1f, 0f, 1f], values);
     }
 
     [Fact]
