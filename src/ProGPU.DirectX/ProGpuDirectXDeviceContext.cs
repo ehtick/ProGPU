@@ -52,6 +52,9 @@ public sealed record ProGpuDirectXCommand
     public ProGpuDirectXInputLayout? InputLayout { get; init; }
     public ProGpuDirectXGraphicsPipeline? GraphicsPipeline { get; init; }
     public ProGpuDirectXComputePipeline? ComputePipeline { get; init; }
+    public IReadOnlyDictionary<uint, ProGpuDirectXBuffer>? VertexBuffers { get; init; }
+    public ProGpuDirectXBuffer? IndexBuffer { get; init; }
+    public ProGpuDirectXTexture2D? DepthStencilTexture { get; init; }
     public ProGpuDirectXShaderResourceView? ShaderResourceView { get; init; }
     public ProGpuDirectXSamplerState? Sampler { get; init; }
     public ProGpuDirectXUnorderedAccessView? UnorderedAccessView { get; init; }
@@ -61,6 +64,8 @@ public sealed record ProGpuDirectXCommand
     public DxRasterizerStateDescriptor? RasterizerState { get; init; }
     public DxConstantBufferBinding? ConstantBufferBinding { get; init; }
     public DxShaderResourceBinding? ResourceBinding { get; init; }
+    public uint BufferSlot { get; init; }
+    public DxIndexFormat IndexFormat { get; init; }
     public ProGpuDirectXTexture2D? SourceTexture { get; init; }
     public ProGpuDirectXTexture2D? DestinationTexture { get; init; }
     public ProGpuDirectXBuffer? SourceBuffer { get; init; }
@@ -82,6 +87,9 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
     private ProGpuDirectXShader? _computeShader;
     private ProGpuDirectXGraphicsPipeline? _graphicsPipeline;
     private ProGpuDirectXComputePipeline? _computePipeline;
+    private readonly Dictionary<uint, ProGpuDirectXBuffer> _vertexBuffers = new();
+    private ProGpuDirectXBuffer? _indexBuffer;
+    private DxIndexFormat _indexFormat = DxIndexFormat.UInt32;
     private readonly Dictionary<DxConstantBufferBinding, ProGpuDirectXBuffer?> _constantBuffers = new();
     private readonly Dictionary<DxShaderResourceBinding, ProGpuDirectXShaderResourceView?> _shaderResourceViews = new();
     private readonly Dictionary<DxShaderResourceBinding, ProGpuDirectXSamplerState?> _samplers = new();
@@ -121,9 +129,21 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
 
     public IReadOnlyDictionary<DxShaderResourceBinding, ProGpuDirectXSamplerState?> Samplers => _samplers;
 
+    public IReadOnlyDictionary<uint, ProGpuDirectXBuffer> VertexBuffers => _vertexBuffers;
+
+    public ProGpuDirectXBuffer? IndexBuffer => _indexBuffer;
+
     public IReadOnlyDictionary<DxConstantBufferBinding, ProGpuDirectXBuffer?> ConstantBuffers => _constantBuffers;
 
     public IReadOnlyDictionary<uint, ProGpuDirectXUnorderedAccessView?> UnorderedAccessViews => _unorderedAccessViews;
+
+    public ulong SubmittedDrawCount { get; private set; }
+
+    public ulong SubmittedDispatchCount { get; private set; }
+
+    public ulong SubmittedCopyCount { get; private set; }
+
+    public ulong SubmittedClearCount { get; private set; }
 
     public void SetRenderTargets(ProGpuDirectXTexture2D? renderTarget, ProGpuDirectXTexture2D? depthStencil = null)
     {
@@ -172,11 +192,23 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
 
     public void SetVertexBuffer(ProGpuDirectXBuffer buffer)
     {
+        SetVertexBuffer(0, buffer);
+    }
+
+    public void SetVertexBuffer(uint slot, ProGpuDirectXBuffer buffer)
+    {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(buffer);
+        if ((buffer.Descriptor.Usage & DxBufferUsage.Vertex) == 0)
+        {
+            throw new ArgumentException("Buffer was not created with vertex-buffer usage.", nameof(buffer));
+        }
+
+        _vertexBuffers[slot] = buffer;
         _commands.Add(new ProGpuDirectXCommand
         {
             Kind = ProGpuDirectXCommandKind.SetVertexBuffer,
+            BufferSlot = slot,
             Buffer = buffer
         });
     }
@@ -185,9 +217,17 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(buffer);
+        if ((buffer.Descriptor.Usage & DxBufferUsage.Index) == 0)
+        {
+            throw new ArgumentException("Buffer was not created with index-buffer usage.", nameof(buffer));
+        }
+
+        _indexBuffer = buffer;
+        _indexFormat = indexFormat;
         _commands.Add(new ProGpuDirectXCommand
         {
             Kind = ProGpuDirectXCommandKind.SetIndexBuffer,
+            IndexFormat = indexFormat,
             Buffer = buffer
         });
     }
@@ -476,9 +516,14 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
         _commands.Add(new ProGpuDirectXCommand
         {
             Kind = ProGpuDirectXCommandKind.Draw,
+            Texture = _renderTarget,
+            DepthStencilTexture = _depthStencil,
             Topology = _topology,
+            Viewport = Viewport,
+            Rect = ScissorRect,
             Draw = draw,
             GraphicsPipeline = _graphicsPipeline,
+            VertexBuffers = SnapshotVertexBuffers(),
             BindingSnapshot = CreateBindingSnapshotCore(DxShaderStageFlags.AllGraphics, "ProGPU DirectX Draw Bindings")
         });
     }
@@ -489,9 +534,10 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
         int baseVertexLocation = 0,
         uint instanceCount = 1,
         uint startInstanceLocation = 0,
-        DxIndexFormat indexFormat = DxIndexFormat.UInt32)
+        DxIndexFormat? indexFormat = null)
     {
         ThrowIfDisposed();
+        var effectiveIndexFormat = indexFormat ?? _indexFormat;
         var draw = new DxDrawIndexedCall(
             _topology,
             indexCount,
@@ -499,13 +545,20 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
             baseVertexLocation,
             instanceCount,
             startInstanceLocation,
-            indexFormat);
+            effectiveIndexFormat);
         _commands.Add(new ProGpuDirectXCommand
         {
             Kind = ProGpuDirectXCommandKind.DrawIndexed,
+            Texture = _renderTarget,
+            DepthStencilTexture = _depthStencil,
             Topology = _topology,
+            Viewport = Viewport,
+            Rect = ScissorRect,
             DrawIndexed = draw,
             GraphicsPipeline = _graphicsPipeline,
+            VertexBuffers = SnapshotVertexBuffers(),
+            IndexBuffer = _indexBuffer,
+            IndexFormat = effectiveIndexFormat,
             BindingSnapshot = CreateBindingSnapshotCore(DxShaderStageFlags.AllGraphics, "ProGPU DirectX DrawIndexed Bindings")
         });
     }
@@ -552,7 +605,7 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
 
         if (_device.Context is { } context && _device.IsGpuBacked)
         {
-            ExecuteGpuBackedClearCommands(context);
+            ExecuteGpuBackedCommands(context);
             context.CleanupPendingResources();
         }
 
@@ -566,6 +619,13 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
     {
         var entries = BuildBindingEntries(stages);
         return new ProGpuDirectXBindingSnapshot(_device, stages, entries, label);
+    }
+
+    private IReadOnlyDictionary<uint, ProGpuDirectXBuffer> SnapshotVertexBuffers()
+    {
+        return _vertexBuffers.Count == 0
+            ? new Dictionary<uint, ProGpuDirectXBuffer>()
+            : _vertexBuffers.ToDictionary(pair => pair.Key, pair => pair.Value);
     }
 
     private IReadOnlyList<ProGpuDirectXBindingEntry> BuildBindingEntries(DxShaderStageFlags stages)
@@ -699,85 +759,439 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
         _commands.Clear();
     }
 
-    private void ExecuteGpuBackedClearCommands(ProGPU.Backend.WgpuContext context)
+    private void ExecuteGpuBackedCommands(ProGPU.Backend.WgpuContext context)
     {
         foreach (var command in _commands)
         {
-            if (command.Kind != ProGpuDirectXCommandKind.ClearRenderTarget ||
-                command.Texture?.BackendTexture is not { IsDisposed: false, ViewPtr: not null } texture)
+            switch (command.Kind)
             {
-                continue;
+                case ProGpuDirectXCommandKind.ClearRenderTarget:
+                    ExecuteGpuBackedClearCommand(context, command);
+                    break;
+                case ProGpuDirectXCommandKind.CopyBuffer:
+                    ExecuteGpuBackedCopyBufferCommand(context, command);
+                    break;
+                case ProGpuDirectXCommandKind.Draw:
+                case ProGpuDirectXCommandKind.DrawIndexed:
+                    ExecuteGpuBackedDrawCommand(context, command);
+                    break;
+                case ProGpuDirectXCommandKind.Dispatch:
+                    ExecuteGpuBackedDispatchCommand(context, command);
+                    break;
+            }
+        }
+    }
+
+    private void ExecuteGpuBackedClearCommand(ProGPU.Backend.WgpuContext context, ProGpuDirectXCommand command)
+    {
+        if (command.Texture?.BackendTexture is not { IsDisposed: false, ViewPtr: not null } texture)
+        {
+            return;
+        }
+
+        var labelPtr = SilkMarshal.StringToPtr("ProGPU DirectX Clear Encoder");
+        CommandEncoder* encoder = null;
+        RenderPassEncoder* pass = null;
+        CommandBuffer* commandBuffer = null;
+        try
+        {
+            var encoderDesc = new CommandEncoderDescriptor { Label = (byte*)labelPtr };
+            encoder = context.Wgpu.DeviceCreateCommandEncoder(context.Device, &encoderDesc);
+            if (encoder == null)
+            {
+                return;
             }
 
-            var labelPtr = SilkMarshal.StringToPtr("ProGPU DirectX Clear Encoder");
-            CommandEncoder* encoder = null;
-            RenderPassEncoder* pass = null;
-            CommandBuffer* commandBuffer = null;
-            try
+            var clearColor = command.Color;
+            var colorAttachment = new RenderPassColorAttachment
             {
-                var encoderDesc = new CommandEncoderDescriptor { Label = (byte*)labelPtr };
-                encoder = context.Wgpu.DeviceCreateCommandEncoder(context.Device, &encoderDesc);
-                if (encoder == null)
+                View = texture.ViewPtr,
+                ResolveTarget = null,
+                LoadOp = LoadOp.Clear,
+                StoreOp = StoreOp.Store,
+                ClearValue = new Silk.NET.WebGPU.Color
                 {
-                    continue;
+                    R = clearColor.R,
+                    G = clearColor.G,
+                    B = clearColor.B,
+                    A = clearColor.A
                 }
+            };
 
-                var clearColor = command.Color;
-                var colorAttachment = new RenderPassColorAttachment
+            var passDesc = new RenderPassDescriptor
+            {
+                ColorAttachmentCount = 1,
+                ColorAttachments = &colorAttachment
+            };
+
+            pass = context.Wgpu.CommandEncoderBeginRenderPass(encoder, &passDesc);
+            if (pass != null)
+            {
+                context.Wgpu.RenderPassEncoderEnd(pass);
+                context.Wgpu.RenderPassEncoderRelease(pass);
+                pass = null;
+            }
+
+            var commandBufferDesc = new CommandBufferDescriptor();
+            commandBuffer = context.Wgpu.CommandEncoderFinish(encoder, &commandBufferDesc);
+            if (commandBuffer != null)
+            {
+                context.Wgpu.QueueSubmit(context.Queue, 1, &commandBuffer);
+                SubmittedClearCount++;
+            }
+        }
+        finally
+        {
+            if (commandBuffer != null)
+            {
+                context.Wgpu.CommandBufferRelease(commandBuffer);
+            }
+
+            if (pass != null)
+            {
+                context.Wgpu.RenderPassEncoderRelease(pass);
+            }
+
+            if (encoder != null)
+            {
+                context.Wgpu.CommandEncoderRelease(encoder);
+            }
+
+            SilkMarshal.Free(labelPtr);
+        }
+    }
+
+    private void ExecuteGpuBackedCopyBufferCommand(ProGPU.Backend.WgpuContext context, ProGpuDirectXCommand command)
+    {
+        if (command.SourceBuffer?.BackendBuffer is not { BufferPtr: not null } source ||
+            command.DestinationBuffer?.BackendBuffer is not { BufferPtr: not null } destination)
+        {
+            return;
+        }
+
+        var labelPtr = SilkMarshal.StringToPtr("ProGPU DirectX CopyBuffer Encoder");
+        CommandEncoder* encoder = null;
+        CommandBuffer* commandBuffer = null;
+        try
+        {
+            var encoderDesc = new CommandEncoderDescriptor { Label = (byte*)labelPtr };
+            encoder = context.Wgpu.DeviceCreateCommandEncoder(context.Device, &encoderDesc);
+            if (encoder == null)
+            {
+                return;
+            }
+
+            context.Wgpu.CommandEncoderCopyBufferToBuffer(
+                encoder,
+                source.BufferPtr,
+                0,
+                destination.BufferPtr,
+                0,
+                source.Size);
+
+            var commandBufferDesc = new CommandBufferDescriptor();
+            commandBuffer = context.Wgpu.CommandEncoderFinish(encoder, &commandBufferDesc);
+            if (commandBuffer != null)
+            {
+                context.Wgpu.QueueSubmit(context.Queue, 1, &commandBuffer);
+                SubmittedCopyCount++;
+            }
+        }
+        finally
+        {
+            if (commandBuffer != null)
+            {
+                context.Wgpu.CommandBufferRelease(commandBuffer);
+            }
+
+            if (encoder != null)
+            {
+                context.Wgpu.CommandEncoderRelease(encoder);
+            }
+
+            SilkMarshal.Free(labelPtr);
+        }
+    }
+
+    private void ExecuteGpuBackedDrawCommand(ProGPU.Backend.WgpuContext context, ProGpuDirectXCommand command)
+    {
+        if (command.Texture?.BackendTexture is not { IsDisposed: false, ViewPtr: not null } renderTarget)
+        {
+            throw new InvalidOperationException("GPU-backed DirectX draw requires a render target with a backend texture view.");
+        }
+
+        if (command.GraphicsPipeline is not { BackendPipeline: not null } pipeline)
+        {
+            throw new InvalidOperationException("GPU-backed DirectX draw requires a backend graphics pipeline.");
+        }
+
+        if (command.BindingSnapshot is { Entries.Count: > 0, HasBackendBindGroup: false })
+        {
+            throw new InvalidOperationException("GPU-backed DirectX draw requires backend-compatible binding resources.");
+        }
+
+        RenderPassDepthStencilAttachment depthAttachment = default;
+        var depthTexture = command.DepthStencilTexture?.BackendTexture;
+        var hasDepthAttachment = depthTexture is { IsDisposed: false, ViewPtr: not null };
+        if (command.GraphicsPipeline.Descriptor.DepthStencilFormat != DxResourceFormat.Unknown &&
+            command.GraphicsPipeline.Descriptor.DepthStencilState.DepthEnable &&
+            !hasDepthAttachment)
+        {
+            throw new InvalidOperationException("GPU-backed DirectX draw requires a backend depth-stencil texture for depth-enabled pipelines.");
+        }
+
+        if (hasDepthAttachment)
+        {
+            depthAttachment = new RenderPassDepthStencilAttachment
+            {
+                View = depthTexture!.ViewPtr,
+                DepthLoadOp = LoadOp.Load,
+                DepthStoreOp = StoreOp.Store,
+                DepthClearValue = 1f,
+                DepthReadOnly = false,
+                StencilLoadOp = LoadOp.Load,
+                StencilStoreOp = StoreOp.Store,
+                StencilClearValue = 0,
+                StencilReadOnly = false
+            };
+        }
+
+        var labelPtr = SilkMarshal.StringToPtr("ProGPU DirectX Draw Encoder");
+        CommandEncoder* encoder = null;
+        RenderPassEncoder* pass = null;
+        CommandBuffer* commandBuffer = null;
+        try
+        {
+            var encoderDesc = new CommandEncoderDescriptor { Label = (byte*)labelPtr };
+            encoder = context.Wgpu.DeviceCreateCommandEncoder(context.Device, &encoderDesc);
+            if (encoder == null)
+            {
+                return;
+            }
+
+            var colorAttachment = new RenderPassColorAttachment
+            {
+                View = renderTarget.ViewPtr,
+                ResolveTarget = null,
+                LoadOp = LoadOp.Load,
+                StoreOp = StoreOp.Store,
+                ClearValue = new Silk.NET.WebGPU.Color()
+            };
+
+            var passDesc = new RenderPassDescriptor
+            {
+                ColorAttachmentCount = 1,
+                ColorAttachments = &colorAttachment,
+                DepthStencilAttachment = hasDepthAttachment ? &depthAttachment : null
+            };
+
+            pass = context.Wgpu.CommandEncoderBeginRenderPass(encoder, &passDesc);
+            if (pass == null)
+            {
+                return;
+            }
+
+            context.Wgpu.RenderPassEncoderSetPipeline(pass, pipeline.BackendPipeline);
+            ApplyRenderState(context, pass, command, renderTarget.Width, renderTarget.Height);
+
+            if (command.BindingSnapshot is { HasBackendBindGroup: true } snapshot)
+            {
+                context.Wgpu.RenderPassEncoderSetBindGroup(pass, 0, snapshot.BackendBindGroup, 0, null);
+            }
+
+            if (command.VertexBuffers is { Count: > 0 } vertexBuffers)
+            {
+                foreach (var pair in vertexBuffers.OrderBy(pair => pair.Key))
                 {
-                    View = texture.ViewPtr,
-                    ResolveTarget = null,
-                    LoadOp = LoadOp.Clear,
-                    StoreOp = StoreOp.Store,
-                    ClearValue = new Silk.NET.WebGPU.Color
+                    if (pair.Value.BackendBuffer is not { BufferPtr: not null } buffer)
                     {
-                        R = clearColor.R,
-                        G = clearColor.G,
-                        B = clearColor.B,
-                        A = clearColor.A
+                        throw new InvalidOperationException("GPU-backed DirectX draw requires backend vertex buffers.");
                     }
-                };
 
-                var passDesc = new RenderPassDescriptor
-                {
-                    ColorAttachmentCount = 1,
-                    ColorAttachments = &colorAttachment
-                };
-
-                pass = context.Wgpu.CommandEncoderBeginRenderPass(encoder, &passDesc);
-                if (pass != null)
-                {
-                    context.Wgpu.RenderPassEncoderEnd(pass);
-                    context.Wgpu.RenderPassEncoderRelease(pass);
-                    pass = null;
-                }
-
-                var commandBufferDesc = new CommandBufferDescriptor();
-                commandBuffer = context.Wgpu.CommandEncoderFinish(encoder, &commandBufferDesc);
-                if (commandBuffer != null)
-                {
-                    context.Wgpu.QueueSubmit(context.Queue, 1, &commandBuffer);
+                    context.Wgpu.RenderPassEncoderSetVertexBuffer(pass, pair.Key, buffer.BufferPtr, 0, buffer.Size);
                 }
             }
-            finally
+
+            if (command.Kind == ProGpuDirectXCommandKind.DrawIndexed)
             {
-                if (commandBuffer != null)
+                if (command.IndexBuffer?.BackendBuffer is not { BufferPtr: not null } indexBuffer ||
+                    command.DrawIndexed is null)
                 {
-                    context.Wgpu.CommandBufferRelease(commandBuffer);
+                    throw new InvalidOperationException("GPU-backed DirectX DrawIndexed requires a backend index buffer.");
                 }
 
-                if (pass != null)
-                {
-                    context.Wgpu.RenderPassEncoderRelease(pass);
-                }
+                context.Wgpu.RenderPassEncoderSetIndexBuffer(
+                    pass,
+                    indexBuffer.BufferPtr,
+                    ProGpuDirectXFormatConverter.ToIndexFormat(command.DrawIndexed.IndexFormat),
+                    0,
+                    indexBuffer.Size);
 
-                if (encoder != null)
-                {
-                    context.Wgpu.CommandEncoderRelease(encoder);
-                }
-
-                SilkMarshal.Free(labelPtr);
+                context.Wgpu.RenderPassEncoderDrawIndexed(
+                    pass,
+                    command.DrawIndexed.IndexCount,
+                    command.DrawIndexed.InstanceCount,
+                    command.DrawIndexed.StartIndexLocation,
+                    command.DrawIndexed.BaseVertexLocation,
+                    command.DrawIndexed.StartInstanceLocation);
             }
+            else if (command.Draw is { } draw)
+            {
+                context.Wgpu.RenderPassEncoderDraw(
+                    pass,
+                    draw.VertexCount,
+                    draw.InstanceCount,
+                    draw.StartVertexLocation,
+                    draw.StartInstanceLocation);
+            }
+
+            context.Wgpu.RenderPassEncoderEnd(pass);
+            context.Wgpu.RenderPassEncoderRelease(pass);
+            pass = null;
+
+            var commandBufferDesc = new CommandBufferDescriptor();
+            commandBuffer = context.Wgpu.CommandEncoderFinish(encoder, &commandBufferDesc);
+            if (commandBuffer != null)
+            {
+                context.Wgpu.QueueSubmit(context.Queue, 1, &commandBuffer);
+                SubmittedDrawCount++;
+            }
+        }
+        finally
+        {
+            if (commandBuffer != null)
+            {
+                context.Wgpu.CommandBufferRelease(commandBuffer);
+            }
+
+            if (pass != null)
+            {
+                context.Wgpu.RenderPassEncoderRelease(pass);
+            }
+
+            if (encoder != null)
+            {
+                context.Wgpu.CommandEncoderRelease(encoder);
+            }
+
+            SilkMarshal.Free(labelPtr);
+        }
+    }
+
+    private static void ApplyRenderState(
+        ProGPU.Backend.WgpuContext context,
+        RenderPassEncoder* pass,
+        ProGpuDirectXCommand command,
+        uint targetWidth,
+        uint targetHeight)
+    {
+        var viewport = command.Viewport.Width > 0 && command.Viewport.Height > 0
+            ? command.Viewport
+            : new DxViewport(0, 0, targetWidth, targetHeight);
+
+        context.Wgpu.RenderPassEncoderSetViewport(
+            pass,
+            viewport.X,
+            viewport.Y,
+            viewport.Width,
+            viewport.Height,
+            viewport.MinDepth,
+            viewport.MaxDepth);
+
+        if (command.Rect.Width > 0 && command.Rect.Height > 0)
+        {
+            context.Wgpu.RenderPassEncoderSetScissorRect(
+                pass,
+                checked((uint)Math.Max(0, command.Rect.X)),
+                checked((uint)Math.Max(0, command.Rect.Y)),
+                checked((uint)command.Rect.Width),
+                checked((uint)command.Rect.Height));
+        }
+        else
+        {
+            context.Wgpu.RenderPassEncoderSetScissorRect(pass, 0, 0, targetWidth, targetHeight);
+        }
+    }
+
+    private void ExecuteGpuBackedDispatchCommand(ProGPU.Backend.WgpuContext context, ProGpuDirectXCommand command)
+    {
+        if (command.ComputePipeline is not { BackendPipeline: not null } pipeline)
+        {
+            throw new InvalidOperationException("GPU-backed DirectX dispatch requires a backend compute pipeline.");
+        }
+
+        if (command.BindingSnapshot is { Entries.Count: > 0, HasBackendBindGroup: false })
+        {
+            throw new InvalidOperationException("GPU-backed DirectX dispatch requires backend-compatible binding resources.");
+        }
+
+        if (command.Dispatch is not { } dispatch)
+        {
+            return;
+        }
+
+        var labelPtr = SilkMarshal.StringToPtr("ProGPU DirectX Dispatch Encoder");
+        CommandEncoder* encoder = null;
+        ComputePassEncoder* pass = null;
+        CommandBuffer* commandBuffer = null;
+        try
+        {
+            var encoderDesc = new CommandEncoderDescriptor { Label = (byte*)labelPtr };
+            encoder = context.Wgpu.DeviceCreateCommandEncoder(context.Device, &encoderDesc);
+            if (encoder == null)
+            {
+                return;
+            }
+
+            var passDesc = new ComputePassDescriptor();
+            pass = context.Wgpu.CommandEncoderBeginComputePass(encoder, &passDesc);
+            if (pass == null)
+            {
+                return;
+            }
+
+            context.Wgpu.ComputePassEncoderSetPipeline(pass, pipeline.BackendPipeline);
+            if (command.BindingSnapshot is { HasBackendBindGroup: true } snapshot)
+            {
+                context.Wgpu.ComputePassEncoderSetBindGroup(pass, 0, snapshot.BackendBindGroup, 0, null);
+            }
+
+            context.Wgpu.ComputePassEncoderDispatchWorkgroups(
+                pass,
+                dispatch.ThreadGroupCountX,
+                dispatch.ThreadGroupCountY,
+                dispatch.ThreadGroupCountZ);
+
+            context.Wgpu.ComputePassEncoderEnd(pass);
+            context.Wgpu.ComputePassEncoderRelease(pass);
+            pass = null;
+
+            var commandBufferDesc = new CommandBufferDescriptor();
+            commandBuffer = context.Wgpu.CommandEncoderFinish(encoder, &commandBufferDesc);
+            if (commandBuffer != null)
+            {
+                context.Wgpu.QueueSubmit(context.Queue, 1, &commandBuffer);
+                SubmittedDispatchCount++;
+            }
+        }
+        finally
+        {
+            if (commandBuffer != null)
+            {
+                context.Wgpu.CommandBufferRelease(commandBuffer);
+            }
+
+            if (pass != null)
+            {
+                context.Wgpu.ComputePassEncoderRelease(pass);
+            }
+
+            if (encoder != null)
+            {
+                context.Wgpu.CommandEncoderRelease(encoder);
+            }
+
+            SilkMarshal.Free(labelPtr);
         }
     }
 
@@ -823,6 +1237,8 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
     public void Dispose()
     {
         ClearRecordedCommandResources();
+        _vertexBuffers.Clear();
+        _indexBuffer = null;
         _constantBuffers.Clear();
         _shaderResourceViews.Clear();
         _samplers.Clear();

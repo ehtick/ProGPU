@@ -146,6 +146,13 @@ internal static class ProGpuDirectXFormatConverter
             : VertexStepMode.Vertex;
     }
 
+    public static IndexFormat ToIndexFormat(DxIndexFormat format)
+    {
+        return format == DxIndexFormat.UInt16
+            ? IndexFormat.Uint16
+            : IndexFormat.Uint32;
+    }
+
     public static CullMode ToCullMode(DxCullMode mode)
     {
         return mode switch

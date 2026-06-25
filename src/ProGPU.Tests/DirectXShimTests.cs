@@ -1,3 +1,4 @@
+using ProGPU.Backend;
 using ProGPU.DirectX;
 using Xunit;
 
@@ -33,6 +34,23 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     private const string ComputeWgsl = """
 @compute @workgroup_size(1)
 fn cs_main() {
+}
+""";
+
+    private const string SolidTriangleWgsl = """
+@vertex
+fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> @builtin(position) vec4<f32> {
+    var positions = array<vec2<f32>, 3>(
+        vec2<f32>(-0.9, -0.9),
+        vec2<f32>(0.9, -0.9),
+        vec2<f32>(0.0, 0.9));
+    let p = positions[vertexIndex];
+    return vec4<f32>(p, 0.0, 1.0);
+}
+
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0, 0.0, 0.0, 1.0);
 }
 """;
 
@@ -245,6 +263,125 @@ fn cs_main() {
         Assert.Same(pipeline, context.ComputePipeline);
         Assert.Equal(ProGpuDirectXCommandKind.Dispatch, context.Commands[1].Kind);
         Assert.Equal(new DxDispatchCall(8, 4, 1), context.Commands[1].Dispatch);
+    }
+
+    [Fact]
+    public void DrawCommandsCaptureDeferredVertexAndIndexBufferState()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var vertexBuffer0 = device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = 128,
+            Usage = DxBufferUsage.Vertex | DxBufferUsage.CopyDestination,
+            StrideInBytes = 16
+        });
+        using var vertexBuffer1 = device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = 128,
+            Usage = DxBufferUsage.Vertex | DxBufferUsage.CopyDestination,
+            StrideInBytes = 16
+        });
+        using var indexBuffer = device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = 64,
+            Usage = DxBufferUsage.Index | DxBufferUsage.CopyDestination
+        });
+        using var context = device.CreateImmediateContext();
+
+        context.SetVertexBuffer(0, vertexBuffer0);
+        context.SetVertexBuffer(1, vertexBuffer1);
+        context.SetIndexBuffer(indexBuffer, DxIndexFormat.UInt16);
+        context.DrawIndexed(6);
+
+        var command = context.Commands[^1];
+
+        Assert.Equal(ProGpuDirectXCommandKind.DrawIndexed, command.Kind);
+        Assert.NotNull(command.VertexBuffers);
+        Assert.Same(vertexBuffer0, command.VertexBuffers[0]);
+        Assert.Same(vertexBuffer1, command.VertexBuffers[1]);
+        Assert.Same(indexBuffer, command.IndexBuffer);
+        Assert.Equal(DxIndexFormat.UInt16, command.DrawIndexed!.IndexFormat);
+        Assert.Equal(DxIndexFormat.UInt16, command.IndexFormat);
+    }
+
+    [Fact]
+    public void FlushSubmitsGpuBackedDrawCommands()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var target = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 32,
+            Height = 32,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.RenderTarget | DxTextureUsage.CopySource
+        });
+        using var vertexShader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Vertex,
+            SourceKind = DxShaderSourceKind.Wgsl,
+            Source = SolidTriangleWgsl
+        });
+        using var pixelShader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Pixel,
+            SourceKind = DxShaderSourceKind.Wgsl,
+            Source = SolidTriangleWgsl
+        });
+        using var pipeline = device.CreateGraphicsPipeline(new DxGraphicsPipelineDescriptor
+        {
+            VertexShader = vertexShader,
+            PixelShader = pixelShader,
+            RenderTargetFormat = DxResourceFormat.R8G8B8A8Unorm,
+            BlendState = new DxBlendStateDescriptor { EnableBlend = false },
+            RasterizerState = new DxRasterizerStateDescriptor { CullMode = DxCullMode.None }
+        });
+        using var context = device.CreateImmediateContext();
+
+        context.SetRenderTargets(target);
+        context.SetViewport(new DxViewport(0, 0, 32, 32));
+        context.ClearRenderTarget(target, DxColor.Black);
+        context.SetGraphicsPipeline(pipeline);
+        context.Draw(3);
+        context.Flush();
+
+        Assert.Equal(1ul, context.SubmittedClearCount);
+        Assert.Equal(1ul, context.SubmittedDrawCount);
+        Assert.Empty(context.Commands);
+
+        var pixels = target.BackendTexture!.ReadPixels();
+        var center = ReadRgbaPixel(pixels, 32, 16, 16);
+        Assert.True(center.R > 200, $"Expected red center pixel after DirectX draw, actual: {center}");
+        Assert.True(center.G < 50, $"Expected low green center pixel after DirectX draw, actual: {center}");
+        Assert.True(center.B < 50, $"Expected low blue center pixel after DirectX draw, actual: {center}");
+        Assert.True(center.A > 200, $"Expected opaque center pixel after DirectX draw, actual: {center}");
+    }
+
+    [Fact]
+    public void FlushSubmitsGpuBackedComputeDispatchCommands()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var computeShader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Compute,
+            SourceKind = DxShaderSourceKind.Wgsl,
+            Source = ComputeWgsl
+        });
+        using var pipeline = device.CreateComputePipeline(new DxComputePipelineDescriptor
+        {
+            ComputeShader = computeShader
+        });
+        using var context = device.CreateImmediateContext();
+
+        context.SetComputePipeline(pipeline);
+        context.Dispatch(1, 1, 1);
+        context.Flush();
+
+        Assert.Equal(1ul, context.SubmittedDispatchCount);
+        Assert.Empty(context.Commands);
     }
 
     [Fact]
@@ -542,5 +679,11 @@ fn cs_main() {
         });
         Assert.Throws<ArgumentException>(() =>
             context.SetConstantBuffer(DxShaderStage.Vertex, 0, vertexBuffer));
+    }
+
+    private static (byte R, byte G, byte B, byte A) ReadRgbaPixel(byte[] pixels, int width, int x, int y)
+    {
+        var offset = ((y * width) + x) * 4;
+        return (pixels[offset], pixels[offset + 1], pixels[offset + 2], pixels[offset + 3]);
     }
 }
