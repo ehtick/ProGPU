@@ -64,6 +64,7 @@ public sealed record ProGpuDirectXCommand
     public DxRasterizerStateDescriptor? RasterizerState { get; init; }
     public DxConstantBufferBinding? ConstantBufferBinding { get; init; }
     public DxShaderResourceBinding? ResourceBinding { get; init; }
+    public DxDepthStencilClearFlags DepthStencilClearFlags { get; init; }
     public uint BufferSlot { get; init; }
     public DxIndexFormat IndexFormat { get; init; }
     public ProGpuDirectXTexture2D? SourceTexture { get; init; }
@@ -441,12 +442,6 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
         ArgumentNullException.ThrowIfNull(source);
         ValidateTextureCopy(destination, source);
 
-        if (destination.BackendTexture is { IsDisposed: false } destinationTexture &&
-            source.BackendTexture is { IsDisposed: false } sourceTexture)
-        {
-            destinationTexture.CopyFrom(sourceTexture);
-        }
-
         _commands.Add(new ProGpuDirectXCommand
         {
             Kind = ProGpuDirectXCommandKind.CopyTexture,
@@ -499,12 +494,28 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
 
     public void ClearDepthStencil(ProGpuDirectXTexture2D depthStencil, float depth = 1f, byte stencil = 0)
     {
+        ClearDepthStencil(depthStencil, DxDepthStencilClearFlags.DepthStencil, depth, stencil);
+    }
+
+    public void ClearDepthStencil(
+        ProGpuDirectXTexture2D depthStencil,
+        DxDepthStencilClearFlags clearFlags,
+        float depth = 1f,
+        byte stencil = 0)
+    {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(depthStencil);
+        if (clearFlags == DxDepthStencilClearFlags.None)
+        {
+            throw new ArgumentOutOfRangeException(nameof(clearFlags), "At least one depth-stencil clear flag is required.");
+        }
+
+        ValidateDepthStencilTexture(depthStencil);
         _commands.Add(new ProGpuDirectXCommand
         {
             Kind = ProGpuDirectXCommandKind.ClearDepthStencil,
             Texture = depthStencil,
+            DepthStencilClearFlags = clearFlags,
             Color = new DxColor(depth, stencil / 255f, 0f, 0f)
         });
     }
@@ -768,6 +779,12 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
                 case ProGpuDirectXCommandKind.ClearRenderTarget:
                     ExecuteGpuBackedClearCommand(context, command);
                     break;
+                case ProGpuDirectXCommandKind.ClearDepthStencil:
+                    ExecuteGpuBackedClearDepthStencilCommand(context, command);
+                    break;
+                case ProGpuDirectXCommandKind.CopyTexture:
+                    ExecuteGpuBackedCopyTextureCommand(command);
+                    break;
                 case ProGpuDirectXCommandKind.CopyBuffer:
                     ExecuteGpuBackedCopyBufferCommand(context, command);
                     break;
@@ -902,6 +919,97 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
             if (commandBuffer != null)
             {
                 context.Wgpu.CommandBufferRelease(commandBuffer);
+            }
+
+            if (encoder != null)
+            {
+                context.Wgpu.CommandEncoderRelease(encoder);
+            }
+
+            SilkMarshal.Free(labelPtr);
+        }
+    }
+
+    private void ExecuteGpuBackedCopyTextureCommand(ProGpuDirectXCommand command)
+    {
+        if (command.SourceTexture?.BackendTexture is not { IsDisposed: false } source ||
+            command.DestinationTexture?.BackendTexture is not { IsDisposed: false } destination)
+        {
+            return;
+        }
+
+        destination.CopyFrom(source);
+        SubmittedCopyCount++;
+    }
+
+    private void ExecuteGpuBackedClearDepthStencilCommand(ProGPU.Backend.WgpuContext context, ProGpuDirectXCommand command)
+    {
+        if (command.Texture?.BackendTexture is not { IsDisposed: false, ViewPtr: not null } texture)
+        {
+            return;
+        }
+
+        var clearDepth = (command.DepthStencilClearFlags & DxDepthStencilClearFlags.Depth) != 0;
+        var clearStencil = (command.DepthStencilClearFlags & DxDepthStencilClearFlags.Stencil) != 0;
+        var labelPtr = SilkMarshal.StringToPtr("ProGPU DirectX ClearDepthStencil Encoder");
+        CommandEncoder* encoder = null;
+        RenderPassEncoder* pass = null;
+        CommandBuffer* commandBuffer = null;
+        try
+        {
+            var encoderDesc = new CommandEncoderDescriptor { Label = (byte*)labelPtr };
+            encoder = context.Wgpu.DeviceCreateCommandEncoder(context.Device, &encoderDesc);
+            if (encoder == null)
+            {
+                return;
+            }
+
+            var depthAttachment = new RenderPassDepthStencilAttachment
+            {
+                View = texture.ViewPtr,
+                DepthLoadOp = clearDepth ? LoadOp.Clear : LoadOp.Load,
+                DepthStoreOp = StoreOp.Store,
+                DepthClearValue = command.Color.R,
+                DepthReadOnly = false,
+                StencilLoadOp = clearStencil ? LoadOp.Clear : LoadOp.Load,
+                StencilStoreOp = StoreOp.Store,
+                StencilClearValue = checked((uint)Math.Clamp(command.Color.G * 255f, 0f, 255f)),
+                StencilReadOnly = false
+            };
+
+            var passDesc = new RenderPassDescriptor
+            {
+                ColorAttachmentCount = 0,
+                ColorAttachments = null,
+                DepthStencilAttachment = &depthAttachment
+            };
+
+            pass = context.Wgpu.CommandEncoderBeginRenderPass(encoder, &passDesc);
+            if (pass != null)
+            {
+                context.Wgpu.RenderPassEncoderEnd(pass);
+                context.Wgpu.RenderPassEncoderRelease(pass);
+                pass = null;
+            }
+
+            var commandBufferDesc = new CommandBufferDescriptor();
+            commandBuffer = context.Wgpu.CommandEncoderFinish(encoder, &commandBufferDesc);
+            if (commandBuffer != null)
+            {
+                context.Wgpu.QueueSubmit(context.Queue, 1, &commandBuffer);
+                SubmittedClearCount++;
+            }
+        }
+        finally
+        {
+            if (commandBuffer != null)
+            {
+                context.Wgpu.CommandBufferRelease(commandBuffer);
+            }
+
+            if (pass != null)
+            {
+                context.Wgpu.RenderPassEncoderRelease(pass);
             }
 
             if (encoder != null)
@@ -1231,6 +1339,19 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
         if ((source.Descriptor.Usage & DxTextureUsage.CopySource) == 0)
         {
             throw new ArgumentException("Source texture was not created with copy-source usage.", nameof(source));
+        }
+    }
+
+    private static void ValidateDepthStencilTexture(ProGpuDirectXTexture2D depthStencil)
+    {
+        if ((depthStencil.Descriptor.Usage & DxTextureUsage.DepthStencil) == 0)
+        {
+            throw new ArgumentException("Depth-stencil clear requires a texture created with depth-stencil usage.", nameof(depthStencil));
+        }
+
+        if (depthStencil.Descriptor.Format is not (DxResourceFormat.D24UnormS8UInt or DxResourceFormat.D32Float))
+        {
+            throw new ArgumentException("Depth-stencil clear requires a depth-stencil resource format.", nameof(depthStencil));
         }
     }
 

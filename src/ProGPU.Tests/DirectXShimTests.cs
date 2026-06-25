@@ -359,6 +359,112 @@ fn fs_main() -> @location(0) vec4<f32> {
     }
 
     [Fact]
+    public void FlushSubmitsGpuBackedDepthClearAndDepthDrawCommands()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var target = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 32,
+            Height = 32,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.RenderTarget | DxTextureUsage.CopySource
+        });
+        using var depth = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 32,
+            Height = 32,
+            Format = DxResourceFormat.D24UnormS8UInt,
+            Usage = DxTextureUsage.DepthStencil
+        });
+        using var vertexShader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Vertex,
+            SourceKind = DxShaderSourceKind.Wgsl,
+            Source = SolidTriangleWgsl
+        });
+        using var pixelShader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Pixel,
+            SourceKind = DxShaderSourceKind.Wgsl,
+            Source = SolidTriangleWgsl
+        });
+        using var pipeline = device.CreateGraphicsPipeline(new DxGraphicsPipelineDescriptor
+        {
+            VertexShader = vertexShader,
+            PixelShader = pixelShader,
+            RenderTargetFormat = DxResourceFormat.R8G8B8A8Unorm,
+            DepthStencilFormat = DxResourceFormat.D24UnormS8UInt,
+            BlendState = new DxBlendStateDescriptor { EnableBlend = false },
+            RasterizerState = new DxRasterizerStateDescriptor { CullMode = DxCullMode.None },
+            DepthStencilState = new DxDepthStencilStateDescriptor
+            {
+                DepthEnable = true,
+                DepthWriteMask = DxDepthWriteMask.All,
+                DepthFunction = DxComparisonFunction.LessEqual
+            }
+        });
+        using var context = device.CreateImmediateContext();
+
+        context.ClearDepthStencil(depth, DxDepthStencilClearFlags.DepthStencil, depth: 1f, stencil: 0);
+        context.SetRenderTargets(target, depth);
+        context.SetViewport(new DxViewport(0, 0, 32, 32));
+        context.SetGraphicsPipeline(pipeline);
+        context.Draw(3);
+        context.Flush();
+
+        Assert.Equal(1ul, context.SubmittedClearCount);
+        Assert.Equal(1ul, context.SubmittedDrawCount);
+        Assert.Empty(context.Commands);
+
+        var pixels = target.BackendTexture!.ReadPixels();
+        var center = ReadRgbaPixel(pixels, 32, 16, 16);
+        Assert.True(center.R > 200, $"Expected red center pixel after DirectX depth draw, actual: {center}");
+        Assert.True(center.G < 50, $"Expected low green center pixel after DirectX depth draw, actual: {center}");
+        Assert.True(center.B < 50, $"Expected low blue center pixel after DirectX depth draw, actual: {center}");
+        Assert.True(center.A > 200, $"Expected opaque center pixel after DirectX depth draw, actual: {center}");
+    }
+
+    [Fact]
+    public void FlushSubmitsGpuBackedTextureCopyCommands()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var source = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 16,
+            Height = 16,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.RenderTarget | DxTextureUsage.CopySource
+        });
+        using var destination = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 16,
+            Height = 16,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.CopyDestination | DxTextureUsage.CopySource
+        });
+        using var context = device.CreateImmediateContext();
+
+        context.ClearRenderTarget(source, new DxColor(0f, 1f, 0f, 1f));
+        context.CopyResource(destination, source);
+        context.Flush();
+
+        Assert.Equal(1ul, context.SubmittedClearCount);
+        Assert.Equal(1ul, context.SubmittedCopyCount);
+        Assert.Empty(context.Commands);
+
+        var pixels = destination.BackendTexture!.ReadPixels();
+        var center = ReadRgbaPixel(pixels, 16, 8, 8);
+        Assert.True(center.R < 50, $"Expected low red copied pixel, actual: {center}");
+        Assert.True(center.G > 200, $"Expected green copied pixel, actual: {center}");
+        Assert.True(center.B < 50, $"Expected low blue copied pixel, actual: {center}");
+        Assert.True(center.A > 200, $"Expected opaque copied pixel, actual: {center}");
+    }
+
+    [Fact]
     public void FlushSubmitsGpuBackedComputeDispatchCommands()
     {
         using var wgpu = new WgpuContext();
@@ -671,6 +777,8 @@ fn fs_main() -> @location(0) vec4<f32> {
         });
         using var context = device.CreateImmediateContext();
         Assert.Throws<ArgumentOutOfRangeException>(() => context.CopyResource(mismatchedDestination, copySource));
+
+        Assert.Throws<ArgumentException>(() => context.ClearDepthStencil(renderOnlyTexture));
 
         using var vertexBuffer = device.CreateBuffer(new DxBufferDescriptor
         {

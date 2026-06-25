@@ -353,8 +353,8 @@ public sealed unsafe class ProGpuDirectXGraphicsPipeline : IDisposable
                 Format = ProGpuDirectXFormatConverter.ToTextureFormat(descriptor.DepthStencilFormat),
                 DepthWriteEnabled = descriptor.DepthStencilState.DepthWriteMask == DxDepthWriteMask.All,
                 DepthCompare = ProGpuDirectXFormatConverter.ToCompareFunction(descriptor.DepthStencilState.DepthFunction),
-                StencilFront = new StencilFaceState(),
-                StencilBack = new StencilFaceState(),
+                StencilFront = CreateStencilFaceState(),
+                StencilBack = CreateStencilFaceState(),
                 StencilReadMask = 0xFF,
                 StencilWriteMask = 0xFF,
                 DepthBias = descriptor.RasterizerState.DepthBias,
@@ -401,6 +401,17 @@ public sealed unsafe class ProGpuDirectXGraphicsPipeline : IDisposable
                 SilkMarshal.Free(fsEntryPtr);
             }
         }
+    }
+
+    private static StencilFaceState CreateStencilFaceState()
+    {
+        return new StencilFaceState
+        {
+            Compare = CompareFunction.Always,
+            FailOp = StencilOperation.Keep,
+            DepthFailOp = StencilOperation.Keep,
+            PassOp = StencilOperation.Keep
+        };
     }
 
     private static void ValidateDescriptor(DxGraphicsPipelineDescriptor descriptor)
