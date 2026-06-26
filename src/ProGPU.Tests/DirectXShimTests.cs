@@ -1569,6 +1569,34 @@ fn fs_main() -> @location(0) vec4<f32> {
     }
 
     [Fact]
+    public void GraphicsPipelineDescriptorUsesDirect3DCompatibleDefaults()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var vertexShader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Vertex,
+            SourceKind = DxShaderSourceKind.Wgsl,
+            Source = SolidTriangleWgsl
+        });
+        using var pixelShader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Pixel,
+            SourceKind = DxShaderSourceKind.Wgsl,
+            Source = SolidTriangleWgsl
+        });
+        using var pipeline = device.CreateGraphicsPipeline(new DxGraphicsPipelineDescriptor
+        {
+            VertexShader = vertexShader,
+            PixelShader = pixelShader,
+            RenderTargetFormat = DxResourceFormat.R8G8B8A8Unorm
+        });
+
+        Assert.False(pipeline.Descriptor.BlendState.EnableBlend);
+        Assert.Equal(DxCullMode.Back, pipeline.Descriptor.RasterizerState.CullMode);
+        Assert.Equal(DxFrontFace.Clockwise, pipeline.Descriptor.RasterizerState.FrontFace);
+    }
+
+    [Fact]
     public void CanCreateDirectXStencilPipelineMetadata()
     {
         using var device = ProGpuDirectXDevice.CreateMetadataDevice();
@@ -2897,7 +2925,11 @@ VertexOutput VSMain(VertexInput input)
             InputLayout = inputLayout,
             RenderTargetFormat = DxResourceFormat.R8G8B8A8Unorm,
             BlendState = new DxBlendStateDescriptor { EnableBlend = false },
-            RasterizerState = new DxRasterizerStateDescriptor { CullMode = DxCullMode.None }
+            RasterizerState = new DxRasterizerStateDescriptor
+            {
+                CullMode = DxCullMode.None,
+                FrontFace = DxFrontFace.CounterClockwise
+            }
         });
         using var context = device.CreateImmediateContext();
 
@@ -2995,7 +3027,11 @@ VertexOutput VSMain(VertexInput input)
             InputLayout = inputLayout,
             RenderTargetFormat = DxResourceFormat.R8G8B8A8Unorm,
             BlendState = new DxBlendStateDescriptor { EnableBlend = false },
-            RasterizerState = new DxRasterizerStateDescriptor { CullMode = DxCullMode.None }
+            RasterizerState = new DxRasterizerStateDescriptor
+            {
+                CullMode = DxCullMode.None,
+                FrontFace = DxFrontFace.CounterClockwise
+            }
         });
         using var context = device.CreateImmediateContext();
 
@@ -3972,7 +4008,11 @@ float4 PSMain(float4 color : COLOR0, bool isFrontFace : SV_IsFrontFace) : SV_Tar
             InputLayout = inputLayout,
             RenderTargetFormat = DxResourceFormat.R8G8B8A8Unorm,
             BlendState = new DxBlendStateDescriptor { EnableBlend = false },
-            RasterizerState = new DxRasterizerStateDescriptor { CullMode = DxCullMode.None }
+            RasterizerState = new DxRasterizerStateDescriptor
+            {
+                CullMode = DxCullMode.None,
+                FrontFace = DxFrontFace.CounterClockwise
+            }
         });
         using var context = device.CreateImmediateContext();
 
@@ -4186,7 +4226,11 @@ float4 PSMain(float4 color : COLOR0, bool isFrontFace : SV_IsFrontFace) : SV_Tar
             InputLayout = inputLayout,
             RenderTargetFormat = DxResourceFormat.R8G8B8A8Unorm,
             BlendState = new DxBlendStateDescriptor { EnableBlend = false },
-            RasterizerState = new DxRasterizerStateDescriptor { CullMode = DxCullMode.None }
+            RasterizerState = new DxRasterizerStateDescriptor
+            {
+                CullMode = DxCullMode.None,
+                FrontFace = DxFrontFace.CounterClockwise
+            }
         });
         using var context = device.CreateImmediateContext();
 
@@ -4424,7 +4468,11 @@ float4 PSMain(PixelInput input) : SV_Target
             InputLayout = inputLayout,
             RenderTargetFormat = DxResourceFormat.R8G8B8A8Unorm,
             BlendState = new DxBlendStateDescriptor { EnableBlend = false },
-            RasterizerState = new DxRasterizerStateDescriptor { CullMode = DxCullMode.None }
+            RasterizerState = new DxRasterizerStateDescriptor
+            {
+                CullMode = DxCullMode.None,
+                FrontFace = DxFrontFace.CounterClockwise
+            }
         });
         using var context = device.CreateImmediateContext();
 

@@ -108,7 +108,7 @@ public sealed record DxRasterizerStateDescriptor
 {
     public DxFillMode FillMode { get; init; } = DxFillMode.Solid;
     public DxCullMode CullMode { get; init; } = DxCullMode.Back;
-    public DxFrontFace FrontFace { get; init; } = DxFrontFace.CounterClockwise;
+    public DxFrontFace FrontFace { get; init; } = DxFrontFace.Clockwise;
     public bool ScissorEnable { get; init; }
     public int DepthBias { get; init; }
     public float DepthBiasClamp { get; init; }
@@ -117,7 +117,7 @@ public sealed record DxRasterizerStateDescriptor
 
 public sealed record DxBlendStateDescriptor
 {
-    public bool EnableBlend { get; init; } = true;
+    public bool EnableBlend { get; init; }
     public DxBlendFactor SourceColor { get; init; } = DxBlendFactor.SourceAlpha;
     public DxBlendFactor DestinationColor { get; init; } = DxBlendFactor.InverseSourceAlpha;
     public DxBlendOperation ColorOperation { get; init; } = DxBlendOperation.Add;
