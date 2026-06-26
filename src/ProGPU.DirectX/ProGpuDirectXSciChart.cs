@@ -340,6 +340,18 @@ public sealed record ProGpuDirectXSciChartTextureVertexDraw(
     ProGpuDirectXSciChartTextureFiltering Filtering,
     DxRect? ClipRect);
 
+public sealed record ProGpuDirectXSciChartVerticalPixelsDraw(
+    int XLeft,
+    int XRight,
+    IReadOnlyList<int>? YCoordinates,
+    int YStartBottom,
+    int YEndTop,
+    IReadOnlyList<int> PixelColorsArgb,
+    double Opacity,
+    bool IsUniform,
+    bool YAxisIsFlipped,
+    DxRect? ClipRect);
+
 public sealed record ProGpuDirectXSciChartShapedHeatmapDraw(
     ProGpuDirectXSciChartTexture2D HeightsTexture,
     ProGpuDirectXSciChartTexture2D GradientTexture,
@@ -610,6 +622,7 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
     private readonly List<ProGpuDirectXSciChartColoredSpriteDraw> _coloredSpriteDraws = new();
     private readonly List<ProGpuDirectXSciChartFinancialBatchDraw> _financialBatchDraws = new();
     private readonly List<ProGpuDirectXSciChartTextureVertexDraw> _textureVertexDraws = new();
+    private readonly List<ProGpuDirectXSciChartVerticalPixelsDraw> _verticalPixelsDraws = new();
     private readonly List<ProGpuDirectXSciChartShapedHeatmapDraw> _shapedHeatmapDraws = new();
     private readonly List<ProGpuDirectXSciChartHeightTextureContoursDraw> _heightTextureContourDraws = new();
     private readonly Dictionary<(DxResourceFormat Format, ProGpuDirectXSciChartTextureFiltering Filtering), ProGpuDirectXGraphicsPipeline> _texturePipelines = new();
@@ -689,6 +702,8 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
     public IReadOnlyList<ProGpuDirectXSciChartFinancialBatchDraw> FinancialBatchDraws => _financialBatchDraws;
 
     public IReadOnlyList<ProGpuDirectXSciChartTextureVertexDraw> TextureVertexDraws => _textureVertexDraws;
+
+    public IReadOnlyList<ProGpuDirectXSciChartVerticalPixelsDraw> VerticalPixelsDraws => _verticalPixelsDraws;
 
     public IReadOnlyList<ProGpuDirectXSciChartShapedHeatmapDraw> ShapedHeatmapDraws => _shapedHeatmapDraws;
 
@@ -821,6 +836,7 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
         _coloredSpriteDraws.Clear();
         _financialBatchDraws.Clear();
         _textureVertexDraws.Clear();
+        _verticalPixelsDraws.Clear();
         _shapedHeatmapDraws.Clear();
         _heightTextureContourDraws.Clear();
         _clipRect = null;
@@ -878,6 +894,112 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
         _textureDraws.Add(new ProGpuDirectXSciChartTextureDraw(texture, effectiveRect, filtering, isUniform));
         _transientResources.Add(vertexBuffer);
         _transientResources.Add(shaderResourceView);
+    }
+
+    public void DrawPixelsVertically(
+        int xLeft,
+        int xRight,
+        int yStartBottom,
+        int yEndTop,
+        ReadOnlySpan<int> pixelColorsArgb,
+        double opacity,
+        bool yAxisIsFlipped)
+    {
+        ThrowIfDisposed();
+        ValidateVerticalPixels(xLeft, xRight, yStartBottom, yEndTop, pixelColorsArgb.Length, opacity);
+
+        if (HasEmptyClip)
+        {
+            return;
+        }
+
+        DrawVerticalPixelsTexture(
+            xLeft,
+            xRight,
+            yStartBottom,
+            yEndTop,
+            yCoordinates: null,
+            pixelColorsArgb,
+            opacity,
+            isUniform: true,
+            yAxisIsFlipped);
+    }
+
+    public void DrawPixelsVertically(
+        int xLeft,
+        int xRight,
+        ReadOnlySpan<int> yCoordinates,
+        ReadOnlySpan<int> pixelColorsArgb,
+        double opacity,
+        bool isUniform,
+        bool yAxisIsFlipped)
+    {
+        ThrowIfDisposed();
+        ValidateVerticalPixelCoordinates(xLeft, xRight, yCoordinates.Length, pixelColorsArgb.Length, opacity, isUniform);
+
+        if (HasEmptyClip)
+        {
+            return;
+        }
+
+        var copiedCoordinates = yCoordinates.ToArray();
+        if (isUniform)
+        {
+            if (copiedCoordinates[0] == copiedCoordinates[^1])
+            {
+                throw new ArgumentOutOfRangeException(nameof(yCoordinates), "SciChart uniform vertical pixels require a non-empty y range.");
+            }
+
+            DrawVerticalPixelsTexture(
+                xLeft,
+                xRight,
+                copiedCoordinates[0],
+                copiedCoordinates[^1],
+                copiedCoordinates,
+                pixelColorsArgb,
+                opacity,
+                isUniform: true,
+                yAxisIsFlipped);
+            return;
+        }
+
+        var copiedColors = pixelColorsArgb.ToArray();
+        var vertexBuffer = CreateVerticalPixelVertexBuffer(
+            xLeft,
+            xRight,
+            copiedCoordinates,
+            copiedColors,
+            opacity,
+            yAxisIsFlipped,
+            out var submittedVertexCount);
+        if (vertexBuffer is null)
+        {
+            return;
+        }
+
+        _context.SetRenderTargets(RenderTarget);
+        _context.SetViewport(new DxViewport(0, 0, RenderTarget.Width, RenderTarget.Height));
+        _context.SetScissorRect(_clipRect ?? FullRenderTargetRect);
+        _context.SetGraphicsPipeline(GetColumnFillPipeline(RenderTarget.Descriptor.Format));
+        _context.SetVertexBuffer(vertexBuffer);
+        _context.SetShaderResource(DxShaderStage.Pixel, 0, null);
+        _context.SetShaderResource(DxShaderStage.Pixel, 1, null);
+        _context.SetConstantBuffer(DxShaderStage.Pixel, 0, null);
+        _context.SetSampler(DxShaderStage.Pixel, 0, null);
+        _context.Draw(submittedVertexCount);
+
+        _verticalPixelsDraws.Add(new ProGpuDirectXSciChartVerticalPixelsDraw(
+            xLeft,
+            xRight,
+            copiedCoordinates,
+            copiedCoordinates[0],
+            copiedCoordinates[^1],
+            copiedColors,
+            opacity,
+            IsUniform: false,
+            yAxisIsFlipped,
+            _clipRect));
+        _transientResources.Add(vertexBuffer);
     }
 
     public void DrawText(
@@ -2192,6 +2314,47 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
         return vertexBuffer;
     }
 
+    private void DrawVerticalPixelsTexture(
+        int xLeft,
+        int xRight,
+        int yStartBottom,
+        int yEndTop,
+        int[]? yCoordinates,
+        ReadOnlySpan<int> pixelColorsArgb,
+        double opacity,
+        bool isUniform,
+        bool yAxisIsFlipped)
+    {
+        var sourceColors = pixelColorsArgb.ToArray();
+        var uploadColors = CopyVerticalPixelColors(pixelColorsArgb, opacity, yAxisIsFlipped);
+        if (!ContainsVisibleColor(uploadColors))
+        {
+            return;
+        }
+
+        var viewportRect = CreateVerticalPixelRect(xLeft, xRight, yStartBottom, yEndTop);
+        var pixelsTexture = CreateTexture(1, checked((uint)uploadColors.Length));
+        pixelsTexture.SetData(uploadColors);
+        DrawTexture(
+            pixelsTexture,
+            viewportRect,
+            ProGpuDirectXSciChartTextureFiltering.Point,
+            isUniform: false);
+
+        _verticalPixelsDraws.Add(new ProGpuDirectXSciChartVerticalPixelsDraw(
+            xLeft,
+            xRight,
+            yCoordinates,
+            yStartBottom,
+            yEndTop,
+            sourceColors,
+            opacity,
+            isUniform,
+            yAxisIsFlipped,
+            _clipRect));
+        _transientResources.Add(pixelsTexture);
+    }
+
     private ProGpuDirectXBuffer CreateBatchedTextureVertexBuffer(
         ReadOnlySpan<ProGpuDirectXSciChartTextureVertex> vertices,
         ProGpuDirectXSciChartVertexTransform transform)
@@ -2934,6 +3097,49 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
         }
 
         return CreateSolidColorVertexBuffer(vertexData, "SciChartRectBatchVertices", out submittedVertexCount);
+    }
+
+    private ProGpuDirectXBuffer? CreateVerticalPixelVertexBuffer(
+        int xLeft,
+        int xRight,
+        ReadOnlySpan<int> yCoordinates,
+        ReadOnlySpan<int> pixelColorsArgb,
+        double opacity,
+        bool yAxisIsFlipped,
+        out uint submittedVertexCount)
+    {
+        var left = Math.Min(xLeft, xRight);
+        var right = Math.Max(xLeft, xRight);
+        var intervalCount = yCoordinates.Length - 1;
+        var vertexData = new List<float>(checked(intervalCount * 36));
+
+        for (var i = 0; i < intervalCount; i++)
+        {
+            var colorIndex = yAxisIsFlipped ? intervalCount - 1 - i : i;
+            var colorArgb = ApplyOpacity(unchecked((uint)pixelColorsArgb[colorIndex]), opacity);
+            if (!HasVisibleColor(colorArgb))
+            {
+                continue;
+            }
+
+            var y0 = yCoordinates[i];
+            var y1 = yCoordinates[i + 1];
+            if (y0 == y1)
+            {
+                continue;
+            }
+
+            var top = Math.Min(y0, y1);
+            var bottom = Math.Max(y0, y1);
+            AppendSolidColorVertex(vertexData, left, top, colorArgb);
+            AppendSolidColorVertex(vertexData, right, top, colorArgb);
+            AppendSolidColorVertex(vertexData, right, bottom, colorArgb);
+            AppendSolidColorVertex(vertexData, left, top, colorArgb);
+            AppendSolidColorVertex(vertexData, right, bottom, colorArgb);
+            AppendSolidColorVertex(vertexData, left, bottom, colorArgb);
+        }
+
+        return CreateSolidColorVertexBuffer(vertexData, "SciChartVerticalPixels", out submittedVertexCount);
     }
 
     private ProGpuDirectXBuffer? CreateSpriteBatchVertexBuffer(
@@ -4199,6 +4405,15 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
         return new DxRect(left, top, right - left, bottom - top);
     }
 
+    private static DxRect CreateVerticalPixelRect(int xLeft, int xRight, int yStartBottom, int yEndTop)
+    {
+        var left = Math.Min(xLeft, xRight);
+        var right = Math.Max(xLeft, xRight);
+        var top = Math.Min(yStartBottom, yEndTop);
+        var bottom = Math.Max(yStartBottom, yEndTop);
+        return new DxRect(left, top, right - left, bottom - top);
+    }
+
     private static void ValidateDrawRect(DxRect rect)
     {
         if (rect.Width <= 0 || rect.Height <= 0)
@@ -4336,6 +4551,61 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
         }
     }
 
+    private static void ValidateVerticalPixels(
+        int xLeft,
+        int xRight,
+        int yStartBottom,
+        int yEndTop,
+        int colorCount,
+        double opacity)
+    {
+        ValidateOpacity(opacity);
+        if (xLeft == xRight)
+        {
+            throw new ArgumentOutOfRangeException(nameof(xRight), "SciChart vertical pixels require a non-empty x range.");
+        }
+
+        if (yStartBottom == yEndTop)
+        {
+            throw new ArgumentOutOfRangeException(nameof(yEndTop), "SciChart vertical pixels require a non-empty y range.");
+        }
+
+        if (colorCount <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(colorCount), "SciChart vertical pixels require at least one color.");
+        }
+    }
+
+    private static void ValidateVerticalPixelCoordinates(
+        int xLeft,
+        int xRight,
+        int coordinateCount,
+        int colorCount,
+        double opacity,
+        bool isUniform)
+    {
+        ValidateOpacity(opacity);
+        if (xLeft == xRight)
+        {
+            throw new ArgumentOutOfRangeException(nameof(xRight), "SciChart vertical pixels require a non-empty x range.");
+        }
+
+        if (coordinateCount < 2)
+        {
+            throw new ArgumentOutOfRangeException(nameof(coordinateCount), "SciChart vertical pixel coordinates require at least two y coordinates.");
+        }
+
+        if (colorCount <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(colorCount), "SciChart vertical pixels require at least one color.");
+        }
+
+        if (!isUniform && colorCount < coordinateCount - 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(colorCount), "SciChart non-uniform vertical pixels require one color per y interval.");
+        }
+    }
+
     private static void ValidateGradientRotationAngle(double gradientRotationAngle)
     {
         if (!double.IsFinite(gradientRotationAngle))
@@ -4372,6 +4642,34 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
         var alpha = (int)((colorArgb >> 24) & 0xFF);
         var adjustedAlpha = (uint)Math.Clamp((int)Math.Round(alpha * opacity, MidpointRounding.AwayFromZero), 0, 255);
         return (colorArgb & 0x00FFFFFFu) | (adjustedAlpha << 24);
+    }
+
+    private static int[] CopyVerticalPixelColors(
+        ReadOnlySpan<int> pixelColorsArgb,
+        double opacity,
+        bool reverse)
+    {
+        var colors = new int[pixelColorsArgb.Length];
+        for (var i = 0; i < colors.Length; i++)
+        {
+            var sourceIndex = reverse ? colors.Length - 1 - i : i;
+            colors[i] = unchecked((int)ApplyOpacity(unchecked((uint)pixelColorsArgb[sourceIndex]), opacity));
+        }
+
+        return colors;
+    }
+
+    private static bool ContainsVisibleColor(ReadOnlySpan<int> pixelColorsArgb)
+    {
+        foreach (var colorArgb in pixelColorsArgb)
+        {
+            if (HasVisibleColor(unchecked((uint)colorArgb)))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static uint WithAlpha(uint colorArgb, byte alpha)

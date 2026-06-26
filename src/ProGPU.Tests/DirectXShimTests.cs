@@ -1404,6 +1404,86 @@ fn fs_main() -> @location(0) vec4<f32> {
     }
 
     [Fact]
+    public void SciChartRenderContextRecordsVerticalPixelsAndClip()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var renderContext = new ProGpuDirectXSciChartRenderContext2D(device, 64, 32);
+        int[] colors =
+        [
+            unchecked((int)0xFF00FF00),
+            unchecked((int)0x0000FF00),
+            unchecked((int)0xFFFF0000)
+        ];
+
+        renderContext.SetClipRect(new DxRect(0, 0, 16, 16));
+        renderContext.DrawPixelsVertically(
+            xLeft: 0,
+            xRight: 8,
+            yStartBottom: 16,
+            yEndTop: 0,
+            colors,
+            opacity: 0.5d,
+            yAxisIsFlipped: false);
+
+        Assert.Single(renderContext.VerticalPixelsDraws);
+        Assert.Single(renderContext.TextureDraws);
+        var uniformDraw = renderContext.VerticalPixelsDraws[0];
+        Assert.Equal(new DxRect(0, 0, 16, 16), uniformDraw.ClipRect);
+        Assert.True(uniformDraw.IsUniform);
+        Assert.False(uniformDraw.YAxisIsFlipped);
+        Assert.Equal(colors.Length, uniformDraw.PixelColorsArgb.Count);
+        Assert.Null(uniformDraw.YCoordinates);
+        var uniformCommand = renderContext.ImmediateContext.Commands[^1];
+        var uniformPayload = uniformCommand.Draw ?? throw new InvalidOperationException("Expected SciChart vertical texture draw command payload.");
+        Assert.Equal(ProGpuDirectXCommandKind.Draw, uniformCommand.Kind);
+        Assert.Equal(6u, uniformPayload.VertexCount);
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            renderContext.DrawPixelsVertically(0, 0, 16, 0, colors, 1d, yAxisIsFlipped: false));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            renderContext.DrawPixelsVertically(0, 8, 0, 0, colors, 1d, yAxisIsFlipped: false));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            renderContext.DrawPixelsVertically(0, 8, 16, 0, ReadOnlySpan<int>.Empty, 1d, yAxisIsFlipped: false));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            renderContext.DrawPixelsVertically(0, 8, 16, 0, colors, 1.5d, yAxisIsFlipped: false));
+
+        renderContext.BeginFrame();
+        int[] yCoordinates = [0, 8, 16];
+        int[] runColors =
+        [
+            unchecked((int)0xFF00FF00),
+            unchecked((int)0xFFFF0000)
+        ];
+        renderContext.SetClipRect(new DxRect(0, 0, 16, 16));
+        renderContext.DrawPixelsVertically(
+            xLeft: 0,
+            xRight: 8,
+            yCoordinates,
+            runColors,
+            opacity: 1d,
+            isUniform: false,
+            yAxisIsFlipped: true);
+
+        Assert.Single(renderContext.VerticalPixelsDraws);
+        var coordinateDraw = renderContext.VerticalPixelsDraws[0];
+        Assert.False(coordinateDraw.IsUniform);
+        Assert.True(coordinateDraw.YAxisIsFlipped);
+        Assert.Equal(yCoordinates, coordinateDraw.YCoordinates);
+        Assert.Equal(runColors, coordinateDraw.PixelColorsArgb);
+        var coordinateCommand = renderContext.ImmediateContext.Commands[^1];
+        var coordinatePayload = coordinateCommand.Draw ?? throw new InvalidOperationException("Expected SciChart vertical coordinate draw command payload.");
+        Assert.Equal(12u, coordinatePayload.VertexCount);
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            renderContext.DrawPixelsVertically(0, 8, yCoordinates.AsSpan(0, 1), runColors, 1d, isUniform: false, yAxisIsFlipped: false));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            renderContext.DrawPixelsVertically(0, 8, yCoordinates, runColors.AsSpan(0, 1), 1d, isUniform: false, yAxisIsFlipped: false));
+
+        renderContext.BeginFrame();
+        renderContext.SetClipRect(new DxRect(100, 100, 8, 8));
+        renderContext.DrawPixelsVertically(0, 8, 16, 0, colors, 1d, yAxisIsFlipped: false);
+        Assert.Empty(renderContext.VerticalPixelsDraws);
+    }
+
+    [Fact]
     public void SciChartRenderContextRecordsSpriteBatchesAndClip()
     {
         using var device = ProGpuDirectXDevice.CreateMetadataDevice();
@@ -4045,6 +4125,63 @@ VertexOutput VSMain(VertexInput input)
         Assert.True(clippedOut.G < 50, $"Expected black pixel outside SciChart rect clip, actual: {clippedOut}");
         Assert.True(clippedOut.B < 50, $"Expected black pixel outside SciChart rect clip, actual: {clippedOut}");
         Assert.True(clippedOut.A > 200, $"Expected opaque clear alpha outside SciChart rect clip, actual: {clippedOut}");
+    }
+
+    [Fact]
+    public void FlushSubmitsGpuBackedSciChartVerticalPixelCommands()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var renderContext = new ProGpuDirectXSciChartRenderContext2D(
+            device,
+            16,
+            16,
+            DxResourceFormat.R8G8B8A8Unorm);
+        int[] green = [unchecked((int)0xFF00FF00)];
+        int[] yCoordinates = [8, 16];
+
+        renderContext.Clear(DxColor.Black);
+        renderContext.SetClipRect(new DxRect(0, 0, 8, 16));
+        renderContext.DrawPixelsVertically(
+            xLeft: 0,
+            xRight: 16,
+            yStartBottom: 0,
+            yEndTop: 8,
+            green,
+            opacity: 1d,
+            yAxisIsFlipped: false);
+        renderContext.DrawPixelsVertically(
+            xLeft: 0,
+            xRight: 16,
+            yCoordinates,
+            green,
+            opacity: 1d,
+            isUniform: false,
+            yAxisIsFlipped: false);
+        renderContext.Flush();
+
+        Assert.Equal(2, renderContext.VerticalPixelsDraws.Count);
+        Assert.Equal(2ul, renderContext.ImmediateContext.SubmittedDrawCount);
+
+        var targetPixels = renderContext.ReadTargetPixels();
+        var uniformIn = ReadRgbaPixel(targetPixels, 16, 4, 4);
+        Assert.True(uniformIn.R < 50, $"Expected vertical pixel texture low red pixel inside SciChart clip, actual: {uniformIn}");
+        Assert.True(uniformIn.G > 200, $"Expected vertical pixel texture green pixel inside SciChart clip, actual: {uniformIn}");
+        Assert.True(uniformIn.B < 50, $"Expected vertical pixel texture low blue pixel inside SciChart clip, actual: {uniformIn}");
+        Assert.True(uniformIn.A > 200, $"Expected vertical pixel texture opaque pixel inside SciChart clip, actual: {uniformIn}");
+
+        var coordinateIn = ReadRgbaPixel(targetPixels, 16, 4, 12);
+        Assert.True(coordinateIn.R < 50, $"Expected vertical pixel coordinate low red pixel inside SciChart clip, actual: {coordinateIn}");
+        Assert.True(coordinateIn.G > 200, $"Expected vertical pixel coordinate green pixel inside SciChart clip, actual: {coordinateIn}");
+        Assert.True(coordinateIn.B < 50, $"Expected vertical pixel coordinate low blue pixel inside SciChart clip, actual: {coordinateIn}");
+        Assert.True(coordinateIn.A > 200, $"Expected vertical pixel coordinate opaque pixel inside SciChart clip, actual: {coordinateIn}");
+
+        var clippedOut = ReadRgbaPixel(targetPixels, 16, 12, 8);
+        Assert.True(clippedOut.R < 50, $"Expected black pixel outside SciChart vertical pixel clip, actual: {clippedOut}");
+        Assert.True(clippedOut.G < 50, $"Expected black pixel outside SciChart vertical pixel clip, actual: {clippedOut}");
+        Assert.True(clippedOut.B < 50, $"Expected black pixel outside SciChart vertical pixel clip, actual: {clippedOut}");
+        Assert.True(clippedOut.A > 200, $"Expected opaque clear alpha outside SciChart vertical pixel clip, actual: {clippedOut}");
     }
 
     [Fact]
