@@ -22,39 +22,39 @@ internal static class ProGpuDirectXHlslTranslator
         RegexOptions.Compiled);
 
     private static readonly Regex s_texture2DResourceRegex = new(
-        @"\bTexture2D(?:\s*<\s*(?<type>[A-Za-z_]\w*)\s*>)?\s+(?<name>[A-Za-z_]\w*)\s*:\s*register\s*\(\s*t(?<slot>\d+)\s*\)\s*;",
+        @"\bTexture2D(?:\s*<\s*(?<type>[A-Za-z_]\w*)\s*>)?\s+(?<name>[A-Za-z_]\w*)\s*(?::\s*register\s*\(\s*t(?<slot>\d+)\s*\))?\s*;",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex s_texture2DArrayResourceRegex = new(
-        @"\bTexture2DArray(?:\s*<\s*(?<type>[A-Za-z_]\w*)\s*>)?\s+(?<name>[A-Za-z_]\w*)\s*:\s*register\s*\(\s*t(?<slot>\d+)\s*\)\s*;",
+        @"\bTexture2DArray(?:\s*<\s*(?<type>[A-Za-z_]\w*)\s*>)?\s+(?<name>[A-Za-z_]\w*)\s*(?::\s*register\s*\(\s*t(?<slot>\d+)\s*\))?\s*;",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex s_structuredBufferResourceRegex = new(
-        @"\bStructuredBuffer\s*<\s*(?<type>[A-Za-z_]\w*)\s*>\s+(?<name>[A-Za-z_]\w*)\s*:\s*register\s*\(\s*t(?<slot>\d+)\s*\)\s*;",
+        @"\bStructuredBuffer\s*<\s*(?<type>[A-Za-z_]\w*)\s*>\s+(?<name>[A-Za-z_]\w*)\s*(?::\s*register\s*\(\s*t(?<slot>\d+)\s*\))?\s*;",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex s_typedBufferResourceRegex = new(
-        @"\bBuffer\s*<\s*(?<type>[A-Za-z_]\w*)\s*>\s+(?<name>[A-Za-z_]\w*)\s*:\s*register\s*\(\s*t(?<slot>\d+)\s*\)\s*;",
+        @"\bBuffer\s*<\s*(?<type>[A-Za-z_]\w*)\s*>\s+(?<name>[A-Za-z_]\w*)\s*(?::\s*register\s*\(\s*t(?<slot>\d+)\s*\))?\s*;",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex s_rwStructuredBufferResourceRegex = new(
-        @"\bRWStructuredBuffer\s*<\s*(?<type>[A-Za-z_]\w*)\s*>\s+(?<name>[A-Za-z_]\w*)\s*:\s*register\s*\(\s*u(?<slot>\d+)\s*\)\s*;",
+        @"\bRWStructuredBuffer\s*<\s*(?<type>[A-Za-z_]\w*)\s*>\s+(?<name>[A-Za-z_]\w*)\s*(?::\s*register\s*\(\s*u(?<slot>\d+)\s*\))?\s*;",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex s_rwTypedBufferResourceRegex = new(
-        @"\bRWBuffer\s*<\s*(?<type>[A-Za-z_]\w*)\s*>\s+(?<name>[A-Za-z_]\w*)\s*:\s*register\s*\(\s*u(?<slot>\d+)\s*\)\s*;",
+        @"\bRWBuffer\s*<\s*(?<type>[A-Za-z_]\w*)\s*>\s+(?<name>[A-Za-z_]\w*)\s*(?::\s*register\s*\(\s*u(?<slot>\d+)\s*\))?\s*;",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex s_byteAddressBufferResourceRegex = new(
-        @"\bByteAddressBuffer\s+(?<name>[A-Za-z_]\w*)\s*:\s*register\s*\(\s*t(?<slot>\d+)\s*\)\s*;",
+        @"\bByteAddressBuffer\s+(?<name>[A-Za-z_]\w*)\s*(?::\s*register\s*\(\s*t(?<slot>\d+)\s*\))?\s*;",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex s_rwByteAddressBufferResourceRegex = new(
-        @"\bRWByteAddressBuffer\s+(?<name>[A-Za-z_]\w*)\s*:\s*register\s*\(\s*u(?<slot>\d+)\s*\)\s*;",
+        @"\bRWByteAddressBuffer\s+(?<name>[A-Za-z_]\w*)\s*(?::\s*register\s*\(\s*u(?<slot>\d+)\s*\))?\s*;",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex s_samplerStateResourceRegex = new(
-        @"\bSamplerState\s+(?<name>[A-Za-z_]\w*)\s*:\s*register\s*\(\s*s(?<slot>\d+)\s*\)\s*;",
+        @"\bSamplerState\s+(?<name>[A-Za-z_]\w*)\s*(?::\s*register\s*\(\s*s(?<slot>\d+)\s*\))?\s*;",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex s_textureMethodCallStartRegex = new(
@@ -524,12 +524,13 @@ internal static class ProGpuDirectXHlslTranslator
     private static List<HlslConstantBuffer> ParseConstantBuffers(string source)
     {
         var constantBuffers = new List<HlslConstantBuffer>();
-        foreach (Match match in s_cbufferRegex.Matches(source))
+        var matches = s_cbufferRegex.Matches(source).Cast<Match>().ToArray();
+        var usedRegisters = CreateExplicitRegisterSet(matches);
+        uint nextRegister = 0;
+        foreach (var match in matches)
         {
             var name = match.Groups["name"].Value;
-            var register = match.Groups["slot"].Success
-                ? uint.Parse(match.Groups["slot"].Value)
-                : 0u;
+            var register = ResolveRegister(match, usedRegisters, ref nextRegister);
             var fields = new List<HlslConstantBufferField>();
 
             foreach (Match fieldMatch in s_cbufferFieldRegex.Matches(match.Groups["body"].Value))
@@ -559,106 +560,152 @@ internal static class ProGpuDirectXHlslTranslator
         IReadOnlyDictionary<string, HlslStruct> structs)
     {
         var resources = new List<HlslShaderResource>();
-        foreach (Match match in s_texture2DResourceRegex.Matches(source))
+        var pendingResources = CreatePendingShaderResources(source);
+        var usedSrvRegisters = CreateExplicitRegisterSet(pendingResources
+            .Where(resource => IsShaderResourceSlotKind(resource.Kind))
+            .Select(resource => resource.Match));
+        var usedUavRegisters = CreateExplicitRegisterSet(pendingResources
+            .Where(resource => IsUnorderedAccessSlotKind(resource.Kind))
+            .Select(resource => resource.Match));
+        var usedSamplerRegisters = CreateExplicitRegisterSet(pendingResources
+            .Where(resource => resource.Kind == HlslShaderResourceKind.SamplerState)
+            .Select(resource => resource.Match));
+        uint nextSrvRegister = 0;
+        uint nextUavRegister = 0;
+        uint nextSamplerRegister = 0;
+
+        foreach (var pendingResource in pendingResources.OrderBy(resource => resource.Match.Index))
         {
-            var resourceType = match.Groups["type"].Success ? match.Groups["type"].Value : "float4";
-            if (!string.Equals(resourceType, "float4", StringComparison.Ordinal))
+            var match = pendingResource.Match;
+            var register = pendingResource.Kind switch
             {
-                throw new NotSupportedException($"HLSL Texture2D resource type '{resourceType}' is not supported.");
-            }
+                HlslShaderResourceKind.SamplerState => ResolveRegister(match, usedSamplerRegisters, ref nextSamplerRegister),
+                HlslShaderResourceKind.RWStructuredBuffer or
+                HlslShaderResourceKind.RWBuffer or
+                HlslShaderResourceKind.RWByteAddressBuffer => ResolveRegister(match, usedUavRegisters, ref nextUavRegister),
+                _ => ResolveRegister(match, usedSrvRegisters, ref nextSrvRegister)
+            };
 
-            resources.Add(new HlslShaderResource(
-                HlslShaderResourceKind.Texture2D,
-                match.Groups["name"].Value,
-                uint.Parse(match.Groups["slot"].Value)));
-        }
-
-        foreach (Match match in s_texture2DArrayResourceRegex.Matches(source))
-        {
-            var resourceType = match.Groups["type"].Success ? match.Groups["type"].Value : "float4";
-            if (!string.Equals(resourceType, "float4", StringComparison.Ordinal))
+            switch (pendingResource.Kind)
             {
-                throw new NotSupportedException($"HLSL Texture2DArray resource type '{resourceType}' is not supported.");
+                case HlslShaderResourceKind.Texture2D:
+                case HlslShaderResourceKind.Texture2DArray:
+                    var resourceType = match.Groups["type"].Success ? match.Groups["type"].Value : "float4";
+                    if (!string.Equals(resourceType, "float4", StringComparison.Ordinal))
+                    {
+                        throw new NotSupportedException($"HLSL {pendingResource.Kind} resource type '{resourceType}' is not supported.");
+                    }
+
+                    resources.Add(new HlslShaderResource(
+                        pendingResource.Kind,
+                        match.Groups["name"].Value,
+                        register));
+                    break;
+
+                case HlslShaderResourceKind.StructuredBuffer:
+                case HlslShaderResourceKind.Buffer:
+                case HlslShaderResourceKind.RWStructuredBuffer:
+                case HlslShaderResourceKind.RWBuffer:
+                    var elementType = match.Groups["type"].Value;
+                    _ = MapResourceElementType(elementType, structs);
+                    resources.Add(new HlslShaderResource(
+                        pendingResource.Kind,
+                        match.Groups["name"].Value,
+                        register,
+                        elementType));
+                    break;
+
+                case HlslShaderResourceKind.ByteAddressBuffer:
+                case HlslShaderResourceKind.RWByteAddressBuffer:
+                case HlslShaderResourceKind.SamplerState:
+                    resources.Add(new HlslShaderResource(
+                        pendingResource.Kind,
+                        match.Groups["name"].Value,
+                        register));
+                    break;
+
+                default:
+                    throw new NotSupportedException($"Unsupported HLSL resource kind '{pendingResource.Kind}'.");
             }
-
-            resources.Add(new HlslShaderResource(
-                HlslShaderResourceKind.Texture2DArray,
-                match.Groups["name"].Value,
-                uint.Parse(match.Groups["slot"].Value)));
-        }
-
-        foreach (Match match in s_structuredBufferResourceRegex.Matches(source))
-        {
-            var elementType = match.Groups["type"].Value;
-            _ = MapResourceElementType(elementType, structs);
-            resources.Add(new HlslShaderResource(
-                HlslShaderResourceKind.StructuredBuffer,
-                match.Groups["name"].Value,
-                uint.Parse(match.Groups["slot"].Value),
-                elementType));
-        }
-
-        foreach (Match match in s_typedBufferResourceRegex.Matches(source))
-        {
-            var elementType = match.Groups["type"].Value;
-            _ = MapResourceElementType(elementType, structs);
-            resources.Add(new HlslShaderResource(
-                HlslShaderResourceKind.Buffer,
-                match.Groups["name"].Value,
-                uint.Parse(match.Groups["slot"].Value),
-                elementType));
-        }
-
-        foreach (Match match in s_rwStructuredBufferResourceRegex.Matches(source))
-        {
-            var elementType = match.Groups["type"].Value;
-            _ = MapResourceElementType(elementType, structs);
-            resources.Add(new HlslShaderResource(
-                HlslShaderResourceKind.RWStructuredBuffer,
-                match.Groups["name"].Value,
-                uint.Parse(match.Groups["slot"].Value),
-                elementType));
-        }
-
-        foreach (Match match in s_rwTypedBufferResourceRegex.Matches(source))
-        {
-            var elementType = match.Groups["type"].Value;
-            _ = MapResourceElementType(elementType, structs);
-            resources.Add(new HlslShaderResource(
-                HlslShaderResourceKind.RWBuffer,
-                match.Groups["name"].Value,
-                uint.Parse(match.Groups["slot"].Value),
-                elementType));
-        }
-
-        foreach (Match match in s_byteAddressBufferResourceRegex.Matches(source))
-        {
-            resources.Add(new HlslShaderResource(
-                HlslShaderResourceKind.ByteAddressBuffer,
-                match.Groups["name"].Value,
-                uint.Parse(match.Groups["slot"].Value)));
-        }
-
-        foreach (Match match in s_rwByteAddressBufferResourceRegex.Matches(source))
-        {
-            resources.Add(new HlslShaderResource(
-                HlslShaderResourceKind.RWByteAddressBuffer,
-                match.Groups["name"].Value,
-                uint.Parse(match.Groups["slot"].Value)));
-        }
-
-        foreach (Match match in s_samplerStateResourceRegex.Matches(source))
-        {
-            resources.Add(new HlslShaderResource(
-                HlslShaderResourceKind.SamplerState,
-                match.Groups["name"].Value,
-                uint.Parse(match.Groups["slot"].Value)));
         }
 
         return resources
             .OrderBy(resource => resource.Kind)
             .ThenBy(resource => resource.Register)
             .ToList();
+    }
+
+    private static List<PendingHlslShaderResource> CreatePendingShaderResources(string source)
+    {
+        var resources = new List<PendingHlslShaderResource>();
+        AddPendingResources(resources, HlslShaderResourceKind.Texture2D, s_texture2DResourceRegex.Matches(source));
+        AddPendingResources(resources, HlslShaderResourceKind.Texture2DArray, s_texture2DArrayResourceRegex.Matches(source));
+        AddPendingResources(resources, HlslShaderResourceKind.StructuredBuffer, s_structuredBufferResourceRegex.Matches(source));
+        AddPendingResources(resources, HlslShaderResourceKind.Buffer, s_typedBufferResourceRegex.Matches(source));
+        AddPendingResources(resources, HlslShaderResourceKind.RWStructuredBuffer, s_rwStructuredBufferResourceRegex.Matches(source));
+        AddPendingResources(resources, HlslShaderResourceKind.RWBuffer, s_rwTypedBufferResourceRegex.Matches(source));
+        AddPendingResources(resources, HlslShaderResourceKind.ByteAddressBuffer, s_byteAddressBufferResourceRegex.Matches(source));
+        AddPendingResources(resources, HlslShaderResourceKind.RWByteAddressBuffer, s_rwByteAddressBufferResourceRegex.Matches(source));
+        AddPendingResources(resources, HlslShaderResourceKind.SamplerState, s_samplerStateResourceRegex.Matches(source));
+        return resources;
+    }
+
+    private static void AddPendingResources(
+        List<PendingHlslShaderResource> resources,
+        HlslShaderResourceKind kind,
+        MatchCollection matches)
+    {
+        foreach (Match match in matches)
+        {
+            resources.Add(new PendingHlslShaderResource(kind, match));
+        }
+    }
+
+    private static HashSet<uint> CreateExplicitRegisterSet(IEnumerable<Match> matches)
+    {
+        var registers = new HashSet<uint>();
+        foreach (var match in matches)
+        {
+            if (match.Groups["slot"].Success)
+            {
+                registers.Add(uint.Parse(match.Groups["slot"].Value));
+            }
+        }
+
+        return registers;
+    }
+
+    private static uint ResolveRegister(Match match, HashSet<uint> usedRegisters, ref uint nextRegister)
+    {
+        if (match.Groups["slot"].Success)
+        {
+            return uint.Parse(match.Groups["slot"].Value);
+        }
+
+        while (usedRegisters.Contains(nextRegister))
+        {
+            nextRegister++;
+        }
+
+        var register = nextRegister++;
+        usedRegisters.Add(register);
+        return register;
+    }
+
+    private static bool IsShaderResourceSlotKind(HlslShaderResourceKind kind)
+    {
+        return kind is HlslShaderResourceKind.Texture2D or
+            HlslShaderResourceKind.Texture2DArray or
+            HlslShaderResourceKind.StructuredBuffer or
+            HlslShaderResourceKind.Buffer or
+            HlslShaderResourceKind.ByteAddressBuffer;
+    }
+
+    private static bool IsUnorderedAccessSlotKind(HlslShaderResourceKind kind)
+    {
+        return kind is HlslShaderResourceKind.RWStructuredBuffer or
+            HlslShaderResourceKind.RWBuffer or
+            HlslShaderResourceKind.RWByteAddressBuffer;
     }
 
     private static Dictionary<string, HlslStruct> ParseStructs(string source)
@@ -1994,6 +2041,8 @@ internal static class ProGpuDirectXHlslTranslator
         string Name,
         uint Register,
         string? ElementType = null);
+
+    private sealed record PendingHlslShaderResource(HlslShaderResourceKind Kind, Match Match);
 
     private enum HlslShaderResourceKind
     {

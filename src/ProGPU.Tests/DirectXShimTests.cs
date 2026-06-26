@@ -2087,6 +2087,110 @@ float4 PSMain(float2 uv : TEXCOORD0) : SV_Target
     }
 
     [Fact]
+    public void HlslTextShaderAssignsRegistersToUnannotatedConstantBuffers()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var shader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Vertex,
+            SourceKind = DxShaderSourceKind.HlslText,
+            Source = """
+cbuffer Transform
+{
+    float4 Offset;
+};
+
+cbuffer Lighting : register(b3)
+{
+    float4 Tint;
+};
+
+cbuffer Material
+{
+    float4 Color;
+};
+
+float4 VSMain(float3 position : POSITION) : SV_Position
+{
+    return float4(position, 1.0) + Offset + Tint + Color;
+}
+""",
+            EntryPoint = "VSMain"
+        });
+
+        Assert.NotNull(shader.BackendSource);
+        Assert.Contains("@binding(0) var<uniform> transform: Transform;", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("@binding(1) var<uniform> material: Material;", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("@binding(3) var<uniform> lighting: Lighting;", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("transform.Offset", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("material.Color", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("lighting.Tint", shader.BackendSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void HlslTextShaderAssignsRegistersToUnannotatedResourcesInSourceOrder()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var shader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Pixel,
+            SourceKind = DxShaderSourceKind.HlslText,
+            Source = """
+Texture2D BaseTexture;
+StructuredBuffer<float4> Points;
+Texture2D ExplicitTexture : register(t5);
+Buffer<float4> MorePoints;
+SamplerState BaseSampler;
+SamplerState ExplicitSampler : register(s3);
+
+float4 PSMain() : SV_Target
+{
+    float2 uv = float2(0.5, 0.5);
+    return BaseTexture.Sample(BaseSampler, uv) + ExplicitTexture.Sample(ExplicitSampler, uv) + Points[0] + MorePoints[0];
+}
+""",
+            EntryPoint = "PSMain"
+        });
+
+        Assert.NotNull(shader.BackendSource);
+        Assert.Contains("@binding(576) var BaseTexture: texture_2d<f32>;", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("@binding(577) var<storage, read> Points: array<vec4<f32>>;", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("@binding(578) var<storage, read> MorePoints: array<vec4<f32>>;", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("@binding(581) var ExplicitTexture: texture_2d<f32>;", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("@binding(768) var BaseSampler: sampler;", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("@binding(771) var ExplicitSampler: sampler;", shader.BackendSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void HlslTextShaderAssignsRegistersToUnannotatedUnorderedAccessResources()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var shader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Compute,
+            SourceKind = DxShaderSourceKind.HlslText,
+            Source = """
+RWStructuredBuffer<float4> Output;
+RWBuffer<float4> ExplicitOutput : register(u4);
+RWByteAddressBuffer RawOutput;
+
+[numthreads(1, 1, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    Output[id.x] = float4(1.0, 0.0, 0.0, 1.0);
+    RawOutput.Store(0, 1);
+}
+""",
+            EntryPoint = "CSMain"
+        });
+
+        Assert.NotNull(shader.BackendSource);
+        Assert.Contains("@binding(1856) var<storage, read_write> Output: array<vec4<f32>>;", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("@binding(1857) var<storage, read_write> RawOutput: array<atomic<u32>>;", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("@binding(1860) var<storage, read_write> ExplicitOutput: array<vec4<f32>>;", shader.BackendSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void HlslTextShaderTranslatesTexture2DArraySampleCallsInsideExpressions()
     {
         using var device = ProGpuDirectXDevice.CreateMetadataDevice();
