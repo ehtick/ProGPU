@@ -7456,6 +7456,54 @@ float4 PSMain() : SV_Target
         Assert.Throws<ArgumentOutOfRangeException>(() => texture.Map(DxMapMode.Write, subresource: 6));
     }
 
+    [Theory]
+    [InlineData(DxResourceFormat.D32Float)]
+    [InlineData(DxResourceFormat.D24UnormS8UInt)]
+    public void TextureMapSupportsDepthFormatsInCpuShadow(DxResourceFormat format)
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var texture = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 2,
+            Height = 2,
+            Format = format,
+            Usage = DxTextureUsage.DepthStencil | DxTextureUsage.CopySource | DxTextureUsage.CopyDestination,
+            CpuAccess = DxCpuAccessFlags.Read | DxCpuAccessFlags.Write,
+            MipLevels = 2
+        });
+        byte[] depthBytes = [0x11, 0x22, 0x33, 0x44];
+
+        using var mapping = texture.Map(DxMapMode.WriteDiscard, subresource: 1);
+        Assert.Equal(16u, mapping.OffsetBytes);
+        Assert.Equal(4u, mapping.RowPitch);
+        Assert.Equal(4u, mapping.DepthPitch);
+        mapping.Write<byte>(depthBytes);
+        mapping.Unmap();
+
+        var pixels = texture.ReadPixels();
+        Assert.Equal(20, pixels.Length);
+        Assert.Equal(new byte[16], pixels[..16]);
+        Assert.Equal(depthBytes, pixels[16..20]);
+    }
+
+    [Fact]
+    public void GpuBackedDepthTextureMapFailsClosedUntilBackendSupportsDepthStaging()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var texture = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 2,
+            Height = 2,
+            Format = DxResourceFormat.D32Float,
+            Usage = DxTextureUsage.DepthStencil | DxTextureUsage.CopyDestination,
+            CpuAccess = DxCpuAccessFlags.Write
+        });
+
+        Assert.Throws<NotSupportedException>(() => texture.Map(DxMapMode.WriteDiscard));
+    }
+
     [Fact]
     public void GpuBackedTextureCreationRejectsMipmappedTexturesUntilBackendSupportsMips()
     {

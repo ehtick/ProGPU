@@ -598,6 +598,11 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
             throw new NotSupportedException("GPU-backed DirectX texture mapping currently supports only single-mip textures.");
         }
 
+        if (_backendTexture is not null && IsDepthStencilFormat(Descriptor.Format))
+        {
+            throw new NotSupportedException("GPU-backed DirectX depth texture mapping currently requires backend depth staging support.");
+        }
+
         var subresourceInfo = GetSubresourceInfo(Descriptor, subresource);
         if (requiresRead)
         {
@@ -901,8 +906,15 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
             DxResourceFormat.R32G32B32A32Float or
             DxResourceFormat.R32G32B32A32UInt or
             DxResourceFormat.R32G32B32A32SInt => 16,
+            DxResourceFormat.D24UnormS8UInt or
+            DxResourceFormat.D32Float => 4,
             _ => throw new NotSupportedException($"DirectX texture mapping does not support resource format {format}.")
         };
+    }
+
+    private static bool IsDepthStencilFormat(DxResourceFormat format)
+    {
+        return format is DxResourceFormat.D24UnormS8UInt or DxResourceFormat.D32Float;
     }
 
     private readonly record struct SubresourceInfo(
