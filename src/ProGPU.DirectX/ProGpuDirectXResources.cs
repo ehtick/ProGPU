@@ -526,7 +526,11 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
             throw new ArgumentException($"Pixel span is too small ({bytes.Length} bytes, expected {expectedSize} bytes).", nameof(pixels));
         }
 
-        _backendTexture?.WritePixels(pixels);
+        if (_backendTexture is not null)
+        {
+            UploadAllSubresourcesToBackend(bytes);
+        }
+
         if (_writeShadow.Length > 0)
         {
             bytes.Slice(0, checked((int)expectedSize)).CopyTo(_writeShadow);
@@ -550,14 +554,8 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
 
         if (_backendTexture is { IsDisposed: false } texture)
         {
-            var pixels = texture.ReadPixels();
-            pixels.CopyTo(_writeShadow.AsSpan(0, pixels.Length));
-            if (_cpuShadow is not null && !ReferenceEquals(_cpuShadow, _writeShadow))
-            {
-                pixels.CopyTo(_cpuShadow.AsSpan(0, pixels.Length));
-            }
-
-            return pixels;
+            SynchronizeAllShadowForRead(texture);
+            return _writeShadow.ToArray();
         }
 
         if (_cpuShadow is null)
@@ -566,6 +564,73 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
         }
 
         return _cpuShadow.ToArray();
+    }
+
+    private void UploadAllSubresourcesToBackend(ReadOnlySpan<byte> bytes)
+    {
+        if (_backendTexture is null)
+        {
+            return;
+        }
+
+        var subresourceCount = checked(Descriptor.ArraySize * Descriptor.MipLevels);
+        for (uint subresource = 0; subresource < subresourceCount; subresource++)
+        {
+            var subresourceInfo = GetSubresourceInfo(Descriptor, subresource);
+            _backendTexture.WritePixelsSubRect(
+                bytes.Slice(checked((int)subresourceInfo.OffsetBytes), checked((int)subresourceInfo.SizeInBytes)),
+                x: 0,
+                y: 0,
+                subWidth: subresourceInfo.Width,
+                subHeight: subresourceInfo.Height,
+                arrayLayer: subresourceInfo.ArraySlice,
+                mipLevel: subresourceInfo.MipLevel);
+        }
+    }
+
+    private void SynchronizeAllShadowForRead(GpuTexture texture)
+    {
+        var subresourceCount = checked(Descriptor.ArraySize * Descriptor.MipLevels);
+        for (uint subresource = 0; subresource < subresourceCount; subresource++)
+        {
+            var subresourceInfo = GetSubresourceInfo(Descriptor, subresource);
+            var pixels = texture.ReadPixels(subresourceInfo.MipLevel);
+            var sourceOffset = checked((int)(subresourceInfo.ArraySlice * subresourceInfo.SizeInBytes));
+            pixels.AsSpan(sourceOffset, checked((int)subresourceInfo.SizeInBytes))
+                .CopyTo(_writeShadow.AsSpan(
+                    checked((int)subresourceInfo.OffsetBytes),
+                    checked((int)subresourceInfo.SizeInBytes)));
+        }
+
+        if (_cpuShadow is not null && !ReferenceEquals(_cpuShadow, _writeShadow))
+        {
+            _writeShadow.CopyTo(_cpuShadow, 0);
+        }
+    }
+
+    private void SynchronizeShadowForRead(uint subresource)
+    {
+        if (_backendTexture is not { IsDisposed: false } texture)
+        {
+            return;
+        }
+
+        var subresourceInfo = GetSubresourceInfo(Descriptor, subresource);
+        var pixels = texture.ReadPixels(subresourceInfo.MipLevel);
+        var sourceOffset = checked((int)(subresourceInfo.ArraySlice * subresourceInfo.SizeInBytes));
+        pixels.AsSpan(sourceOffset, checked((int)subresourceInfo.SizeInBytes))
+            .CopyTo(_writeShadow.AsSpan(
+                checked((int)subresourceInfo.OffsetBytes),
+                checked((int)subresourceInfo.SizeInBytes)));
+        if (_cpuShadow is not null && !ReferenceEquals(_cpuShadow, _writeShadow))
+        {
+            _writeShadow.AsSpan(
+                    checked((int)subresourceInfo.OffsetBytes),
+                    checked((int)subresourceInfo.SizeInBytes))
+                .CopyTo(_cpuShadow.AsSpan(
+                    checked((int)subresourceInfo.OffsetBytes),
+                    checked((int)subresourceInfo.SizeInBytes)));
+        }
     }
 
     public ProGpuDirectXMappedSubresource Map(
@@ -593,11 +658,6 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
             throw new InvalidOperationException("DirectX texture was not created with CPU write access.");
         }
 
-        if (_backendTexture is not null && Descriptor.MipLevels != 1)
-        {
-            throw new NotSupportedException("GPU-backed DirectX texture mapping currently supports only single-mip textures.");
-        }
-
         if (_backendTexture is not null && IsDepthStencilFormat(Descriptor.Format))
         {
             throw new NotSupportedException("GPU-backed DirectX depth texture mapping currently requires backend depth staging support.");
@@ -606,7 +666,7 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
         var subresourceInfo = GetSubresourceInfo(Descriptor, subresource);
         if (requiresRead)
         {
-            SynchronizeShadowForRead();
+            SynchronizeShadowForRead(subresource);
         }
         else if (mode == DxMapMode.WriteDiscard)
         {
@@ -683,10 +743,6 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
             if (_backendTexture is not null)
             {
                 var subresourceInfo = GetSubresourceInfo(Descriptor, mapping.Subresource);
-                if (subresourceInfo.MipLevel != 0)
-                {
-                    throw new NotSupportedException("GPU-backed DirectX texture upload currently supports only mip level 0.");
-                }
 
                 _backendTexture.WritePixelsSubRect(
                     mappedBytes,
@@ -694,7 +750,8 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
                     y: 0,
                     subWidth: subresourceInfo.Width,
                     subHeight: subresourceInfo.Height,
-                    subresourceInfo.ArraySlice);
+                    arrayLayer: subresourceInfo.ArraySlice,
+                    mipLevel: subresourceInfo.MipLevel);
             }
 
             if (_cpuShadow is not null && !ReferenceEquals(_cpuShadow, _writeShadow))
@@ -734,11 +791,6 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
             return;
         }
 
-        if (Descriptor.MipLevels != 1)
-        {
-            throw new NotSupportedException("GPU-backed DirectX Texture2D currently supports only single-mip textures.");
-        }
-
         _backendTexture = new GpuTexture(
             context,
             Descriptor.Width,
@@ -748,22 +800,8 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
             Descriptor.Label,
             Descriptor.SampleCount,
             ProGpuDirectXFormatConverter.ToTextureAlphaMode(Descriptor.Format),
-            Descriptor.ArraySize);
-    }
-
-    private void SynchronizeShadowForRead()
-    {
-        if (_backendTexture is not { IsDisposed: false } texture)
-        {
-            return;
-        }
-
-        var pixels = texture.ReadPixels();
-        pixels.CopyTo(_writeShadow.AsSpan(0, pixels.Length));
-        if (_cpuShadow is not null && !ReferenceEquals(_cpuShadow, _writeShadow))
-        {
-            pixels.CopyTo(_cpuShadow.AsSpan(0, pixels.Length));
-        }
+            depthOrArrayLayers: Descriptor.ArraySize,
+            mipLevelCount: Descriptor.MipLevels);
     }
 
     private void ValidateMappableSubresource(uint subresource)

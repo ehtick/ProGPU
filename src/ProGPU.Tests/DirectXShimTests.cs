@@ -7505,21 +7505,37 @@ float4 PSMain() : SV_Target
     }
 
     [Fact]
-    public void GpuBackedTextureCreationRejectsMipmappedTexturesUntilBackendSupportsMips()
+    public void TextureMapMipSubresourceUploadsGpuBackedTextureOnUnmap()
     {
         using var wgpu = new WgpuContext();
         wgpu.Initialize(null);
         using var device = ProGpuDirectXDevice.FromContext(wgpu);
-
-        Assert.Throws<NotSupportedException>(() => device.CreateTexture2D(new DxTexture2DDescriptor
+        using var texture = device.CreateTexture2D(new DxTexture2DDescriptor
         {
             Width = 4,
             Height = 4,
             Format = DxResourceFormat.R8G8B8A8Unorm,
-            Usage = DxTextureUsage.ShaderResource | DxTextureUsage.CopyDestination,
-            CpuAccess = DxCpuAccessFlags.Write,
+            Usage = DxTextureUsage.ShaderResource | DxTextureUsage.CopyDestination | DxTextureUsage.CopySource,
+            CpuAccess = DxCpuAccessFlags.Read | DxCpuAccessFlags.Write,
             MipLevels = 2
-        }));
+        });
+        byte[] mipPixels =
+        [
+            255, 0, 0, 255, 0, 255, 0, 255,
+            0, 0, 255, 255, 255, 255, 255, 255
+        ];
+
+        using var mapping = texture.Map(DxMapMode.WriteDiscard, subresource: 1);
+        Assert.Equal(64u, mapping.OffsetBytes);
+        Assert.Equal(8u, mapping.RowPitch);
+        Assert.Equal(16u, mapping.DepthPitch);
+        mapping.Write<byte>(mipPixels);
+        mapping.Unmap();
+
+        Assert.Equal(mipPixels, texture.BackendTexture!.ReadPixels(mipLevel: 1));
+
+        using var readMap = texture.Map(DxMapMode.Read, subresource: 1);
+        Assert.Equal(mipPixels, readMap.Read<byte>(16));
     }
 
     [Fact]

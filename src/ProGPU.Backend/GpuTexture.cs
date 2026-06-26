@@ -28,6 +28,7 @@ public unsafe class GpuTexture : IDisposable
     public uint Width { get; private set; }
     public uint Height { get; private set; }
     public uint DepthOrArrayLayers { get; private set; } = 1;
+    public uint MipLevelCount { get; private set; } = 1;
     public TextureFormat Format { get; private set; }
     public TextureUsage Usage { get; private set; }
     public uint SampleCount { get; private set; } = 1;
@@ -45,18 +46,25 @@ public unsafe class GpuTexture : IDisposable
         string label = "GpuTexture",
         uint sampleCount = 1,
         GpuTextureAlphaMode alphaMode = GpuTextureAlphaMode.Straight,
-        uint depthOrArrayLayers = 1)
+        uint depthOrArrayLayers = 1,
+        uint mipLevelCount = 1)
     {
         Id = (ulong)Interlocked.Increment(ref s_idCounter);
         _context = context;
         Width = width > 0 ? width : 1;
         Height = height > 0 ? height : 1;
         DepthOrArrayLayers = depthOrArrayLayers > 0 ? depthOrArrayLayers : 1;
+        MipLevelCount = mipLevelCount > 0 ? mipLevelCount : 1;
         Format = format;
         Usage = usage;
         _label = label;
         SampleCount = sampleCount;
         AlphaMode = alphaMode;
+
+        if (SampleCount != 1 && MipLevelCount != 1)
+        {
+            throw new NotSupportedException("Multisampled GPU textures cannot have mip levels.");
+        }
 
         Allocate();
     }
@@ -73,7 +81,7 @@ public unsafe class GpuTexture : IDisposable
             Dimension = TextureDimension.Dimension2D,
             Size = new Extent3D { Width = Width, Height = Height, DepthOrArrayLayers = DepthOrArrayLayers },
             Format = Format,
-            MipLevelCount = 1,
+            MipLevelCount = MipLevelCount,
             SampleCount = SampleCount,
             ViewFormatCount = 0,
             ViewFormats = null
@@ -95,7 +103,7 @@ public unsafe class GpuTexture : IDisposable
                 ? TextureViewDimension.Dimension2DArray
                 : TextureViewDimension.Dimension2D,
             BaseMipLevel = 0,
-            MipLevelCount = 1,
+            MipLevelCount = MipLevelCount,
             BaseArrayLayer = 0,
             ArrayLayerCount = DepthOrArrayLayers,
             Aspect = TextureAspect.All
@@ -122,13 +130,16 @@ public unsafe class GpuTexture : IDisposable
         Allocate();
     }
 
-    public void WritePixels<T>(ReadOnlySpan<T> pixels) where T : unmanaged
+    public void WritePixels<T>(ReadOnlySpan<T> pixels, uint mipLevel = 0) where T : unmanaged
     {
         if (_isDisposed) throw new ObjectDisposedException(nameof(GpuTexture));
+        ValidateMipLevel(mipLevel);
 
         uint bytesPerPixel = GetBytesPerPixel(Format);
+        uint mipWidth = GetMipDimension(Width, mipLevel);
+        uint mipHeight = GetMipDimension(Height, mipLevel);
 
-        uint expectedSize = Width * Height * DepthOrArrayLayers * bytesPerPixel;
+        uint expectedSize = mipWidth * mipHeight * DepthOrArrayLayers * bytesPerPixel;
         uint passedSize = (uint)(pixels.Length * sizeof(T));
         if (passedSize < expectedSize)
         {
@@ -138,7 +149,7 @@ public unsafe class GpuTexture : IDisposable
         var destination = new ImageCopyTexture
         {
             Texture = TexturePtr,
-            MipLevel = 0,
+            MipLevel = mipLevel,
             Origin = new Origin3D { X = 0, Y = 0, Z = 0 },
             Aspect = TextureAspect.All
         };
@@ -146,14 +157,14 @@ public unsafe class GpuTexture : IDisposable
         var layout = new TextureDataLayout
         {
             Offset = 0,
-            BytesPerRow = Width * bytesPerPixel,
-            RowsPerImage = Height
+            BytesPerRow = mipWidth * bytesPerPixel,
+            RowsPerImage = mipHeight
         };
 
         var extent = new Extent3D
         {
-            Width = Width,
-            Height = Height,
+            Width = mipWidth,
+            Height = mipHeight,
             DepthOrArrayLayers = DepthOrArrayLayers
         };
 
@@ -208,10 +219,12 @@ public unsafe class GpuTexture : IDisposable
         uint y,
         uint subWidth,
         uint subHeight,
-        uint arrayLayer = 0)
+        uint arrayLayer = 0,
+        uint mipLevel = 0)
         where T : unmanaged
     {
         if (_isDisposed) throw new ObjectDisposedException(nameof(GpuTexture));
+        ValidateMipLevel(mipLevel);
         if (subWidth == 0)
         {
             throw new ArgumentOutOfRangeException(nameof(subWidth), "Pixel sub-rect width must be greater than zero.");
@@ -222,10 +235,12 @@ public unsafe class GpuTexture : IDisposable
             throw new ArgumentOutOfRangeException(nameof(subHeight), "Pixel sub-rect height must be greater than zero.");
         }
 
-        if (x > Width
-            || y > Height
-            || subWidth > Width - x
-            || subHeight > Height - y)
+        var mipWidth = GetMipDimension(Width, mipLevel);
+        var mipHeight = GetMipDimension(Height, mipLevel);
+        if (x > mipWidth
+            || y > mipHeight
+            || subWidth > mipWidth - x
+            || subHeight > mipHeight - y)
         {
             throw new ArgumentOutOfRangeException(nameof(pixels), "Pixel sub-rect does not fit inside the texture bounds.");
         }
@@ -247,7 +262,7 @@ public unsafe class GpuTexture : IDisposable
         var destination = new ImageCopyTexture
         {
             Texture = TexturePtr,
-            MipLevel = 0,
+            MipLevel = mipLevel,
             Origin = new Origin3D { X = x, Y = y, Z = arrayLayer },
             Aspect = TextureAspect.All
         };
@@ -294,6 +309,7 @@ public unsafe class GpuTexture : IDisposable
         if (source.Width != Width
             || source.Height != Height
             || source.DepthOrArrayLayers != DepthOrArrayLayers
+            || source.MipLevelCount != MipLevelCount
             || source.Format != Format
             || source.SampleCount != SampleCount)
         {
@@ -317,30 +333,33 @@ public unsafe class GpuTexture : IDisposable
             throw new InvalidOperationException("Failed to create command encoder for texture copy.");
         }
 
-        var copySource = new ImageCopyTexture
+        for (uint mipLevel = 0; mipLevel < MipLevelCount; mipLevel++)
         {
-            Texture = source.TexturePtr,
-            MipLevel = 0,
-            Origin = new Origin3D(),
-            Aspect = TextureAspect.All
-        };
+            var copySource = new ImageCopyTexture
+            {
+                Texture = source.TexturePtr,
+                MipLevel = mipLevel,
+                Origin = new Origin3D(),
+                Aspect = TextureAspect.All
+            };
 
-        var copyDestination = new ImageCopyTexture
-        {
-            Texture = TexturePtr,
-            MipLevel = 0,
-            Origin = new Origin3D(),
-            Aspect = TextureAspect.All
-        };
+            var copyDestination = new ImageCopyTexture
+            {
+                Texture = TexturePtr,
+                MipLevel = mipLevel,
+                Origin = new Origin3D(),
+                Aspect = TextureAspect.All
+            };
 
-        var copySize = new Extent3D
-        {
-            Width = Width,
-            Height = Height,
-            DepthOrArrayLayers = DepthOrArrayLayers
-        };
+            var copySize = new Extent3D
+            {
+                Width = GetMipDimension(Width, mipLevel),
+                Height = GetMipDimension(Height, mipLevel),
+                DepthOrArrayLayers = DepthOrArrayLayers
+            };
 
-        _context.Wgpu.CommandEncoderCopyTextureToTexture(encoder, &copySource, &copyDestination, &copySize);
+            _context.Wgpu.CommandEncoderCopyTextureToTexture(encoder, &copySource, &copyDestination, &copySize);
+        }
 
         var commandBufferDesc = new CommandBufferDescriptor();
         var commandBuffer = _context.Wgpu.CommandEncoderFinish(encoder, &commandBufferDesc);
@@ -413,6 +432,25 @@ public unsafe class GpuTexture : IDisposable
         };
     }
 
+    private void ValidateMipLevel(uint mipLevel)
+    {
+        if (mipLevel >= MipLevelCount)
+        {
+            throw new ArgumentOutOfRangeException(nameof(mipLevel), "Texture mip level is outside the texture mip chain.");
+        }
+    }
+
+    private static uint GetMipDimension(uint dimension, uint mipLevel)
+    {
+        if (mipLevel >= 31)
+        {
+            return 1;
+        }
+
+        var shifted = dimension >> checked((int)mipLevel);
+        return Math.Max(1u, shifted);
+    }
+
     public static void CleanupPendingResources(WgpuContext context)
     {
         context.CleanupPendingResources();
@@ -421,7 +459,7 @@ public unsafe class GpuTexture : IDisposable
     [System.Runtime.InteropServices.DllImport("wgpu_native", EntryPoint = "wgpuDevicePoll")]
     private static extern unsafe bool wgpuDevicePoll(Device* device, bool wait, void* wrappedSubmissionIndex);
 
-    public byte[] ReadPixels()
+    public byte[] ReadPixels(uint mipLevel = 0)
     {
         if (_isDisposed) throw new ObjectDisposedException(nameof(GpuTexture));
         if (!Usage.HasFlag(TextureUsage.CopySrc))
@@ -429,16 +467,19 @@ public unsafe class GpuTexture : IDisposable
             throw new InvalidOperationException("Texture was not created with CopySrc usage.");
         }
 
+        ValidateMipLevel(mipLevel);
         var wgpu = _context.Wgpu;
         var device = _context.Device;
         var queue = _context.Queue;
 
         uint bytesPerPixel = GetBytesPerPixel(Format);
+        uint mipWidth = GetMipDimension(Width, mipLevel);
+        uint mipHeight = GetMipDimension(Height, mipLevel);
 
         // Align row pitch to 256 bytes per WebGPU requirements
-        uint bytesPerRow = Width * bytesPerPixel;
+        uint bytesPerRow = mipWidth * bytesPerPixel;
         uint alignedBytesPerRow = (bytesPerRow + 255) & ~255u;
-        uint bufferSize = alignedBytesPerRow * Height * DepthOrArrayLayers;
+        uint bufferSize = alignedBytesPerRow * mipHeight * DepthOrArrayLayers;
 
         var bufferDesc = new BufferDescriptor
         {
@@ -461,7 +502,7 @@ public unsafe class GpuTexture : IDisposable
         var source = new ImageCopyTexture
         {
             Texture = TexturePtr,
-            MipLevel = 0,
+            MipLevel = mipLevel,
             Origin = new Origin3D { X = 0, Y = 0, Z = 0 },
             Aspect = TextureAspect.All
         };
@@ -473,14 +514,14 @@ public unsafe class GpuTexture : IDisposable
             {
                 Offset = 0,
                 BytesPerRow = alignedBytesPerRow,
-                RowsPerImage = Height
+                RowsPerImage = mipHeight
             }
         };
 
         var copySize = new Extent3D
         {
-            Width = Width,
-            Height = Height,
+            Width = mipWidth,
+            Height = mipHeight,
             DepthOrArrayLayers = DepthOrArrayLayers
         };
 
@@ -530,17 +571,17 @@ public unsafe class GpuTexture : IDisposable
         }
 
         // 5. Read out the mapped pixels, stripping the row-alignment padding
-        byte[] unpaddedPixels = new byte[Width * Height * DepthOrArrayLayers * bytesPerPixel];
+        byte[] unpaddedPixels = new byte[mipWidth * mipHeight * DepthOrArrayLayers * bytesPerPixel];
         void* mappedPtr = wgpu.BufferGetConstMappedRange(readbackBuffer, 0, (nuint)bufferSize);
         if (mappedPtr != null)
         {
             byte* srcBytes = (byte*)mappedPtr;
             for (uint layer = 0; layer < DepthOrArrayLayers; layer++)
             {
-                for (uint y = 0; y < Height; y++)
+                for (uint y = 0; y < mipHeight; y++)
                 {
-                    long srcOffset = (layer * Height * alignedBytesPerRow) + (y * alignedBytesPerRow);
-                    long dstOffset = (layer * Height * bytesPerRow) + (y * bytesPerRow);
+                    long srcOffset = (layer * mipHeight * alignedBytesPerRow) + (y * alignedBytesPerRow);
+                    long dstOffset = (layer * mipHeight * bytesPerRow) + (y * bytesPerRow);
                     System.Runtime.InteropServices.Marshal.Copy((nint)(srcBytes + srcOffset), unpaddedPixels, (int)dstOffset, (int)bytesPerRow);
                 }
             }

@@ -1773,6 +1773,75 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     }
 
     [Fact]
+    public void GpuTextureWritePixelsSubRectTargetsRequestedMipLevel()
+    {
+        using var window = new HeadlessWindow(4, 4);
+        using var texture = new GpuTexture(
+            window.Context,
+            4,
+            4,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.TextureBinding | TextureUsage.CopyDst | TextureUsage.CopySrc,
+            "SubRect Mip Texture",
+            mipLevelCount: 2);
+        byte[] mipPixels =
+        [
+            255, 0, 0, 255, 0, 255, 0, 255,
+            0, 0, 255, 255, 255, 255, 255, 255
+        ];
+
+        texture.WritePixelsSubRect(mipPixels, x: 0, y: 0, subWidth: 2, subHeight: 2, mipLevel: 1);
+
+        Assert.Equal(2u, texture.MipLevelCount);
+        Assert.Equal(mipPixels, texture.ReadPixels(mipLevel: 1));
+
+        var exception = Assert.Throws<System.ArgumentOutOfRangeException>(
+            () => texture.WritePixelsSubRect(mipPixels, x: 0, y: 0, subWidth: 2, subHeight: 2, mipLevel: 2));
+        Assert.Equal("mipLevel", exception.ParamName);
+    }
+
+    [Fact]
+    public void GpuTextureCopyFromCopiesAllMipLevels()
+    {
+        using var window = new HeadlessWindow(4, 4);
+        using var source = new GpuTexture(
+            window.Context,
+            4,
+            4,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.CopySrc | TextureUsage.CopyDst,
+            "Mipped Copy Source",
+            mipLevelCount: 2);
+        using var destination = new GpuTexture(
+            window.Context,
+            4,
+            4,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.CopySrc | TextureUsage.CopyDst,
+            "Mipped Copy Destination",
+            mipLevelCount: 2);
+        byte[] mip0Pixels =
+        [
+            1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255,
+            13, 14, 15, 255, 16, 17, 18, 255, 19, 20, 21, 255, 22, 23, 24, 255,
+            25, 26, 27, 255, 28, 29, 30, 255, 31, 32, 33, 255, 34, 35, 36, 255,
+            37, 38, 39, 255, 40, 41, 42, 255, 43, 44, 45, 255, 46, 47, 48, 255
+        ];
+        byte[] mip1Pixels =
+        [
+            100, 0, 0, 255, 0, 100, 0, 255,
+            0, 0, 100, 255, 100, 100, 100, 255
+        ];
+
+        source.WritePixels(mip0Pixels);
+        source.WritePixels(mip1Pixels, mipLevel: 1);
+        destination.CopyFrom(source);
+
+        Assert.Equal(mip0Pixels, destination.ReadPixels());
+        Assert.Equal(mip1Pixels, destination.ReadPixels(mipLevel: 1));
+    }
+
+    [Fact]
     public void GpuTextureWritePixelsAndReadPixelsUseNativeFormatStride()
     {
         using var window = new HeadlessWindow(2, 1);
