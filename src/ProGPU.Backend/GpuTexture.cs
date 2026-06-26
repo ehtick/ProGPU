@@ -321,7 +321,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             Texture = TexturePtr,
             MipLevel = mipLevel,
             Origin = new Origin3D { X = 0, Y = 0, Z = 0 },
-            Aspect = TextureAspect.All
+            Aspect = GetTextureCopyAspect(Format)
         };
 
         var layout = new TextureDataLayout
@@ -434,7 +434,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             Texture = TexturePtr,
             MipLevel = mipLevel,
             Origin = new Origin3D { X = x, Y = y, Z = arrayLayer },
-            Aspect = TextureAspect.All
+            Aspect = GetTextureCopyAspect(Format)
         };
 
         var layout = new TextureDataLayout
@@ -518,7 +518,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             Texture = TexturePtr,
             MipLevel = mipLevel,
             Origin = new Origin3D { X = x, Y = y, Z = z },
-            Aspect = TextureAspect.All
+            Aspect = GetTextureCopyAspect(Format)
         };
 
         var layout = new TextureDataLayout
@@ -1032,7 +1032,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                 Texture = source.TexturePtr,
                 MipLevel = mipLevel,
                 Origin = new Origin3D(),
-                Aspect = TextureAspect.All
+                Aspect = GetTextureCopyAspect(source.Format)
             };
 
             var copyDestination = new ImageCopyTexture
@@ -1040,7 +1040,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                 Texture = TexturePtr,
                 MipLevel = mipLevel,
                 Origin = new Origin3D(),
-                Aspect = TextureAspect.All
+                Aspect = GetTextureCopyAspect(Format)
             };
 
             var copySize = new Extent3D
@@ -1187,6 +1187,18 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         };
     }
 
+    private static TextureAspect GetTextureCopyAspect(TextureFormat format)
+    {
+        return format switch
+        {
+            TextureFormat.Depth16Unorm or
+            TextureFormat.Depth24Plus or
+            TextureFormat.Depth24PlusStencil8 or
+            TextureFormat.Depth32float => TextureAspect.DepthOnly,
+            _ => TextureAspect.All
+        };
+    }
+
     private void ValidateMipLevel(uint mipLevel)
     {
         if (mipLevel >= MipLevelCount)
@@ -1260,7 +1272,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             Texture = TexturePtr,
             MipLevel = mipLevel,
             Origin = new Origin3D { X = 0, Y = 0, Z = 0 },
-            Aspect = TextureAspect.All
+            Aspect = GetTextureCopyAspect(Format)
         };
 
         var destination = new ImageCopyBuffer

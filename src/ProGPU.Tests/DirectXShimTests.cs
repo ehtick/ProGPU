@@ -8215,7 +8215,7 @@ float4 PSMain() : SV_Target
     }
 
     [Fact]
-    public void GpuBackedDepthTextureMapFailsClosedUntilBackendSupportsDepthStaging()
+    public void GpuBackedD32FloatTextureReadMapUsesBackendDepthStaging()
     {
         using var wgpu = new WgpuContext();
         wgpu.Initialize(null);
@@ -8225,11 +8225,40 @@ float4 PSMain() : SV_Target
             Width = 2,
             Height = 2,
             Format = DxResourceFormat.D32Float,
+            Usage = DxTextureUsage.DepthStencil | DxTextureUsage.CopySource,
+            CpuAccess = DxCpuAccessFlags.Read
+        });
+        using var context = device.CreateImmediateContext();
+        float[] depthValues = [0.5f, 0.5f, 0.5f, 0.5f];
+        var depthBytes = MemoryMarshal.AsBytes(depthValues.AsSpan()).ToArray();
+
+        context.ClearDepthStencil(texture, DxDepthStencilClearFlags.Depth, depth: 0.5f, stencil: 0);
+        context.Flush();
+        Assert.Equal(depthBytes, texture.BackendTexture!.ReadPixels());
+
+        using var readMap = texture.Map(DxMapMode.Read);
+        Assert.Equal(depthBytes, readMap.Read<byte>(16));
+    }
+
+    [Theory]
+    [InlineData(DxResourceFormat.D32Float)]
+    [InlineData(DxResourceFormat.D24UnormS8UInt)]
+    public void GpuBackedDepthTextureWriteMapFailsClosedUntilDepthUploadIsValidated(DxResourceFormat format)
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var texture = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 2,
+            Height = 2,
+            Format = format,
             Usage = DxTextureUsage.DepthStencil | DxTextureUsage.CopyDestination,
             CpuAccess = DxCpuAccessFlags.Write
         });
 
-        Assert.Throws<NotSupportedException>(() => texture.Map(DxMapMode.WriteDiscard));
+        var exception = Assert.Throws<NotSupportedException>(() => texture.Map(DxMapMode.WriteDiscard));
+        Assert.Contains("read staging", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]

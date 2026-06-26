@@ -793,9 +793,11 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
             throw new InvalidOperationException("DirectX texture was not created with CPU write access.");
         }
 
-        if (_backendTexture is not null && IsDepthStencilFormat(Descriptor.Format))
+        if (_backendTexture is not null &&
+            IsDepthStencilFormat(Descriptor.Format) &&
+            (Descriptor.Format != DxResourceFormat.D32Float || requiresWrite))
         {
-            throw new NotSupportedException("GPU-backed DirectX depth texture mapping currently requires backend depth staging support.");
+            throw new NotSupportedException("GPU-backed DirectX depth-stencil texture mapping currently supports D32Float read staging only.");
         }
 
         var subresourceInfo = GetSubresourceInfo(Descriptor, subresource);
