@@ -361,6 +361,13 @@ public sealed record ProGpuDirectXSciChartMesh3DDraw(
     DxCullMode CullMode,
     DxRect? ClipRect);
 
+public sealed record ProGpuDirectXSciChartTriangleStrip3DDraw(
+    IReadOnlyList<ProGpuDirectXSciChartVertex3D> Vertices,
+    Matrix4x4 WorldViewProjection,
+    Vector3 LightDirection,
+    DxCullMode CullMode,
+    DxRect? ClipRect);
+
 public sealed record ProGpuDirectXSciChartSurfaceMesh3DDraw(
     IReadOnlyList<float> Heights,
     int Columns,
@@ -4961,6 +4968,7 @@ public sealed class ProGpuDirectXSciChartRenderContext3D : IDisposable
     private readonly List<ProGpuDirectXSciChartPointCloud3DDraw> _pointCloudDraws = new();
     private readonly List<ProGpuDirectXSciChartLine3DDraw> _lineDraws = new();
     private readonly List<ProGpuDirectXSciChartMesh3DDraw> _meshDraws = new();
+    private readonly List<ProGpuDirectXSciChartTriangleStrip3DDraw> _triangleStripDraws = new();
     private readonly List<ProGpuDirectXSciChartSurfaceMesh3DDraw> _surfaceMeshDraws = new();
     private readonly Dictionary<(DxPrimitiveTopology Topology, DxCullMode CullMode), ProGpuDirectXGraphicsPipeline> _pipelines = new();
     private ProGpuDirectXShader? _vertexShader;
@@ -5010,6 +5018,8 @@ public sealed class ProGpuDirectXSciChartRenderContext3D : IDisposable
 
     public IReadOnlyList<ProGpuDirectXSciChartMesh3DDraw> MeshDraws => _meshDraws;
 
+    public IReadOnlyList<ProGpuDirectXSciChartTriangleStrip3DDraw> TriangleStripDraws => _triangleStripDraws;
+
     public IReadOnlyList<ProGpuDirectXSciChartSurfaceMesh3DDraw> SurfaceMeshDraws => _surfaceMeshDraws;
 
     public void BeginFrame()
@@ -5018,6 +5028,7 @@ public sealed class ProGpuDirectXSciChartRenderContext3D : IDisposable
         _pointCloudDraws.Clear();
         _lineDraws.Clear();
         _meshDraws.Clear();
+        _triangleStripDraws.Clear();
         _surfaceMeshDraws.Clear();
         _clipRect = null;
     }
@@ -5142,6 +5153,43 @@ public sealed class ProGpuDirectXSciChartRenderContext3D : IDisposable
             _clipRect));
         _transientResources.Add(vertexBuffer);
         _transientResources.Add(indexBuffer);
+        _transientResources.Add(cameraBuffer);
+    }
+
+    public void DrawTriangleStrip(
+        ReadOnlySpan<ProGpuDirectXSciChartVertex3D> vertices,
+        Matrix4x4 worldViewProjection,
+        Vector3? lightDirection = null,
+        DxCullMode cullMode = DxCullMode.Back)
+    {
+        ThrowIfDisposed();
+        ValidateVertices(vertices, minCount: 3);
+        ValidateMatrix(worldViewProjection);
+        if (!Enum.IsDefined(cullMode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(cullMode), "Unknown SciChart 3D triangle-strip cull mode.");
+        }
+
+        if (HasEmptyClip)
+        {
+            return;
+        }
+
+        var copiedVertices = vertices.ToArray();
+        var light = ResolveLightDirection(lightDirection);
+        var vertexBuffer = CreateVertexBuffer(copiedVertices);
+        var cameraBuffer = CreateCameraBuffer(worldViewProjection, light);
+        var pipeline = GetPipeline(DxPrimitiveTopology.TriangleStrip, cullMode);
+
+        SetDrawState(pipeline, vertexBuffer, cameraBuffer);
+        _context.Draw((uint)copiedVertices.Length);
+        _triangleStripDraws.Add(new ProGpuDirectXSciChartTriangleStrip3DDraw(
+            copiedVertices,
+            worldViewProjection,
+            light,
+            cullMode,
+            _clipRect));
+        _transientResources.Add(vertexBuffer);
         _transientResources.Add(cameraBuffer);
     }
 
