@@ -21,7 +21,8 @@ public abstract unsafe class ProGpuDirectXView : IDisposable
         uint mipLevelCount,
         uint baseArrayLayer,
         uint arrayLayerCount,
-        bool createTextureView)
+        bool createTextureView,
+        TextureViewDimension? nativeTextureViewDimension = null)
     {
         Device = device;
         Texture = texture;
@@ -31,8 +32,9 @@ public abstract unsafe class ProGpuDirectXView : IDisposable
         Format = format;
         Label = label;
 
-        var backendTexture = texture?.BackendTexture ?? texture3D?.BackendTexture;
+        var backendTexture = texture?.GetBackendTexture(baseArrayLayer) ?? texture3D?.BackendTexture;
         var sourceFormat = texture?.Descriptor.Format ?? texture3D?.Descriptor.Format ?? format;
+        var nativeBaseArrayLayer = texture?.GetNativeArrayLayer(baseArrayLayer) ?? baseArrayLayer;
         if (createTextureView &&
             backendTexture is { IsDisposed: false, TexturePtr: not null })
         {
@@ -44,8 +46,9 @@ public abstract unsafe class ProGpuDirectXView : IDisposable
                 label,
                 baseMipLevel,
                 mipLevelCount,
-                baseArrayLayer,
-                arrayLayerCount);
+                nativeBaseArrayLayer,
+                arrayLayerCount,
+                nativeTextureViewDimension);
             _ownsTextureView = true;
         }
         else if (backendTexture is { IsDisposed: false, ViewPtr: not null } defaultTexture)
@@ -91,7 +94,8 @@ public abstract unsafe class ProGpuDirectXView : IDisposable
         uint baseMipLevel,
         uint mipLevelCount,
         uint baseArrayLayer,
-        uint arrayLayerCount)
+        uint arrayLayerCount,
+        TextureViewDimension? nativeTextureViewDimension)
     {
         var labelPtr = SilkMarshal.StringToPtr(label);
         try
@@ -100,12 +104,12 @@ public abstract unsafe class ProGpuDirectXView : IDisposable
             {
                 Label = (byte*)labelPtr,
                 Format = ProGpuDirectXFormatConverter.ToTextureFormat(format),
-                Dimension = dimension switch
+                Dimension = nativeTextureViewDimension ?? (dimension switch
                 {
                     DxResourceViewDimension.Texture2DArray => TextureViewDimension.Dimension2DArray,
                     DxResourceViewDimension.Texture3D => TextureViewDimension.Dimension3D,
                     _ => TextureViewDimension.Dimension2D
-                },
+                }),
                 BaseMipLevel = baseMipLevel,
                 MipLevelCount = mipLevelCount,
                 BaseArrayLayer = baseArrayLayer,
@@ -163,7 +167,8 @@ public sealed class ProGpuDirectXRenderTargetView : ProGpuDirectXView
             1,
             descriptor.FirstArraySlice,
             descriptor.ArraySize,
-            createTextureView: true)
+            createTextureView: true,
+            nativeTextureViewDimension: GetRenderAttachmentTextureViewDimension(descriptor.Dimension, descriptor.ArraySize))
     {
         Descriptor = descriptor;
     }
@@ -179,9 +184,9 @@ public sealed class ProGpuDirectXRenderTargetView : ProGpuDirectXView
             throw new ArgumentException("Texture was not created with render-target usage.", nameof(texture));
         }
 
-        if (descriptor.Dimension != DxResourceViewDimension.Texture2D)
+        if (descriptor.Dimension is not DxResourceViewDimension.Texture2D and not DxResourceViewDimension.Texture2DArray)
         {
-            throw new ArgumentOutOfRangeException(nameof(descriptor), "Render-target views currently support Texture2D resources.");
+            throw new ArgumentOutOfRangeException(nameof(descriptor), "Render-target views currently support Texture2D and Texture2DArray resources.");
         }
 
         if (descriptor.MipSlice >= texture.Descriptor.MipLevels)
@@ -196,7 +201,21 @@ public sealed class ProGpuDirectXRenderTargetView : ProGpuDirectXView
             throw new ArgumentOutOfRangeException(nameof(descriptor), "Render-target view array range exceeds the texture.");
         }
 
+        if (texture.UsesBackendArraySliceTextures && descriptor.ArraySize != 1)
+        {
+            throw new NotSupportedException("Multisampled texture array render-target views currently support one array slice per view.");
+        }
+
         return texture;
+    }
+
+    private static TextureViewDimension GetRenderAttachmentTextureViewDimension(
+        DxResourceViewDimension dimension,
+        uint arrayLayerCount)
+    {
+        return dimension == DxResourceViewDimension.Texture2DArray && arrayLayerCount > 1
+            ? TextureViewDimension.Dimension2DArray
+            : TextureViewDimension.Dimension2D;
     }
 }
 
@@ -218,7 +237,8 @@ public sealed class ProGpuDirectXDepthStencilView : ProGpuDirectXView
             1,
             descriptor.FirstArraySlice,
             descriptor.ArraySize,
-            createTextureView: true)
+            createTextureView: true,
+            nativeTextureViewDimension: GetDepthStencilTextureViewDimension(descriptor.Dimension, descriptor.ArraySize))
     {
         Descriptor = descriptor;
     }
@@ -234,9 +254,9 @@ public sealed class ProGpuDirectXDepthStencilView : ProGpuDirectXView
             throw new ArgumentException("Texture was not created with depth-stencil usage.", nameof(texture));
         }
 
-        if (descriptor.Dimension != DxResourceViewDimension.Texture2D)
+        if (descriptor.Dimension is not DxResourceViewDimension.Texture2D and not DxResourceViewDimension.Texture2DArray)
         {
-            throw new ArgumentOutOfRangeException(nameof(descriptor), "Depth-stencil views currently support Texture2D resources.");
+            throw new ArgumentOutOfRangeException(nameof(descriptor), "Depth-stencil views currently support Texture2D and Texture2DArray resources.");
         }
 
         if (descriptor.MipSlice >= texture.Descriptor.MipLevels)
@@ -251,7 +271,21 @@ public sealed class ProGpuDirectXDepthStencilView : ProGpuDirectXView
             throw new ArgumentOutOfRangeException(nameof(descriptor), "Depth-stencil view array range exceeds the texture.");
         }
 
+        if (texture.UsesBackendArraySliceTextures && descriptor.ArraySize != 1)
+        {
+            throw new NotSupportedException("Multisampled texture array depth-stencil views currently support one array slice per view.");
+        }
+
         return texture;
+    }
+
+    private static TextureViewDimension GetDepthStencilTextureViewDimension(
+        DxResourceViewDimension dimension,
+        uint arrayLayerCount)
+    {
+        return dimension == DxResourceViewDimension.Texture2DArray && arrayLayerCount > 1
+            ? TextureViewDimension.Dimension2DArray
+            : TextureViewDimension.Dimension2D;
     }
 }
 
@@ -348,6 +382,11 @@ public sealed class ProGpuDirectXShaderResourceView : ProGpuDirectXView
             descriptor.ArraySize > texture.Descriptor.ArraySize - descriptor.FirstArraySlice)
         {
             throw new ArgumentOutOfRangeException(nameof(descriptor), "Shader-resource view array range exceeds the texture.");
+        }
+
+        if (texture.UsesBackendArraySliceTextures && descriptor.ArraySize != 1)
+        {
+            throw new NotSupportedException("Multisampled texture array shader-resource views currently support one array slice per view.");
         }
 
         return texture;
@@ -470,6 +509,11 @@ public sealed class ProGpuDirectXUnorderedAccessView : ProGpuDirectXView
             descriptor.ArraySize > texture.Descriptor.ArraySize - descriptor.FirstArraySlice)
         {
             throw new ArgumentOutOfRangeException(nameof(descriptor), "Unordered-access view array range exceeds the texture.");
+        }
+
+        if (texture.UsesBackendArraySliceTextures && descriptor.ArraySize != 1)
+        {
+            throw new NotSupportedException("Multisampled texture array unordered-access views currently support one array slice per view.");
         }
 
         return texture;

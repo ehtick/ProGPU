@@ -501,6 +501,7 @@ public sealed class ProGpuDirectXMappedSubresource : IDisposable
 public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
 {
     private GpuTexture? _backendTexture;
+    private GpuTexture[]? _backendArraySliceTextures;
     private byte[]? _cpuShadow;
     private byte[] _writeShadow = [];
     private bool[] _writeShadowSubresourcesCurrent = [];
@@ -518,6 +519,8 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
     public DxTexture2DDescriptor Descriptor { get; private set; }
 
     public GpuTexture? BackendTexture => _backendTexture;
+
+    internal bool UsesBackendArraySliceTextures => _backendArraySliceTextures is not null;
 
     public uint Width => Descriptor.Width;
 
@@ -539,6 +542,35 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
         Generation++;
     }
 
+    internal GpuTexture? GetBackendTexture(uint arraySlice)
+    {
+        if (_backendArraySliceTextures is { } sliceTextures)
+        {
+            return arraySlice < sliceTextures.Length
+                ? sliceTextures[checked((int)arraySlice)]
+                : null;
+        }
+
+        return _backendTexture;
+    }
+
+    internal GpuTexture? GetBackendTextureForSubresource(uint subresource)
+    {
+        var subresourceInfo = GetSubresourceInfo(Descriptor, subresource);
+        return GetBackendTexture(subresourceInfo.ArraySlice);
+    }
+
+    internal uint GetNativeArrayLayer(uint arraySlice)
+    {
+        return _backendArraySliceTextures is not null ? 0 : arraySlice;
+    }
+
+    internal uint GetNativeArrayLayerForSubresource(uint subresource)
+    {
+        var subresourceInfo = GetSubresourceInfo(Descriptor, subresource);
+        return GetNativeArrayLayer(subresourceInfo.ArraySlice);
+    }
+
     public unsafe void WritePixels<T>(ReadOnlySpan<T> pixels) where T : unmanaged
     {
         ThrowIfDisposed();
@@ -549,7 +581,7 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
             throw new ArgumentException($"Pixel span is too small ({bytes.Length} bytes, expected {expectedSize} bytes).", nameof(pixels));
         }
 
-        if (_backendTexture is not null)
+        if (_backendTexture is not null || _backendArraySliceTextures is not null)
         {
             UploadAllSubresourcesToBackend(bytes);
         }
@@ -663,7 +695,7 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
 
     private void UploadAllSubresourcesToBackend(ReadOnlySpan<byte> bytes)
     {
-        if (_backendTexture is null)
+        if (_backendTexture is null && _backendArraySliceTextures is null)
         {
             return;
         }
@@ -672,13 +704,19 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
         for (uint subresource = 0; subresource < subresourceCount; subresource++)
         {
             var subresourceInfo = GetSubresourceInfo(Descriptor, subresource);
-            _backendTexture.WritePixelsSubRect(
+            var backendTexture = GetBackendTexture(subresourceInfo.ArraySlice);
+            if (backendTexture is null)
+            {
+                continue;
+            }
+
+            backendTexture.WritePixelsSubRect(
                 bytes.Slice(checked((int)subresourceInfo.OffsetBytes), checked((int)subresourceInfo.SizeInBytes)),
                 x: 0,
                 y: 0,
                 subWidth: subresourceInfo.Width,
                 subHeight: subresourceInfo.Height,
-                arrayLayer: subresourceInfo.ArraySlice,
+                arrayLayer: GetNativeArrayLayer(subresourceInfo.ArraySlice),
                 mipLevel: subresourceInfo.MipLevel);
         }
     }
@@ -821,6 +859,13 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
         {
             _backendTexture.Resize(width, height);
         }
+        else if (_backendArraySliceTextures is not null)
+        {
+            foreach (var texture in _backendArraySliceTextures)
+            {
+                texture.Resize(width, height);
+            }
+        }
 
         Generation++;
     }
@@ -847,7 +892,7 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
                     y: 0,
                     subWidth: subresourceInfo.Width,
                     subHeight: subresourceInfo.Height,
-                    arrayLayer: subresourceInfo.ArraySlice,
+                    arrayLayer: GetNativeArrayLayer(subresourceInfo.ArraySlice),
                     mipLevel: subresourceInfo.MipLevel);
             }
 
@@ -894,6 +939,27 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
     {
         if (Device.Context is not { } context || !Device.IsGpuBacked)
         {
+            return;
+        }
+
+        if (NeedsBackendArraySliceTextures(Descriptor))
+        {
+            _backendArraySliceTextures = new GpuTexture[checked((int)Descriptor.ArraySize)];
+            for (uint arraySlice = 0; arraySlice < Descriptor.ArraySize; arraySlice++)
+            {
+                _backendArraySliceTextures[checked((int)arraySlice)] = new GpuTexture(
+                    context,
+                    Descriptor.Width,
+                    Descriptor.Height,
+                    ProGpuDirectXFormatConverter.ToTextureFormat(Descriptor.Format),
+                    ProGpuDirectXFormatConverter.ToTextureUsage(Descriptor.Usage),
+                    $"{Descriptor.Label}[{arraySlice}]",
+                    Descriptor.SampleCount,
+                    ProGpuDirectXFormatConverter.ToTextureAlphaMode(Descriptor.Format),
+                    depthOrArrayLayers: 1,
+                    mipLevelCount: Descriptor.MipLevels);
+            }
+
             return;
         }
 
@@ -982,6 +1048,11 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
         {
             throw new ArgumentOutOfRangeException(nameof(descriptor), "DirectX textures must have at least one sample.");
         }
+    }
+
+    private static bool NeedsBackendArraySliceTextures(DxTexture2DDescriptor descriptor)
+    {
+        return descriptor.SampleCount > 1 && descriptor.ArraySize > 1;
     }
 
     private static void ValidateMapMode(DxMapMode mode)
@@ -1225,6 +1296,15 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
         _activeMapping = null;
         _backendTexture?.Dispose();
         _backendTexture = null;
+        if (_backendArraySliceTextures is not null)
+        {
+            foreach (var texture in _backendArraySliceTextures)
+            {
+                texture.Dispose();
+            }
+
+            _backendArraySliceTextures = null;
+        }
     }
 }
 

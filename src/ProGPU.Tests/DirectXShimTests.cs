@@ -7573,6 +7573,70 @@ float4 PSMain() : SV_Target
     }
 
     [Fact]
+    public void FlushSubmitsGpuBackedMultisampleResolveForArraySubresources()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var source = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 16,
+            Height = 16,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.RenderTarget,
+            SampleCount = 4,
+            ArraySize = 2
+        });
+        using var destination = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 16,
+            Height = 16,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.RenderTarget | DxTextureUsage.CopySource,
+            CpuAccess = DxCpuAccessFlags.Read,
+            ArraySize = 2
+        });
+        using var sourceSlice0 = device.CreateRenderTargetView(source, new DxRenderTargetViewDescriptor
+        {
+            Dimension = DxResourceViewDimension.Texture2DArray,
+            FirstArraySlice = 0,
+            ArraySize = 1,
+            Label = "ResolveSourceSlice0"
+        });
+        using var sourceSlice1 = device.CreateRenderTargetView(source, new DxRenderTargetViewDescriptor
+        {
+            Dimension = DxResourceViewDimension.Texture2DArray,
+            FirstArraySlice = 1,
+            ArraySize = 1,
+            Label = "ResolveSourceSlice1"
+        });
+        using var context = device.CreateImmediateContext();
+
+        context.ClearRenderTarget(sourceSlice0, new DxColor(1f, 0f, 0f, 1f));
+        context.ClearRenderTarget(sourceSlice1, new DxColor(0f, 0f, 1f, 1f));
+        context.ResolveSubresource(destination, destinationSubresource: 0, source, sourceSubresource: 0, DxResourceFormat.R8G8B8A8Unorm);
+        context.ResolveSubresource(destination, destinationSubresource: 1, source, sourceSubresource: 1, DxResourceFormat.R8G8B8A8Unorm);
+        context.Flush();
+
+        Assert.Equal(2ul, context.SubmittedClearCount);
+        Assert.Equal(2ul, context.SubmittedResolveCount);
+        Assert.Empty(context.Commands);
+
+        var pixels = destination.ReadPixels();
+        var sliceSize = checked((int)(destination.Width * destination.Height * 4));
+        var slice0Center = ReadRgbaPixel(pixels.AsSpan(0, sliceSize).ToArray(), 16, 8, 8);
+        var slice1Center = ReadRgbaPixel(pixels.AsSpan(sliceSize, sliceSize).ToArray(), 16, 8, 8);
+        Assert.True(slice0Center.R > 200, $"Expected red resolved layer 0 pixel, actual: {slice0Center}");
+        Assert.True(slice0Center.G < 50, $"Expected low green resolved layer 0 pixel, actual: {slice0Center}");
+        Assert.True(slice0Center.B < 50, $"Expected low blue resolved layer 0 pixel, actual: {slice0Center}");
+        Assert.True(slice0Center.A > 200, $"Expected opaque resolved layer 0 pixel, actual: {slice0Center}");
+        Assert.True(slice1Center.R < 50, $"Expected low red resolved array pixel, actual: {slice1Center}");
+        Assert.True(slice1Center.G < 50, $"Expected low green resolved array pixel, actual: {slice1Center}");
+        Assert.True(slice1Center.B > 200, $"Expected blue resolved array pixel, actual: {slice1Center}");
+        Assert.True(slice1Center.A > 200, $"Expected opaque resolved array pixel, actual: {slice1Center}");
+    }
+
+    [Fact]
     public void CpuReadableBuffersSupportMetadataShadowCopies()
     {
         using var device = ProGpuDirectXDevice.CreateMetadataDevice();
@@ -9169,6 +9233,49 @@ float4 PSMain() : SV_Target
     }
 
     [Fact]
+    public void GpuBackedRenderTargetArrayViewsClearSelectedNativeSlice()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var renderTarget = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 8,
+            Height = 8,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.RenderTarget | DxTextureUsage.CopySource,
+            CpuAccess = DxCpuAccessFlags.Read,
+            ArraySize = 2
+        });
+        using var renderTargetView = device.CreateRenderTargetView(
+            renderTarget,
+            new DxRenderTargetViewDescriptor
+            {
+                Dimension = DxResourceViewDimension.Texture2DArray,
+                FirstArraySlice = 1,
+                ArraySize = 1,
+                Label = "ArraySlice1Rtv"
+            });
+        using var context = device.CreateImmediateContext();
+
+        context.ClearRenderTarget(renderTargetView, new DxColor(0f, 0f, 1f, 1f));
+        context.Flush();
+
+        Assert.True(renderTargetView.HasBackendTextureView);
+        Assert.Equal(1ul, context.SubmittedClearCount);
+
+        var pixels = renderTarget.ReadPixels();
+        var sliceSize = checked((int)(renderTarget.Width * renderTarget.Height * 4));
+        var slice0Center = ReadRgbaPixel(pixels.AsSpan(0, sliceSize).ToArray(), 8, 4, 4);
+        var slice1Center = ReadRgbaPixel(pixels.AsSpan(sliceSize, sliceSize).ToArray(), 8, 4, 4);
+        Assert.True(slice0Center.B < 50, $"Expected layer 0 to stay non-blue, actual: {slice0Center}");
+        Assert.True(slice1Center.R < 50, $"Expected low red array clear pixel, actual: {slice1Center}");
+        Assert.True(slice1Center.G < 50, $"Expected low green array clear pixel, actual: {slice1Center}");
+        Assert.True(slice1Center.B > 200, $"Expected blue array clear pixel, actual: {slice1Center}");
+        Assert.True(slice1Center.A > 200, $"Expected opaque array clear pixel, actual: {slice1Center}");
+    }
+
+    [Fact]
     public void GpuBackedTextureViewsValidateDescriptorsBeforeNativeViewCreation()
     {
         using var wgpu = new WgpuContext();
@@ -9206,6 +9313,15 @@ float4 PSMain() : SV_Target
             Usage = DxTextureUsage.DepthStencil,
             ArraySize = 1
         });
+        using var multisampledArray = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 8,
+            Height = 8,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.RenderTarget,
+            SampleCount = 4,
+            ArraySize = 2
+        });
 
         Assert.Throws<ArgumentOutOfRangeException>(() =>
             device.CreateShaderResourceView(
@@ -9235,6 +9351,14 @@ float4 PSMain() : SV_Target
                 depthStencil,
                 new DxDepthStencilViewDescriptor
                 {
+                    ArraySize = 2
+                }));
+        Assert.Throws<NotSupportedException>(() =>
+            device.CreateRenderTargetView(
+                multisampledArray,
+                new DxRenderTargetViewDescriptor
+                {
+                    Dimension = DxResourceViewDimension.Texture2DArray,
                     ArraySize = 2
                 }));
     }
