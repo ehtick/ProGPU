@@ -15,6 +15,13 @@ public sealed record ProGpuDirectXNativeAbiExportRequirement(
     IReadOnlyList<ProGpuDirectXNativeImport> Imports)
 {
     public string DisplayName => $"{ModuleName}!{EntryPoint}";
+
+    public IReadOnlyList<string> ManagedSignatures =>
+        Imports
+            .Select(static import => import.ManagedSignature)
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
 }
 
 public sealed record ProGpuDirectXNativeAbiModuleRequirement(

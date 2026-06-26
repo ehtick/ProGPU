@@ -4,16 +4,33 @@ using System.Text;
 
 namespace ProGPU.DirectX;
 
+public sealed record ProGpuDirectXNativeImportParameter(
+    string Name,
+    string TypeName,
+    bool IsIn,
+    bool IsOut,
+    bool IsByRef,
+    bool IsOptional)
+{
+    public string DisplayName => string.IsNullOrWhiteSpace(Name) ? TypeName : $"{TypeName} {Name}";
+}
+
 public sealed record ProGpuDirectXNativeImport(
     string AssemblyName,
     string TypeName,
     string MethodName,
     string ModuleName,
     string EntryPoint,
+    string ReturnTypeName,
+    IReadOnlyList<ProGpuDirectXNativeImportParameter> Parameters,
     CallingConvention CallingConvention,
     CharSet CharSet,
     bool SetLastError,
-    bool ExactSpelling);
+    bool ExactSpelling)
+{
+    public string ManagedSignature =>
+        $"{ReturnTypeName} {TypeName}.{MethodName}({string.Join(", ", Parameters.Select(static parameter => parameter.DisplayName))})";
+}
 
 public sealed record ProGpuDirectXNativeModuleHint(
     string AssemblyName,
@@ -87,6 +104,8 @@ public static class ProGpuDirectXNativeDependencyInspector
                         method.Name,
                         moduleName,
                         import.EntryPoint ?? method.Name,
+                        FormatTypeName(method.ReturnType),
+                        method.GetParameters().Select(CreateParameter).ToArray(),
                         import.CallingConvention,
                         import.CharSet,
                         import.SetLastError,
@@ -129,6 +148,38 @@ public static class ProGpuDirectXNativeDependencyInspector
         {
             return ex.Types.Where(static type => type is not null).Cast<Type>();
         }
+    }
+
+    private static ProGpuDirectXNativeImportParameter CreateParameter(ParameterInfo parameter)
+    {
+        var type = parameter.ParameterType;
+        return new ProGpuDirectXNativeImportParameter(
+            parameter.Name ?? string.Empty,
+            FormatTypeName(type),
+            parameter.IsIn,
+            parameter.IsOut,
+            type.IsByRef,
+            parameter.IsOptional);
+    }
+
+    private static string FormatTypeName(Type type)
+    {
+        if (type.IsByRef)
+        {
+            return FormatTypeName(type.GetElementType()!) + "&";
+        }
+
+        if (type.IsPointer)
+        {
+            return FormatTypeName(type.GetElementType()!) + "*";
+        }
+
+        if (type.IsArray)
+        {
+            return FormatTypeName(type.GetElementType()!) + "[]";
+        }
+
+        return type.FullName ?? type.Name;
     }
 
     private static IEnumerable<ProGpuDirectXNativeModuleHint> InspectModuleHints(Assembly assembly)

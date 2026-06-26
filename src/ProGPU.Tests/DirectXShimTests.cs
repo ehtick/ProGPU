@@ -519,6 +519,33 @@ fn fs_main() -> @location(0) vec4<f32> {
         Assert.Equal(CallingConvention.StdCall, messageBoxImport.CallingConvention);
         Assert.Equal(CharSet.Unicode, messageBoxImport.CharSet);
         Assert.True(messageBoxImport.SetLastError);
+        Assert.Equal("System.Int32", messageBoxImport.ReturnTypeName);
+        Assert.Collection(
+            messageBoxImport.Parameters,
+            parameter =>
+            {
+                Assert.Equal("hwnd", parameter.Name);
+                Assert.Equal("System.IntPtr", parameter.TypeName);
+            },
+            parameter =>
+            {
+                Assert.Equal("text", parameter.Name);
+                Assert.Equal("System.String", parameter.TypeName);
+            },
+            parameter =>
+            {
+                Assert.Equal("caption", parameter.Name);
+                Assert.Equal("System.String", parameter.TypeName);
+            },
+            parameter =>
+            {
+                Assert.Equal("type", parameter.Name);
+                Assert.Equal("System.UInt32", parameter.TypeName);
+            });
+        Assert.Contains(
+            "System.Int32 ProGPU.Tests.DirectXShimTests+NativeDependencyFixture.MessageBoxW(System.IntPtr hwnd, System.String text, System.String caption, System.UInt32 type)",
+            messageBoxImport.ManagedSignature,
+            StringComparison.Ordinal);
 
         var d3dImport = Assert.Single(
             report.Imports,
@@ -604,6 +631,10 @@ fn fs_main() -> @location(0) vec4<f32> {
         Assert.Equal(ProGpuDirectXNativeCompatibilityAction.ImplementProGpuNativeFacade, d3dExport.Action);
         Assert.Equal(CallingConvention.Winapi, d3dExport.CallingConvention);
         Assert.True(d3dExport.ExactSpelling);
+        Assert.Contains(
+            "System.Int32 ProGPU.Tests.DirectXShimTests+NativeDependencyFixture.D3D11CreateDevice()",
+            d3dExport.ManagedSignatures,
+            StringComparer.Ordinal);
 
         var licensingExport = Assert.Single(
             plan.ActionableExports,
@@ -619,6 +650,10 @@ fn fs_main() -> @location(0) vec4<f32> {
         Assert.Equal(CallingConvention.StdCall, win32Export.CallingConvention);
         Assert.Equal(CharSet.Unicode, win32Export.CharSet);
         Assert.True(win32Export.SetLastError);
+        Assert.Contains(
+            "System.Int32 ProGPU.Tests.DirectXShimTests+NativeDependencyFixture.MessageBoxW(System.IntPtr hwnd, System.String text, System.String caption, System.UInt32 type)",
+            win32Export.ManagedSignatures,
+            StringComparer.Ordinal);
 
         var dynamicHint = Assert.Single(
             plan.DynamicModuleHints,
