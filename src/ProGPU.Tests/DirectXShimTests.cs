@@ -588,6 +588,50 @@ fn fs_main() -> @location(0) vec4<f32> {
     }
 
     [Fact]
+    public void NativeAbiPlannerReportsExportsAndDynamicModuleHints()
+    {
+        var report = ProGpuDirectXNativeDependencyInspector.Inspect(typeof(NativeDependencyFixture).Assembly);
+        var plan = ProGpuDirectXNativeAbiPlanner.Create(report);
+
+        Assert.Contains("d3d11.dll: D3D11CreateDevice", plan.DescribeActionableExports(), StringComparison.Ordinal);
+        Assert.Contains("user32.dll: MessageBoxW", plan.DescribeActionableExports(), StringComparison.Ordinal);
+        Assert.Contains("VXccelEngine3D.dll: dynamic module hint", plan.DescribeActionableExports(), StringComparison.Ordinal);
+
+        var d3dExport = Assert.Single(
+            plan.ActionableExports,
+            export => export.DisplayName.Equals("d3d11.dll!D3D11CreateDevice", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(ProGpuDirectXNativeModuleKind.Direct3D, d3dExport.Kind);
+        Assert.Equal(ProGpuDirectXNativeCompatibilityAction.ImplementProGpuNativeFacade, d3dExport.Action);
+        Assert.Equal(CallingConvention.Winapi, d3dExport.CallingConvention);
+        Assert.True(d3dExport.ExactSpelling);
+
+        var licensingExport = Assert.Single(
+            plan.ActionableExports,
+            export => export.DisplayName.Equals("AbtLicensingNative!SciChartLicenseCheck", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(ProGpuDirectXNativeModuleKind.SciChartLicensing, licensingExport.Kind);
+        Assert.Equal(ProGpuDirectXNativeCompatibilityAction.ImplementProGpuNativeFacade, licensingExport.Action);
+
+        var win32Export = Assert.Single(
+            plan.ActionableExports,
+            export => export.DisplayName.Equals("user32.dll!MessageBoxW", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(ProGpuDirectXNativeModuleKind.Win32System, win32Export.Kind);
+        Assert.Equal(ProGpuDirectXNativeCompatibilityAction.ImplementHostOsAbstraction, win32Export.Action);
+        Assert.Equal(CallingConvention.StdCall, win32Export.CallingConvention);
+        Assert.Equal(CharSet.Unicode, win32Export.CharSet);
+        Assert.True(win32Export.SetLastError);
+
+        var dynamicHint = Assert.Single(
+            plan.DynamicModuleHints,
+            module => module.ModuleName.Equals("VXccelEngine3D.dll", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(ProGpuDirectXNativeModuleKind.SciChartVisualXccelerator, dynamicHint.Kind);
+        Assert.True(dynamicHint.HasOnlyDynamicHints);
+
+        Assert.DoesNotContain(
+            plan.ActionableExports,
+            export => export.ModuleName.Equals("SciChart.Charting3D.dll", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void NativeResolverClassifiesRequestsWithoutMaskingMissingFacade()
     {
         var report = ProGpuDirectXNativeDependencyInspector.Inspect(typeof(NativeDependencyFixture).Assembly);
