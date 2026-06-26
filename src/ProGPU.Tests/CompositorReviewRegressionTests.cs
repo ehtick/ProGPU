@@ -1773,6 +1773,28 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     }
 
     [Fact]
+    public void GpuTextureWritePixelsAndReadPixelsUseNativeFormatStride()
+    {
+        using var window = new HeadlessWindow(2, 1);
+        using var texture = new GpuTexture(
+            window.Context,
+            2,
+            1,
+            TextureFormat.Rgba32float,
+            TextureUsage.CopyDst | TextureUsage.CopySrc,
+            "Wide Format Texture");
+        byte[] pixels =
+        [
+            0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 64, 64, 0, 0, 128, 64,
+            0, 0, 160, 64, 0, 0, 192, 64, 0, 0, 224, 64, 0, 0, 0, 65
+        ];
+
+        texture.WritePixels(pixels);
+
+        Assert.Equal(pixels, texture.ReadPixels());
+    }
+
+    [Fact]
     public void DrawCallScissorPreservesNonEmptySubpixelClips()
     {
         var subpixel = InvokeTryComputeScissorRect(

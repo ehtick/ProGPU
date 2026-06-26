@@ -126,12 +126,7 @@ public unsafe class GpuTexture : IDisposable
     {
         if (_isDisposed) throw new ObjectDisposedException(nameof(GpuTexture));
 
-        uint bytesPerPixel = Format switch
-        {
-            TextureFormat.Rgba8Unorm or TextureFormat.Rgba8UnormSrgb or TextureFormat.Bgra8Unorm or TextureFormat.Bgra8UnormSrgb => 4,
-            TextureFormat.R8Unorm => 1,
-            _ => 4 // Default standard
-        };
+        uint bytesPerPixel = GetBytesPerPixel(Format);
 
         uint expectedSize = Width * Height * DepthOrArrayLayers * bytesPerPixel;
         uint passedSize = (uint)(pixels.Length * sizeof(T));
@@ -240,12 +235,7 @@ public unsafe class GpuTexture : IDisposable
             throw new ArgumentOutOfRangeException(nameof(arrayLayer), "Pixel sub-rect array layer is outside the texture array.");
         }
 
-        uint bytesPerPixel = Format switch
-        {
-            TextureFormat.Rgba8Unorm or TextureFormat.Rgba8UnormSrgb or TextureFormat.Bgra8Unorm or TextureFormat.Bgra8UnormSrgb => 4,
-            TextureFormat.R8Unorm => 1,
-            _ => 4
-        };
+        uint bytesPerPixel = GetBytesPerPixel(Format);
 
         uint expectedSize = subWidth * subHeight * bytesPerPixel;
         uint passedSize = (uint)(pixels.Length * sizeof(T));
@@ -370,6 +360,59 @@ public unsafe class GpuTexture : IDisposable
         }
     }
 
+    private static uint GetBytesPerPixel(TextureFormat format)
+    {
+        return format switch
+        {
+            TextureFormat.R8Unorm or
+            TextureFormat.R8Snorm or
+            TextureFormat.R8Uint or
+            TextureFormat.R8Sint => 1,
+
+            TextureFormat.R16Uint or
+            TextureFormat.R16Sint or
+            TextureFormat.R16float or
+            TextureFormat.Depth16Unorm => 2,
+
+            TextureFormat.RG8Unorm or
+            TextureFormat.RG8Snorm or
+            TextureFormat.RG8Uint or
+            TextureFormat.RG8Sint => 2,
+
+            TextureFormat.R32Uint or
+            TextureFormat.R32Sint or
+            TextureFormat.R32float or
+            TextureFormat.RG16Uint or
+            TextureFormat.RG16Sint or
+            TextureFormat.RG16float or
+            TextureFormat.Rgba8Unorm or
+            TextureFormat.Rgba8UnormSrgb or
+            TextureFormat.Rgba8Snorm or
+            TextureFormat.Rgba8Uint or
+            TextureFormat.Rgba8Sint or
+            TextureFormat.Bgra8Unorm or
+            TextureFormat.Bgra8UnormSrgb or
+            TextureFormat.Rgb10A2Unorm or
+            TextureFormat.Rgb10A2Uint or
+            TextureFormat.Depth24Plus or
+            TextureFormat.Depth24PlusStencil8 or
+            TextureFormat.Depth32float => 4,
+
+            TextureFormat.RG32Uint or
+            TextureFormat.RG32Sint or
+            TextureFormat.RG32float or
+            TextureFormat.Rgba16Uint or
+            TextureFormat.Rgba16Sint or
+            TextureFormat.Rgba16float => 8,
+
+            TextureFormat.Rgba32Uint or
+            TextureFormat.Rgba32Sint or
+            TextureFormat.Rgba32float => 16,
+
+            _ => throw new NotSupportedException($"Texture format {format} does not have a supported compact pixel size.")
+        };
+    }
+
     public static void CleanupPendingResources(WgpuContext context)
     {
         context.CleanupPendingResources();
@@ -390,12 +433,7 @@ public unsafe class GpuTexture : IDisposable
         var device = _context.Device;
         var queue = _context.Queue;
 
-        uint bytesPerPixel = Format switch
-        {
-            TextureFormat.Rgba8Unorm or TextureFormat.Rgba8UnormSrgb or TextureFormat.Bgra8Unorm or TextureFormat.Bgra8UnormSrgb => 4,
-            TextureFormat.R8Unorm => 1,
-            _ => 4
-        };
+        uint bytesPerPixel = GetBytesPerPixel(Format);
 
         // Align row pitch to 256 bytes per WebGPU requirements
         uint bytesPerRow = Width * bytesPerPixel;

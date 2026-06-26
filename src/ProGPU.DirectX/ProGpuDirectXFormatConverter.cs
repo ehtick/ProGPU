@@ -19,10 +19,14 @@ internal static class ProGpuDirectXFormatConverter
             DxResourceFormat.R32UInt => TextureFormat.R32Uint,
             DxResourceFormat.R32SInt => TextureFormat.R32Sint,
             DxResourceFormat.R32G32Float => TextureFormat.RG32float,
+            DxResourceFormat.R32G32UInt => TextureFormat.RG32Uint,
+            DxResourceFormat.R32G32SInt => TextureFormat.RG32Sint,
             DxResourceFormat.R32G32B32A32Float => TextureFormat.Rgba32float,
+            DxResourceFormat.R32G32B32A32UInt => TextureFormat.Rgba32Uint,
+            DxResourceFormat.R32G32B32A32SInt => TextureFormat.Rgba32Sint,
             DxResourceFormat.D24UnormS8UInt => TextureFormat.Depth24PlusStencil8,
             DxResourceFormat.D32Float => TextureFormat.Depth32float,
-            _ => TextureFormat.Bgra8Unorm
+            _ => throw new NotSupportedException($"DirectX resource format {format} does not map to a WebGPU texture format.")
         };
     }
 

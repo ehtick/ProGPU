@@ -512,22 +512,26 @@ public sealed unsafe class ProGpuDirectXGraphicsPipeline : IDisposable
             var rasterizerState = rasterizerStateOverride ?? descriptor.RasterizerState;
             var depthStencilEnabled = descriptor.DepthStencilFormat != DxResourceFormat.Unknown &&
                 (descriptor.DepthStencilState.DepthEnable || descriptor.DepthStencilState.StencilEnable);
-            var depthStencilState = new DepthStencilState
+            DepthStencilState depthStencilState = default;
+            if (depthStencilEnabled)
             {
-                Format = ProGpuDirectXFormatConverter.ToTextureFormat(descriptor.DepthStencilFormat),
-                DepthWriteEnabled = descriptor.DepthStencilState.DepthEnable &&
-                    descriptor.DepthStencilState.DepthWriteMask == DxDepthWriteMask.All,
-                DepthCompare = descriptor.DepthStencilState.DepthEnable
-                    ? ProGpuDirectXFormatConverter.ToCompareFunction(descriptor.DepthStencilState.DepthFunction)
-                    : CompareFunction.Always,
-                StencilFront = CreateStencilFaceState(descriptor.DepthStencilState.FrontFace),
-                StencilBack = CreateStencilFaceState(descriptor.DepthStencilState.BackFace),
-                StencilReadMask = descriptor.DepthStencilState.StencilReadMask,
-                StencilWriteMask = descriptor.DepthStencilState.StencilWriteMask,
-                DepthBias = rasterizerState.DepthBias,
-                DepthBiasClamp = rasterizerState.DepthBiasClamp,
-                DepthBiasSlopeScale = rasterizerState.SlopeScaledDepthBias
-            };
+                depthStencilState = new DepthStencilState
+                {
+                    Format = ProGpuDirectXFormatConverter.ToTextureFormat(descriptor.DepthStencilFormat),
+                    DepthWriteEnabled = descriptor.DepthStencilState.DepthEnable &&
+                        descriptor.DepthStencilState.DepthWriteMask == DxDepthWriteMask.All,
+                    DepthCompare = descriptor.DepthStencilState.DepthEnable
+                        ? ProGpuDirectXFormatConverter.ToCompareFunction(descriptor.DepthStencilState.DepthFunction)
+                        : CompareFunction.Always,
+                    StencilFront = CreateStencilFaceState(descriptor.DepthStencilState.FrontFace),
+                    StencilBack = CreateStencilFaceState(descriptor.DepthStencilState.BackFace),
+                    StencilReadMask = descriptor.DepthStencilState.StencilReadMask,
+                    StencilWriteMask = descriptor.DepthStencilState.StencilWriteMask,
+                    DepthBias = rasterizerState.DepthBias,
+                    DepthBiasClamp = rasterizerState.DepthBiasClamp,
+                    DepthBiasSlopeScale = rasterizerState.SlopeScaledDepthBias
+                };
+            }
 
             var pipelineDesc = new RenderPipelineDescriptor
             {

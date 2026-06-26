@@ -7418,6 +7418,73 @@ float4 PSMain() : SV_Target
         Assert.Equal(layerPixels, pixels[16..32]);
     }
 
+    [Theory]
+    [InlineData(DxResourceFormat.R16Float, 2)]
+    [InlineData(DxResourceFormat.R32G32Float, 8)]
+    [InlineData(DxResourceFormat.R32G32UInt, 8)]
+    [InlineData(DxResourceFormat.R32G32SInt, 8)]
+    [InlineData(DxResourceFormat.R32G32B32A32Float, 16)]
+    [InlineData(DxResourceFormat.R32G32B32A32UInt, 16)]
+    [InlineData(DxResourceFormat.R32G32B32A32SInt, 16)]
+    public void TextureMapSupportsWiderSingleMipFormats(DxResourceFormat format, int bytesPerPixel)
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var texture = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 2,
+            Height = 2,
+            Format = format,
+            Usage = DxTextureUsage.CopyDestination | DxTextureUsage.CopySource,
+            CpuAccess = DxCpuAccessFlags.Read | DxCpuAccessFlags.Write
+        });
+        var rowPitch = checked((uint)(2 * bytesPerPixel));
+        var depthPitch = checked((uint)(2 * 2 * bytesPerPixel));
+        var pixels = new byte[depthPitch];
+        for (var i = 0; i < pixels.Length; i++)
+        {
+            pixels[i] = (byte)(i + 1);
+        }
+
+        using var mapping = texture.Map(DxMapMode.WriteDiscard);
+        Assert.Equal(0u, mapping.OffsetBytes);
+        Assert.Equal(rowPitch, mapping.RowPitch);
+        Assert.Equal(depthPitch, mapping.DepthPitch);
+        mapping.Write<byte>(pixels);
+        mapping.Unmap();
+
+        Assert.Equal(depthPitch, texture.LastWriteSizeInBytes);
+        Assert.Equal(pixels, texture.ReadPixels());
+    }
+
+    [Fact]
+    public void TextureMapWiderFormatUploadsGpuBackedTextureOnUnmap()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var texture = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 1,
+            Height = 2,
+            Format = DxResourceFormat.R32G32B32A32UInt,
+            Usage = DxTextureUsage.CopyDestination | DxTextureUsage.CopySource,
+            CpuAccess = DxCpuAccessFlags.Write
+        });
+        byte[] pixels =
+        [
+            1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0,
+            5, 0, 0, 0, 6, 0, 0, 0, 7, 0, 0, 0, 8, 0, 0, 0
+        ];
+
+        using var mapping = texture.Map(DxMapMode.WriteDiscard);
+        Assert.Equal(16u, mapping.RowPitch);
+        Assert.Equal(32u, mapping.DepthPitch);
+        mapping.Write<byte>(pixels);
+        mapping.Unmap();
+
+        Assert.Equal(pixels, texture.BackendTexture!.ReadPixels());
+    }
+
     [Fact]
     public void BuffersSupportContextMapWriteDiscardAndReadBack()
     {

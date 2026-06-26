@@ -819,6 +819,7 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
         return format switch
         {
             DxResourceFormat.R8Unorm => 1,
+            DxResourceFormat.R16Float => 2,
             DxResourceFormat.R32Float or
             DxResourceFormat.R32UInt or
             DxResourceFormat.R32SInt => 4,
@@ -826,6 +827,12 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
             DxResourceFormat.R8G8B8A8UnormSrgb or
             DxResourceFormat.B8G8R8A8Unorm or
             DxResourceFormat.B8G8R8A8UnormSrgb => 4,
+            DxResourceFormat.R32G32Float or
+            DxResourceFormat.R32G32UInt or
+            DxResourceFormat.R32G32SInt => 8,
+            DxResourceFormat.R32G32B32A32Float or
+            DxResourceFormat.R32G32B32A32UInt or
+            DxResourceFormat.R32G32B32A32SInt => 16,
             _ => throw new NotSupportedException($"DirectX texture mapping does not support resource format {format}.")
         };
     }
