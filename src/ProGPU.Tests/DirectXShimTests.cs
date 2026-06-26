@@ -7382,6 +7382,99 @@ float4 PSMain() : SV_Target
     }
 
     [Fact]
+    public void TextureMapSupportsMipSubresourcesInCpuShadow()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var texture = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 4,
+            Height = 4,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.CopyDestination | DxTextureUsage.CopySource,
+            CpuAccess = DxCpuAccessFlags.Read | DxCpuAccessFlags.Write,
+            MipLevels = 3,
+            ArraySize = 2
+        });
+        byte[] mipPixels = [10, 20, 30, 255];
+
+        using var mapping = texture.Map(DxMapMode.WriteDiscard, subresource: 5);
+        Assert.Equal(5u, mapping.Subresource);
+        Assert.Equal(164u, mapping.OffsetBytes);
+        Assert.Equal(4u, mapping.RowPitch);
+        Assert.Equal(4u, mapping.DepthPitch);
+        mapping.Write<byte>(mipPixels);
+        mapping.Unmap();
+
+        Assert.Equal(4u, texture.LastWriteSizeInBytes);
+        var pixels = texture.ReadPixels();
+        Assert.Equal(168, pixels.Length);
+        Assert.Equal(new byte[164], pixels[..164]);
+        Assert.Equal(mipPixels, pixels[164..168]);
+    }
+
+    [Fact]
+    public void TextureMapSupportsMipSubresourcePitchesForNonPowerOfTwoTextures()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var texture = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 5,
+            Height = 3,
+            Format = DxResourceFormat.R16Float,
+            Usage = DxTextureUsage.CopyDestination,
+            CpuAccess = DxCpuAccessFlags.Write,
+            MipLevels = 4
+        });
+
+        using var mip1 = texture.Map(DxMapMode.WriteDiscard, subresource: 1);
+        Assert.Equal(30u, mip1.OffsetBytes);
+        Assert.Equal(4u, mip1.RowPitch);
+        Assert.Equal(4u, mip1.DepthPitch);
+        mip1.Unmap();
+
+        using var mip3 = texture.Map(DxMapMode.WriteDiscard, subresource: 3);
+        Assert.Equal(36u, mip3.OffsetBytes);
+        Assert.Equal(2u, mip3.RowPitch);
+        Assert.Equal(2u, mip3.DepthPitch);
+    }
+
+    [Fact]
+    public void TextureMapRejectsOutOfRangeMipSubresource()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var texture = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 4,
+            Height = 4,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.CopyDestination,
+            CpuAccess = DxCpuAccessFlags.Write,
+            MipLevels = 3,
+            ArraySize = 2
+        });
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => texture.Map(DxMapMode.Write, subresource: 6));
+    }
+
+    [Fact]
+    public void GpuBackedTextureCreationRejectsMipmappedTexturesUntilBackendSupportsMips()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+
+        Assert.Throws<NotSupportedException>(() => device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 4,
+            Height = 4,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.ShaderResource | DxTextureUsage.CopyDestination,
+            CpuAccess = DxCpuAccessFlags.Write,
+            MipLevels = 2
+        }));
+    }
+
+    [Fact]
     public void TextureMapArraySubresourceUploadsGpuBackedTextureOnUnmap()
     {
         using var wgpu = new WgpuContext();

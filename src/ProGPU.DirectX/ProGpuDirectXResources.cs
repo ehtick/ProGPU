@@ -338,13 +338,14 @@ public sealed class ProGpuDirectXMappedSubresource : IDisposable
         ProGpuDirectXTexture2D texture,
         DxMapMode mode,
         DxMapFlags flags,
+        uint subresource,
         uint offsetBytes,
         uint sizeInBytes,
         uint rowPitch,
         uint depthPitch,
         byte[] data,
         bool uploadOnUnmap)
-        : this(texture, texture.CompleteMappedSubresource, mode, flags, offsetBytes, sizeInBytes, rowPitch, depthPitch, data, uploadOnUnmap)
+        : this(texture, texture.CompleteMappedSubresource, mode, flags, subresource, offsetBytes, sizeInBytes, rowPitch, depthPitch, data, uploadOnUnmap)
     {
     }
 
@@ -359,11 +360,28 @@ public sealed class ProGpuDirectXMappedSubresource : IDisposable
         uint depthPitch,
         byte[] data,
         bool uploadOnUnmap)
+        : this(resource, completeMapping, mode, flags, subresource: 0, offsetBytes, sizeInBytes, rowPitch, depthPitch, data, uploadOnUnmap)
+    {
+    }
+
+    private ProGpuDirectXMappedSubresource(
+        ProGpuDirectXResource resource,
+        Action<ProGpuDirectXMappedSubresource> completeMapping,
+        DxMapMode mode,
+        DxMapFlags flags,
+        uint subresource,
+        uint offsetBytes,
+        uint sizeInBytes,
+        uint rowPitch,
+        uint depthPitch,
+        byte[] data,
+        bool uploadOnUnmap)
     {
         _resource = resource;
         _completeMapping = completeMapping;
         Mode = mode;
         Flags = flags;
+        Subresource = subresource;
         OffsetBytes = offsetBytes;
         SizeInBytes = sizeInBytes;
         RowPitch = rowPitch;
@@ -381,6 +399,8 @@ public sealed class ProGpuDirectXMappedSubresource : IDisposable
     public DxMapMode Mode { get; }
 
     public DxMapFlags Flags { get; }
+
+    public uint Subresource { get; }
 
     public uint OffsetBytes { get; }
 
@@ -573,26 +593,30 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
             throw new InvalidOperationException("DirectX texture was not created with CPU write access.");
         }
 
-        var rowPitch = GetRowPitchInBytes(Descriptor);
-        var depthPitch = GetSubresourceSizeInBytes(Descriptor);
-        var subresourceOffset = GetSubresourceOffsetInBytes(Descriptor, subresource);
+        if (_backendTexture is not null && Descriptor.MipLevels != 1)
+        {
+            throw new NotSupportedException("GPU-backed DirectX texture mapping currently supports only single-mip textures.");
+        }
+
+        var subresourceInfo = GetSubresourceInfo(Descriptor, subresource);
         if (requiresRead)
         {
             SynchronizeShadowForRead();
         }
         else if (mode == DxMapMode.WriteDiscard)
         {
-            _writeShadow.AsSpan(checked((int)subresourceOffset), checked((int)depthPitch)).Clear();
+            _writeShadow.AsSpan(checked((int)subresourceInfo.OffsetBytes), checked((int)subresourceInfo.SizeInBytes)).Clear();
         }
 
         _activeMapping = new ProGpuDirectXMappedSubresource(
             this,
             mode,
             flags,
-            offsetBytes: subresourceOffset,
-            sizeInBytes: depthPitch,
-            rowPitch,
-            depthPitch,
+            subresource,
+            offsetBytes: subresourceInfo.OffsetBytes,
+            sizeInBytes: subresourceInfo.SizeInBytes,
+            subresourceInfo.RowPitch,
+            subresourceInfo.SizeInBytes,
             _writeShadow,
             uploadOnUnmap: requiresWrite);
 
@@ -653,15 +677,19 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
                 checked((int)mapping.SizeInBytes));
             if (_backendTexture is not null)
             {
-                var subresourceSize = GetSubresourceSizeInBytes(Descriptor);
-                var arrayLayer = checked(mapping.OffsetBytes / subresourceSize);
+                var subresourceInfo = GetSubresourceInfo(Descriptor, mapping.Subresource);
+                if (subresourceInfo.MipLevel != 0)
+                {
+                    throw new NotSupportedException("GPU-backed DirectX texture upload currently supports only mip level 0.");
+                }
+
                 _backendTexture.WritePixelsSubRect(
                     mappedBytes,
                     x: 0,
                     y: 0,
-                    subWidth: Descriptor.Width,
-                    subHeight: Descriptor.Height,
-                    arrayLayer);
+                    subWidth: subresourceInfo.Width,
+                    subHeight: subresourceInfo.Height,
+                    subresourceInfo.ArraySlice);
             }
 
             if (_cpuShadow is not null && !ReferenceEquals(_cpuShadow, _writeShadow))
@@ -701,6 +729,11 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
             return;
         }
 
+        if (Descriptor.MipLevels != 1)
+        {
+            throw new NotSupportedException("GPU-backed DirectX Texture2D currently supports only single-mip textures.");
+        }
+
         _backendTexture = new GpuTexture(
             context,
             Descriptor.Width,
@@ -730,14 +763,9 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
 
     private void ValidateMappableSubresource(uint subresource)
     {
-        if (Descriptor.MipLevels != 1)
+        if (subresource >= checked(Descriptor.ArraySize * Descriptor.MipLevels))
         {
-            throw new NotSupportedException("DirectX texture mapping currently supports only single-mip textures.");
-        }
-
-        if (subresource >= Descriptor.ArraySize)
-        {
-            throw new ArgumentOutOfRangeException(nameof(subresource), "DirectX texture mapping subresource is outside the texture array.");
+            throw new ArgumentOutOfRangeException(nameof(subresource), "DirectX texture mapping subresource is outside the texture array/mip range.");
         }
 
         if (Descriptor.SampleCount != 1)
@@ -794,24 +822,64 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
         return mode is DxMapMode.Write or DxMapMode.ReadWrite or DxMapMode.WriteDiscard or DxMapMode.WriteNoOverwrite;
     }
 
-    private static uint GetSubresourceSizeInBytes(DxTexture2DDescriptor descriptor)
+    private static SubresourceInfo GetSubresourceInfo(DxTexture2DDescriptor descriptor, uint subresource)
     {
-        return checked(GetRowPitchInBytes(descriptor) * descriptor.Height);
+        var mipLevels = descriptor.MipLevels;
+        var mipLevel = subresource % mipLevels;
+        var arraySlice = subresource / mipLevels;
+        if (arraySlice >= descriptor.ArraySize)
+        {
+            throw new ArgumentOutOfRangeException(nameof(subresource), "DirectX subresource is outside the texture array/mip range.");
+        }
+
+        var offsetBytes = checked(GetArraySliceSizeInBytes(descriptor) * arraySlice);
+        for (uint mip = 0; mip < mipLevel; mip++)
+        {
+            offsetBytes = checked(offsetBytes + GetMipSizeInBytes(descriptor, mip));
+        }
+
+        var width = GetMipDimension(descriptor.Width, mipLevel);
+        var height = GetMipDimension(descriptor.Height, mipLevel);
+        var rowPitch = GetRowPitchInBytes(descriptor, mipLevel);
+        var sizeInBytes = checked(rowPitch * height);
+        return new SubresourceInfo(mipLevel, arraySlice, width, height, rowPitch, sizeInBytes, offsetBytes);
+    }
+
+    private static uint GetMipSizeInBytes(DxTexture2DDescriptor descriptor, uint mipLevel)
+    {
+        return checked(GetRowPitchInBytes(descriptor, mipLevel) * GetMipDimension(descriptor.Height, mipLevel));
     }
 
     private static uint GetTextureSizeInBytes(DxTexture2DDescriptor descriptor)
     {
-        return checked(GetSubresourceSizeInBytes(descriptor) * descriptor.ArraySize);
+        return checked(GetArraySliceSizeInBytes(descriptor) * descriptor.ArraySize);
     }
 
-    private static uint GetSubresourceOffsetInBytes(DxTexture2DDescriptor descriptor, uint subresource)
+    private static uint GetArraySliceSizeInBytes(DxTexture2DDescriptor descriptor)
     {
-        return checked(GetSubresourceSizeInBytes(descriptor) * subresource);
+        var sizeInBytes = 0u;
+        for (uint mip = 0; mip < descriptor.MipLevels; mip++)
+        {
+            sizeInBytes = checked(sizeInBytes + GetMipSizeInBytes(descriptor, mip));
+        }
+
+        return sizeInBytes;
     }
 
-    private static uint GetRowPitchInBytes(DxTexture2DDescriptor descriptor)
+    private static uint GetRowPitchInBytes(DxTexture2DDescriptor descriptor, uint mipLevel)
     {
-        return checked(descriptor.Width * GetBytesPerPixel(descriptor.Format));
+        return checked(GetMipDimension(descriptor.Width, mipLevel) * GetBytesPerPixel(descriptor.Format));
+    }
+
+    private static uint GetMipDimension(uint dimension, uint mipLevel)
+    {
+        if (mipLevel >= 31)
+        {
+            return 1;
+        }
+
+        var shifted = dimension >> checked((int)mipLevel);
+        return Math.Max(1u, shifted);
     }
 
     private static uint GetBytesPerPixel(DxResourceFormat format)
@@ -836,6 +904,15 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
             _ => throw new NotSupportedException($"DirectX texture mapping does not support resource format {format}.")
         };
     }
+
+    private readonly record struct SubresourceInfo(
+        uint MipLevel,
+        uint ArraySlice,
+        uint Width,
+        uint Height,
+        uint RowPitch,
+        uint SizeInBytes,
+        uint OffsetBytes);
 
     protected override void DisposeCore()
     {
