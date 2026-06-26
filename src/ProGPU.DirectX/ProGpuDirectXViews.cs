@@ -35,6 +35,7 @@ public abstract unsafe class ProGpuDirectXView : IDisposable
             _backendTextureView = (IntPtr)CreateTextureView(
                 backendTexture.TexturePtr,
                 texture,
+                dimension,
                 format,
                 label,
                 baseMipLevel,
@@ -70,6 +71,7 @@ public abstract unsafe class ProGpuDirectXView : IDisposable
     private static TextureView* CreateTextureView(
         Texture* texture,
         ProGpuDirectXTexture2D source,
+        DxResourceViewDimension dimension,
         DxResourceFormat format,
         string label,
         uint baseMipLevel,
@@ -85,7 +87,9 @@ public abstract unsafe class ProGpuDirectXView : IDisposable
             {
                 Label = (byte*)labelPtr,
                 Format = ProGpuDirectXFormatConverter.ToTextureFormat(viewFormat),
-                Dimension = TextureViewDimension.Dimension2D,
+                Dimension = dimension == DxResourceViewDimension.Texture2DArray
+                    ? TextureViewDimension.Dimension2DArray
+                    : TextureViewDimension.Dimension2D,
                 BaseMipLevel = baseMipLevel,
                 MipLevelCount = mipLevelCount,
                 BaseArrayLayer = baseArrayLayer,

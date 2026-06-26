@@ -499,7 +499,7 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
     public unsafe void WritePixels<T>(ReadOnlySpan<T> pixels) where T : unmanaged
     {
         ThrowIfDisposed();
-        var expectedSize = GetSubresourceSizeInBytes(Descriptor);
+        var expectedSize = GetTextureSizeInBytes(Descriptor);
         var bytes = MemoryMarshal.AsBytes(pixels);
         if (bytes.Length < expectedSize)
         {
@@ -671,7 +671,7 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
             return;
         }
 
-        var byteSize = GetSubresourceSizeInBytes(descriptor);
+        var byteSize = GetTextureSizeInBytes(descriptor);
         _cpuShadow = new byte[byteSize];
         _writeShadow = _cpuShadow ?? new byte[byteSize];
         LastWriteSizeInBytes = 0;
@@ -692,7 +692,8 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
             ProGpuDirectXFormatConverter.ToTextureUsage(Descriptor.Usage),
             Descriptor.Label,
             Descriptor.SampleCount,
-            ProGpuDirectXFormatConverter.ToTextureAlphaMode(Descriptor.Format));
+            ProGpuDirectXFormatConverter.ToTextureAlphaMode(Descriptor.Format),
+            Descriptor.ArraySize);
     }
 
     private void SynchronizeShadowForRead()
@@ -779,6 +780,11 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
     private static uint GetSubresourceSizeInBytes(DxTexture2DDescriptor descriptor)
     {
         return checked(GetRowPitchInBytes(descriptor) * descriptor.Height);
+    }
+
+    private static uint GetTextureSizeInBytes(DxTexture2DDescriptor descriptor)
+    {
+        return checked(GetSubresourceSizeInBytes(descriptor) * descriptor.ArraySize);
     }
 
     private static uint GetRowPitchInBytes(DxTexture2DDescriptor descriptor)

@@ -247,6 +247,25 @@ float4 PSMain(VertexOutput input) : SV_Target
 }
 """;
 
+    private const string Texture2DArraySamplePixelHlsl = """
+Texture2DArray SourceTextureArray : register(t0);
+SamplerState SourceSampler : register(s0);
+
+struct VertexOutput
+{
+    float4 position : SV_Position;
+    float2 uv : TEXCOORD0;
+};
+
+float4 PSMain(VertexOutput input) : SV_Target
+{
+    float3 uvw = float3(input.uv, 1.0);
+    float4 sampled = SourceTextureArray.Sample(SourceSampler, uvw);
+    float4 loaded = SourceTextureArray.Load(int4(0, 0, 1, 0));
+    return float4(sampled.r * loaded.r, sampled.g * loaded.g, sampled.b * loaded.b, sampled.a * loaded.a);
+}
+""";
+
     private const string StructuredBufferVertexHlsl = """
 StructuredBuffer<float4> Positions : register(t0);
 
@@ -5161,6 +5180,146 @@ float4 PSMain() : SV_Target
         Assert.True(center.G < 50, $"Expected low green center pixel after HLSL texture sample draw, actual: {center}");
         Assert.True(center.B < 50, $"Expected low blue center pixel after HLSL texture sample draw, actual: {center}");
         Assert.True(center.A > 200, $"Expected opaque center pixel after HLSL texture sample draw, actual: {center}");
+    }
+
+    [Fact]
+    public void FlushSubmitsGpuBackedHlslTextDrawCommandsWithTexture2DArraySampler()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var target = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 32,
+            Height = 32,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.RenderTarget | DxTextureUsage.CopySource
+        });
+        using var sourceTexture = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 1,
+            Height = 1,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.ShaderResource | DxTextureUsage.CopyDestination,
+            ArraySize = 2,
+            Label = "Source Texture Array"
+        });
+        sourceTexture.WritePixels<byte>(
+        [
+            255, 0, 0, 255,
+            0, 255, 0, 255
+        ]);
+        using var sourceView = device.CreateShaderResourceView(sourceTexture, new DxShaderResourceViewDescriptor
+        {
+            Dimension = DxResourceViewDimension.Texture2DArray,
+            ArraySize = 2,
+            Label = "Source Texture Array SRV"
+        });
+        using var sourceSampler = device.CreateSamplerState(new DxSamplerDescriptor
+        {
+            Filter = DxFilter.MinMagMipPoint,
+            AddressU = DxTextureAddressMode.Clamp,
+            AddressV = DxTextureAddressMode.Clamp
+        });
+        using var constants = device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = 64,
+            Usage = DxBufferUsage.Constant | DxBufferUsage.CopyDestination,
+            Label = "Texture Array Transform Constants"
+        });
+        constants.Write<float>(
+        [
+            1.0f, 0.0f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 1.0f, 0.0f,
+            0.0f, 0.0f, 0.0f, 1.0f
+        ]);
+        using var vertexBuffer = device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = 60,
+            Usage = DxBufferUsage.Vertex | DxBufferUsage.CopyDestination,
+            StrideInBytes = 20
+        });
+        vertexBuffer.Write<float>(
+        [
+            -0.8f, -0.8f, 0.0f, 0.0f, 0.0f,
+             0.8f, -0.8f, 0.0f, 1.0f, 0.0f,
+             0.0f,  0.8f, 0.0f, 0.5f, 1.0f
+        ]);
+        using var vertexShader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Vertex,
+            SourceKind = DxShaderSourceKind.HlslText,
+            Source = TexturedTransformVertexHlsl,
+            EntryPoint = "VSMain",
+            Label = "HLSL Texture Array Vertex"
+        });
+        using var pixelShader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Pixel,
+            SourceKind = DxShaderSourceKind.HlslText,
+            Source = Texture2DArraySamplePixelHlsl,
+            EntryPoint = "PSMain",
+            Label = "HLSL Texture Array Pixel"
+        });
+        var inputLayout = device.CreateInputLayout(new DxInputLayoutDescriptor
+        {
+            Elements =
+            [
+                new DxInputElementDescriptor
+                {
+                    SemanticName = "POSITION",
+                    Format = DxResourceFormat.R32G32B32Float,
+                    AlignedByteOffset = 0,
+                    ShaderLocation = 0
+                },
+                new DxInputElementDescriptor
+                {
+                    SemanticName = "TEXCOORD",
+                    Format = DxResourceFormat.R32G32Float,
+                    AlignedByteOffset = 12,
+                    ShaderLocation = 1
+                }
+            ]
+        });
+        using var pipeline = device.CreateGraphicsPipeline(new DxGraphicsPipelineDescriptor
+        {
+            VertexShader = vertexShader,
+            PixelShader = pixelShader,
+            InputLayout = inputLayout,
+            RenderTargetFormat = DxResourceFormat.R8G8B8A8Unorm,
+            BlendState = new DxBlendStateDescriptor { EnableBlend = false },
+            RasterizerState = new DxRasterizerStateDescriptor { CullMode = DxCullMode.None }
+        });
+        using var context = device.CreateImmediateContext();
+
+        context.SetRenderTargets(target);
+        context.SetViewport(new DxViewport(0, 0, 32, 32));
+        context.ClearRenderTarget(target, DxColor.Black);
+        context.SetGraphicsPipeline(pipeline);
+        context.SetVertexBuffer(vertexBuffer);
+        context.SetConstantBuffer(DxShaderStage.Vertex, 0, constants);
+        context.SetShaderResource(DxShaderStage.Pixel, 0, sourceView);
+        context.SetSampler(DxShaderStage.Pixel, 0, sourceSampler);
+        context.Draw(3);
+        context.Flush();
+
+        Assert.Equal(2u, sourceTexture.BackendTexture!.DepthOrArrayLayers);
+        Assert.Equal(DxResourceViewDimension.Texture2DArray, sourceView.Dimension);
+        Assert.True(sourceView.HasBackendTextureView);
+        Assert.True(pixelShader.HasBackendShaderModule);
+        Assert.Contains("@binding(576) var SourceTextureArray: texture_2d_array<f32>;", pixelShader.BackendSource!, StringComparison.Ordinal);
+        Assert.Contains("textureSample(SourceTextureArray, SourceSampler, uvw.xy, i32(uvw.z))", pixelShader.BackendSource!, StringComparison.Ordinal);
+        Assert.Contains("textureLoad(SourceTextureArray, (vec4<i32>(0, 0, 1, 0)).xy, i32((vec4<i32>(0, 0, 1, 0)).z), (vec4<i32>(0, 0, 1, 0)).w)", pixelShader.BackendSource!, StringComparison.Ordinal);
+        Assert.True(pipeline.HasBackendPipeline);
+        Assert.Equal(1ul, context.SubmittedDrawCount);
+
+        var pixels = target.BackendTexture!.ReadPixels();
+        var center = ReadRgbaPixel(pixels, 32, 16, 16);
+        Assert.True(center.R < 50, $"Expected low red center pixel after HLSL texture array sample draw, actual: {center}");
+        Assert.True(center.G > 200, $"Expected green center pixel after HLSL texture array sample draw, actual: {center}");
+        Assert.True(center.B < 50, $"Expected low blue center pixel after HLSL texture array sample draw, actual: {center}");
+        Assert.True(center.A > 200, $"Expected opaque center pixel after HLSL texture array sample draw, actual: {center}");
     }
 
     [Fact]

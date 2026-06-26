@@ -27,6 +27,7 @@ public unsafe class GpuTexture : IDisposable
     public TextureView* ViewPtr { get; private set; }
     public uint Width { get; private set; }
     public uint Height { get; private set; }
+    public uint DepthOrArrayLayers { get; private set; } = 1;
     public TextureFormat Format { get; private set; }
     public TextureUsage Usage { get; private set; }
     public uint SampleCount { get; private set; } = 1;
@@ -43,12 +44,14 @@ public unsafe class GpuTexture : IDisposable
         TextureUsage usage,
         string label = "GpuTexture",
         uint sampleCount = 1,
-        GpuTextureAlphaMode alphaMode = GpuTextureAlphaMode.Straight)
+        GpuTextureAlphaMode alphaMode = GpuTextureAlphaMode.Straight,
+        uint depthOrArrayLayers = 1)
     {
         Id = (ulong)Interlocked.Increment(ref s_idCounter);
         _context = context;
         Width = width > 0 ? width : 1;
         Height = height > 0 ? height : 1;
+        DepthOrArrayLayers = depthOrArrayLayers > 0 ? depthOrArrayLayers : 1;
         Format = format;
         Usage = usage;
         _label = label;
@@ -68,7 +71,7 @@ public unsafe class GpuTexture : IDisposable
             Label = (byte*)labelPtr,
             Usage = Usage,
             Dimension = TextureDimension.Dimension2D,
-            Size = new Extent3D { Width = Width, Height = Height, DepthOrArrayLayers = 1 },
+            Size = new Extent3D { Width = Width, Height = Height, DepthOrArrayLayers = DepthOrArrayLayers },
             Format = Format,
             MipLevelCount = 1,
             SampleCount = SampleCount,
@@ -88,11 +91,13 @@ public unsafe class GpuTexture : IDisposable
         var viewDesc = new TextureViewDescriptor
         {
             Format = Format,
-            Dimension = TextureViewDimension.Dimension2D,
+            Dimension = DepthOrArrayLayers > 1
+                ? TextureViewDimension.Dimension2DArray
+                : TextureViewDimension.Dimension2D,
             BaseMipLevel = 0,
             MipLevelCount = 1,
             BaseArrayLayer = 0,
-            ArrayLayerCount = 1,
+            ArrayLayerCount = DepthOrArrayLayers,
             Aspect = TextureAspect.All
         };
 
@@ -128,7 +133,7 @@ public unsafe class GpuTexture : IDisposable
             _ => 4 // Default standard
         };
 
-        uint expectedSize = Width * Height * bytesPerPixel;
+        uint expectedSize = Width * Height * DepthOrArrayLayers * bytesPerPixel;
         uint passedSize = (uint)(pixels.Length * sizeof(T));
         if (passedSize < expectedSize)
         {
@@ -154,7 +159,7 @@ public unsafe class GpuTexture : IDisposable
         {
             Width = Width,
             Height = Height,
-            DepthOrArrayLayers = 1
+            DepthOrArrayLayers = DepthOrArrayLayers
         };
 
         fixed (T* ptr = pixels)
@@ -286,6 +291,7 @@ public unsafe class GpuTexture : IDisposable
 
         if (source.Width != Width
             || source.Height != Height
+            || source.DepthOrArrayLayers != DepthOrArrayLayers
             || source.Format != Format
             || source.SampleCount != SampleCount)
         {
@@ -329,7 +335,7 @@ public unsafe class GpuTexture : IDisposable
         {
             Width = Width,
             Height = Height,
-            DepthOrArrayLayers = 1
+            DepthOrArrayLayers = DepthOrArrayLayers
         };
 
         _context.Wgpu.CommandEncoderCopyTextureToTexture(encoder, &copySource, &copyDestination, &copySize);
@@ -382,7 +388,7 @@ public unsafe class GpuTexture : IDisposable
         // Align row pitch to 256 bytes per WebGPU requirements
         uint bytesPerRow = Width * bytesPerPixel;
         uint alignedBytesPerRow = (bytesPerRow + 255) & ~255u;
-        uint bufferSize = alignedBytesPerRow * Height;
+        uint bufferSize = alignedBytesPerRow * Height * DepthOrArrayLayers;
 
         var bufferDesc = new BufferDescriptor
         {
@@ -425,7 +431,7 @@ public unsafe class GpuTexture : IDisposable
         {
             Width = Width,
             Height = Height,
-            DepthOrArrayLayers = 1
+            DepthOrArrayLayers = DepthOrArrayLayers
         };
 
         wgpu.CommandEncoderCopyTextureToBuffer(encoder, &source, &destination, &copySize);
@@ -474,16 +480,19 @@ public unsafe class GpuTexture : IDisposable
         }
 
         // 5. Read out the mapped pixels, stripping the row-alignment padding
-        byte[] unpaddedPixels = new byte[Width * Height * bytesPerPixel];
+        byte[] unpaddedPixels = new byte[Width * Height * DepthOrArrayLayers * bytesPerPixel];
         void* mappedPtr = wgpu.BufferGetConstMappedRange(readbackBuffer, 0, (nuint)bufferSize);
         if (mappedPtr != null)
         {
             byte* srcBytes = (byte*)mappedPtr;
-            for (uint y = 0; y < Height; y++)
+            for (uint layer = 0; layer < DepthOrArrayLayers; layer++)
             {
-                long srcOffset = y * alignedBytesPerRow;
-                long dstOffset = y * bytesPerRow;
-                System.Runtime.InteropServices.Marshal.Copy((nint)(srcBytes + srcOffset), unpaddedPixels, (int)dstOffset, (int)bytesPerRow);
+                for (uint y = 0; y < Height; y++)
+                {
+                    long srcOffset = (layer * Height * alignedBytesPerRow) + (y * alignedBytesPerRow);
+                    long dstOffset = (layer * Height * bytesPerRow) + (y * bytesPerRow);
+                    System.Runtime.InteropServices.Marshal.Copy((nint)(srcBytes + srcOffset), unpaddedPixels, (int)dstOffset, (int)bytesPerRow);
+                }
             }
         }
 

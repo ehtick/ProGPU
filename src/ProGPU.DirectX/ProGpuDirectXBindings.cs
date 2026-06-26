@@ -358,7 +358,7 @@ public sealed unsafe class ProGpuDirectXBindingSnapshot : IDisposable
                 Texture = new TextureBindingLayout
                 {
                     SampleType = ToTextureSampleType(entry.ShaderResourceView.Format),
-                    ViewDimension = texture.Descriptor.ArraySize > 1
+                    ViewDimension = entry.ShaderResourceView.Dimension == DxResourceViewDimension.Texture2DArray
                         ? TextureViewDimension.Dimension2DArray
                         : TextureViewDimension.Dimension2D,
                     Multisampled = texture.Descriptor.SampleCount > 1
@@ -394,7 +394,7 @@ public sealed unsafe class ProGpuDirectXBindingSnapshot : IDisposable
                 {
                     Access = ProGpuDirectXFormatConverter.ToStorageTextureAccess(entry.UnorderedAccessView.Descriptor.Access),
                     Format = ProGpuDirectXFormatConverter.ToTextureFormat(entry.UnorderedAccessView.Format),
-                    ViewDimension = texture.Descriptor.ArraySize > 1
+                    ViewDimension = entry.UnorderedAccessView.Dimension == DxResourceViewDimension.Texture2DArray
                         ? TextureViewDimension.Dimension2DArray
                         : TextureViewDimension.Dimension2D
                 }
