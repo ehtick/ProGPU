@@ -237,7 +237,8 @@ public enum DxResourceViewDimension
     Unknown,
     Buffer,
     Texture2D,
-    Texture2DArray
+    Texture2DArray,
+    Texture3D
 }
 
 public enum DxUnorderedAccessViewAccess

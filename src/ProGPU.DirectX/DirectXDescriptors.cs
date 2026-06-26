@@ -51,6 +51,18 @@ public sealed record DxTexture2DDescriptor
     public string Label { get; init; } = "DirectXTexture2D";
 }
 
+public sealed record DxTexture3DDescriptor
+{
+    public required uint Width { get; init; }
+    public required uint Height { get; init; }
+    public required uint Depth { get; init; }
+    public DxResourceFormat Format { get; init; } = DxResourceFormat.B8G8R8A8Unorm;
+    public DxTextureUsage Usage { get; init; } = DxTextureUsage.ShaderResource | DxTextureUsage.CopyDestination;
+    public DxCpuAccessFlags CpuAccess { get; init; } = DxCpuAccessFlags.None;
+    public uint MipLevels { get; init; } = 1;
+    public string Label { get; init; } = "DirectXTexture3D";
+}
+
 public sealed record DxSwapChainDescriptor
 {
     public required uint Width { get; init; }

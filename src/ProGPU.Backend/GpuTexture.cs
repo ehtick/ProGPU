@@ -11,6 +11,12 @@ public enum GpuTextureAlphaMode
     Premultiplied = 1
 }
 
+public enum GpuTextureDimension
+{
+    Dimension2D = 0,
+    Dimension3D = 1
+}
+
 public unsafe class GpuTexture : IDisposable
 {
     private static long s_idCounter = 0;
@@ -29,6 +35,7 @@ public unsafe class GpuTexture : IDisposable
     public uint Height { get; private set; }
     public uint DepthOrArrayLayers { get; private set; } = 1;
     public uint MipLevelCount { get; private set; } = 1;
+    public GpuTextureDimension Dimension { get; private set; } = GpuTextureDimension.Dimension2D;
     public TextureFormat Format { get; private set; }
     public TextureUsage Usage { get; private set; }
     public uint SampleCount { get; private set; } = 1;
@@ -47,7 +54,8 @@ public unsafe class GpuTexture : IDisposable
         uint sampleCount = 1,
         GpuTextureAlphaMode alphaMode = GpuTextureAlphaMode.Straight,
         uint depthOrArrayLayers = 1,
-        uint mipLevelCount = 1)
+        uint mipLevelCount = 1,
+        GpuTextureDimension dimension = GpuTextureDimension.Dimension2D)
     {
         Id = (ulong)Interlocked.Increment(ref s_idCounter);
         _context = context;
@@ -55,6 +63,7 @@ public unsafe class GpuTexture : IDisposable
         Height = height > 0 ? height : 1;
         DepthOrArrayLayers = depthOrArrayLayers > 0 ? depthOrArrayLayers : 1;
         MipLevelCount = mipLevelCount > 0 ? mipLevelCount : 1;
+        Dimension = dimension;
         Format = format;
         Usage = usage;
         _label = label;
@@ -78,7 +87,9 @@ public unsafe class GpuTexture : IDisposable
         {
             Label = (byte*)labelPtr,
             Usage = Usage,
-            Dimension = TextureDimension.Dimension2D,
+            Dimension = Dimension == GpuTextureDimension.Dimension3D
+                ? TextureDimension.Dimension3D
+                : TextureDimension.Dimension2D,
             Size = new Extent3D { Width = Width, Height = Height, DepthOrArrayLayers = DepthOrArrayLayers },
             Format = Format,
             MipLevelCount = MipLevelCount,
@@ -99,7 +110,9 @@ public unsafe class GpuTexture : IDisposable
         var viewDesc = new TextureViewDescriptor
         {
             Format = Format,
-            Dimension = DepthOrArrayLayers > 1
+            Dimension = Dimension == GpuTextureDimension.Dimension3D
+                ? TextureViewDimension.Dimension3D
+                : DepthOrArrayLayers > 1
                 ? TextureViewDimension.Dimension2DArray
                 : TextureViewDimension.Dimension2D,
             BaseMipLevel = 0,
@@ -138,8 +151,9 @@ public unsafe class GpuTexture : IDisposable
         uint bytesPerPixel = GetBytesPerPixel(Format);
         uint mipWidth = GetMipDimension(Width, mipLevel);
         uint mipHeight = GetMipDimension(Height, mipLevel);
+        uint mipDepthOrLayers = GetMipDepthOrArrayLayers(mipLevel);
 
-        uint expectedSize = mipWidth * mipHeight * DepthOrArrayLayers * bytesPerPixel;
+        uint expectedSize = mipWidth * mipHeight * mipDepthOrLayers * bytesPerPixel;
         uint passedSize = (uint)(pixels.Length * sizeof(T));
         if (passedSize < expectedSize)
         {
@@ -165,7 +179,7 @@ public unsafe class GpuTexture : IDisposable
         {
             Width = mipWidth,
             Height = mipHeight,
-            DepthOrArrayLayers = DepthOrArrayLayers
+            DepthOrArrayLayers = mipDepthOrLayers
         };
 
         fixed (T* ptr = pixels)
@@ -245,9 +259,9 @@ public unsafe class GpuTexture : IDisposable
             throw new ArgumentOutOfRangeException(nameof(pixels), "Pixel sub-rect does not fit inside the texture bounds.");
         }
 
-        if (arrayLayer >= DepthOrArrayLayers)
+        if (arrayLayer >= GetMipDepthOrArrayLayers(mipLevel))
         {
-            throw new ArgumentOutOfRangeException(nameof(arrayLayer), "Pixel sub-rect array layer is outside the texture array.");
+            throw new ArgumentOutOfRangeException(nameof(arrayLayer), "Pixel sub-rect array layer or depth slice is outside the texture.");
         }
 
         uint bytesPerPixel = GetBytesPerPixel(Format);
@@ -289,6 +303,90 @@ public unsafe class GpuTexture : IDisposable
         Generation++;
     }
 
+    public void WritePixelsVolume<T>(
+        ReadOnlySpan<T> pixels,
+        uint x,
+        uint y,
+        uint z,
+        uint subWidth,
+        uint subHeight,
+        uint subDepth,
+        uint mipLevel = 0)
+        where T : unmanaged
+    {
+        if (_isDisposed) throw new ObjectDisposedException(nameof(GpuTexture));
+        ValidateMipLevel(mipLevel);
+        if (Dimension != GpuTextureDimension.Dimension3D)
+        {
+            throw new InvalidOperationException("Volume uploads require a 3D GPU texture.");
+        }
+
+        if (subWidth == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(subWidth), "Pixel volume width must be greater than zero.");
+        }
+
+        if (subHeight == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(subHeight), "Pixel volume height must be greater than zero.");
+        }
+
+        if (subDepth == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(subDepth), "Pixel volume depth must be greater than zero.");
+        }
+
+        var mipWidth = GetMipDimension(Width, mipLevel);
+        var mipHeight = GetMipDimension(Height, mipLevel);
+        var mipDepth = GetMipDepthOrArrayLayers(mipLevel);
+        if (x > mipWidth
+            || y > mipHeight
+            || z > mipDepth
+            || subWidth > mipWidth - x
+            || subHeight > mipHeight - y
+            || subDepth > mipDepth - z)
+        {
+            throw new ArgumentOutOfRangeException(nameof(pixels), "Pixel volume does not fit inside the texture bounds.");
+        }
+
+        uint bytesPerPixel = GetBytesPerPixel(Format);
+        uint expectedSize = subWidth * subHeight * subDepth * bytesPerPixel;
+        uint passedSize = (uint)(pixels.Length * sizeof(T));
+        if (passedSize < expectedSize)
+        {
+            throw new ArgumentException($"Pixel span is too small for volume ({passedSize} bytes, expected {expectedSize} bytes).");
+        }
+
+        var destination = new ImageCopyTexture
+        {
+            Texture = TexturePtr,
+            MipLevel = mipLevel,
+            Origin = new Origin3D { X = x, Y = y, Z = z },
+            Aspect = TextureAspect.All
+        };
+
+        var layout = new TextureDataLayout
+        {
+            Offset = 0,
+            BytesPerRow = subWidth * bytesPerPixel,
+            RowsPerImage = subHeight
+        };
+
+        var extent = new Extent3D
+        {
+            Width = subWidth,
+            Height = subHeight,
+            DepthOrArrayLayers = subDepth
+        };
+
+        fixed (T* ptr = pixels)
+        {
+            _context.Wgpu.QueueWriteTexture(_context.Queue, &destination, ptr, passedSize, &layout, &extent);
+        }
+
+        Generation++;
+    }
+
     public void MarkContentsDirty()
     {
         if (_isDisposed) throw new ObjectDisposedException(nameof(GpuTexture));
@@ -310,6 +408,7 @@ public unsafe class GpuTexture : IDisposable
             || source.Height != Height
             || source.DepthOrArrayLayers != DepthOrArrayLayers
             || source.MipLevelCount != MipLevelCount
+            || source.Dimension != Dimension
             || source.Format != Format
             || source.SampleCount != SampleCount)
         {
@@ -355,7 +454,7 @@ public unsafe class GpuTexture : IDisposable
             {
                 Width = GetMipDimension(Width, mipLevel),
                 Height = GetMipDimension(Height, mipLevel),
-                DepthOrArrayLayers = DepthOrArrayLayers
+                DepthOrArrayLayers = GetMipDepthOrArrayLayers(mipLevel)
             };
 
             _context.Wgpu.CommandEncoderCopyTextureToTexture(encoder, &copySource, &copyDestination, &copySize);
@@ -475,11 +574,12 @@ public unsafe class GpuTexture : IDisposable
         uint bytesPerPixel = GetBytesPerPixel(Format);
         uint mipWidth = GetMipDimension(Width, mipLevel);
         uint mipHeight = GetMipDimension(Height, mipLevel);
+        uint mipDepthOrLayers = GetMipDepthOrArrayLayers(mipLevel);
 
         // Align row pitch to 256 bytes per WebGPU requirements
         uint bytesPerRow = mipWidth * bytesPerPixel;
         uint alignedBytesPerRow = (bytesPerRow + 255) & ~255u;
-        uint bufferSize = alignedBytesPerRow * mipHeight * DepthOrArrayLayers;
+        uint bufferSize = alignedBytesPerRow * mipHeight * mipDepthOrLayers;
 
         var bufferDesc = new BufferDescriptor
         {
@@ -522,7 +622,7 @@ public unsafe class GpuTexture : IDisposable
         {
             Width = mipWidth,
             Height = mipHeight,
-            DepthOrArrayLayers = DepthOrArrayLayers
+            DepthOrArrayLayers = mipDepthOrLayers
         };
 
         wgpu.CommandEncoderCopyTextureToBuffer(encoder, &source, &destination, &copySize);
@@ -571,12 +671,12 @@ public unsafe class GpuTexture : IDisposable
         }
 
         // 5. Read out the mapped pixels, stripping the row-alignment padding
-        byte[] unpaddedPixels = new byte[mipWidth * mipHeight * DepthOrArrayLayers * bytesPerPixel];
+        byte[] unpaddedPixels = new byte[mipWidth * mipHeight * mipDepthOrLayers * bytesPerPixel];
         void* mappedPtr = wgpu.BufferGetConstMappedRange(readbackBuffer, 0, (nuint)bufferSize);
         if (mappedPtr != null)
         {
             byte* srcBytes = (byte*)mappedPtr;
-            for (uint layer = 0; layer < DepthOrArrayLayers; layer++)
+            for (uint layer = 0; layer < mipDepthOrLayers; layer++)
             {
                 for (uint y = 0; y < mipHeight; y++)
                 {
@@ -593,6 +693,13 @@ public unsafe class GpuTexture : IDisposable
         wgpu.BufferRelease(readbackBuffer);
 
         return unpaddedPixels;
+    }
+
+    private uint GetMipDepthOrArrayLayers(uint mipLevel)
+    {
+        return Dimension == GpuTextureDimension.Dimension3D
+            ? GetMipDimension(DepthOrArrayLayers, mipLevel)
+            : DepthOrArrayLayers;
     }
 
     private void ReleaseResources(bool immediate = false)

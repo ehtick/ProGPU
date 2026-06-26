@@ -161,8 +161,8 @@ public sealed unsafe class ProGpuDirectXBindingSnapshot : IDisposable
         {
             ProGpuDirectXBindingKind.ConstantBuffer when entry.ConstantBuffer is { } buffer =>
                 $"buffer:{buffer.Label}:{buffer.Descriptor.SizeInBytes}:{RuntimeHelpers.GetHashCode(buffer)}",
-            ProGpuDirectXBindingKind.ShaderResourceView when entry.ShaderResourceView is { Texture: { } texture } =>
-                $"srv-texture:{texture.Label}:{texture.Generation}:{RuntimeHelpers.GetHashCode(entry.ShaderResourceView)}",
+            ProGpuDirectXBindingKind.ShaderResourceView when entry.ShaderResourceView is { IsTextureView: true } view =>
+                $"srv-texture:{view.TextureLabel}:{view.TextureGeneration}:{RuntimeHelpers.GetHashCode(entry.ShaderResourceView)}",
             ProGpuDirectXBindingKind.ShaderResourceView when entry.ShaderResourceView is { Buffer: { } buffer } =>
                 $"srv-buffer:{buffer.Label}:{RuntimeHelpers.GetHashCode(entry.ShaderResourceView)}",
             ProGpuDirectXBindingKind.Sampler when entry.Sampler is { } sampler =>
@@ -194,7 +194,7 @@ public sealed unsafe class ProGpuDirectXBindingSnapshot : IDisposable
         {
             ProGpuDirectXBindingKind.ConstantBuffer when entry.ConstantBuffer?.BackendBuffer is { } buffer =>
                 $"buffer:{(IntPtr)buffer.BufferPtr}:{buffer.Size}",
-            ProGpuDirectXBindingKind.ShaderResourceView when entry.ShaderResourceView is { Texture: not null } view =>
+            ProGpuDirectXBindingKind.ShaderResourceView when entry.ShaderResourceView is { IsTextureView: true } view =>
                 $"srv-texture:{view.BackendTextureViewHandle}:{view.Dimension}:{view.Format}:{view.Descriptor.MostDetailedMip}:{view.Descriptor.MipLevels}:{view.Descriptor.FirstArraySlice}:{view.Descriptor.ArraySize}",
             ProGpuDirectXBindingKind.ShaderResourceView when entry.ShaderResourceView is { Buffer.BackendBuffer: { } buffer } view =>
                 $"srv-buffer:{(IntPtr)buffer.BufferPtr}:{view.Dimension}:{view.Format}:{view.Descriptor.FirstElement}:{view.Descriptor.ElementCount}:{view.Descriptor.ElementStrideInBytes}",
@@ -293,7 +293,7 @@ public sealed unsafe class ProGpuDirectXBindingSnapshot : IDisposable
                     }
                     break;
                 case ProGpuDirectXBindingKind.ShaderResourceView:
-                    if (entry.ShaderResourceView is { Texture: not null, BackendTextureView: not null })
+                    if (entry.ShaderResourceView is { IsTextureView: true, BackendTextureView: not null })
                     {
                         break;
                     }
@@ -351,17 +351,15 @@ public sealed unsafe class ProGpuDirectXBindingSnapshot : IDisposable
                     MinBindingSize = 0
                 }
             },
-            ProGpuDirectXBindingKind.ShaderResourceView when entry.ShaderResourceView?.Texture is { } texture => new BindGroupLayoutEntry
+            ProGpuDirectXBindingKind.ShaderResourceView when entry.ShaderResourceView is { IsTextureView: true } view => new BindGroupLayoutEntry
             {
                 Binding = entry.NativeBinding,
                 Visibility = ToShaderStage(entry.Stage),
                 Texture = new TextureBindingLayout
                 {
                     SampleType = ToTextureSampleType(entry.ShaderResourceView.Format),
-                    ViewDimension = entry.ShaderResourceView.Dimension == DxResourceViewDimension.Texture2DArray
-                        ? TextureViewDimension.Dimension2DArray
-                        : TextureViewDimension.Dimension2D,
-                    Multisampled = texture.Descriptor.SampleCount > 1
+                    ViewDimension = ToTextureViewDimension(entry.ShaderResourceView.Dimension),
+                    Multisampled = view.TextureSampleCount > 1
                 }
             },
             ProGpuDirectXBindingKind.ShaderResourceView when entry.ShaderResourceView?.Buffer is not null => new BindGroupLayoutEntry
@@ -386,7 +384,7 @@ public sealed unsafe class ProGpuDirectXBindingSnapshot : IDisposable
                         : SamplerBindingType.Filtering
                 }
             },
-            ProGpuDirectXBindingKind.UnorderedAccessView when entry.UnorderedAccessView?.Texture is { } texture => new BindGroupLayoutEntry
+            ProGpuDirectXBindingKind.UnorderedAccessView when entry.UnorderedAccessView?.Texture is not null => new BindGroupLayoutEntry
             {
                 Binding = entry.NativeBinding,
                 Visibility = ToShaderStage(entry.Stage),
@@ -394,9 +392,7 @@ public sealed unsafe class ProGpuDirectXBindingSnapshot : IDisposable
                 {
                     Access = ProGpuDirectXFormatConverter.ToStorageTextureAccess(entry.UnorderedAccessView.Descriptor.Access),
                     Format = ProGpuDirectXFormatConverter.ToTextureFormat(entry.UnorderedAccessView.Format),
-                    ViewDimension = entry.UnorderedAccessView.Dimension == DxResourceViewDimension.Texture2DArray
-                        ? TextureViewDimension.Dimension2DArray
-                        : TextureViewDimension.Dimension2D
+                    ViewDimension = ToTextureViewDimension(entry.UnorderedAccessView.Dimension)
                 }
             },
             ProGpuDirectXBindingKind.UnorderedAccessView when entry.UnorderedAccessView?.Buffer is not null => new BindGroupLayoutEntry
@@ -430,7 +426,7 @@ public sealed unsafe class ProGpuDirectXBindingSnapshot : IDisposable
                 Offset = 0,
                 Size = buffer.Size
             },
-            ProGpuDirectXBindingKind.ShaderResourceView when entry.ShaderResourceView?.Texture is not null => new BindGroupEntry
+            ProGpuDirectXBindingKind.ShaderResourceView when entry.ShaderResourceView is { IsTextureView: true } => new BindGroupEntry
             {
                 Binding = entry.NativeBinding,
                 TextureView = entry.ShaderResourceView.BackendTextureView
@@ -493,6 +489,16 @@ public sealed unsafe class ProGpuDirectXBindingSnapshot : IDisposable
         return format is DxResourceFormat.D24UnormS8UInt or DxResourceFormat.D32Float
             ? TextureSampleType.Depth
             : TextureSampleType.Float;
+    }
+
+    private static TextureViewDimension ToTextureViewDimension(DxResourceViewDimension dimension)
+    {
+        return dimension switch
+        {
+            DxResourceViewDimension.Texture2DArray => TextureViewDimension.Dimension2DArray,
+            DxResourceViewDimension.Texture3D => TextureViewDimension.Dimension3D,
+            _ => TextureViewDimension.Dimension2D
+        };
     }
 
     public void Dispose()

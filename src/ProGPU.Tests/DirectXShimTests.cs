@@ -284,6 +284,24 @@ float4 PSMain(VertexOutput input) : SV_Target
 }
 """;
 
+    private const string Texture3DSamplePixelHlsl = """
+Texture3D SourceTextureVolume : register(t0);
+SamplerState SourceSampler : register(s0);
+
+struct VertexOutput
+{
+    float4 position : SV_Position;
+    float2 uv : TEXCOORD0;
+};
+
+float4 PSMain(VertexOutput input) : SV_Target
+{
+    float4 sampled = SourceTextureVolume.Sample(SourceSampler, float3(input.uv, 0.75));
+    float4 loaded = SourceTextureVolume.Load(int4(1, 1, 1, 0));
+    return float4(sampled.g, loaded.g, sampled.r, loaded.a);
+}
+""";
+
     private const string StructuredBufferVertexHlsl = """
 StructuredBuffer<float4> Positions : register(t0);
 
@@ -2107,7 +2125,7 @@ fn fs_main() -> @location(0) vec4<f32> {
             Stage = DxShaderStage.Pixel,
             SourceKind = DxShaderSourceKind.HlslText,
             Source = """
-Texture3D SourceTexture : register(t0);
+TextureCube SourceTexture : register(t0);
 
 float4 PSMain(float3 uv : TEXCOORD0) : SV_Target
 {
@@ -2120,6 +2138,25 @@ float4 PSMain(float3 uv : TEXCOORD0) : SV_Target
         Assert.False(shader.HasBackendShaderModule);
         Assert.Null(shader.BackendSource);
         Assert.Equal("PSMain", shader.EntryPoint);
+    }
+
+    [Fact]
+    public void HlslTextShaderTranslatesTexture3DSampleAndLoadCalls()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var shader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Pixel,
+            SourceKind = DxShaderSourceKind.HlslText,
+            Source = Texture3DSamplePixelHlsl,
+            EntryPoint = "PSMain"
+        });
+
+        Assert.NotNull(shader.BackendSource);
+        Assert.Contains("@binding(576) var SourceTextureVolume: texture_3d<f32>;", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("@binding(768) var SourceSampler: sampler;", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("textureSample(SourceTextureVolume, SourceSampler, vec3<f32>(input.uv, 0.75))", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("textureLoad(SourceTextureVolume", shader.BackendSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -6071,6 +6108,153 @@ float4 PSMain() : SV_Target
     }
 
     [Fact]
+    public void FlushSubmitsGpuBackedHlslTextDrawCommandsWithTexture3DSampler()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var target = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 32,
+            Height = 32,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.RenderTarget | DxTextureUsage.CopySource
+        });
+        using var sourceTexture = device.CreateTexture3D(new DxTexture3DDescriptor
+        {
+            Width = 2,
+            Height = 2,
+            Depth = 2,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.ShaderResource | DxTextureUsage.CopyDestination | DxTextureUsage.CopySource,
+            Label = "Source Texture Volume"
+        });
+        sourceTexture.WritePixels<byte>(
+        [
+            255, 0, 0, 255,
+            255, 0, 0, 255,
+            255, 0, 0, 255,
+            255, 0, 0, 255,
+            0, 255, 0, 255,
+            0, 255, 0, 255,
+            0, 255, 0, 255,
+            0, 255, 0, 255
+        ]);
+        using var sourceView = device.CreateShaderResourceView(sourceTexture, new DxShaderResourceViewDescriptor
+        {
+            Dimension = DxResourceViewDimension.Texture3D,
+            Label = "Source Texture Volume SRV"
+        });
+        using var sourceSampler = device.CreateSamplerState(new DxSamplerDescriptor
+        {
+            Filter = DxFilter.MinMagMipPoint,
+            AddressU = DxTextureAddressMode.Clamp,
+            AddressV = DxTextureAddressMode.Clamp,
+            AddressW = DxTextureAddressMode.Clamp
+        });
+        using var constants = device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = 64,
+            Usage = DxBufferUsage.Constant | DxBufferUsage.CopyDestination,
+            Label = "Texture Volume Transform Constants"
+        });
+        constants.Write<float>(
+        [
+            1.0f, 0.0f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 1.0f, 0.0f,
+            0.0f, 0.0f, 0.0f, 1.0f
+        ]);
+        using var vertexBuffer = device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = 60,
+            Usage = DxBufferUsage.Vertex | DxBufferUsage.CopyDestination,
+            StrideInBytes = 20
+        });
+        vertexBuffer.Write<float>(
+        [
+            -0.8f, -0.8f, 0.0f, 0.0f, 0.0f,
+             0.8f, -0.8f, 0.0f, 1.0f, 0.0f,
+             0.0f,  0.8f, 0.0f, 0.5f, 1.0f
+        ]);
+        using var vertexShader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Vertex,
+            SourceKind = DxShaderSourceKind.HlslText,
+            Source = TexturedTransformVertexHlsl,
+            EntryPoint = "VSMain",
+            Label = "HLSL Texture Volume Vertex"
+        });
+        using var pixelShader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Pixel,
+            SourceKind = DxShaderSourceKind.HlslText,
+            Source = Texture3DSamplePixelHlsl,
+            EntryPoint = "PSMain",
+            Label = "HLSL Texture Volume Pixel"
+        });
+        var inputLayout = device.CreateInputLayout(new DxInputLayoutDescriptor
+        {
+            Elements =
+            [
+                new DxInputElementDescriptor
+                {
+                    SemanticName = "POSITION",
+                    Format = DxResourceFormat.R32G32B32Float,
+                    AlignedByteOffset = 0,
+                    ShaderLocation = 0
+                },
+                new DxInputElementDescriptor
+                {
+                    SemanticName = "TEXCOORD",
+                    Format = DxResourceFormat.R32G32Float,
+                    AlignedByteOffset = 12,
+                    ShaderLocation = 1
+                }
+            ]
+        });
+        using var pipeline = device.CreateGraphicsPipeline(new DxGraphicsPipelineDescriptor
+        {
+            VertexShader = vertexShader,
+            PixelShader = pixelShader,
+            InputLayout = inputLayout,
+            RenderTargetFormat = DxResourceFormat.R8G8B8A8Unorm,
+            BlendState = new DxBlendStateDescriptor { EnableBlend = false },
+            RasterizerState = new DxRasterizerStateDescriptor { CullMode = DxCullMode.None }
+        });
+        using var context = device.CreateImmediateContext();
+
+        context.SetRenderTargets(target);
+        context.SetViewport(new DxViewport(0, 0, 32, 32));
+        context.ClearRenderTarget(target, DxColor.Black);
+        context.SetGraphicsPipeline(pipeline);
+        context.SetVertexBuffer(vertexBuffer);
+        context.SetConstantBuffer(DxShaderStage.Vertex, 0, constants);
+        context.SetShaderResource(DxShaderStage.Pixel, 0, sourceView);
+        context.SetSampler(DxShaderStage.Pixel, 0, sourceSampler);
+        context.Draw(3);
+        context.Flush();
+
+        Assert.Equal(GpuTextureDimension.Dimension3D, sourceTexture.BackendTexture!.Dimension);
+        Assert.Equal(2u, sourceTexture.BackendTexture.DepthOrArrayLayers);
+        Assert.Equal(DxResourceViewDimension.Texture3D, sourceView.Dimension);
+        Assert.True(sourceView.HasBackendTextureView);
+        Assert.True(pixelShader.HasBackendShaderModule);
+        Assert.Contains("@binding(576) var SourceTextureVolume: texture_3d<f32>;", pixelShader.BackendSource!, StringComparison.Ordinal);
+        Assert.Contains("textureSample(SourceTextureVolume, SourceSampler, vec3<f32>(input.uv, 0.75))", pixelShader.BackendSource!, StringComparison.Ordinal);
+        Assert.Contains("textureLoad(SourceTextureVolume", pixelShader.BackendSource!, StringComparison.Ordinal);
+        Assert.True(pipeline.HasBackendPipeline);
+        Assert.Equal(1ul, context.SubmittedDrawCount);
+
+        var pixels = target.BackendTexture!.ReadPixels();
+        var center = ReadRgbaPixel(pixels, 32, 16, 16);
+        Assert.True(center.R > 200, $"Expected sampled green channel to reach red output after HLSL texture volume sample draw, actual: {center}");
+        Assert.True(center.G > 200, $"Expected loaded green channel after HLSL texture volume load draw, actual: {center}");
+        Assert.True(center.B < 50, $"Expected low sampled red channel after HLSL texture volume sample draw, actual: {center}");
+        Assert.True(center.A > 200, $"Expected opaque center pixel after HLSL texture volume sample draw, actual: {center}");
+    }
+
+    [Fact]
     public void GpuBackedDrawsReusePipelineCompatibleBindGroupsAcrossFlushes()
     {
         using var wgpu = new WgpuContext();
@@ -7712,6 +7896,38 @@ float4 PSMain() : SV_Target
 
         using var readMap = texture.Map(DxMapMode.Read, subresource: 1);
         Assert.Equal(mipPixels, readMap.Read<byte>(16));
+    }
+
+    [Fact]
+    public void Texture3DMapMipSubresourceUploadsGpuBackedTextureOnUnmap()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var texture = device.CreateTexture3D(new DxTexture3DDescriptor
+        {
+            Width = 4,
+            Height = 4,
+            Depth = 4,
+            Format = DxResourceFormat.R8Unorm,
+            Usage = DxTextureUsage.ShaderResource | DxTextureUsage.CopyDestination | DxTextureUsage.CopySource,
+            CpuAccess = DxCpuAccessFlags.Read | DxCpuAccessFlags.Write,
+            MipLevels = 2
+        });
+        byte[] mipPixels = [10, 20, 30, 40, 50, 60, 70, 80];
+
+        using var mapping = texture.Map(DxMapMode.WriteDiscard, subresource: 1);
+        Assert.Equal(64u, mapping.OffsetBytes);
+        Assert.Equal(2u, mapping.RowPitch);
+        Assert.Equal(4u, mapping.DepthPitch);
+        Assert.Equal(8u, mapping.SizeInBytes);
+        mapping.Write<byte>(mipPixels);
+        mapping.Unmap();
+
+        Assert.Equal(mipPixels, texture.BackendTexture!.ReadPixels(mipLevel: 1));
+
+        using var readMap = texture.Map(DxMapMode.Read, subresource: 1);
+        Assert.Equal(mipPixels, readMap.Read<byte>(8));
     }
 
     [Fact]

@@ -12,6 +12,7 @@ public abstract unsafe class ProGpuDirectXView : IDisposable
     protected ProGpuDirectXView(
         ProGpuDirectXDevice device,
         ProGpuDirectXTexture2D? texture,
+        ProGpuDirectXTexture3D? texture3D,
         ProGpuDirectXBuffer? buffer,
         DxResourceViewDimension dimension,
         DxResourceFormat format,
@@ -24,19 +25,22 @@ public abstract unsafe class ProGpuDirectXView : IDisposable
     {
         Device = device;
         Texture = texture;
+        Texture3D = texture3D;
         Buffer = buffer;
         Dimension = dimension;
         Format = format;
         Label = label;
 
+        var backendTexture = texture?.BackendTexture ?? texture3D?.BackendTexture;
+        var sourceFormat = texture?.Descriptor.Format ?? texture3D?.Descriptor.Format ?? format;
         if (createTextureView &&
-            texture?.BackendTexture is { IsDisposed: false, TexturePtr: not null } backendTexture)
+            backendTexture is { IsDisposed: false, TexturePtr: not null })
         {
             _backendTextureView = (IntPtr)CreateTextureView(
                 backendTexture.TexturePtr,
-                texture,
+                device,
                 dimension,
-                format,
+                format == DxResourceFormat.Unknown ? sourceFormat : format,
                 label,
                 baseMipLevel,
                 mipLevelCount,
@@ -44,7 +48,7 @@ public abstract unsafe class ProGpuDirectXView : IDisposable
                 arrayLayerCount);
             _ownsTextureView = true;
         }
-        else if (texture?.BackendTexture is { IsDisposed: false, ViewPtr: not null } defaultTexture)
+        else if (backendTexture is { IsDisposed: false, ViewPtr: not null } defaultTexture)
         {
             _backendTextureView = (IntPtr)defaultTexture.ViewPtr;
         }
@@ -53,6 +57,8 @@ public abstract unsafe class ProGpuDirectXView : IDisposable
     public ProGpuDirectXDevice Device { get; }
 
     public ProGpuDirectXTexture2D? Texture { get; }
+
+    public ProGpuDirectXTexture3D? Texture3D { get; }
 
     public ProGpuDirectXBuffer? Buffer { get; }
 
@@ -64,13 +70,21 @@ public abstract unsafe class ProGpuDirectXView : IDisposable
 
     public bool HasBackendTextureView => _backendTextureView != IntPtr.Zero;
 
+    public bool IsTextureView => Texture is not null || Texture3D is not null;
+
+    public uint TextureSampleCount => Texture?.Descriptor.SampleCount ?? 1;
+
+    public uint TextureGeneration => Texture?.Generation ?? Texture3D?.Generation ?? 0;
+
+    public string? TextureLabel => Texture?.Label ?? Texture3D?.Label;
+
     public IntPtr BackendTextureViewHandle => _backendTextureView;
 
     internal TextureView* BackendTextureView => (TextureView*)_backendTextureView;
 
     private static TextureView* CreateTextureView(
         Texture* texture,
-        ProGpuDirectXTexture2D source,
+        ProGpuDirectXDevice device,
         DxResourceViewDimension dimension,
         DxResourceFormat format,
         string label,
@@ -79,17 +93,19 @@ public abstract unsafe class ProGpuDirectXView : IDisposable
         uint baseArrayLayer,
         uint arrayLayerCount)
     {
-        var viewFormat = format == DxResourceFormat.Unknown ? source.Descriptor.Format : format;
         var labelPtr = SilkMarshal.StringToPtr(label);
         try
         {
             var viewDesc = new TextureViewDescriptor
             {
                 Label = (byte*)labelPtr,
-                Format = ProGpuDirectXFormatConverter.ToTextureFormat(viewFormat),
-                Dimension = dimension == DxResourceViewDimension.Texture2DArray
-                    ? TextureViewDimension.Dimension2DArray
-                    : TextureViewDimension.Dimension2D,
+                Format = ProGpuDirectXFormatConverter.ToTextureFormat(format),
+                Dimension = dimension switch
+                {
+                    DxResourceViewDimension.Texture2DArray => TextureViewDimension.Dimension2DArray,
+                    DxResourceViewDimension.Texture3D => TextureViewDimension.Dimension3D,
+                    _ => TextureViewDimension.Dimension2D
+                },
                 BaseMipLevel = baseMipLevel,
                 MipLevelCount = mipLevelCount,
                 BaseArrayLayer = baseArrayLayer,
@@ -97,7 +113,7 @@ public abstract unsafe class ProGpuDirectXView : IDisposable
                 Aspect = TextureAspect.All
             };
 
-            var view = source.Device.Context!.Wgpu.TextureCreateView(texture, &viewDesc);
+            var view = device.Context!.Wgpu.TextureCreateView(texture, &viewDesc);
             if (view == null)
             {
                 throw new InvalidOperationException($"Failed to create DirectX texture view '{label}'.");
@@ -138,6 +154,7 @@ public sealed class ProGpuDirectXRenderTargetView : ProGpuDirectXView
         : base(
             device,
             ValidateDescriptor(texture, descriptor),
+            null,
             null,
             descriptor.Dimension,
             descriptor.Format == DxResourceFormat.Unknown ? texture.Descriptor.Format : descriptor.Format,
@@ -193,6 +210,7 @@ public sealed class ProGpuDirectXDepthStencilView : ProGpuDirectXView
             device,
             ValidateDescriptor(texture, descriptor),
             null,
+            null,
             descriptor.Dimension,
             descriptor.Format == DxResourceFormat.Unknown ? texture.Descriptor.Format : descriptor.Format,
             descriptor.Label,
@@ -247,6 +265,7 @@ public sealed class ProGpuDirectXShaderResourceView : ProGpuDirectXView
             device,
             ValidateTextureDescriptor(texture, descriptor),
             null,
+            null,
             descriptor.Dimension,
             descriptor.Format == DxResourceFormat.Unknown ? texture.Descriptor.Format : descriptor.Format,
             descriptor.Label,
@@ -261,10 +280,32 @@ public sealed class ProGpuDirectXShaderResourceView : ProGpuDirectXView
 
     internal ProGpuDirectXShaderResourceView(
         ProGpuDirectXDevice device,
+        ProGpuDirectXTexture3D texture,
+        DxShaderResourceViewDescriptor descriptor)
+        : base(
+            device,
+            null,
+            ValidateTextureDescriptor(texture, descriptor),
+            null,
+            descriptor.Dimension,
+            descriptor.Format == DxResourceFormat.Unknown ? texture.Descriptor.Format : descriptor.Format,
+            descriptor.Label,
+            descriptor.MostDetailedMip,
+            descriptor.MipLevels,
+            0,
+            1,
+            createTextureView: true)
+    {
+        Descriptor = descriptor with { Dimension = DxResourceViewDimension.Texture3D, FirstArraySlice = 0, ArraySize = 1 };
+    }
+
+    internal ProGpuDirectXShaderResourceView(
+        ProGpuDirectXDevice device,
         ProGpuDirectXBuffer buffer,
         DxShaderResourceViewDescriptor descriptor)
         : base(
             device,
+            null,
             null,
             buffer,
             DxResourceViewDimension.Buffer,
@@ -312,6 +353,39 @@ public sealed class ProGpuDirectXShaderResourceView : ProGpuDirectXView
         return texture;
     }
 
+    private static ProGpuDirectXTexture3D ValidateTextureDescriptor(
+        ProGpuDirectXTexture3D texture,
+        DxShaderResourceViewDescriptor descriptor)
+    {
+        if ((texture.Descriptor.Usage & DxTextureUsage.ShaderResource) == 0)
+        {
+            throw new ArgumentException("Texture was not created with shader-resource usage.", nameof(texture));
+        }
+
+        if (descriptor.Dimension != DxResourceViewDimension.Texture3D)
+        {
+            throw new ArgumentOutOfRangeException(nameof(descriptor), "3D texture shader-resource views require Texture3D dimension.");
+        }
+
+        if (descriptor.MipLevels == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(descriptor), "Shader-resource views must expose at least one mip level.");
+        }
+
+        if (descriptor.MostDetailedMip >= texture.Descriptor.MipLevels ||
+            descriptor.MipLevels > texture.Descriptor.MipLevels - descriptor.MostDetailedMip)
+        {
+            throw new ArgumentOutOfRangeException(nameof(descriptor), "Shader-resource view mip range exceeds the texture.");
+        }
+
+        if (descriptor.FirstArraySlice != 0 || descriptor.ArraySize != 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(descriptor), "3D texture shader-resource views do not expose array slices.");
+        }
+
+        return texture;
+    }
+
     private static void ValidateBufferDescriptor(
         ProGpuDirectXBuffer buffer,
         DxShaderResourceViewDescriptor descriptor)
@@ -338,6 +412,7 @@ public sealed class ProGpuDirectXUnorderedAccessView : ProGpuDirectXView
             device,
             ValidateTextureDescriptor(texture, descriptor),
             null,
+            null,
             descriptor.Dimension,
             descriptor.Format == DxResourceFormat.Unknown ? texture.Descriptor.Format : descriptor.Format,
             descriptor.Label,
@@ -356,6 +431,7 @@ public sealed class ProGpuDirectXUnorderedAccessView : ProGpuDirectXView
         DxUnorderedAccessViewDescriptor descriptor)
         : base(
             device,
+            null,
             null,
             buffer,
             DxResourceViewDimension.Buffer,

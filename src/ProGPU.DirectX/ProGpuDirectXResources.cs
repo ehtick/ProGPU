@@ -349,6 +349,21 @@ public sealed class ProGpuDirectXMappedSubresource : IDisposable
     {
     }
 
+    internal ProGpuDirectXMappedSubresource(
+        ProGpuDirectXTexture3D texture,
+        DxMapMode mode,
+        DxMapFlags flags,
+        uint subresource,
+        uint offsetBytes,
+        uint sizeInBytes,
+        uint rowPitch,
+        uint depthPitch,
+        byte[] data,
+        bool uploadOnUnmap)
+        : this(texture, texture.CompleteMappedSubresource, mode, flags, subresource, offsetBytes, sizeInBytes, rowPitch, depthPitch, data, uploadOnUnmap)
+    {
+    }
+
     private ProGpuDirectXMappedSubresource(
         ProGpuDirectXResource resource,
         Action<ProGpuDirectXMappedSubresource> completeMapping,
@@ -395,6 +410,8 @@ public sealed class ProGpuDirectXMappedSubresource : IDisposable
     public ProGpuDirectXBuffer? Buffer => _resource as ProGpuDirectXBuffer;
 
     public ProGpuDirectXTexture2D? Texture => _resource as ProGpuDirectXTexture2D;
+
+    public ProGpuDirectXTexture3D? Texture3D => _resource as ProGpuDirectXTexture3D;
 
     public DxMapMode Mode { get; }
 
@@ -961,6 +978,450 @@ public sealed class ProGpuDirectXTexture2D : ProGpuDirectXResource
         uint Width,
         uint Height,
         uint RowPitch,
+        uint SizeInBytes,
+        uint OffsetBytes);
+
+    protected override void DisposeCore()
+    {
+        _activeMapping?.Dispose();
+        _activeMapping = null;
+        _backendTexture?.Dispose();
+        _backendTexture = null;
+    }
+}
+
+public sealed class ProGpuDirectXTexture3D : ProGpuDirectXResource
+{
+    private GpuTexture? _backendTexture;
+    private byte[]? _cpuShadow;
+    private byte[] _writeShadow = [];
+    private ProGpuDirectXMappedSubresource? _activeMapping;
+
+    internal ProGpuDirectXTexture3D(ProGpuDirectXDevice device, DxTexture3DDescriptor descriptor)
+        : base(device, descriptor.Label)
+    {
+        ValidateDescriptor(descriptor);
+        Descriptor = descriptor;
+        AllocateCpuStorage(descriptor);
+        AllocateBackendTexture();
+    }
+
+    public DxTexture3DDescriptor Descriptor { get; }
+
+    public GpuTexture? BackendTexture => _backendTexture;
+
+    public uint Width => Descriptor.Width;
+
+    public uint Height => Descriptor.Height;
+
+    public uint Depth => Descriptor.Depth;
+
+    public uint LastWriteSizeInBytes { get; private set; }
+
+    public uint Generation { get; private set; }
+
+    public bool IsMapped => _activeMapping is not null;
+
+    public unsafe void WritePixels<T>(ReadOnlySpan<T> pixels) where T : unmanaged
+    {
+        ThrowIfDisposed();
+        var expectedSize = GetTextureSizeInBytes(Descriptor);
+        var bytes = MemoryMarshal.AsBytes(pixels);
+        if (bytes.Length < expectedSize)
+        {
+            throw new ArgumentException($"Pixel span is too small ({bytes.Length} bytes, expected {expectedSize} bytes).", nameof(pixels));
+        }
+
+        if (_backendTexture is not null)
+        {
+            UploadAllSubresourcesToBackend(bytes);
+        }
+
+        if (_writeShadow.Length > 0)
+        {
+            bytes.Slice(0, checked((int)expectedSize)).CopyTo(_writeShadow);
+            if (_cpuShadow is not null && !ReferenceEquals(_cpuShadow, _writeShadow))
+            {
+                _writeShadow.CopyTo(_cpuShadow, 0);
+            }
+        }
+
+        LastWriteSizeInBytes = expectedSize;
+        Generation++;
+    }
+
+    public byte[] ReadPixels()
+    {
+        ThrowIfDisposed();
+        if ((Descriptor.CpuAccess & DxCpuAccessFlags.Read) == 0)
+        {
+            throw new InvalidOperationException("Texture was not created with CPU read access.");
+        }
+
+        if (_backendTexture is { IsDisposed: false } texture)
+        {
+            SynchronizeAllShadowForRead(texture);
+            return _writeShadow.ToArray();
+        }
+
+        if (_cpuShadow is null)
+        {
+            throw new InvalidOperationException("Texture readback requires a GPU-backed texture.");
+        }
+
+        return _cpuShadow.ToArray();
+    }
+
+    public ProGpuDirectXMappedSubresource Map(
+        DxMapMode mode,
+        DxMapFlags flags = DxMapFlags.None,
+        uint subresource = 0)
+    {
+        ThrowIfDisposed();
+        ValidateMapMode(mode);
+        ValidateMappableSubresource(subresource);
+        if (_activeMapping is not null)
+        {
+            throw new InvalidOperationException("DirectX texture is already mapped.");
+        }
+
+        var requiresRead = RequiresCpuRead(mode);
+        var requiresWrite = RequiresCpuWrite(mode);
+        if (requiresRead && (Descriptor.CpuAccess & DxCpuAccessFlags.Read) == 0)
+        {
+            throw new InvalidOperationException("DirectX texture was not created with CPU read access.");
+        }
+
+        if (requiresWrite && (Descriptor.CpuAccess & DxCpuAccessFlags.Write) == 0)
+        {
+            throw new InvalidOperationException("DirectX texture was not created with CPU write access.");
+        }
+
+        var subresourceInfo = GetSubresourceInfo(Descriptor, subresource);
+        if (requiresRead)
+        {
+            SynchronizeShadowForRead(subresource);
+        }
+        else if (mode == DxMapMode.WriteDiscard)
+        {
+            _writeShadow.AsSpan(checked((int)subresourceInfo.OffsetBytes), checked((int)subresourceInfo.SizeInBytes)).Clear();
+        }
+
+        _activeMapping = new ProGpuDirectXMappedSubresource(
+            this,
+            mode,
+            flags,
+            subresource,
+            offsetBytes: subresourceInfo.OffsetBytes,
+            sizeInBytes: subresourceInfo.SizeInBytes,
+            subresourceInfo.RowPitch,
+            subresourceInfo.DepthPitch,
+            _writeShadow,
+            uploadOnUnmap: requiresWrite);
+
+        return _activeMapping;
+    }
+
+    public void Unmap(ProGpuDirectXMappedSubresource mapping)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(mapping);
+        if (!ReferenceEquals(mapping.Texture3D, this))
+        {
+            throw new ArgumentException("Mapped DirectX subresource belongs to a different texture.", nameof(mapping));
+        }
+
+        mapping.Unmap();
+    }
+
+    internal void CompleteMappedSubresource(ProGpuDirectXMappedSubresource mapping)
+    {
+        if (!ReferenceEquals(_activeMapping, mapping))
+        {
+            throw new InvalidOperationException("DirectX texture mapping is not active.");
+        }
+
+        if (mapping.UploadOnUnmap)
+        {
+            var mappedBytes = _writeShadow.AsSpan(
+                checked((int)mapping.OffsetBytes),
+                checked((int)mapping.SizeInBytes));
+            if (_backendTexture is not null)
+            {
+                var subresourceInfo = GetSubresourceInfo(Descriptor, mapping.Subresource);
+                _backendTexture.WritePixelsVolume(
+                    mappedBytes,
+                    x: 0,
+                    y: 0,
+                    z: 0,
+                    subWidth: subresourceInfo.Width,
+                    subHeight: subresourceInfo.Height,
+                    subDepth: subresourceInfo.Depth,
+                    mipLevel: subresourceInfo.MipLevel);
+            }
+
+            if (_cpuShadow is not null && !ReferenceEquals(_cpuShadow, _writeShadow))
+            {
+                mappedBytes.CopyTo(_cpuShadow.AsSpan(
+                    checked((int)mapping.OffsetBytes),
+                    checked((int)mapping.SizeInBytes)));
+            }
+
+            LastWriteSizeInBytes = mapping.SizeInBytes;
+            Generation++;
+        }
+
+        _activeMapping = null;
+    }
+
+    private void UploadAllSubresourcesToBackend(ReadOnlySpan<byte> bytes)
+    {
+        if (_backendTexture is null)
+        {
+            return;
+        }
+
+        for (uint subresource = 0; subresource < Descriptor.MipLevels; subresource++)
+        {
+            var subresourceInfo = GetSubresourceInfo(Descriptor, subresource);
+            _backendTexture.WritePixelsVolume(
+                bytes.Slice(checked((int)subresourceInfo.OffsetBytes), checked((int)subresourceInfo.SizeInBytes)),
+                x: 0,
+                y: 0,
+                z: 0,
+                subWidth: subresourceInfo.Width,
+                subHeight: subresourceInfo.Height,
+                subDepth: subresourceInfo.Depth,
+                mipLevel: subresourceInfo.MipLevel);
+        }
+    }
+
+    private void SynchronizeAllShadowForRead(GpuTexture texture)
+    {
+        for (uint subresource = 0; subresource < Descriptor.MipLevels; subresource++)
+        {
+            var subresourceInfo = GetSubresourceInfo(Descriptor, subresource);
+            var pixels = texture.ReadPixels(subresourceInfo.MipLevel);
+            pixels.AsSpan(0, checked((int)subresourceInfo.SizeInBytes))
+                .CopyTo(_writeShadow.AsSpan(
+                    checked((int)subresourceInfo.OffsetBytes),
+                    checked((int)subresourceInfo.SizeInBytes)));
+        }
+
+        if (_cpuShadow is not null && !ReferenceEquals(_cpuShadow, _writeShadow))
+        {
+            _writeShadow.CopyTo(_cpuShadow, 0);
+        }
+    }
+
+    private void SynchronizeShadowForRead(uint subresource)
+    {
+        if (_backendTexture is not { IsDisposed: false } texture)
+        {
+            return;
+        }
+
+        var subresourceInfo = GetSubresourceInfo(Descriptor, subresource);
+        var pixels = texture.ReadPixels(subresourceInfo.MipLevel);
+        pixels.AsSpan(0, checked((int)subresourceInfo.SizeInBytes))
+            .CopyTo(_writeShadow.AsSpan(
+                checked((int)subresourceInfo.OffsetBytes),
+                checked((int)subresourceInfo.SizeInBytes)));
+        if (_cpuShadow is not null && !ReferenceEquals(_cpuShadow, _writeShadow))
+        {
+            _writeShadow.AsSpan(
+                    checked((int)subresourceInfo.OffsetBytes),
+                    checked((int)subresourceInfo.SizeInBytes))
+                .CopyTo(_cpuShadow.AsSpan(
+                    checked((int)subresourceInfo.OffsetBytes),
+                    checked((int)subresourceInfo.SizeInBytes)));
+        }
+    }
+
+    private void AllocateCpuStorage(DxTexture3DDescriptor descriptor)
+    {
+        if ((descriptor.CpuAccess & (DxCpuAccessFlags.Read | DxCpuAccessFlags.Write)) == 0)
+        {
+            _cpuShadow = null;
+            _writeShadow = [];
+            LastWriteSizeInBytes = 0;
+            return;
+        }
+
+        var byteSize = GetTextureSizeInBytes(descriptor);
+        _cpuShadow = new byte[byteSize];
+        _writeShadow = _cpuShadow ?? new byte[byteSize];
+        LastWriteSizeInBytes = 0;
+    }
+
+    private void AllocateBackendTexture()
+    {
+        if (Device.Context is not { } context || !Device.IsGpuBacked)
+        {
+            return;
+        }
+
+        _backendTexture = new GpuTexture(
+            context,
+            Descriptor.Width,
+            Descriptor.Height,
+            ProGpuDirectXFormatConverter.ToTextureFormat(Descriptor.Format),
+            ProGpuDirectXFormatConverter.ToTextureUsage(Descriptor.Usage),
+            Descriptor.Label,
+            sampleCount: 1,
+            ProGpuDirectXFormatConverter.ToTextureAlphaMode(Descriptor.Format),
+            depthOrArrayLayers: Descriptor.Depth,
+            mipLevelCount: Descriptor.MipLevels,
+            dimension: GpuTextureDimension.Dimension3D);
+    }
+
+    private void ValidateMappableSubresource(uint subresource)
+    {
+        if (subresource >= Descriptor.MipLevels)
+        {
+            throw new ArgumentOutOfRangeException(nameof(subresource), "DirectX 3D texture mapping subresource is outside the mip range.");
+        }
+
+        _ = GetBytesPerPixel(Descriptor.Format);
+    }
+
+    private static void ValidateDescriptor(DxTexture3DDescriptor descriptor)
+    {
+        if (descriptor.Width == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(descriptor), "DirectX 3D textures must have a non-zero width.");
+        }
+
+        if (descriptor.Height == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(descriptor), "DirectX 3D textures must have a non-zero height.");
+        }
+
+        if (descriptor.Depth == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(descriptor), "DirectX 3D textures must have a non-zero depth.");
+        }
+
+        if (descriptor.MipLevels == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(descriptor), "DirectX 3D textures must have at least one mip level.");
+        }
+
+        if (IsDepthStencilFormat(descriptor.Format))
+        {
+            throw new NotSupportedException("DirectX 3D depth/stencil textures are not supported by the ProGPU shim.");
+        }
+    }
+
+    private static void ValidateMapMode(DxMapMode mode)
+    {
+        if (!Enum.IsDefined(mode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode), "Unknown DirectX map mode.");
+        }
+    }
+
+    private static bool RequiresCpuRead(DxMapMode mode)
+    {
+        return mode is DxMapMode.Read or DxMapMode.ReadWrite;
+    }
+
+    private static bool RequiresCpuWrite(DxMapMode mode)
+    {
+        return mode is DxMapMode.Write or DxMapMode.ReadWrite or DxMapMode.WriteDiscard or DxMapMode.WriteNoOverwrite;
+    }
+
+    private static Subresource3DInfo GetSubresourceInfo(DxTexture3DDescriptor descriptor, uint subresource)
+    {
+        if (subresource >= descriptor.MipLevels)
+        {
+            throw new ArgumentOutOfRangeException(nameof(subresource), "DirectX 3D subresource is outside the mip range.");
+        }
+
+        var offsetBytes = 0u;
+        for (uint mip = 0; mip < subresource; mip++)
+        {
+            offsetBytes = checked(offsetBytes + GetMipSizeInBytes(descriptor, mip));
+        }
+
+        var width = GetMipDimension(descriptor.Width, subresource);
+        var height = GetMipDimension(descriptor.Height, subresource);
+        var depth = GetMipDimension(descriptor.Depth, subresource);
+        var rowPitch = GetRowPitchInBytes(descriptor, subresource);
+        var depthPitch = checked(rowPitch * height);
+        var sizeInBytes = checked(depthPitch * depth);
+        return new Subresource3DInfo(subresource, width, height, depth, rowPitch, depthPitch, sizeInBytes, offsetBytes);
+    }
+
+    private static uint GetTextureSizeInBytes(DxTexture3DDescriptor descriptor)
+    {
+        var sizeInBytes = 0u;
+        for (uint mip = 0; mip < descriptor.MipLevels; mip++)
+        {
+            sizeInBytes = checked(sizeInBytes + GetMipSizeInBytes(descriptor, mip));
+        }
+
+        return sizeInBytes;
+    }
+
+    private static uint GetMipSizeInBytes(DxTexture3DDescriptor descriptor, uint mipLevel)
+    {
+        return checked(GetRowPitchInBytes(descriptor, mipLevel)
+            * GetMipDimension(descriptor.Height, mipLevel)
+            * GetMipDimension(descriptor.Depth, mipLevel));
+    }
+
+    private static uint GetRowPitchInBytes(DxTexture3DDescriptor descriptor, uint mipLevel)
+    {
+        return checked(GetMipDimension(descriptor.Width, mipLevel) * GetBytesPerPixel(descriptor.Format));
+    }
+
+    private static uint GetMipDimension(uint dimension, uint mipLevel)
+    {
+        if (mipLevel >= 31)
+        {
+            return 1;
+        }
+
+        var shifted = dimension >> checked((int)mipLevel);
+        return Math.Max(1u, shifted);
+    }
+
+    private static uint GetBytesPerPixel(DxResourceFormat format)
+    {
+        return format switch
+        {
+            DxResourceFormat.R8Unorm => 1,
+            DxResourceFormat.R16Float => 2,
+            DxResourceFormat.R32Float or
+            DxResourceFormat.R32UInt or
+            DxResourceFormat.R32SInt => 4,
+            DxResourceFormat.R8G8B8A8Unorm or
+            DxResourceFormat.R8G8B8A8UnormSrgb or
+            DxResourceFormat.B8G8R8A8Unorm or
+            DxResourceFormat.B8G8R8A8UnormSrgb => 4,
+            DxResourceFormat.R32G32Float or
+            DxResourceFormat.R32G32UInt or
+            DxResourceFormat.R32G32SInt => 8,
+            DxResourceFormat.R32G32B32A32Float or
+            DxResourceFormat.R32G32B32A32UInt or
+            DxResourceFormat.R32G32B32A32SInt => 16,
+            _ => throw new NotSupportedException($"DirectX 3D texture mapping does not support resource format {format}.")
+        };
+    }
+
+    private static bool IsDepthStencilFormat(DxResourceFormat format)
+    {
+        return format is DxResourceFormat.D24UnormS8UInt or DxResourceFormat.D32Float;
+    }
+
+    private readonly record struct Subresource3DInfo(
+        uint MipLevel,
+        uint Width,
+        uint Height,
+        uint Depth,
+        uint RowPitch,
+        uint DepthPitch,
         uint SizeInBytes,
         uint OffsetBytes);
 

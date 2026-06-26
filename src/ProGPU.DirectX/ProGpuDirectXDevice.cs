@@ -71,6 +71,12 @@ public sealed class ProGpuDirectXDevice : IDisposable
         return new ProGpuDirectXTexture2D(this, descriptor);
     }
 
+    public ProGpuDirectXTexture3D CreateTexture3D(DxTexture3DDescriptor descriptor)
+    {
+        ThrowIfDisposed();
+        return new ProGpuDirectXTexture3D(this, descriptor);
+    }
+
     public ProGpuDirectXSwapChain CreateSwapChain(DxSwapChainDescriptor descriptor)
     {
         ThrowIfDisposed();
@@ -108,6 +114,18 @@ public sealed class ProGpuDirectXDevice : IDisposable
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(texture);
         return new ProGpuDirectXShaderResourceView(this, texture, descriptor ?? new DxShaderResourceViewDescriptor());
+    }
+
+    public ProGpuDirectXShaderResourceView CreateShaderResourceView(
+        ProGpuDirectXTexture3D texture,
+        DxShaderResourceViewDescriptor? descriptor = null)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(texture);
+        return new ProGpuDirectXShaderResourceView(
+            this,
+            texture,
+            descriptor ?? new DxShaderResourceViewDescriptor { Dimension = DxResourceViewDimension.Texture3D });
     }
 
     public ProGpuDirectXShaderResourceView CreateShaderResourceView(
