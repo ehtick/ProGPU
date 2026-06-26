@@ -611,6 +611,7 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
     private readonly Dictionary<DxResourceFormat, ProGpuDirectXGraphicsPipeline> _columnFillPipelines = new();
     private readonly Dictionary<(DxResourceFormat Format, ProGpuDirectXSciChartTextureFiltering Filtering), ProGpuDirectXGraphicsPipeline> _textureVertexPipelines = new();
     private readonly Dictionary<(DxResourceFormat Format, ProGpuDirectXSciChartTextureFiltering Filtering), ProGpuDirectXGraphicsPipeline> _spritePipelines = new();
+    private readonly Dictionary<(DxResourceFormat Format, ProGpuDirectXSciChartTextureFiltering Filtering), ProGpuDirectXGraphicsPipeline> _instancedSpritePipelines = new();
     private readonly Dictionary<(DxResourceFormat Format, ProGpuDirectXSciChartTextureFiltering Filtering), ProGpuDirectXGraphicsPipeline> _shapedHeatmapPipelines = new();
     private readonly Dictionary<DxResourceFormat, ProGpuDirectXGraphicsPipeline> _heightContourPipelines = new();
     private readonly Dictionary<ProGpuDirectXSciChartTextureFiltering, ProGpuDirectXSamplerState> _samplers = new();
@@ -623,6 +624,9 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
     private ProGpuDirectXShader? _batchedTextureVertexShader;
     private ProGpuDirectXShader? _batchedTexturePixelShader;
     private ProGpuDirectXInputLayout? _batchedTextureInputLayout;
+    private ProGpuDirectXShader? _instancedSpriteVertexShader;
+    private ProGpuDirectXInputLayout? _instancedSpriteInputLayout;
+    private ProGpuDirectXBuffer? _spriteQuadVertexBuffer;
     private ProGpuDirectXShader? _shapedHeatmapPixelShader;
     private ProGpuDirectXShader? _heightContourPixelShader;
     private Compositor? _textCompositor;
@@ -1622,13 +1626,13 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
         }
 
         var copiedVertices = vertices.Slice(startIndex, count).ToArray();
-        var vertexBuffer = CreateColoredSpriteVertexBuffer(
+        var instanceBuffer = CreateColoredSpriteInstanceBuffer(
             copiedVertices,
             sprite,
             transform,
             centeredAmount,
-            out var submittedVertexCount);
-        if (vertexBuffer is null)
+            out var submittedInstanceCount);
+        if (instanceBuffer is null)
         {
             return;
         }
@@ -1636,15 +1640,16 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
         _context.SetRenderTargets(RenderTarget);
         _context.SetViewport(new DxViewport(0, 0, RenderTarget.Width, RenderTarget.Height));
         _context.SetScissorRect(_clipRect ?? FullRenderTargetRect);
-        _context.SetGraphicsPipeline(GetSpritePipeline(RenderTarget.Descriptor.Format, filtering));
+        _context.SetGraphicsPipeline(GetInstancedSpritePipeline(RenderTarget.Descriptor.Format, filtering));
         _context.SetShaderResource(DxShaderStage.Pixel, 1, null);
         _context.SetConstantBuffer(DxShaderStage.Pixel, 0, null);
         _context.SetSampler(DxShaderStage.Pixel, 0, GetSampler(filtering));
 
         var spriteView = _device.CreateShaderResourceView(sprite.Texture.Resource);
-        _context.SetVertexBuffer(vertexBuffer);
+        _context.SetVertexBuffer(0, GetSpriteQuadVertexBuffer(), 8);
+        _context.SetVertexBuffer(1, instanceBuffer, 32);
         _context.SetShaderResource(DxShaderStage.Pixel, 0, spriteView);
-        _context.Draw(submittedVertexCount);
+        _context.DrawInstanced(6, submittedInstanceCount);
 
         _coloredSpriteDraws.Add(new ProGpuDirectXSciChartColoredSpriteDraw(
             copiedVertices,
@@ -1655,7 +1660,7 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
             centeredAmount,
             filtering,
             _clipRect));
-        _transientResources.Add(vertexBuffer);
+        _transientResources.Add(instanceBuffer);
         _transientResources.Add(spriteView);
     }
 
@@ -2858,14 +2863,14 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
         return CreateTexturedColorVertexBuffer(vertexData, "SciChartSpriteBatchVertices", out submittedVertexCount);
     }
 
-    private ProGpuDirectXBuffer? CreateColoredSpriteVertexBuffer(
+    private ProGpuDirectXBuffer? CreateColoredSpriteInstanceBuffer(
         ReadOnlySpan<ProGpuDirectXSciChartColoredSpriteVertex> vertices,
         ProGpuDirectXSciChartSprite2D sprite,
         ProGpuDirectXSciChartVertexTransform transform,
         float centeredAmount,
-        out uint submittedVertexCount)
+        out uint submittedInstanceCount)
     {
-        var vertexData = new List<float>(checked(vertices.Length * 48));
+        var instanceData = new List<float>(checked(vertices.Length * 8));
         foreach (var source in vertices)
         {
             if (!HasVisibleColor(source.ColorArgb)
@@ -2874,15 +2879,29 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
                 continue;
             }
 
-            AppendTexturedColorVertex(vertexData, left, top, 0f, 0f, source.ColorArgb);
-            AppendTexturedColorVertex(vertexData, right, top, 1f, 0f, source.ColorArgb);
-            AppendTexturedColorVertex(vertexData, right, bottom, 1f, 1f, source.ColorArgb);
-            AppendTexturedColorVertex(vertexData, left, top, 0f, 0f, source.ColorArgb);
-            AppendTexturedColorVertex(vertexData, right, bottom, 1f, 1f, source.ColorArgb);
-            AppendTexturedColorVertex(vertexData, left, bottom, 0f, 1f, source.ColorArgb);
+            instanceData.Add(PixelXToNdc(left));
+            instanceData.Add(PixelYToNdc(top));
+            instanceData.Add(PixelXToNdc(right));
+            instanceData.Add(PixelYToNdc(bottom));
+            AppendColorArgb(instanceData, source.ColorArgb);
         }
 
-        return CreateTexturedColorVertexBuffer(vertexData, "SciChartColoredSpriteVertices", out submittedVertexCount);
+        submittedInstanceCount = checked((uint)(instanceData.Count / 8));
+        if (submittedInstanceCount == 0)
+        {
+            return null;
+        }
+
+        var instanceArray = instanceData.ToArray();
+        var instanceBuffer = _device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = checked((uint)(instanceArray.Length * sizeof(float))),
+            Usage = DxBufferUsage.Vertex | DxBufferUsage.CopyDestination,
+            StrideInBytes = 32,
+            Label = $"SciChartColoredSpriteInstances {submittedInstanceCount}"
+        });
+        instanceBuffer.Write(instanceArray);
+        return instanceBuffer;
     }
 
     private ProGpuDirectXBuffer? CreateCandleFillVertexBuffer(
@@ -2986,6 +3005,33 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
         });
         vertexBuffer.Write(vertexArray);
         return vertexBuffer;
+    }
+
+    private ProGpuDirectXBuffer GetSpriteQuadVertexBuffer()
+    {
+        if (_spriteQuadVertexBuffer is not null)
+        {
+            return _spriteQuadVertexBuffer;
+        }
+
+        float[] corners =
+        [
+            0f, 0f,
+            1f, 0f,
+            1f, 1f,
+            0f, 0f,
+            1f, 1f,
+            0f, 1f
+        ];
+        _spriteQuadVertexBuffer = _device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = checked((uint)(corners.Length * sizeof(float))),
+            Usage = DxBufferUsage.Vertex | DxBufferUsage.CopyDestination,
+            StrideInBytes = 8,
+            Label = "SciChartSpriteQuadCorners"
+        });
+        _spriteQuadVertexBuffer.Write(corners);
+        return _spriteQuadVertexBuffer;
     }
 
     private ProGpuDirectXBuffer? CreateSolidColorVertexBuffer(
@@ -3759,6 +3805,44 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
         return pipeline;
     }
 
+    private ProGpuDirectXGraphicsPipeline GetInstancedSpritePipeline(
+        DxResourceFormat renderTargetFormat,
+        ProGpuDirectXSciChartTextureFiltering filtering)
+    {
+        var key = (renderTargetFormat, filtering);
+        if (_instancedSpritePipelines.TryGetValue(key, out var pipeline))
+        {
+            return pipeline;
+        }
+
+        EnsureInstancedSpriteResources();
+        _batchedTexturePixelShader ??= _device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Pixel,
+            SourceKind = DxShaderSourceKind.Wgsl,
+            Source = CreateBatchedTexturePixelShader(),
+            EntryPoint = "fs_main",
+            Label = "SciChart Batched Texture Pixel"
+        });
+        var vertexShader = _instancedSpriteVertexShader ?? throw new InvalidOperationException("SciChart instanced sprite vertex shader was not initialized.");
+        var pixelShader = _batchedTexturePixelShader ?? throw new InvalidOperationException("SciChart instanced sprite pixel shader was not initialized.");
+        var inputLayout = _instancedSpriteInputLayout ?? throw new InvalidOperationException("SciChart instanced sprite input layout was not initialized.");
+
+        pipeline = _device.CreateGraphicsPipeline(new DxGraphicsPipelineDescriptor
+        {
+            VertexShader = vertexShader,
+            PixelShader = pixelShader,
+            InputLayout = inputLayout,
+            RenderTargetFormat = renderTargetFormat,
+            Topology = DxPrimitiveTopology.TriangleList,
+            BlendState = new DxBlendStateDescriptor { EnableBlend = true },
+            RasterizerState = new DxRasterizerStateDescriptor { CullMode = DxCullMode.None, ScissorEnable = true },
+            Label = $"SciChart Instanced Sprite Pipeline {renderTargetFormat} {filtering}"
+        });
+        _instancedSpritePipelines[key] = pipeline;
+        return pipeline;
+    }
+
     private ProGpuDirectXGraphicsPipeline GetShapedHeatmapPipeline(
         DxResourceFormat renderTargetFormat,
         ProGpuDirectXSciChartTextureFiltering filtering)
@@ -3894,6 +3978,53 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
                     SemanticName = "COLOR",
                     Format = DxResourceFormat.R32G32B32A32Float,
                     AlignedByteOffset = 16,
+                    ShaderLocation = 2
+                }
+            ]
+        });
+    }
+
+    private void EnsureInstancedSpriteResources()
+    {
+        _instancedSpriteVertexShader ??= _device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Vertex,
+            SourceKind = DxShaderSourceKind.Wgsl,
+            Source = InstancedSpriteVertexShader,
+            EntryPoint = "vs_main",
+            Label = "SciChart Instanced Sprite Vertex"
+        });
+        _instancedSpriteInputLayout ??= _device.CreateInputLayout(new DxInputLayoutDescriptor
+        {
+            Label = "SciChart Instanced Sprite Layout",
+            Elements =
+            [
+                new DxInputElementDescriptor
+                {
+                    SemanticName = "POSITION",
+                    Format = DxResourceFormat.R32G32Float,
+                    InputSlot = 0,
+                    AlignedByteOffset = 0,
+                    ShaderLocation = 0
+                },
+                new DxInputElementDescriptor
+                {
+                    SemanticName = "RECT",
+                    Format = DxResourceFormat.R32G32B32A32Float,
+                    InputSlot = 1,
+                    AlignedByteOffset = 0,
+                    InputSlotClass = DxInputClassification.PerInstanceData,
+                    InstanceDataStepRate = 1,
+                    ShaderLocation = 1
+                },
+                new DxInputElementDescriptor
+                {
+                    SemanticName = "COLOR",
+                    Format = DxResourceFormat.R32G32B32A32Float,
+                    InputSlot = 1,
+                    AlignedByteOffset = 16,
+                    InputSlotClass = DxInputClassification.PerInstanceData,
+                    InstanceDataStepRate = 1,
                     ShaderLocation = 2
                 }
             ]
@@ -4844,6 +4975,30 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
 """;
     }
 
+    private static string InstancedSpriteVertexShader => """
+struct VertexIn {
+    @location(0) corner: vec2<f32>,
+    @location(1) rect: vec4<f32>,
+    @location(2) color: vec4<f32>,
+};
+
+struct VertexOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) color: vec4<f32>,
+};
+
+@vertex
+fn vs_main(input: VertexIn) -> VertexOut {
+    var output: VertexOut;
+    let position = input.rect.xy + ((input.rect.zw - input.rect.xy) * input.corner);
+    output.position = vec4<f32>(position, 0.0, 1.0);
+    output.uv = input.corner;
+    output.color = input.color;
+    return output;
+}
+""";
+
     private static string CreateShapedHeatmapPixelShader()
     {
         return $$"""
@@ -5067,6 +5222,16 @@ fn vs_main(input: VertexIn) -> VertexOut {
             pipeline.Dispose();
         }
 
+        foreach (var pipeline in _spritePipelines.Values)
+        {
+            pipeline.Dispose();
+        }
+
+        foreach (var pipeline in _instancedSpritePipelines.Values)
+        {
+            pipeline.Dispose();
+        }
+
         foreach (var pipeline in _shapedHeatmapPipelines.Values)
         {
             pipeline.Dispose();
@@ -5088,6 +5253,8 @@ fn vs_main(input: VertexIn) -> VertexOut {
         _linePixelShader?.Dispose();
         _batchedTextureVertexShader?.Dispose();
         _batchedTexturePixelShader?.Dispose();
+        _instancedSpriteVertexShader?.Dispose();
+        _spriteQuadVertexBuffer?.Dispose();
         _shapedHeatmapPixelShader?.Dispose();
         _heightContourPixelShader?.Dispose();
         _textCompositor?.Dispose();

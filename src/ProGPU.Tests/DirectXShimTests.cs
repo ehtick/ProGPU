@@ -1468,7 +1468,13 @@ fn fs_main() -> @location(0) vec4<f32> {
         var drawCommand = renderContext.ImmediateContext.Commands[^1];
         var draw = drawCommand.Draw ?? throw new InvalidOperationException("Expected SciChart colored sprite draw command payload.");
         Assert.Equal(ProGpuDirectXCommandKind.Draw, drawCommand.Kind);
-        Assert.Equal(12u, draw.VertexCount);
+        Assert.Equal(6u, draw.VertexCount);
+        Assert.Equal(2u, draw.InstanceCount);
+        Assert.NotNull(drawCommand.VertexBufferBindings);
+        Assert.True(drawCommand.VertexBufferBindings.ContainsKey(0));
+        Assert.True(drawCommand.VertexBufferBindings.ContainsKey(1));
+        Assert.Equal(8u, drawCommand.VertexBufferBindings[0].StrideInBytes);
+        Assert.Equal(32u, drawCommand.VertexBufferBindings[1].StrideInBytes);
         Assert.Throws<ArgumentOutOfRangeException>(() =>
             renderContext.DrawColoredSprites(sprite, vertices, startIndex: -1, count: 1, transform: default, centeredAmount: 0.5f));
         Assert.Throws<ArgumentOutOfRangeException>(() =>
@@ -3926,6 +3932,10 @@ VertexOutput VSMain(VertexInput input)
             transform: new ProGpuDirectXSciChartVertexTransform(),
             centeredAmount: 0f,
             filtering: ProGpuDirectXSciChartTextureFiltering.Point);
+        var drawCommand = renderContext.ImmediateContext.Commands[^1];
+        var draw = drawCommand.Draw ?? throw new InvalidOperationException("Expected SciChart colored sprite draw command payload.");
+        Assert.Equal(6u, draw.VertexCount);
+        Assert.Equal(2u, draw.InstanceCount);
         renderContext.Flush();
 
         Assert.Single(renderContext.ColoredSpriteDraws);
