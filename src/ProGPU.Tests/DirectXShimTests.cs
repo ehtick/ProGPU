@@ -1433,6 +1433,64 @@ fn fs_main() -> @location(0) vec4<f32> {
     }
 
     [Fact]
+    public void SciChartRenderContextRecordsColoredSpritesAndClip()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var renderContext = new ProGpuDirectXSciChartRenderContext2D(device, 64, 32);
+        using var sprite = renderContext.CreateSprite(4, 4);
+        sprite.SetData(Enumerable.Repeat(unchecked((int)0xFFFFFFFF), 16).ToArray());
+        ProGpuDirectXSciChartColoredSpriteVertex[] vertices =
+        [
+            new(4, 4, 0xFF00FF00),
+            new(8, 8, 0xFF00FF00),
+            new(24, 8, 0xFFFF0000),
+            new(float.NaN, 8, 0xFF00FF00)
+        ];
+
+        renderContext.SetClipRect(new DxRect(0, 0, 16, 16));
+        renderContext.DrawColoredSprites(
+            sprite,
+            vertices,
+            startIndex: 1,
+            count: 2,
+            transform: new ProGpuDirectXSciChartVertexTransform(),
+            centeredAmount: 0.5f,
+            filtering: ProGpuDirectXSciChartTextureFiltering.Point);
+
+        Assert.Single(renderContext.ColoredSpriteDraws);
+        var drawRecord = renderContext.ColoredSpriteDraws[0];
+        Assert.Equal(new DxRect(0, 0, 16, 16), drawRecord.ClipRect);
+        Assert.Equal(1, drawRecord.StartIndex);
+        Assert.Equal(2, drawRecord.Count);
+        Assert.Equal(0.5f, drawRecord.CenteredAmount);
+        Assert.Equal(2, drawRecord.Vertices.Count);
+        Assert.Equal(8, drawRecord.Vertices[0].X);
+        var drawCommand = renderContext.ImmediateContext.Commands[^1];
+        var draw = drawCommand.Draw ?? throw new InvalidOperationException("Expected SciChart colored sprite draw command payload.");
+        Assert.Equal(ProGpuDirectXCommandKind.Draw, drawCommand.Kind);
+        Assert.Equal(12u, draw.VertexCount);
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            renderContext.DrawColoredSprites(sprite, vertices, startIndex: -1, count: 1, transform: default, centeredAmount: 0.5f));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            renderContext.DrawColoredSprites(sprite, vertices, startIndex: 0, count: 0, transform: default, centeredAmount: 0.5f));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            renderContext.DrawColoredSprites(sprite, vertices, startIndex: vertices.Length, count: 1, transform: default, centeredAmount: 0.5f));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            renderContext.DrawColoredSprites(sprite, vertices, startIndex: 0, count: 1, transform: default, centeredAmount: float.NaN));
+
+        renderContext.BeginFrame();
+        renderContext.SetClipRect(new DxRect(100, 100, 8, 8));
+        renderContext.DrawColoredSprites(
+            sprite,
+            vertices,
+            startIndex: 0,
+            count: vertices.Length,
+            transform: new ProGpuDirectXSciChartVertexTransform(),
+            centeredAmount: 0.5f);
+        Assert.Empty(renderContext.ColoredSpriteDraws);
+    }
+
+    [Fact]
     public void SciChartRenderContextRecordsCandleBatchesAndClip()
     {
         using var device = ProGpuDirectXDevice.CreateMetadataDevice();
@@ -3837,6 +3895,54 @@ VertexOutput VSMain(VertexInput input)
         Assert.True(clippedOut.G < 50, $"Expected black pixel outside SciChart sprite clip, actual: {clippedOut}");
         Assert.True(clippedOut.B < 50, $"Expected black pixel outside SciChart sprite clip, actual: {clippedOut}");
         Assert.True(clippedOut.A > 200, $"Expected opaque clear alpha outside SciChart sprite clip, actual: {clippedOut}");
+    }
+
+    [Fact]
+    public void FlushSubmitsGpuBackedSciChartColoredSpriteCommands()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var renderContext = new ProGpuDirectXSciChartRenderContext2D(
+            device,
+            16,
+            16,
+            DxResourceFormat.R8G8B8A8Unorm);
+        using var sprite = renderContext.CreateSprite(8, 16);
+        sprite.SetData(Enumerable.Repeat(unchecked((int)0xFFFFFFFF), 128).ToArray());
+        ProGpuDirectXSciChartColoredSpriteVertex[] vertices =
+        [
+            new(0, 0, 0xFF00FF00),
+            new(8, 0, 0xFFFF0000)
+        ];
+
+        renderContext.Clear(DxColor.Black);
+        renderContext.SetClipRect(new DxRect(0, 0, 8, 16));
+        renderContext.DrawColoredSprites(
+            sprite,
+            vertices,
+            startIndex: 0,
+            count: vertices.Length,
+            transform: new ProGpuDirectXSciChartVertexTransform(),
+            centeredAmount: 0f,
+            filtering: ProGpuDirectXSciChartTextureFiltering.Point);
+        renderContext.Flush();
+
+        Assert.Single(renderContext.ColoredSpriteDraws);
+        Assert.Equal(1ul, renderContext.ImmediateContext.SubmittedDrawCount);
+
+        var targetPixels = renderContext.ReadTargetPixels();
+        var clippedIn = ReadRgbaPixel(targetPixels, 16, 4, 8);
+        Assert.True(clippedIn.R < 50, $"Expected colored sprite low red pixel inside SciChart clip, actual: {clippedIn}");
+        Assert.True(clippedIn.G > 200, $"Expected colored sprite green pixel inside SciChart clip, actual: {clippedIn}");
+        Assert.True(clippedIn.B < 50, $"Expected colored sprite low blue pixel inside SciChart clip, actual: {clippedIn}");
+        Assert.True(clippedIn.A > 200, $"Expected colored sprite opaque pixel inside SciChart clip, actual: {clippedIn}");
+
+        var clippedOut = ReadRgbaPixel(targetPixels, 16, 12, 8);
+        Assert.True(clippedOut.R < 50, $"Expected black pixel outside SciChart colored sprite clip, actual: {clippedOut}");
+        Assert.True(clippedOut.G < 50, $"Expected black pixel outside SciChart colored sprite clip, actual: {clippedOut}");
+        Assert.True(clippedOut.B < 50, $"Expected black pixel outside SciChart colored sprite clip, actual: {clippedOut}");
+        Assert.True(clippedOut.A > 200, $"Expected opaque clear alpha outside SciChart colored sprite clip, actual: {clippedOut}");
     }
 
     [Fact]
