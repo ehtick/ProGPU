@@ -125,6 +125,112 @@ public abstract unsafe class ProGpuDirectXView : IDisposable
     }
 }
 
+public sealed class ProGpuDirectXRenderTargetView : ProGpuDirectXView
+{
+    internal ProGpuDirectXRenderTargetView(
+        ProGpuDirectXDevice device,
+        ProGpuDirectXTexture2D texture,
+        DxRenderTargetViewDescriptor descriptor)
+        : base(
+            device,
+            texture,
+            null,
+            descriptor.Dimension,
+            descriptor.Format == DxResourceFormat.Unknown ? texture.Descriptor.Format : descriptor.Format,
+            descriptor.Label,
+            descriptor.MipSlice,
+            1,
+            descriptor.FirstArraySlice,
+            descriptor.ArraySize,
+            createTextureView: true)
+    {
+        ValidateDescriptor(texture, descriptor);
+        Descriptor = descriptor;
+    }
+
+    public DxRenderTargetViewDescriptor Descriptor { get; }
+
+    private static void ValidateDescriptor(
+        ProGpuDirectXTexture2D texture,
+        DxRenderTargetViewDescriptor descriptor)
+    {
+        if ((texture.Descriptor.Usage & DxTextureUsage.RenderTarget) == 0)
+        {
+            throw new ArgumentException("Texture was not created with render-target usage.", nameof(texture));
+        }
+
+        if (descriptor.Dimension != DxResourceViewDimension.Texture2D)
+        {
+            throw new ArgumentOutOfRangeException(nameof(descriptor), "Render-target views currently support Texture2D resources.");
+        }
+
+        if (descriptor.MipSlice >= texture.Descriptor.MipLevels)
+        {
+            throw new ArgumentOutOfRangeException(nameof(descriptor), "Render-target view mip slice exceeds the texture.");
+        }
+
+        if (descriptor.FirstArraySlice >= texture.Descriptor.ArraySize ||
+            descriptor.ArraySize == 0 ||
+            descriptor.ArraySize > texture.Descriptor.ArraySize - descriptor.FirstArraySlice)
+        {
+            throw new ArgumentOutOfRangeException(nameof(descriptor), "Render-target view array range exceeds the texture.");
+        }
+    }
+}
+
+public sealed class ProGpuDirectXDepthStencilView : ProGpuDirectXView
+{
+    internal ProGpuDirectXDepthStencilView(
+        ProGpuDirectXDevice device,
+        ProGpuDirectXTexture2D texture,
+        DxDepthStencilViewDescriptor descriptor)
+        : base(
+            device,
+            texture,
+            null,
+            descriptor.Dimension,
+            descriptor.Format == DxResourceFormat.Unknown ? texture.Descriptor.Format : descriptor.Format,
+            descriptor.Label,
+            descriptor.MipSlice,
+            1,
+            descriptor.FirstArraySlice,
+            descriptor.ArraySize,
+            createTextureView: true)
+    {
+        ValidateDescriptor(texture, descriptor);
+        Descriptor = descriptor;
+    }
+
+    public DxDepthStencilViewDescriptor Descriptor { get; }
+
+    private static void ValidateDescriptor(
+        ProGpuDirectXTexture2D texture,
+        DxDepthStencilViewDescriptor descriptor)
+    {
+        if ((texture.Descriptor.Usage & DxTextureUsage.DepthStencil) == 0)
+        {
+            throw new ArgumentException("Texture was not created with depth-stencil usage.", nameof(texture));
+        }
+
+        if (descriptor.Dimension != DxResourceViewDimension.Texture2D)
+        {
+            throw new ArgumentOutOfRangeException(nameof(descriptor), "Depth-stencil views currently support Texture2D resources.");
+        }
+
+        if (descriptor.MipSlice >= texture.Descriptor.MipLevels)
+        {
+            throw new ArgumentOutOfRangeException(nameof(descriptor), "Depth-stencil view mip slice exceeds the texture.");
+        }
+
+        if (descriptor.FirstArraySlice >= texture.Descriptor.ArraySize ||
+            descriptor.ArraySize == 0 ||
+            descriptor.ArraySize > texture.Descriptor.ArraySize - descriptor.FirstArraySlice)
+        {
+            throw new ArgumentOutOfRangeException(nameof(descriptor), "Depth-stencil view array range exceeds the texture.");
+        }
+    }
+}
+
 public sealed class ProGpuDirectXShaderResourceView : ProGpuDirectXView
 {
     internal ProGpuDirectXShaderResourceView(

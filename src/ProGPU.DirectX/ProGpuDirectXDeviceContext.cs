@@ -57,6 +57,8 @@ public sealed record ProGpuDirectXCommand
     public IReadOnlyDictionary<uint, ProGpuDirectXBuffer>? VertexBuffers { get; init; }
     public ProGpuDirectXBuffer? IndexBuffer { get; init; }
     public ProGpuDirectXTexture2D? DepthStencilTexture { get; init; }
+    public ProGpuDirectXRenderTargetView? RenderTargetView { get; init; }
+    public ProGpuDirectXDepthStencilView? DepthStencilView { get; init; }
     public ProGpuDirectXShaderResourceView? ShaderResourceView { get; init; }
     public ProGpuDirectXSamplerState? Sampler { get; init; }
     public ProGpuDirectXUnorderedAccessView? UnorderedAccessView { get; init; }
@@ -85,6 +87,8 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
     private readonly List<ProGpuDirectXCommand> _commands = new();
     private ProGpuDirectXTexture2D? _renderTarget;
     private ProGpuDirectXTexture2D? _depthStencil;
+    private ProGpuDirectXRenderTargetView? _renderTargetView;
+    private ProGpuDirectXDepthStencilView? _depthStencilView;
     private DxPrimitiveTopology _topology = DxPrimitiveTopology.TriangleList;
     private ProGpuDirectXInputLayout? _inputLayout;
     private ProGpuDirectXShader? _vertexShader;
@@ -164,6 +168,10 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
 
     public ProGpuDirectXTexture2D? DepthStencil => _depthStencil;
 
+    public ProGpuDirectXRenderTargetView? RenderTargetView => _renderTargetView;
+
+    public ProGpuDirectXDepthStencilView? DepthStencilView => _depthStencilView;
+
     public DxViewport Viewport { get; private set; }
 
     public DxRect ScissorRect { get; private set; }
@@ -221,10 +229,32 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
         ThrowIfDisposed();
         _renderTarget = renderTarget;
         _depthStencil = depthStencil;
+        _renderTargetView = null;
+        _depthStencilView = null;
         _commands.Add(new ProGpuDirectXCommand
         {
             Kind = ProGpuDirectXCommandKind.SetRenderTargets,
-            Texture = renderTarget
+            Texture = renderTarget,
+            DepthStencilTexture = depthStencil
+        });
+    }
+
+    public void SetRenderTargets(
+        ProGpuDirectXRenderTargetView? renderTargetView,
+        ProGpuDirectXDepthStencilView? depthStencilView = null)
+    {
+        ThrowIfDisposed();
+        _renderTargetView = renderTargetView;
+        _depthStencilView = depthStencilView;
+        _renderTarget = renderTargetView?.Texture;
+        _depthStencil = depthStencilView?.Texture;
+        _commands.Add(new ProGpuDirectXCommand
+        {
+            Kind = ProGpuDirectXCommandKind.SetRenderTargets,
+            Texture = _renderTarget,
+            DepthStencilTexture = _depthStencil,
+            RenderTargetView = renderTargetView,
+            DepthStencilView = depthStencilView
         });
     }
 
@@ -657,9 +687,55 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
         });
     }
 
+    public void ClearRenderTarget(ProGpuDirectXRenderTargetView renderTargetView, DxColor color)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(renderTargetView);
+        _commands.Add(new ProGpuDirectXCommand
+        {
+            Kind = ProGpuDirectXCommandKind.ClearRenderTarget,
+            Texture = renderTargetView.Texture,
+            RenderTargetView = renderTargetView,
+            Color = color
+        });
+    }
+
     public void ClearDepthStencil(ProGpuDirectXTexture2D depthStencil, float depth = 1f, byte stencil = 0)
     {
         ClearDepthStencil(depthStencil, DxDepthStencilClearFlags.DepthStencil, depth, stencil);
+    }
+
+    public void ClearDepthStencil(
+        ProGpuDirectXDepthStencilView depthStencilView,
+        float depth = 1f,
+        byte stencil = 0)
+    {
+        ClearDepthStencil(depthStencilView, DxDepthStencilClearFlags.DepthStencil, depth, stencil);
+    }
+
+    public void ClearDepthStencil(
+        ProGpuDirectXDepthStencilView depthStencilView,
+        DxDepthStencilClearFlags clearFlags,
+        float depth = 1f,
+        byte stencil = 0)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(depthStencilView);
+        if (clearFlags == DxDepthStencilClearFlags.None)
+        {
+            throw new ArgumentOutOfRangeException(nameof(clearFlags), "At least one depth-stencil clear flag is required.");
+        }
+
+        var depthStencil = depthStencilView.Texture ?? throw new ArgumentException("Depth-stencil view does not reference a texture.", nameof(depthStencilView));
+        ValidateDepthStencilTexture(depthStencil);
+        _commands.Add(new ProGpuDirectXCommand
+        {
+            Kind = ProGpuDirectXCommandKind.ClearDepthStencil,
+            Texture = depthStencil,
+            DepthStencilView = depthStencilView,
+            DepthStencilClearFlags = clearFlags,
+            Color = new DxColor(depth, stencil / 255f, 0f, 0f)
+        });
     }
 
     public void ClearDepthStencil(

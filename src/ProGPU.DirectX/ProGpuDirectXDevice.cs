@@ -139,6 +139,24 @@ public sealed class ProGpuDirectXDevice : IDisposable
         return new ProGpuDirectXUnorderedAccessView(this, buffer, descriptor);
     }
 
+    public ProGpuDirectXRenderTargetView CreateRenderTargetView(
+        ProGpuDirectXTexture2D texture,
+        DxRenderTargetViewDescriptor? descriptor = null)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(texture);
+        return new ProGpuDirectXRenderTargetView(this, texture, descriptor ?? new DxRenderTargetViewDescriptor());
+    }
+
+    public ProGpuDirectXDepthStencilView CreateDepthStencilView(
+        ProGpuDirectXTexture2D texture,
+        DxDepthStencilViewDescriptor? descriptor = null)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(texture);
+        return new ProGpuDirectXDepthStencilView(this, texture, descriptor ?? new DxDepthStencilViewDescriptor());
+    }
+
     public ProGpuDirectXSamplerState CreateSamplerState(DxSamplerDescriptor descriptor)
     {
         ThrowIfDisposed();

@@ -6844,6 +6844,110 @@ float4 PSMain() : SV_Target
     }
 
     [Fact]
+    public void CanCreateRenderTargetAndDepthStencilViewsAndBindThem()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var renderTarget = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 64,
+            Height = 64,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.RenderTarget | DxTextureUsage.ShaderResource | DxTextureUsage.CopySource
+        });
+        using var depthStencil = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 64,
+            Height = 64,
+            Format = DxResourceFormat.D32Float,
+            Usage = DxTextureUsage.DepthStencil
+        });
+        using var renderTargetView = device.CreateRenderTargetView(
+            renderTarget,
+            new DxRenderTargetViewDescriptor
+            {
+                Format = DxResourceFormat.R8G8B8A8Unorm,
+                Label = "SharpDXStyleRtv"
+            });
+        using var depthStencilView = device.CreateDepthStencilView(
+            depthStencil,
+            new DxDepthStencilViewDescriptor
+            {
+                Format = DxResourceFormat.D32Float,
+                Label = "SharpDXStyleDsv"
+            });
+        using var context = device.CreateImmediateContext();
+
+        context.SetRenderTargets(renderTargetView, depthStencilView);
+        context.ClearRenderTarget(renderTargetView, new DxColor(0.2f, 0.4f, 0.6f, 1f));
+        context.ClearDepthStencil(depthStencilView, DxDepthStencilClearFlags.Depth, depth: 1f);
+
+        Assert.Same(renderTargetView, context.RenderTargetView);
+        Assert.Same(depthStencilView, context.DepthStencilView);
+        Assert.Same(renderTarget, context.RenderTarget);
+        Assert.Same(depthStencil, context.DepthStencil);
+        Assert.Equal(DxResourceFormat.R8G8B8A8Unorm, renderTargetView.Format);
+        Assert.Equal(DxResourceFormat.D32Float, depthStencilView.Format);
+        Assert.Equal(ProGpuDirectXCommandKind.SetRenderTargets, context.Commands[0].Kind);
+        Assert.Same(renderTargetView, context.Commands[0].RenderTargetView);
+        Assert.Same(depthStencilView, context.Commands[0].DepthStencilView);
+        Assert.Equal(ProGpuDirectXCommandKind.ClearRenderTarget, context.Commands[1].Kind);
+        Assert.Same(renderTargetView, context.Commands[1].RenderTargetView);
+        Assert.Equal(ProGpuDirectXCommandKind.ClearDepthStencil, context.Commands[2].Kind);
+        Assert.Same(depthStencilView, context.Commands[2].DepthStencilView);
+
+        using var shaderOnlyTexture = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 16,
+            Height = 16,
+            Usage = DxTextureUsage.ShaderResource
+        });
+        Assert.Throws<ArgumentException>(() => device.CreateRenderTargetView(shaderOnlyTexture));
+        Assert.Throws<ArgumentException>(() => device.CreateDepthStencilView(renderTarget));
+    }
+
+    [Fact]
+    public void GpuBackedRenderTargetAndDepthStencilViewsClearNativeTargets()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var renderTarget = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 8,
+            Height = 8,
+            Format = DxResourceFormat.R8G8B8A8Unorm,
+            Usage = DxTextureUsage.RenderTarget | DxTextureUsage.CopySource,
+            CpuAccess = DxCpuAccessFlags.Read
+        });
+        using var depthStencil = device.CreateTexture2D(new DxTexture2DDescriptor
+        {
+            Width = 8,
+            Height = 8,
+            Format = DxResourceFormat.D32Float,
+            Usage = DxTextureUsage.DepthStencil
+        });
+        using var renderTargetView = device.CreateRenderTargetView(renderTarget);
+        using var depthStencilView = device.CreateDepthStencilView(depthStencil);
+        using var context = device.CreateImmediateContext();
+
+        context.SetRenderTargets(renderTargetView, depthStencilView);
+        context.ClearRenderTarget(renderTargetView, new DxColor(1f, 0f, 0f, 1f));
+        context.ClearDepthStencil(depthStencilView, DxDepthStencilClearFlags.Depth, depth: 0.5f);
+        context.Flush();
+
+        Assert.True(renderTargetView.HasBackendTextureView);
+        Assert.True(depthStencilView.HasBackendTextureView);
+        Assert.Equal(2ul, context.SubmittedClearCount);
+
+        var pixels = renderTarget.ReadPixels();
+        var pixel = ReadRgbaPixel(pixels, 8, 4, 4);
+        Assert.True(pixel.R > 200, $"Expected render-target view clear to red, actual: {pixel}");
+        Assert.True(pixel.G < 50, $"Expected render-target view clear low green, actual: {pixel}");
+        Assert.True(pixel.B < 50, $"Expected render-target view clear low blue, actual: {pixel}");
+        Assert.True(pixel.A > 200, $"Expected opaque render-target view clear, actual: {pixel}");
+    }
+
+    [Fact]
     public void TextureUnorderedAccessViewsCreateGpuBackedBindGroups()
     {
         using var wgpu = new WgpuContext();

@@ -194,6 +194,26 @@ public sealed record DxUnorderedAccessViewDescriptor
     public string Label { get; init; } = "DirectXUnorderedAccessView";
 }
 
+public sealed record DxRenderTargetViewDescriptor
+{
+    public DxResourceViewDimension Dimension { get; init; } = DxResourceViewDimension.Texture2D;
+    public DxResourceFormat Format { get; init; } = DxResourceFormat.Unknown;
+    public uint MipSlice { get; init; }
+    public uint FirstArraySlice { get; init; }
+    public uint ArraySize { get; init; } = 1;
+    public string Label { get; init; } = "DirectXRenderTargetView";
+}
+
+public sealed record DxDepthStencilViewDescriptor
+{
+    public DxResourceViewDimension Dimension { get; init; } = DxResourceViewDimension.Texture2D;
+    public DxResourceFormat Format { get; init; } = DxResourceFormat.Unknown;
+    public uint MipSlice { get; init; }
+    public uint FirstArraySlice { get; init; }
+    public uint ArraySize { get; init; } = 1;
+    public string Label { get; init; } = "DirectXDepthStencilView";
+}
+
 public sealed record DxSamplerDescriptor
 {
     public DxFilter Filter { get; init; } = DxFilter.MinMagMipLinear;
