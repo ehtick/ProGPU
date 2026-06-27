@@ -13,7 +13,7 @@ public sealed class GpuHitTestingTests
     [Fact]
     public void StructLayoutsMatchShaderStorageLayout()
     {
-        Assert.Equal(112, Marshal.SizeOf<GpuHitTestPrimitive>());
+        Assert.Equal(128, Marshal.SizeOf<GpuHitTestPrimitive>());
         Assert.Equal(32, Marshal.SizeOf<GpuHitTestNode>());
         Assert.Equal(40, Marshal.SizeOf<GpuHitTestQuery>());
         Assert.Equal(32, Marshal.SizeOf<GpuHitTestResult>());
@@ -150,6 +150,37 @@ public sealed class GpuHitTestingTests
                 Assert.Equal(new Vector2(50f, 50f), unclipped.BoundsMin);
                 Assert.Equal(new Vector2(60f, 60f), unclipped.BoundsMax);
             });
+    }
+
+    [Fact]
+    public void RenderCommandCacheAttachesGeometryClipMetadataToPrimitives()
+    {
+        var builder = new GpuRenderCommandHitTestCacheBuilder();
+        builder.AddCommand(new RenderCommand
+        {
+            Type = RenderCommandType.PushGeometryClip,
+            Path = CreateTrianglePath()
+        }, Matrix4x4.CreateTranslation(5f, 0f, 0f));
+        builder.AddCommand(new RenderCommand
+        {
+            Type = RenderCommandType.DrawRect,
+            Rect = new Rect(0f, 0f, 10f, 10f),
+            Brush = new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f))
+        }, Matrix4x4.Identity, id: 51);
+        builder.AddCommand(new RenderCommand
+        {
+            Type = RenderCommandType.PopGeometryClip
+        }, Matrix4x4.Identity);
+
+        var index = builder.BuildIndex(maxDepth: 2, maxPrimitivesPerNode: 1);
+
+        var primitive = Assert.Single(index.Primitives);
+        Assert.Equal(51, primitive.Id);
+        Assert.Equal(GpuHitTestPrimitiveKind.RectangleFill, primitive.Kind);
+        Assert.Equal(new Vector2(5f, 0f), primitive.BoundsMin);
+        Assert.Equal(new Vector2(10f, 10f), primitive.BoundsMax);
+        Assert.NotEqual(0u, primitive.ClipSegmentCount);
+        Assert.True(primitive.ClipStartSegment < index.PathSegments.Count);
     }
 
     [Fact]
@@ -1278,6 +1309,96 @@ public sealed class GpuHitTestingTests
         Assert.False(cornerMiss);
         Assert.False(missResult.HasHit);
         Assert.True(missResult.CandidateCount > 0);
+    }
+
+    [Fact]
+    public void RenderCommandCacheFeedsGpuGeometryClipPointHitTesting()
+    {
+        using var gpu = new WgpuContext();
+        gpu.Initialize(null);
+
+        var builder = new GpuRenderCommandHitTestCacheBuilder();
+        builder.AddCommand(new RenderCommand
+        {
+            Type = RenderCommandType.PushGeometryClip,
+            Path = CreateTrianglePath()
+        }, Matrix4x4.Identity);
+        builder.AddCommand(new RenderCommand
+        {
+            Type = RenderCommandType.DrawRect,
+            Brush = new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f)),
+            Rect = new Rect(0f, 0f, 10f, 10f)
+        }, Matrix4x4.Identity, id: 108);
+        builder.AddCommand(new RenderCommand
+        {
+            Type = RenderCommandType.PopGeometryClip
+        }, Matrix4x4.Identity);
+        var index = builder.BuildIndex(maxDepth: 2, maxPrimitivesPerNode: 1);
+
+        bool clippedHit = GpuHitTestEngine.TryHitTestPoint(gpu, index, new Vector2(2f, 2f), out GpuHitTestResult hitResult);
+        bool clippedMiss = GpuHitTestEngine.TryHitTestPoint(gpu, index, new Vector2(8f, 8f), out GpuHitTestResult missResult);
+
+        Assert.True(clippedHit);
+        Assert.Equal(108, hitResult.Id);
+        Assert.False(clippedMiss);
+        Assert.False(missResult.HasHit);
+        Assert.Equal(1u, missResult.CandidateCount);
+        Assert.Equal(1u, missResult.PreciseTests);
+    }
+
+    [Fact]
+    public void RenderCommandCacheFeedsGpuGeometryClipBoundsHitTesting()
+    {
+        using var gpu = new WgpuContext();
+        gpu.Initialize(null);
+
+        var builder = new GpuRenderCommandHitTestCacheBuilder();
+        builder.AddCommand(new RenderCommand
+        {
+            Type = RenderCommandType.PushGeometryClip,
+            Path = CreateTrianglePath()
+        }, Matrix4x4.Identity);
+        builder.AddCommand(new RenderCommand
+        {
+            Type = RenderCommandType.DrawRect,
+            Brush = new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f)),
+            Rect = new Rect(0f, 0f, 10f, 10f)
+        }, Matrix4x4.Identity, id: 109);
+        builder.AddCommand(new RenderCommand
+        {
+            Type = RenderCommandType.PopGeometryClip
+        }, Matrix4x4.Identity);
+        var index = builder.BuildIndex(maxDepth: 2, maxPrimitivesPerNode: 1);
+        var results = new GpuHitTestResult[2];
+
+        bool hit = GpuHitTestEngine.TryQueryBoundsAll(
+            gpu,
+            index,
+            new Vector2(1f, 1f),
+            new Vector2(2f, 2f),
+            results,
+            out int hitCount,
+            out GpuHitTestResult summary);
+
+        Assert.True(hit);
+        Assert.Equal(1, hitCount);
+        Assert.Equal(109, results[0].Id);
+        Assert.Equal(1u, summary.PreciseTests);
+
+        Array.Clear(results);
+        bool miss = GpuHitTestEngine.TryQueryBoundsAll(
+            gpu,
+            index,
+            new Vector2(8f, 8f),
+            new Vector2(9f, 9f),
+            results,
+            out hitCount,
+            out summary);
+
+        Assert.False(miss);
+        Assert.Equal(0, hitCount);
+        Assert.Equal(1u, summary.CandidateCount);
+        Assert.Equal(1u, summary.PreciseTests);
     }
 
     [Fact]

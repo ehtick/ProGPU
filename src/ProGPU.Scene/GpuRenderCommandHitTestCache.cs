@@ -915,7 +915,10 @@ public sealed class GpuRenderCommandHitTestCacheBuilder
             clipMax = Vector2.Min(clipMax, active.Max);
         }
 
-        _clipStack.Push(new ClipState(clipMin, clipMax));
+        _clipStack.Push(
+            _clipStack.TryPeek(out ClipState inherited)
+                ? inherited.WithBounds(clipMin, clipMax)
+                : new ClipState(clipMin, clipMax));
     }
 
     private void PushGeometryClip(RenderCommand command, Matrix4x4 activeTransform)
@@ -933,7 +936,22 @@ public sealed class GpuRenderCommandHitTestCacheBuilder
             clipMax = Vector2.Min(clipMax, activeClip.Max);
         }
 
-        _clipStack.Push(new ClipState(clipMin, clipMax));
+        if (TryCompileHitTestPath(command.Path.CreateTransformed(activeTransform), out var compiledClip))
+        {
+            _clipStack.Push(new ClipState(
+                clipMin,
+                clipMax,
+                compiledClip.StartSegment,
+                compiledClip.SegmentCount,
+                command.Path.FillRule,
+                HasPath: true));
+            return;
+        }
+
+        _clipStack.Push(
+            _clipStack.TryPeek(out ClipState inherited)
+                ? inherited.WithBounds(clipMin, clipMax)
+                : new ClipState(clipMin, clipMax));
     }
 
     public void PopClip()
@@ -970,6 +988,11 @@ public sealed class GpuRenderCommandHitTestCacheBuilder
         }
 
         primitive = primitive.WithWorldBounds(min, max);
+        if (clip.HasPath)
+        {
+            primitive = primitive.WithClip(clip.StartSegment, clip.SegmentCount, clip.FillRule);
+        }
+
         return true;
     }
 
@@ -1009,7 +1032,13 @@ public sealed class GpuRenderCommandHitTestCacheBuilder
         };
     }
 
-    private readonly record struct ClipState(Vector2 Min, Vector2 Max)
+    private readonly record struct ClipState(
+        Vector2 Min,
+        Vector2 Max,
+        uint StartSegment = 0,
+        uint SegmentCount = 0,
+        FillRule FillRule = FillRule.Nonzero,
+        bool HasPath = false)
     {
         public static ClipState Unbounded { get; } = new(
             new Vector2(float.NegativeInfinity, float.NegativeInfinity),
@@ -1020,5 +1049,10 @@ public sealed class GpuRenderCommandHitTestCacheBuilder
             float.IsNegativeInfinity(Min.Y) &&
             float.IsPositiveInfinity(Max.X) &&
             float.IsPositiveInfinity(Max.Y);
+
+        public ClipState WithBounds(Vector2 min, Vector2 max)
+        {
+            return new ClipState(min, max, StartSegment, SegmentCount, FillRule, HasPath);
+        }
     }
 }

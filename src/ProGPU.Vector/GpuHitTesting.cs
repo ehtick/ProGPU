@@ -37,7 +37,7 @@ public enum GpuHitTestPrimitiveFlags : uint
     HitTestVisible = 1 << 1
 }
 
-[StructLayout(LayoutKind.Sequential, Size = 112)]
+[StructLayout(LayoutKind.Sequential, Size = 128)]
 public readonly struct GpuHitTestPrimitive
 {
     public readonly Vector2 BoundsMin;
@@ -51,6 +51,10 @@ public readonly struct GpuHitTestPrimitive
     public readonly GpuHitTestPrimitiveFlags Flags;
     public readonly int Id;
     public readonly float ZIndex;
+    public readonly uint ClipStartSegment;
+    public readonly uint ClipSegmentCount;
+    public readonly uint ClipFillRule;
+    public readonly uint ClipFlags;
 
     public GpuHitTestPrimitive(
         GpuHitTestPrimitiveKind kind,
@@ -63,7 +67,11 @@ public readonly struct GpuHitTestPrimitive
         Vector4 inverseTransform0,
         Vector4 inverseTransform1,
         float zIndex,
-        GpuHitTestPrimitiveFlags flags = GpuHitTestPrimitiveFlags.Visible | GpuHitTestPrimitiveFlags.HitTestVisible)
+        GpuHitTestPrimitiveFlags flags = GpuHitTestPrimitiveFlags.Visible | GpuHitTestPrimitiveFlags.HitTestVisible,
+        uint clipStartSegment = 0,
+        uint clipSegmentCount = 0,
+        FillRule clipFillRule = FillRule.Nonzero,
+        uint clipFlags = 0)
     {
         Kind = kind;
         Id = id;
@@ -76,6 +84,10 @@ public readonly struct GpuHitTestPrimitive
         InverseTransform1 = inverseTransform1;
         ZIndex = zIndex;
         Flags = flags;
+        ClipStartSegment = clipStartSegment;
+        ClipSegmentCount = clipSegmentCount;
+        ClipFillRule = (uint)clipFillRule;
+        ClipFlags = clipFlags;
     }
 
     public GpuHitTestPrimitive WithWorldBounds(Vector2 boundsMin, Vector2 boundsMax)
@@ -91,7 +103,31 @@ public readonly struct GpuHitTestPrimitive
             InverseTransform0,
             InverseTransform1,
             ZIndex,
-            Flags);
+            Flags,
+            ClipStartSegment,
+            ClipSegmentCount,
+            (FillRule)ClipFillRule,
+            ClipFlags);
+    }
+
+    public GpuHitTestPrimitive WithClip(uint startSegment, uint segmentCount, FillRule fillRule)
+    {
+        return new GpuHitTestPrimitive(
+            Kind,
+            Id,
+            BoundsMin,
+            BoundsMax,
+            Data0,
+            Data1,
+            Data2,
+            InverseTransform0,
+            InverseTransform1,
+            ZIndex,
+            Flags,
+            startSegment,
+            segmentCount,
+            fillRule,
+            segmentCount > 0 ? 1u : 0u);
     }
 
     public static GpuHitTestPrimitive Bounds(int id, Vector2 min, Vector2 max, float zIndex = 0f)
@@ -1400,6 +1436,10 @@ struct HitTestPrimitive {
     flags: u32,
     id: i32,
     z_index: f32,
+    clip_start_segment: u32,
+    clip_segment_count: u32,
+    clip_fill_rule: u32,
+    clip_flags: u32,
 };
 
 struct PathSegment {
@@ -2364,10 +2404,7 @@ fn accumulate_path_fill_edge(point: vec2<f32>, start: vec2<f32>, end: vec2<f32>,
     return next;
 }
 
-fn contains_path_fill(point: vec2<f32>, primitive: HitTestPrimitive) -> bool {
-    let start_segment = u32(primitive.data1.x + 0.5);
-    let segment_count = u32(primitive.data1.y + 0.5);
-    let fill_rule = u32(primitive.data1.z + 0.5);
+fn contains_path_fill_segments(point: vec2<f32>, start_segment: u32, segment_count: u32, fill_rule: u32) -> bool {
     if (segment_count == 0u || start_segment >= query.path_segment_count) {
         return false;
     }
@@ -2442,9 +2479,14 @@ fn contains_path_fill(point: vec2<f32>, primitive: HitTestPrimitive) -> bool {
     return state.winding != 0;
 }
 
-fn path_fill_segments_intersect_rect(rect_min: vec2<f32>, rect_max: vec2<f32>, primitive: HitTestPrimitive) -> bool {
+fn contains_path_fill(point: vec2<f32>, primitive: HitTestPrimitive) -> bool {
     let start_segment = u32(primitive.data1.x + 0.5);
     let segment_count = u32(primitive.data1.y + 0.5);
+    let fill_rule = u32(primitive.data1.z + 0.5);
+    return contains_path_fill_segments(point, start_segment, segment_count, fill_rule);
+}
+
+fn path_fill_segments_intersect_rect_range(rect_min: vec2<f32>, rect_max: vec2<f32>, start_segment: u32, segment_count: u32) -> bool {
     if (segment_count == 0u || start_segment >= query.path_segment_count) {
         return false;
     }
@@ -2517,9 +2559,13 @@ fn path_fill_segments_intersect_rect(rect_min: vec2<f32>, rect_max: vec2<f32>, p
     return false;
 }
 
-fn path_fill_segments_intersect_ellipse_region(query_center: vec2<f32>, query_inverse_radii: vec2<f32>, primitive: HitTestPrimitive) -> bool {
+fn path_fill_segments_intersect_rect(rect_min: vec2<f32>, rect_max: vec2<f32>, primitive: HitTestPrimitive) -> bool {
     let start_segment = u32(primitive.data1.x + 0.5);
     let segment_count = u32(primitive.data1.y + 0.5);
+    return path_fill_segments_intersect_rect_range(rect_min, rect_max, start_segment, segment_count);
+}
+
+fn path_fill_segments_intersect_ellipse_region_range(query_center: vec2<f32>, query_inverse_radii: vec2<f32>, start_segment: u32, segment_count: u32) -> bool {
     if (segment_count == 0u || start_segment >= query.path_segment_count) {
         return false;
     }
@@ -2592,16 +2638,22 @@ fn path_fill_segments_intersect_ellipse_region(query_center: vec2<f32>, query_in
     return false;
 }
 
-fn classify_path_fill_rect_intersection_detail(rect_min: vec2<f32>, rect_max: vec2<f32>, primitive: HitTestPrimitive) -> u32 {
+fn path_fill_segments_intersect_ellipse_region(query_center: vec2<f32>, query_inverse_radii: vec2<f32>, primitive: HitTestPrimitive) -> bool {
+    let start_segment = u32(primitive.data1.x + 0.5);
+    let segment_count = u32(primitive.data1.y + 0.5);
+    return path_fill_segments_intersect_ellipse_region_range(query_center, query_inverse_radii, start_segment, segment_count);
+}
+
+fn classify_path_fill_rect_intersection_detail_range(rect_min: vec2<f32>, rect_max: vec2<f32>, start_segment: u32, segment_count: u32, fill_rule: u32) -> u32 {
     let top_left = rect_min;
     let top_right = vec2<f32>(rect_max.x, rect_min.y);
     let bottom_right = rect_max;
     let bottom_left = vec2<f32>(rect_min.x, rect_max.y);
-    let top_left_inside = contains_path_fill(top_left, primitive);
-    let top_right_inside = contains_path_fill(top_right, primitive);
-    let bottom_right_inside = contains_path_fill(bottom_right, primitive);
-    let bottom_left_inside = contains_path_fill(bottom_left, primitive);
-    let path_boundary_intersects_region = path_fill_segments_intersect_rect(rect_min, rect_max, primitive);
+    let top_left_inside = contains_path_fill_segments(top_left, start_segment, segment_count, fill_rule);
+    let top_right_inside = contains_path_fill_segments(top_right, start_segment, segment_count, fill_rule);
+    let bottom_right_inside = contains_path_fill_segments(bottom_right, start_segment, segment_count, fill_rule);
+    let bottom_left_inside = contains_path_fill_segments(bottom_left, start_segment, segment_count, fill_rule);
+    let path_boundary_intersects_region = path_fill_segments_intersect_rect_range(rect_min, rect_max, start_segment, segment_count);
     if (top_left_inside && top_right_inside && bottom_right_inside && bottom_left_inside) {
         if (!path_boundary_intersects_region) {
             return INTERSECTION_DETAIL_FULLY_CONTAINS;
@@ -2618,23 +2670,37 @@ fn classify_path_fill_rect_intersection_detail(rect_min: vec2<f32>, rect_max: ve
     return INTERSECTION_DETAIL_EMPTY;
 }
 
-fn classify_path_fill_ellipse_region_intersection_detail(query_center: vec2<f32>, query_inverse_radii: vec2<f32>, primitive: HitTestPrimitive) -> u32 {
+fn classify_path_fill_rect_intersection_detail(rect_min: vec2<f32>, rect_max: vec2<f32>, primitive: HitTestPrimitive) -> u32 {
+    let start_segment = u32(primitive.data1.x + 0.5);
+    let segment_count = u32(primitive.data1.y + 0.5);
+    let fill_rule = u32(primitive.data1.z + 0.5);
+    return classify_path_fill_rect_intersection_detail_range(rect_min, rect_max, start_segment, segment_count, fill_rule);
+}
+
+fn classify_path_fill_ellipse_region_intersection_detail_range(query_center: vec2<f32>, query_inverse_radii: vec2<f32>, start_segment: u32, segment_count: u32, fill_rule: u32) -> u32 {
     let radii = ellipse_radii_from_inverse(query_inverse_radii);
     if (radii.x <= 0.0 || radii.y <= 0.0) {
         return INTERSECTION_DETAIL_EMPTY;
     }
 
-    let boundary_intersects_region = path_fill_segments_intersect_ellipse_region(query_center, query_inverse_radii, primitive);
+    let boundary_intersects_region = path_fill_segments_intersect_ellipse_region_range(query_center, query_inverse_radii, start_segment, segment_count);
     if (boundary_intersects_region ||
-        contains_path_fill(query_center, primitive) ||
-        contains_path_fill(query_center + vec2<f32>(radii.x, 0.0), primitive) ||
-        contains_path_fill(query_center - vec2<f32>(radii.x, 0.0), primitive) ||
-        contains_path_fill(query_center + vec2<f32>(0.0, radii.y), primitive) ||
-        contains_path_fill(query_center - vec2<f32>(0.0, radii.y), primitive)) {
+        contains_path_fill_segments(query_center, start_segment, segment_count, fill_rule) ||
+        contains_path_fill_segments(query_center + vec2<f32>(radii.x, 0.0), start_segment, segment_count, fill_rule) ||
+        contains_path_fill_segments(query_center - vec2<f32>(radii.x, 0.0), start_segment, segment_count, fill_rule) ||
+        contains_path_fill_segments(query_center + vec2<f32>(0.0, radii.y), start_segment, segment_count, fill_rule) ||
+        contains_path_fill_segments(query_center - vec2<f32>(0.0, radii.y), start_segment, segment_count, fill_rule)) {
         return INTERSECTION_DETAIL_INTERSECTS;
     }
 
     return INTERSECTION_DETAIL_EMPTY;
+}
+
+fn classify_path_fill_ellipse_region_intersection_detail(query_center: vec2<f32>, query_inverse_radii: vec2<f32>, primitive: HitTestPrimitive) -> u32 {
+    let start_segment = u32(primitive.data1.x + 0.5);
+    let segment_count = u32(primitive.data1.y + 0.5);
+    let fill_rule = u32(primitive.data1.z + 0.5);
+    return classify_path_fill_ellipse_region_intersection_detail_range(query_center, query_inverse_radii, start_segment, segment_count, fill_rule);
 }
 
 fn path_stroke_line_hit(point: vec2<f32>, start: vec2<f32>, end: vec2<f32>, half_stroke: f32) -> bool {
@@ -2880,7 +2946,55 @@ fn primitive_is_axis_aligned(primitive: HitTestPrimitive) -> bool {
     return abs(primitive.inverse_transform0.y) <= 0.00001 && abs(primitive.inverse_transform1.x) <= 0.00001;
 }
 
+fn primitive_has_clip(primitive: HitTestPrimitive) -> bool {
+    return primitive.clip_segment_count != 0u &&
+        primitive.clip_start_segment < query.path_segment_count &&
+        primitive.clip_flags != 0u;
+}
+
+fn point_inside_primitive_clip(point: vec2<f32>, primitive: HitTestPrimitive) -> bool {
+    if (!primitive_has_clip(primitive)) {
+        return true;
+    }
+
+    return contains_path_fill_segments(
+        point,
+        primitive.clip_start_segment,
+        primitive.clip_segment_count,
+        primitive.clip_fill_rule);
+}
+
+fn primitive_clip_intersection_detail_for_bounds(region_min: vec2<f32>, region_max: vec2<f32>, primitive: HitTestPrimitive) -> u32 {
+    if (!primitive_has_clip(primitive)) {
+        return INTERSECTION_DETAIL_INTERSECTS;
+    }
+
+    return classify_path_fill_rect_intersection_detail_range(
+        region_min,
+        region_max,
+        primitive.clip_start_segment,
+        primitive.clip_segment_count,
+        primitive.clip_fill_rule);
+}
+
+fn primitive_clip_intersection_detail_for_ellipse(query_center: vec2<f32>, query_inverse_radii: vec2<f32>, primitive: HitTestPrimitive) -> u32 {
+    if (!primitive_has_clip(primitive)) {
+        return INTERSECTION_DETAIL_INTERSECTS;
+    }
+
+    return classify_path_fill_ellipse_region_intersection_detail_range(
+        query_center,
+        query_inverse_radii,
+        primitive.clip_start_segment,
+        primitive.clip_segment_count,
+        primitive.clip_fill_rule);
+}
+
 fn primitive_can_fully_contain_query_bounds(primitive: HitTestPrimitive) -> bool {
+    if (primitive_has_clip(primitive)) {
+        return false;
+    }
+
     if (primitive.kind == KIND_BOUNDS) {
         return primitive_is_axis_aligned(primitive);
     }
@@ -2893,7 +3007,8 @@ fn primitive_can_fully_contain_query_bounds(primitive: HitTestPrimitive) -> bool
 }
 
 fn primitive_uses_precise_bounds_region_test(primitive: HitTestPrimitive) -> bool {
-    return primitive_is_axis_aligned(primitive) &&
+    return primitive_has_clip(primitive) ||
+        primitive_is_axis_aligned(primitive) &&
         (primitive.kind == KIND_RECT_FILL ||
             primitive.kind == KIND_RECT_STROKE ||
             primitive.kind == KIND_ELLIPSE_FILL ||
@@ -2904,7 +3019,8 @@ fn primitive_uses_precise_bounds_region_test(primitive: HitTestPrimitive) -> boo
 }
 
 fn primitive_uses_precise_ellipse_region_test(primitive: HitTestPrimitive) -> bool {
-    return primitive_is_axis_aligned(primitive) &&
+    return primitive_has_clip(primitive) ||
+        primitive_is_axis_aligned(primitive) &&
         (primitive.kind == KIND_BOUNDS ||
             primitive.kind == KIND_RECT_FILL ||
             primitive.kind == KIND_RECT_STROKE ||
@@ -2919,6 +3035,12 @@ fn classify_ellipse_region_intersection_detail(primitive: HitTestPrimitive) -> u
     let region_min = query_region_min();
     let region_max = query_region_max();
     if (!rect_intersects_ellipse(primitive.bounds_min, primitive.bounds_max, region_min, region_max)) {
+        return INTERSECTION_DETAIL_EMPTY;
+    }
+
+    let query_center_for_clip = (region_min + region_max) * 0.5;
+    let query_inverse_radii_for_clip = ellipse_inverse_radii_from_bounds(region_min, region_max);
+    if (primitive_clip_intersection_detail_for_ellipse(query_center_for_clip, query_inverse_radii_for_clip, primitive) == INTERSECTION_DETAIL_EMPTY) {
         return INTERSECTION_DETAIL_EMPTY;
     }
 
@@ -3020,6 +3142,10 @@ fn classify_bounds_intersection_detail(primitive: HitTestPrimitive) -> u32 {
         return INTERSECTION_DETAIL_EMPTY;
     }
 
+    if (primitive_clip_intersection_detail_for_bounds(region_min, region_max, primitive) == INTERSECTION_DETAIL_EMPTY) {
+        return INTERSECTION_DETAIL_EMPTY;
+    }
+
     if (contains_rect_bounds(region_min, region_max, primitive.bounds_min, primitive.bounds_max)) {
         return INTERSECTION_DETAIL_FULLY_INSIDE;
     }
@@ -3077,6 +3203,10 @@ fn precise_hit(point: vec2<f32>, primitive: HitTestPrimitive) -> bool {
     }
 
     if (!contains_bounds(point, primitive.bounds_min, primitive.bounds_max)) {
+        return false;
+    }
+
+    if (!point_inside_primitive_clip(point, primitive)) {
         return false;
     }
 
