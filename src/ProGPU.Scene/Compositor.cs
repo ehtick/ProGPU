@@ -2750,6 +2750,8 @@ public unsafe class Compositor : IDisposable
                 _gpuTransformsCameraView = cmd.CameraView * globalTransform;
             }
 
+            AddHitTestStateCommand(cmd, activeTransform);
+
             switch (cmd.Type)
             {
                 case RenderCommandType.DrawRect:
@@ -2896,6 +2898,8 @@ public unsafe class Compositor : IDisposable
                     CompileGlyphRunCommand(cmd, activeTransform);
                     break;
             }
+
+            AddHitTestDrawCommand(cmd, activeTransform, picture);
 
             if (cmd.UseGpuTransforms)
             {

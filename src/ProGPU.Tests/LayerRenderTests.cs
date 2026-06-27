@@ -134,6 +134,30 @@ public sealed class LayerRenderTests
         }
     }
 
+    [Fact]
+    public void PicturePlaybackContributesSubcommandsToHitTestCache()
+    {
+        var window = HeadlessWindow.Shared;
+        window.Resize(100, 60);
+        window.Content = new PictureHitTestVisual();
+
+        try
+        {
+            window.Render();
+
+            var index = window.Compositor.LastHitTestIndex;
+            Assert.NotNull(index);
+            var primitive = Assert.Single(index!.Primitives, primitive => primitive.Id == 992);
+            Assert.Equal(GpuHitTestPrimitiveKind.PathStroke, primitive.Kind);
+            Assert.Equal(new Vector2(0f, 0f), primitive.BoundsMin);
+            Assert.Equal(new Vector2(12f, 12f), primitive.BoundsMax);
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
     private static RgbaPixel ReadPixel(byte[] pixels, uint width, int x, int y)
     {
         var index = ((y * (int)width) + x) * 4;
@@ -310,6 +334,51 @@ public sealed class LayerRenderTests
         public override void OnRender(DrawingContext context)
         {
             context.DrawRectangle(_red, null, new Rect(0f, 0f, 80f, 50f));
+        }
+    }
+
+    private sealed class PictureHitTestVisual : FrameworkElement
+    {
+        private readonly GpuPicture _picture;
+
+        public PictureHitTestVisual()
+        {
+            Width = 100f;
+            Height = 60f;
+
+            _picture = new GpuPicture(
+                [
+                    new RenderCommand
+                    {
+                        Type = RenderCommandType.PushClip,
+                        Rect = new Rect(0f, 0f, 12f, 12f)
+                    },
+                    new RenderCommand
+                    {
+                        Type = RenderCommandType.DrawPolyline,
+                        HitTestId = 992,
+                        Pen = new Pen(new SolidColorBrush(new Vector4(1f, 0f, 0f, 1f)), 2f),
+                        PointBufferOffset = 0,
+                        PointBufferCount = 3
+                    },
+                    new RenderCommand
+                    {
+                        Type = RenderCommandType.PopClip
+                    }
+                ],
+                [
+                    new Vector2(0f, 0f),
+                    new Vector2(20f, 0f),
+                    new Vector2(20f, 20f)
+                ],
+                [],
+                [],
+                []);
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            context.DrawPicture(_picture);
         }
     }
 }
