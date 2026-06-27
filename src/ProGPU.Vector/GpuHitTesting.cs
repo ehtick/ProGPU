@@ -1609,6 +1609,111 @@ fn rect_intersects_rect_stroke(rect_min: vec2<f32>, rect_max: vec2<f32>, primiti
     return !rounded_rect_contains_rect(rect_min, rect_max, inner_min, inner_max, inner_radius);
 }
 
+fn rect_contains_ellipse_region(rect_min: vec2<f32>, rect_max: vec2<f32>, query_center: vec2<f32>, query_inverse_radii: vec2<f32>) -> bool {
+    if (rect_max.x < rect_min.x || rect_max.y < rect_min.y) {
+        return false;
+    }
+
+    let query_radii = ellipse_radii_from_inverse(query_inverse_radii);
+    if (query_radii.x <= 0.0 || query_radii.y <= 0.0) {
+        return false;
+    }
+
+    let query_min = query_center - query_radii;
+    let query_max = query_center + query_radii;
+    return contains_rect_bounds(rect_min, rect_max, query_min, query_max);
+}
+
+fn rounded_rect_intersects_ellipse_region(query_center: vec2<f32>, query_inverse_radii: vec2<f32>, min_value: vec2<f32>, max_value: vec2<f32>, radius: vec2<f32>) -> bool {
+    let query_radii = ellipse_radii_from_inverse(query_inverse_radii);
+    if (query_radii.x <= 0.0 || query_radii.y <= 0.0) {
+        return false;
+    }
+
+    let query_min = query_center - query_radii;
+    let query_max = query_center + query_radii;
+    if (!intersects_bounds(query_min, query_max, min_value, max_value)) {
+        return false;
+    }
+
+    let size = max_value - min_value;
+    let rx = min(abs(radius.x), size.x * 0.5);
+    let ry = min(abs(radius.y), size.y * 0.5);
+    if (rx <= 0.0 || ry <= 0.0) {
+        return rect_intersects_ellipse_from_inverse_radii(min_value, max_value, query_center, query_inverse_radii);
+    }
+
+    if (rect_intersects_ellipse_from_inverse_radii(
+            vec2<f32>(min_value.x + rx, min_value.y),
+            vec2<f32>(max_value.x - rx, max_value.y),
+            query_center,
+            query_inverse_radii) ||
+        rect_intersects_ellipse_from_inverse_radii(
+            vec2<f32>(min_value.x, min_value.y + ry),
+            vec2<f32>(max_value.x, max_value.y - ry),
+            query_center,
+            query_inverse_radii)) {
+        return true;
+    }
+
+    let corner_inverse_radii = vec2<f32>(1.0 / rx, 1.0 / ry);
+    return ellipses_may_intersect(query_center, query_inverse_radii, vec2<f32>(min_value.x + rx, min_value.y + ry), corner_inverse_radii) ||
+        ellipses_may_intersect(query_center, query_inverse_radii, vec2<f32>(max_value.x - rx, min_value.y + ry), corner_inverse_radii) ||
+        ellipses_may_intersect(query_center, query_inverse_radii, vec2<f32>(max_value.x - rx, max_value.y - ry), corner_inverse_radii) ||
+        ellipses_may_intersect(query_center, query_inverse_radii, vec2<f32>(min_value.x + rx, max_value.y - ry), corner_inverse_radii);
+}
+
+fn rounded_rect_contains_ellipse_region(query_center: vec2<f32>, query_inverse_radii: vec2<f32>, min_value: vec2<f32>, max_value: vec2<f32>, radius: vec2<f32>) -> bool {
+    if (!rect_contains_ellipse_region(min_value, max_value, query_center, query_inverse_radii)) {
+        return false;
+    }
+
+    let size = max_value - min_value;
+    let rx = min(abs(radius.x), size.x * 0.5);
+    let ry = min(abs(radius.y), size.y * 0.5);
+    if (rx <= 0.0 || ry <= 0.0) {
+        return true;
+    }
+
+    return rect_contains_ellipse_region(
+            vec2<f32>(min_value.x + rx, min_value.y),
+            vec2<f32>(max_value.x - rx, max_value.y),
+            query_center,
+            query_inverse_radii) ||
+        rect_contains_ellipse_region(
+            vec2<f32>(min_value.x, min_value.y + ry),
+            vec2<f32>(max_value.x, max_value.y - ry),
+            query_center,
+            query_inverse_radii);
+}
+
+fn rect_stroke_intersects_ellipse_region(query_center: vec2<f32>, query_inverse_radii: vec2<f32>, primitive: HitTestPrimitive) -> bool {
+    let stroke = abs(primitive.data1.z);
+    if (stroke <= 0.0) {
+        return false;
+    }
+
+    let tolerance = max(0.0, primitive.data1.w);
+    let half_stroke = stroke * 0.5 + tolerance;
+    let original_min = primitive.data0.xy;
+    let original_max = primitive.data0.zw;
+    let outer_min = original_min - vec2<f32>(half_stroke, half_stroke);
+    let outer_max = original_max + vec2<f32>(half_stroke, half_stroke);
+    let outer_radius = abs(primitive.data1.xy) + vec2<f32>(half_stroke, half_stroke);
+    if (!rounded_rect_intersects_ellipse_region(query_center, query_inverse_radii, outer_min, outer_max, outer_radius)) {
+        return false;
+    }
+
+    let inner_min = original_min + vec2<f32>(half_stroke, half_stroke);
+    let inner_max = original_max - vec2<f32>(half_stroke, half_stroke);
+    if (inner_max.x <= inner_min.x || inner_max.y <= inner_min.y) {
+        return true;
+    }
+
+    let inner_radius = max(vec2<f32>(0.0, 0.0), abs(primitive.data1.xy) - vec2<f32>(half_stroke, half_stroke));
+    return !rounded_rect_contains_ellipse_region(query_center, query_inverse_radii, inner_min, inner_max, inner_radius);
+}
+
 fn contains_rect_stroke(point: vec2<f32>, primitive: HitTestPrimitive) -> bool {
     let stroke = abs(primitive.data1.z);
     if (stroke <= 0.0) {
@@ -2795,9 +2900,8 @@ fn primitive_uses_precise_bounds_region_test(primitive: HitTestPrimitive) -> boo
 fn primitive_uses_precise_ellipse_region_test(primitive: HitTestPrimitive) -> bool {
     return primitive_is_axis_aligned(primitive) &&
         (primitive.kind == KIND_BOUNDS ||
-            (primitive.kind == KIND_RECT_FILL &&
-            abs(primitive.data1.x) <= 0.00001 &&
-            abs(primitive.data1.y) <= 0.00001) ||
+            primitive.kind == KIND_RECT_FILL ||
+            primitive.kind == KIND_RECT_STROKE ||
             primitive.kind == KIND_ELLIPSE_FILL ||
             primitive.kind == KIND_ELLIPSE_STROKE ||
             primitive.kind == KIND_LINE_STROKE ||
@@ -2837,6 +2941,32 @@ fn classify_ellipse_region_intersection_detail(primitive: HitTestPrimitive) -> u
             let query_center = (local_region_min + local_region_max) * 0.5;
             let query_inverse_radii = ellipse_inverse_radii_from_bounds(local_region_min, local_region_max);
             if (!ellipse_stroke_intersects_ellipse_region(query_center, query_inverse_radii, primitive)) {
+                return INTERSECTION_DETAIL_EMPTY;
+            }
+        } else if (primitive.kind == KIND_RECT_FILL) {
+            let query_center = (local_region_min + local_region_max) * 0.5;
+            let query_inverse_radii = ellipse_inverse_radii_from_bounds(local_region_min, local_region_max);
+            if (!rounded_rect_intersects_ellipse_region(query_center, query_inverse_radii, primitive_min, primitive_max, primitive.data1.xy)) {
+                return INTERSECTION_DETAIL_EMPTY;
+            }
+
+            if (abs(primitive.data1.x) <= 0.00001 && abs(primitive.data1.y) <= 0.00001) {
+                if (contains_rect_bounds(primitive_min, primitive_max, local_region_min, local_region_max)) {
+                    return INTERSECTION_DETAIL_FULLY_CONTAINS;
+                }
+
+                if (ellipse_contains_rect(primitive_min, primitive_max, local_region_min, local_region_max)) {
+                    return INTERSECTION_DETAIL_FULLY_INSIDE;
+                }
+            } else {
+                if (rounded_rect_contains_ellipse_region(query_center, query_inverse_radii, primitive_min, primitive_max, primitive.data1.xy)) {
+                    return INTERSECTION_DETAIL_FULLY_CONTAINS;
+                }
+            }
+        } else if (primitive.kind == KIND_RECT_STROKE) {
+            let query_center = (local_region_min + local_region_max) * 0.5;
+            let query_inverse_radii = ellipse_inverse_radii_from_bounds(local_region_min, local_region_max);
+            if (!rect_stroke_intersects_ellipse_region(query_center, query_inverse_radii, primitive)) {
                 return INTERSECTION_DETAIL_EMPTY;
             }
         } else if (primitive.kind == KIND_LINE_STROKE) {
