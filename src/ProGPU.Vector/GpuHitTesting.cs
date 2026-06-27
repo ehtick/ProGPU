@@ -726,6 +726,7 @@ public sealed class GpuHitTestDeviceIndex : IDisposable
 {
     private const uint QueryBufferSize = 32;
     private const uint ResultBufferSize = 32;
+    public const int MaxHitResultCount = 256;
 
     private bool _isDisposed;
 
@@ -771,6 +772,11 @@ public sealed class GpuHitTestDeviceIndex : IDisposable
             BufferUsage.Storage | BufferUsage.CopyDst,
             "GPU Hit Test Path Segments");
         ResultBuffer = new GpuBuffer(context, ResultBufferSize, BufferUsage.Storage | BufferUsage.CopyDst | BufferUsage.CopySrc, "GPU Hit Test Result");
+        ResultListBuffer = new GpuBuffer(
+            context,
+            checked((uint)((MaxHitResultCount + 1) * Marshal.SizeOf<GpuHitTestResult>())),
+            BufferUsage.Storage | BufferUsage.CopyDst | BufferUsage.CopySrc,
+            "GPU Hit Test Result List");
 
         NodeBuffer.Write(index.NodeArray);
         PrimitiveIndexBuffer.Write(index.PrimitiveIndexArray);
@@ -786,6 +792,7 @@ public sealed class GpuHitTestDeviceIndex : IDisposable
     internal GpuBuffer PrimitiveBuffer { get; }
     internal GpuBuffer PathSegmentBuffer { get; }
     internal GpuBuffer ResultBuffer { get; }
+    internal GpuBuffer ResultListBuffer { get; }
     internal uint PrimitiveCount { get; }
     internal uint NodeCount { get; }
     internal uint PrimitiveIndexCount { get; }
@@ -821,6 +828,7 @@ public sealed class GpuHitTestDeviceIndex : IDisposable
         PrimitiveBuffer.Dispose();
         PathSegmentBuffer.Dispose();
         ResultBuffer.Dispose();
+        ResultListBuffer.Dispose();
         _isDisposed = true;
         GC.SuppressFinalize(this);
     }
@@ -996,6 +1004,180 @@ public static unsafe class GpuHitTestEngine
         }
     }
 
+    public static bool TryHitTestPointAll(
+        WgpuContext context,
+        GpuHitTestIndex index,
+        Vector2 point,
+        Span<GpuHitTestResult> results,
+        out int hitCount,
+        out GpuHitTestResult summary)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(index);
+
+        if (!GpuHitTestDeviceIndex.TryCreate(context, index, out GpuHitTestDeviceIndex? deviceIndex) || deviceIndex == null)
+        {
+            hitCount = 0;
+            summary = default;
+            return false;
+        }
+
+        using (deviceIndex)
+        using (var cache = new RenderPipelineCache(context))
+        {
+            return TryHitTestPointAll(context, cache, deviceIndex, point, results, out hitCount, out summary);
+        }
+    }
+
+    public static bool TryHitTestPointAll(
+        WgpuContext context,
+        RenderPipelineCache cache,
+        GpuHitTestDeviceIndex deviceIndex,
+        Vector2 point,
+        Span<GpuHitTestResult> results,
+        out int hitCount,
+        out GpuHitTestResult summary)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(cache);
+        ArgumentNullException.ThrowIfNull(deviceIndex);
+        if (!ReferenceEquals(context, deviceIndex.Context))
+        {
+            throw new ArgumentException("The GPU hit-test device index belongs to a different WebGPU context.", nameof(deviceIndex));
+        }
+
+        if (results.IsEmpty)
+        {
+            hitCount = 0;
+            summary = default;
+            return false;
+        }
+
+        int requestedCount = Math.Min(results.Length, GpuHitTestDeviceIndex.MaxHitResultCount);
+        uint requestedCountU = checked((uint)requestedCount);
+
+        lock (context.RenderLock)
+        {
+            var query = new GpuHitTestQuery
+            {
+                Point = point,
+                RootNodeIndex = 0,
+                PrimitiveCount = deviceIndex.PrimitiveCount,
+                NodeCount = deviceIndex.NodeCount,
+                PrimitiveIndexCount = deviceIndex.PrimitiveIndexCount,
+                Flags = requestedCountU,
+                Pad0 = deviceIndex.PathSegmentCount
+            };
+            var initialResult = new GpuHitTestResult
+            {
+                Hit = 0,
+                Id = -1,
+                PrimitiveIndex = uint.MaxValue,
+                ZIndex = float.NegativeInfinity
+            };
+            var initialResults = new GpuHitTestResult[requestedCount + 1];
+            Array.Fill(initialResults, initialResult);
+
+            deviceIndex.QueryBuffer.WriteSingle(query);
+            deviceIndex.ResultListBuffer.Write(initialResults);
+
+            var shader = cache.GetOrCreateShader("GpuHitTesting.Query", ShaderSource, "GpuHitTesting.Query");
+            var pipeline = cache.GetOrCreateComputePipeline("GpuHitTesting.Query", shader, "cs_main");
+            BindGroupLayout* bindGroupLayout = null;
+            BindGroup* bindGroup = null;
+            CommandEncoder* encoder = null;
+            CommandBuffer* commandBuffer = null;
+
+            try
+            {
+                bindGroupLayout = context.Wgpu.ComputePipelineGetBindGroupLayout(pipeline, 0);
+                var entries = stackalloc BindGroupEntry[6];
+                entries[0] = new BindGroupEntry { Binding = 0, Buffer = deviceIndex.QueryBuffer.BufferPtr, Offset = 0, Size = deviceIndex.QueryBuffer.Size };
+                entries[1] = new BindGroupEntry { Binding = 1, Buffer = deviceIndex.NodeBuffer.BufferPtr, Offset = 0, Size = deviceIndex.NodeBuffer.Size };
+                entries[2] = new BindGroupEntry { Binding = 2, Buffer = deviceIndex.PrimitiveIndexBuffer.BufferPtr, Offset = 0, Size = deviceIndex.PrimitiveIndexBuffer.Size };
+                entries[3] = new BindGroupEntry { Binding = 3, Buffer = deviceIndex.PrimitiveBuffer.BufferPtr, Offset = 0, Size = deviceIndex.PrimitiveBuffer.Size };
+                entries[4] = new BindGroupEntry { Binding = 4, Buffer = deviceIndex.ResultListBuffer.BufferPtr, Offset = 0, Size = checked((uint)(initialResults.Length * Marshal.SizeOf<GpuHitTestResult>())) };
+                entries[5] = new BindGroupEntry { Binding = 5, Buffer = deviceIndex.PathSegmentBuffer.BufferPtr, Offset = 0, Size = deviceIndex.PathSegmentBuffer.Size };
+
+                var bgDesc = new BindGroupDescriptor
+                {
+                    Layout = bindGroupLayout,
+                    EntryCount = 6,
+                    Entries = entries
+                };
+                bindGroup = context.Wgpu.DeviceCreateBindGroup(context.Device, &bgDesc);
+                if (bindGroup == null)
+                {
+                    throw new InvalidOperationException("Failed to create GPU hit-test bind group.");
+                }
+
+                var encoderDesc = new CommandEncoderDescriptor { Label = (byte*)SilkMarshal.StringToPtr("GPU Hit Test List Encoder") };
+                encoder = context.Wgpu.DeviceCreateCommandEncoder(context.Device, &encoderDesc);
+                SilkMarshal.Free((nint)encoderDesc.Label);
+                if (encoder == null)
+                {
+                    throw new InvalidOperationException("Failed to create GPU hit-test command encoder.");
+                }
+
+                var passDesc = new ComputePassDescriptor();
+                var pass = context.Wgpu.CommandEncoderBeginComputePass(encoder, &passDesc);
+                context.Wgpu.ComputePassEncoderSetPipeline(pass, pipeline);
+                context.Wgpu.ComputePassEncoderSetBindGroup(pass, 0, bindGroup, 0, null);
+                context.Wgpu.ComputePassEncoderDispatchWorkgroups(pass, 1, 1, 1);
+                context.Wgpu.ComputePassEncoderEnd(pass);
+                context.Wgpu.ComputePassEncoderRelease(pass);
+
+                var commandBufferDesc = new CommandBufferDescriptor { Label = (byte*)SilkMarshal.StringToPtr("GPU Hit Test List Submit") };
+                commandBuffer = context.Wgpu.CommandEncoderFinish(encoder, &commandBufferDesc);
+                SilkMarshal.Free((nint)commandBufferDesc.Label);
+                if (commandBuffer == null)
+                {
+                    throw new InvalidOperationException("Failed to finish GPU hit-test command encoder.");
+                }
+
+                context.Wgpu.QueueSubmit(context.Queue, 1, &commandBuffer);
+                context.Wgpu.CommandBufferRelease(commandBuffer);
+                commandBuffer = null;
+                context.Wgpu.CommandEncoderRelease(encoder);
+                encoder = null;
+
+                uint readSize = checked((uint)(initialResults.Length * Marshal.SizeOf<GpuHitTestResult>()));
+                byte[] bytes = deviceIndex.ResultListBuffer.ReadBytes(0, readSize);
+                summary = MemoryMarshal.Read<GpuHitTestResult>(bytes);
+                hitCount = Math.Min((int)summary.Hit, requestedCount);
+                int resultSize = Marshal.SizeOf<GpuHitTestResult>();
+                for (int i = 0; i < hitCount; i++)
+                {
+                    results[i] = MemoryMarshal.Read<GpuHitTestResult>(bytes.AsSpan((i + 1) * resultSize));
+                }
+
+                return hitCount > 0;
+            }
+            finally
+            {
+                if (commandBuffer != null)
+                {
+                    context.Wgpu.CommandBufferRelease(commandBuffer);
+                }
+
+                if (encoder != null)
+                {
+                    context.Wgpu.CommandEncoderRelease(encoder);
+                }
+
+                if (bindGroup != null)
+                {
+                    context.Wgpu.BindGroupRelease(bindGroup);
+                }
+
+                if (bindGroupLayout != null)
+                {
+                    context.Wgpu.BindGroupLayoutRelease(bindGroupLayout);
+                }
+            }
+        }
+    }
+
     internal const string ShaderSource = """
 struct HitTestQuery {
     point: vec2<f32>,
@@ -1055,7 +1237,7 @@ struct HitTestResult {
 @group(0) @binding(1) var<storage, read> nodes: array<HitTestNode>;
 @group(0) @binding(2) var<storage, read> primitive_indices: array<u32>;
 @group(0) @binding(3) var<storage, read> primitives: array<HitTestPrimitive>;
-@group(0) @binding(4) var<storage, read_write> result: HitTestResult;
+@group(0) @binding(4) var<storage, read_write> results: array<HitTestResult>;
 @group(0) @binding(5) var<storage, read> path_segments: array<PathSegment>;
 
 const FLAG_VISIBLE: u32 = 1u;
@@ -1571,13 +1753,53 @@ fn precise_hit(point: vec2<f32>, primitive: HitTestPrimitive) -> bool {
     return false;
 }
 
+fn write_hit_result(slot: u32, primitive_index: u32, primitive: HitTestPrimitive) {
+    results[slot].hit = 1u;
+    results[slot].id = primitive.id;
+    results[slot].primitive_index = primitive_index;
+    results[slot].z_index = primitive.z_index;
+}
+
 fn record_hit(primitive_index: u32, primitive: HitTestPrimitive) {
-    if (result.hit == 0u || primitive.z_index >= result.z_index) {
-        result.hit = 1u;
-        result.id = primitive.id;
-        result.primitive_index = primitive_index;
-        result.z_index = primitive.z_index;
+    if (query.flags == 0u) {
+        if (results[0].hit == 0u || primitive.z_index >= results[0].z_index) {
+            write_hit_result(0u, primitive_index, primitive);
+        }
+
+        return;
     }
+
+    let capacity = query.flags;
+    if (capacity == 0u) {
+        return;
+    }
+
+    var count = results[0].hit;
+    if (count >= capacity && primitive.z_index <= results[capacity].z_index) {
+        return;
+    }
+
+    if (count < capacity) {
+        count = count + 1u;
+        results[0].hit = count;
+    }
+
+    var slot = count;
+    loop {
+        if (slot <= 1u) {
+            break;
+        }
+
+        let previous = results[slot - 1u];
+        if (previous.hit != 0u && previous.z_index > primitive.z_index) {
+            break;
+        }
+
+        results[slot] = previous;
+        slot = slot - 1u;
+    }
+
+    write_hit_result(slot, primitive_index, primitive);
 }
 
 @compute @workgroup_size(1)
@@ -1602,7 +1824,7 @@ fn cs_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         }
 
         let node = nodes[node_index];
-        result.nodes_visited = result.nodes_visited + 1u;
+        results[0].nodes_visited = results[0].nodes_visited + 1u;
         if (!contains_bounds(query.point, node.bounds_min, node.bounds_max)) {
             continue;
         }
@@ -1619,8 +1841,8 @@ fn cs_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 if (primitive_index < query.primitive_count) {
                     let primitive = primitives[primitive_index];
                     if (contains_bounds(query.point, primitive.bounds_min, primitive.bounds_max)) {
-                        result.candidate_count = result.candidate_count + 1u;
-                        result.precise_tests = result.precise_tests + 1u;
+                        results[0].candidate_count = results[0].candidate_count + 1u;
+                        results[0].precise_tests = results[0].precise_tests + 1u;
                         if (precise_hit(query.point, primitive)) {
                             record_hit(primitive_index, primitive);
                         }

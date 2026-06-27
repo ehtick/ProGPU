@@ -250,6 +250,67 @@ public sealed class GpuHitTestingTests
     }
 
     [Fact]
+    public void TryHitTestPointAllReturnsHitsInDescendingZOrder()
+    {
+        using var context = new WgpuContext();
+        context.Initialize(null);
+        using var pipelineCache = new RenderPipelineCache(context);
+
+        GpuHitTestPrimitive[] primitives =
+        [
+            GpuHitTestPrimitive.RectangleFill(10, new Vector2(0f, 0f), new Vector2(100f, 100f), Vector2.Zero, zIndex: 0f),
+            GpuHitTestPrimitive.RectangleFill(20, new Vector2(0f, 0f), new Vector2(100f, 100f), Vector2.Zero, zIndex: 1f),
+            GpuHitTestPrimitive.RectangleFill(30, new Vector2(0f, 0f), new Vector2(100f, 100f), Vector2.Zero, zIndex: 2f)
+        ];
+        var index = GpuHitTestIndex.Build(primitives, maxDepth: 4, maxPrimitivesPerNode: 1);
+        using var deviceIndex = new GpuHitTestDeviceIndex(context, index);
+        var results = new GpuHitTestResult[4];
+
+        bool hit = GpuHitTestEngine.TryHitTestPointAll(
+            context,
+            pipelineCache,
+            deviceIndex,
+            new Vector2(50f, 50f),
+            results,
+            out int hitCount,
+            out GpuHitTestResult summary);
+
+        Assert.True(hit);
+        Assert.Equal(3, hitCount);
+        Assert.Equal(3u, summary.Hit);
+        Assert.Equal([30, 20, 10], results.Take(hitCount).Select(result => result.Id).ToArray());
+    }
+
+    [Fact]
+    public void TryHitTestPointAllHonorsCallerCapacity()
+    {
+        using var context = new WgpuContext();
+        context.Initialize(null);
+
+        GpuHitTestPrimitive[] primitives =
+        [
+            GpuHitTestPrimitive.RectangleFill(10, new Vector2(0f, 0f), new Vector2(100f, 100f), Vector2.Zero, zIndex: 0f),
+            GpuHitTestPrimitive.RectangleFill(20, new Vector2(0f, 0f), new Vector2(100f, 100f), Vector2.Zero, zIndex: 1f),
+            GpuHitTestPrimitive.RectangleFill(30, new Vector2(0f, 0f), new Vector2(100f, 100f), Vector2.Zero, zIndex: 2f)
+        ];
+        var index = GpuHitTestIndex.Build(primitives, maxDepth: 4, maxPrimitivesPerNode: 1);
+        var results = new GpuHitTestResult[2];
+
+        bool hit = GpuHitTestEngine.TryHitTestPointAll(
+            context,
+            index,
+            new Vector2(50f, 50f),
+            results,
+            out int hitCount,
+            out GpuHitTestResult summary);
+
+        Assert.True(hit);
+        Assert.Equal(2, hitCount);
+        Assert.Equal(2u, summary.Hit);
+        Assert.Equal([30, 20], results.Take(hitCount).Select(result => result.Id).ToArray());
+    }
+
+    [Fact]
     public void TryHitTestPointRejectsEllipseCornerAfterBroadPhaseCandidate()
     {
         using var context = new WgpuContext();

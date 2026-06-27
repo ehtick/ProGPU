@@ -242,6 +242,29 @@ public unsafe class Compositor : IDisposable
         return GpuHitTestEngine.TryHitTestPoint(_context, _pipelineCache, _lastHitTestDeviceIndex, point, out result);
     }
 
+    public bool TryHitTestPointAll(
+        Vector2 point,
+        Span<GpuHitTestResult> results,
+        out int hitCount,
+        out GpuHitTestResult summary)
+    {
+        if (_lastHitTestDeviceIndex == null)
+        {
+            hitCount = 0;
+            summary = default;
+            return false;
+        }
+
+        return GpuHitTestEngine.TryHitTestPointAll(
+            _context,
+            _pipelineCache,
+            _lastHitTestDeviceIndex,
+            point,
+            results,
+            out hitCount,
+            out summary);
+    }
+
     private void SetLastHitTestIndex(GpuHitTestIndex index)
     {
         _lastHitTestDeviceIndex?.Dispose();
