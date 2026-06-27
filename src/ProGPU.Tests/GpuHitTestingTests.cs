@@ -139,6 +139,25 @@ public sealed class GpuHitTestingTests
     }
 
     [Fact]
+    public void RenderCommandCacheUsesExplicitTextureHitTestId()
+    {
+        var builder = new GpuRenderCommandHitTestCacheBuilder();
+        builder.AddCommand(new RenderCommand
+        {
+            Type = RenderCommandType.DrawTexture,
+            Rect = new Rect(10f, 20f, 30f, 40f)
+        }, Matrix4x4.CreateTranslation(5f, 6f, 0f), id: 4321);
+
+        var index = builder.BuildIndex(maxDepth: 2, maxPrimitivesPerNode: 1);
+
+        var primitive = Assert.Single(index.Primitives);
+        Assert.Equal(4321, primitive.Id);
+        Assert.Equal(GpuHitTestPrimitiveKind.AxisAlignedBounds, primitive.Kind);
+        Assert.Equal(new Vector2(15f, 26f), primitive.BoundsMin);
+        Assert.Equal(new Vector2(45f, 66f), primitive.BoundsMax);
+    }
+
+    [Fact]
     public void RenderCommandCacheBuildsPathPrimitiveSegments()
     {
         var builder = new GpuRenderCommandHitTestCacheBuilder();

@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Numerics;
 using Microsoft.UI.Xaml;
 using ProGPU.Scene;
@@ -100,6 +101,32 @@ public sealed class LayerRenderTests
 
             AssertRed(visible);
             AssertBlack(masked);
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
+    [Fact]
+    public void CachedLayerHitTestCacheUsesLayerOwnerWithoutOffscreenCommands()
+    {
+        var window = HeadlessWindow.Shared;
+        window.Resize(100, 60);
+        window.Content = new VisualCompositeScopeHost(new HitTestCachedLayerVisual());
+
+        try
+        {
+            window.Render();
+            window.Render();
+
+            var index = window.Compositor.LastHitTestIndex;
+            Assert.NotNull(index);
+            var ownerPrimitives = index!.Primitives.Where(primitive => primitive.Id == 991).ToArray();
+            var primitive = Assert.Single(ownerPrimitives);
+            Assert.Equal(GpuHitTestPrimitiveKind.AxisAlignedBounds, primitive.Kind);
+            Assert.Equal(new Vector2(10f, 5f), primitive.BoundsMin);
+            Assert.Equal(new Vector2(90f, 55f), primitive.BoundsMax);
         }
         finally
         {
@@ -265,6 +292,24 @@ public sealed class LayerRenderTests
         public CachedOpacityMaskedVisual()
         {
             CacheAsLayer = true;
+        }
+    }
+
+    private sealed class HitTestCachedLayerVisual : FrameworkElement
+    {
+        private readonly SolidColorBrush _red = new(new Vector4(1f, 0f, 0f, 1f));
+
+        public HitTestCachedLayerVisual()
+        {
+            Width = 80f;
+            Height = 50f;
+            CacheAsLayer = true;
+            HitTestId = 991;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            context.DrawRectangle(_red, null, new Rect(0f, 0f, 80f, 50f));
         }
     }
 }

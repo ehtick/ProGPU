@@ -225,6 +225,7 @@ public unsafe class Compositor : IDisposable
     private readonly List<StaticTextRecord> _compiledTextRecords = new();
     private readonly GpuRenderCommandHitTestCacheBuilder _hitTestCacheBuilder = new();
     private GpuHitTestDeviceIndex? _lastHitTestDeviceIndex;
+    private bool _suspendHitTestCacheWrites;
 
     public CompositorMetrics Metrics { get; private set; }
 
@@ -282,6 +283,38 @@ public unsafe class Compositor : IDisposable
         _lastHitTestDeviceIndex?.Dispose();
         _lastHitTestDeviceIndex = null;
         LastHitTestIndex = null;
+    }
+
+    private void AddHitTestCommand(RenderCommand command, Matrix4x4 transform)
+    {
+        if (!_suspendHitTestCacheWrites)
+        {
+            _hitTestCacheBuilder.AddCommand(command, transform);
+        }
+    }
+
+    private void AddHitTestCommand(RenderCommand command, Matrix4x4 transform, int id)
+    {
+        if (!_suspendHitTestCacheWrites)
+        {
+            _hitTestCacheBuilder.AddCommand(command, transform, id);
+        }
+    }
+
+    private void PushHitTestClip(Rect clipBounds, Matrix4x4 transform)
+    {
+        if (!_suspendHitTestCacheWrites)
+        {
+            _hitTestCacheBuilder.PushClip(clipBounds, transform);
+        }
+    }
+
+    private void PopHitTestClip()
+    {
+        if (!_suspendHitTestCacheWrites)
+        {
+            _hitTestCacheBuilder.PopClip();
+        }
     }
 
     private readonly List<ICompositorExtension> _registeredExtensions = new();
@@ -2367,7 +2400,7 @@ public unsafe class Compositor : IDisposable
                     _gpuTransformsCameraView = cmd.CameraView * globalTransform;
                 }
 
-                _hitTestCacheBuilder.AddCommand(cmd, activeTransform);
+                AddHitTestCommand(cmd, activeTransform);
 
                 switch (cmd.Type)
                 {
@@ -6059,12 +6092,12 @@ public unsafe class Compositor : IDisposable
                 if (bEff.BlurRadius <= 0.01f)
                 {
                     // Draw original source directly (no blur!)
-                    DrawTextureOnMain(textures.Source, paddedRect, compositeTransform);
+                    DrawTextureOnMain(textures.Source, paddedRect, compositeTransform, fe.HitTestId);
                 }
                 else
                 {
                     // Draw the blurred result back onto the main screen (shifted back by padding)
-                    DrawTextureOnMain(textures.Destination, paddedRect, compositeTransform);
+                    DrawTextureOnMain(textures.Destination, paddedRect, compositeTransform, fe.HitTestId);
                 }
             }
             else if (fe.Effect is DropShadowEffect sEff)
@@ -6073,10 +6106,10 @@ public unsafe class Compositor : IDisposable
                 var shadowRect = new Rect(
                     sEff.Offset - new Vector2(padding, padding),
                     new Vector2(logicalWidth, logicalHeight));
-                DrawTextureOnMain(textures.Destination, shadowRect, compositeTransform);
+                DrawTextureOnMain(textures.Destination, shadowRect, compositeTransform, fe.HitTestId);
 
                 // Draw original source on top (shifted back by padding)
-                DrawTextureOnMain(textures.Source, paddedRect, compositeTransform);
+                DrawTextureOnMain(textures.Source, paddedRect, compositeTransform, fe.HitTestId);
             }
             else if (fe.Effect is WpfShaderEffect shaderEffect)
             {
@@ -6155,7 +6188,7 @@ public unsafe class Compositor : IDisposable
         try
         {
             // Draw the cached layer texture onto the main swapchain.
-            DrawTextureOnMain(node.LayerTexture!, controlRect, compositeTransform);
+            DrawTextureOnMain(node.LayerTexture!, controlRect, compositeTransform, node.HitTestId);
         }
         finally
         {
@@ -6174,14 +6207,14 @@ public unsafe class Compositor : IDisposable
         if (node.ClipBounds.HasValue)
         {
             PushClipRect(node.ClipBounds.Value, compositeTransform);
-            _hitTestCacheBuilder.PushClip(node.ClipBounds.Value, compositeTransform);
+            PushHitTestClip(node.ClipBounds.Value, compositeTransform);
             scope |= VisualCompositeScope.Clip;
         }
 
         if (node.OuterClipBounds.HasValue)
         {
             PushClipRect(node.OuterClipBounds.Value, parentTransform);
-            _hitTestCacheBuilder.PushClip(node.OuterClipBounds.Value, parentTransform);
+            PushHitTestClip(node.OuterClipBounds.Value, parentTransform);
             scope |= VisualCompositeScope.OuterClip;
         }
 
@@ -6214,18 +6247,18 @@ public unsafe class Compositor : IDisposable
 
         if ((scope & VisualCompositeScope.OuterClip) != 0)
         {
-            _hitTestCacheBuilder.PopClip();
+            PopHitTestClip();
             PopClipRect();
         }
 
         if ((scope & VisualCompositeScope.Clip) != 0)
         {
-            _hitTestCacheBuilder.PopClip();
+            PopHitTestClip();
             PopClipRect();
         }
     }
 
-    private void DrawTextureOnMain(GpuTexture texture, Rect localRect, Matrix4x4 parentTransform)
+    private void DrawTextureOnMain(GpuTexture texture, Rect localRect, Matrix4x4 parentTransform, int hitTestId = 0)
     {
         var cmd = new RenderCommand
         {
@@ -6233,6 +6266,11 @@ public unsafe class Compositor : IDisposable
             Texture = texture,
             Rect = localRect
         };
+        if (hitTestId != 0)
+        {
+            AddHitTestCommand(cmd, parentTransform, hitTestId);
+        }
+
         CompileTextureCommand(cmd, parentTransform);
     }
 
@@ -6246,8 +6284,20 @@ public unsafe class Compositor : IDisposable
         var pipeline = GetExtension(CompositorBuiltInExtensions.WpfShaderEffect);
         if (pipeline == null)
         {
-            DrawTextureOnMain(sourceTexture, localRect, parentTransform);
+            DrawTextureOnMain(sourceTexture, localRect, parentTransform, visual.HitTestId);
             return;
+        }
+
+        if (visual.HitTestId != 0)
+        {
+            AddHitTestCommand(
+                new RenderCommand
+                {
+                    Type = RenderCommandType.DrawTexture,
+                    Rect = localRect
+                },
+                parentTransform,
+                visual.HitTestId);
         }
 
         CommitPendingDrawCalls();
@@ -6374,11 +6424,13 @@ public unsafe class Compositor : IDisposable
         var savedMaskStack = _maskStack.ToArray();
         var savedMaskRenderPasses = _maskRenderPasses.ToArray();
         var savedMasksToReturnToPool = _masksToReturnToPool.ToArray();
+        var savedSuspendHitTestCacheWrites = _suspendHitTestCacheWrites;
 
         _useGpuTransformsActive = false;
         _cameraViewMatrix = Matrix4x4.Identity;
         _hasGpuTransformsInFrame = false;
         _gpuTransformsCameraView = Matrix4x4.Identity;
+        _suspendHitTestCacheWrites = true;
 
         _vectorVerticesList.Clear();
         _vectorIndicesList.Clear();
@@ -6776,6 +6828,7 @@ public unsafe class Compositor : IDisposable
             _cameraViewMatrix = savedCameraViewMatrix;
             _hasGpuTransformsInFrame = savedHasGpuTransformsInFrame;
             _gpuTransformsCameraView = savedGpuTransformsCameraView;
+            _suspendHitTestCacheWrites = savedSuspendHitTestCacheWrites;
 
             _currentWidth = savedWidth;
             _currentHeight = savedHeight;

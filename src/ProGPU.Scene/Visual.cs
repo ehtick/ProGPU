@@ -27,6 +27,7 @@ public class Visual
     private Rect? _outerClipBounds;
     private Brush? _opacityMask;
     private Rect? _opacityMaskBounds;
+    private int _hitTestId;
 
     private EffectBase? _effect;
     public EffectBase? Effect
@@ -213,6 +214,19 @@ public class Visual
 
     // Composition layer texture view
     public GpuTexture? LayerTexture { get; internal set; }
+
+    public int HitTestId
+    {
+        get => _hitTestId;
+        set
+        {
+            if (_hitTestId != value)
+            {
+                _hitTestId = value;
+                Invalidate();
+            }
+        }
+    }
 
     public Rect? ClipBounds
     {
