@@ -561,6 +561,36 @@ public sealed class GpuHitTestingTests
     }
 
     [Fact]
+    public void TryHitTestPointAllStoresDistinctIdsAndKeepsHighestZDuplicate()
+    {
+        using var context = new WgpuContext();
+        context.Initialize(null);
+
+        GpuHitTestPrimitive[] primitives =
+        [
+            GpuHitTestPrimitive.RectangleFill(20, new Vector2(0f, 0f), new Vector2(100f, 100f), Vector2.Zero, zIndex: 0f),
+            GpuHitTestPrimitive.RectangleFill(10, new Vector2(0f, 0f), new Vector2(100f, 100f), Vector2.Zero, zIndex: 1f),
+            GpuHitTestPrimitive.RectangleFill(20, new Vector2(0f, 0f), new Vector2(100f, 100f), Vector2.Zero, zIndex: 2f)
+        ];
+        var index = GpuHitTestIndex.Build(primitives, maxDepth: 4, maxPrimitivesPerNode: 1);
+        var results = new GpuHitTestResult[2];
+
+        bool hit = GpuHitTestEngine.TryHitTestPointAll(
+            context,
+            index,
+            new Vector2(50f, 50f),
+            results,
+            out int hitCount,
+            out GpuHitTestResult summary);
+
+        Assert.True(hit);
+        Assert.Equal(2, hitCount);
+        Assert.Equal(3u, summary.Hit);
+        Assert.Equal([20, 10], results.Take(hitCount).Select(result => result.Id).ToArray());
+        Assert.Equal(2f, results[0].ZIndex);
+    }
+
+    [Fact]
     public void TryQueryBoundsAllReturnsIntersectingBroadPhaseHitsInDescendingZOrder()
     {
         using var context = new WgpuContext();
@@ -597,6 +627,37 @@ public sealed class GpuHitTestingTests
         Assert.Equal(2u, summary.CandidateCount);
         Assert.Equal(2u, summary.PreciseTests);
         Assert.True(summary.NodesVisited > 0);
+    }
+
+    [Fact]
+    public void TryQueryBoundsAllStoresDistinctIdsAndKeepsHighestZDuplicate()
+    {
+        using var context = new WgpuContext();
+        context.Initialize(null);
+
+        GpuHitTestPrimitive[] primitives =
+        [
+            GpuHitTestPrimitive.RectangleFill(20, new Vector2(0f, 0f), new Vector2(100f, 100f), Vector2.Zero, zIndex: 0f),
+            GpuHitTestPrimitive.RectangleFill(10, new Vector2(0f, 0f), new Vector2(100f, 100f), Vector2.Zero, zIndex: 1f),
+            GpuHitTestPrimitive.RectangleFill(20, new Vector2(0f, 0f), new Vector2(100f, 100f), Vector2.Zero, zIndex: 2f)
+        ];
+        var index = GpuHitTestIndex.Build(primitives, maxDepth: 4, maxPrimitivesPerNode: 1);
+        var results = new GpuHitTestResult[2];
+
+        bool hit = GpuHitTestEngine.TryQueryBoundsAll(
+            context,
+            index,
+            new Vector2(25f, 25f),
+            new Vector2(75f, 75f),
+            results,
+            out int hitCount,
+            out GpuHitTestResult summary);
+
+        Assert.True(hit);
+        Assert.Equal(2, hitCount);
+        Assert.Equal(3u, summary.Hit);
+        Assert.Equal([20, 10], results.Take(hitCount).Select(result => result.Id).ToArray());
+        Assert.Equal(2f, results[0].ZIndex);
     }
 
     [Fact]

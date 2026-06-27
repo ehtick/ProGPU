@@ -1327,11 +1327,17 @@ public static unsafe class GpuHitTestEngine
                 uint readSize = checked((uint)(initialResults.Length * Marshal.SizeOf<GpuHitTestResult>()));
                 byte[] bytes = deviceIndex.ResultListBuffer.ReadBytes(0, readSize);
                 summary = MemoryMarshal.Read<GpuHitTestResult>(bytes);
-                hitCount = Math.Min((int)summary.Hit, requestedCount);
+                hitCount = 0;
                 int resultSize = Marshal.SizeOf<GpuHitTestResult>();
-                for (int i = 0; i < hitCount; i++)
+                for (int i = 0; i < requestedCount; i++)
                 {
-                    results[i] = MemoryMarshal.Read<GpuHitTestResult>(bytes.AsSpan((i + 1) * resultSize));
+                    var result = MemoryMarshal.Read<GpuHitTestResult>(bytes.AsSpan((i + 1) * resultSize));
+                    if (!result.HasHit)
+                    {
+                        break;
+                    }
+
+                    results[hitCount++] = result;
                 }
 
                 return hitCount > 0;
@@ -3119,6 +3125,58 @@ fn write_hit_result(slot: u32, primitive_index: u32, primitive: HitTestPrimitive
     results[slot].intersection_detail = intersection_detail;
 }
 
+fn clear_hit_result(slot: u32) {
+    results[slot].hit = 0u;
+    results[slot].id = -1;
+    results[slot].primitive_index = 4294967295u;
+    results[slot].z_index = -3.4028234663852886e38;
+    results[slot].intersection_detail = INTERSECTION_DETAIL_NOT_CALCULATED;
+}
+
+fn stored_result_count(capacity: u32) -> u32 {
+    var count = 0u;
+    loop {
+        if (count >= capacity || results[count + 1u].hit == 0u) {
+            break;
+        }
+
+        count = count + 1u;
+    }
+
+    return count;
+}
+
+fn find_stored_hit_slot(id: i32, stored_count: u32) -> u32 {
+    var slot = 1u;
+    loop {
+        if (slot > stored_count) {
+            break;
+        }
+
+        if (results[slot].hit != 0u && results[slot].id == id) {
+            return slot;
+        }
+
+        slot = slot + 1u;
+    }
+
+    return 0u;
+}
+
+fn remove_stored_hit_slot(slot: u32, stored_count: u32) {
+    var current = slot;
+    loop {
+        if (current >= stored_count) {
+            break;
+        }
+
+        results[current] = results[current + 1u];
+        current = current + 1u;
+    }
+
+    clear_hit_result(stored_count);
+}
+
 fn record_hit(primitive_index: u32, primitive: HitTestPrimitive, intersection_detail: u32) {
     let capacity = query_result_capacity();
     if (capacity == 0u) {
@@ -3130,8 +3188,18 @@ fn record_hit(primitive_index: u32, primitive: HitTestPrimitive, intersection_de
     }
 
     let total_count = results[0].hit + 1u;
-    let stored_count = min(results[0].hit, capacity);
     results[0].hit = total_count;
+
+    var stored_count = stored_result_count(capacity);
+    let existing_slot = find_stored_hit_slot(primitive.id, stored_count);
+    if (existing_slot != 0u) {
+        if (results[existing_slot].z_index >= primitive.z_index) {
+            return;
+        }
+
+        remove_stored_hit_slot(existing_slot, stored_count);
+        stored_count = stored_count - 1u;
+    }
 
     if (stored_count >= capacity && primitive.z_index <= results[capacity].z_index) {
         return;
