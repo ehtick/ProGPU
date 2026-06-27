@@ -709,6 +709,53 @@ fn fs_main() -> @location(0) vec4<f32> {
     }
 
     [Fact]
+    public void NativeFacadeProjectEmitterGeneratesBuildableNativeAotProjectScaffold()
+    {
+        var report = ProGpuDirectXNativeDependencyInspector.Inspect(typeof(NativeDependencyFixture).Assembly);
+        var plan = ProGpuDirectXNativeAbiPlanner.Create(report);
+        var project = ProGpuDirectXNativeFacadeProjectEmitter.Emit(
+            plan,
+            new ProGpuDirectXNativeFacadeProjectOptions(
+                "ProGPU.Tests.NativeFacade",
+                "net10.0",
+                RuntimeIdentifier: "osx-arm64"),
+            new ProGpuDirectXNativeFacadeSourceOptions(
+                "ProGPU.Tests.GeneratedNativeFacade",
+                "SciChartNativeFacadeExports"));
+
+        Assert.Equal("ProGPU.Tests.NativeFacade.csproj", project.ProjectFileName);
+        Assert.Equal("SciChartNativeFacadeExports.g.cs", project.SourceFileName);
+        Assert.Equal("README.md", project.ReadmeFileName);
+        Assert.Contains("<PublishAot>true</PublishAot>", project.ProjectFileText, StringComparison.Ordinal);
+        Assert.Contains("<NativeLib>Shared</NativeLib>", project.ProjectFileText, StringComparison.Ordinal);
+        Assert.Contains("<RuntimeIdentifier>osx-arm64</RuntimeIdentifier>", project.ProjectFileText, StringComparison.Ordinal);
+        Assert.Contains("<AllowUnsafeBlocks>true</AllowUnsafeBlocks>", project.ProjectFileText, StringComparison.Ordinal);
+        Assert.Contains("public static unsafe partial class SciChartNativeFacadeExports", project.SourceText, StringComparison.Ordinal);
+        Assert.Contains("dotnet publish ProGPU.Tests.NativeFacade.csproj -c Release -r osx-arm64", project.ReadmeText, StringComparison.Ordinal);
+        Assert.Contains("Supported exports: `", project.ReadmeText, StringComparison.Ordinal);
+        Assert.Contains("Unsupported exports: `", project.ReadmeText, StringComparison.Ordinal);
+        Assert.Contains("supported native facade exports", project.DescribeSupport(), StringComparison.Ordinal);
+
+        var outputDirectory = Path.Combine(Path.GetTempPath(), $"progpu-directx-native-facade-{Guid.NewGuid():N}");
+        try
+        {
+            project.WriteToDirectory(outputDirectory);
+            Assert.True(File.Exists(Path.Combine(outputDirectory, project.ProjectFileName)));
+            Assert.True(File.Exists(Path.Combine(outputDirectory, project.SourceFileName)));
+            Assert.True(File.Exists(Path.Combine(outputDirectory, project.ReadmeFileName)));
+            Assert.Contains("<NativeLib>Shared</NativeLib>", File.ReadAllText(Path.Combine(outputDirectory, project.ProjectFileName)), StringComparison.Ordinal);
+            Assert.Contains("D3D11CreateDevice", File.ReadAllText(Path.Combine(outputDirectory, project.SourceFileName)), StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(outputDirectory))
+            {
+                Directory.Delete(outputDirectory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void NativeResolverClassifiesRequestsWithoutMaskingMissingFacade()
     {
         var report = ProGpuDirectXNativeDependencyInspector.Inspect(typeof(NativeDependencyFixture).Assembly);

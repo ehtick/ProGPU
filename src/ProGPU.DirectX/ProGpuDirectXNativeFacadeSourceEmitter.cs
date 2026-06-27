@@ -35,6 +35,50 @@ public sealed record ProGpuDirectXNativeFacadeSource(
         $"{SupportedExports.Count} supported native facade exports, {UnsupportedExports.Count} unsupported native facade exports";
 }
 
+public sealed record ProGpuDirectXNativeFacadeProjectOptions(
+    string ProjectName = "ProGPU.DirectX.NativeFacade",
+    string TargetFramework = "net10.0",
+    string? RuntimeIdentifier = null,
+    bool InvariantGlobalization = true)
+{
+    public static ProGpuDirectXNativeFacadeProjectOptions Default { get; } = new();
+}
+
+public sealed record ProGpuDirectXNativeFacadeProject(
+    string ProjectFileName,
+    string ProjectFileText,
+    string SourceFileName,
+    string SourceText,
+    string ReadmeFileName,
+    string ReadmeText,
+    ProGpuDirectXNativeFacadeSource Source)
+{
+    public string DescribeSupport() => Source.DescribeSupport();
+
+    public void WriteToDirectory(string directoryPath, bool overwrite = true)
+    {
+        if (string.IsNullOrWhiteSpace(directoryPath))
+        {
+            throw new ArgumentException("A native facade project directory path is required.", nameof(directoryPath));
+        }
+
+        Directory.CreateDirectory(directoryPath);
+        WriteFile(Path.Combine(directoryPath, ProjectFileName), ProjectFileText, overwrite);
+        WriteFile(Path.Combine(directoryPath, SourceFileName), SourceText, overwrite);
+        WriteFile(Path.Combine(directoryPath, ReadmeFileName), ReadmeText, overwrite);
+    }
+
+    private static void WriteFile(string path, string text, bool overwrite)
+    {
+        if (!overwrite && File.Exists(path))
+        {
+            throw new IOException($"The native facade project file already exists: {path}");
+        }
+
+        File.WriteAllText(path, text);
+    }
+}
+
 public static class ProGpuDirectXNativeFacadeSourceEmitter
 {
     public static ProGpuDirectXNativeFacadeSource Emit(
@@ -375,4 +419,123 @@ public static class ProGpuDirectXNativeFacadeSourceEmitter
     }
 
     private static string EscapeString(string value) => value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal);
+}
+
+public static class ProGpuDirectXNativeFacadeProjectEmitter
+{
+    public static ProGpuDirectXNativeFacadeProject Emit(
+        ProGpuDirectXNativeAbiPlan plan,
+        ProGpuDirectXNativeFacadeProjectOptions? projectOptions = null,
+        ProGpuDirectXNativeFacadeSourceOptions? sourceOptions = null)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        projectOptions ??= ProGpuDirectXNativeFacadeProjectOptions.Default;
+        sourceOptions ??= ProGpuDirectXNativeFacadeSourceOptions.Default;
+
+        var source = ProGpuDirectXNativeFacadeSourceEmitter.Emit(plan, sourceOptions);
+        var projectName = SanitizeProjectName(projectOptions.ProjectName);
+        var sourceFileName = $"{SanitizeFileStem(sourceOptions.ClassName)}.g.cs";
+        return new ProGpuDirectXNativeFacadeProject(
+            $"{projectName}.csproj",
+            BuildProjectFile(projectOptions, projectName),
+            sourceFileName,
+            source.SourceText,
+            "README.md",
+            BuildReadme(projectName, projectOptions, source),
+            source);
+    }
+
+    private static string BuildProjectFile(
+        ProGpuDirectXNativeFacadeProjectOptions options,
+        string projectName)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine("<Project Sdk=\"Microsoft.NET.Sdk\">");
+        builder.AppendLine("  <PropertyGroup>");
+        builder.Append("    <TargetFramework>").Append(EscapeXml(options.TargetFramework)).AppendLine("</TargetFramework>");
+        builder.AppendLine("    <OutputType>Library</OutputType>");
+        builder.AppendLine("    <PublishAot>true</PublishAot>");
+        builder.AppendLine("    <NativeLib>Shared</NativeLib>");
+        builder.AppendLine("    <SelfContained>true</SelfContained>");
+        builder.AppendLine("    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>");
+        builder.AppendLine("    <ImplicitUsings>enable</ImplicitUsings>");
+        builder.AppendLine("    <Nullable>enable</Nullable>");
+        builder.Append("    <AssemblyName>").Append(EscapeXml(projectName)).AppendLine("</AssemblyName>");
+        if (!string.IsNullOrWhiteSpace(options.RuntimeIdentifier))
+        {
+            builder.Append("    <RuntimeIdentifier>").Append(EscapeXml(options.RuntimeIdentifier!)).AppendLine("</RuntimeIdentifier>");
+        }
+
+        builder.Append("    <InvariantGlobalization>")
+            .Append(options.InvariantGlobalization ? "true" : "false")
+            .AppendLine("</InvariantGlobalization>");
+        builder.AppendLine("  </PropertyGroup>");
+        builder.AppendLine("</Project>");
+        return builder.ToString();
+    }
+
+    private static string BuildReadme(
+        string projectName,
+        ProGpuDirectXNativeFacadeProjectOptions options,
+        ProGpuDirectXNativeFacadeSource source)
+    {
+        var builder = new StringBuilder();
+        builder.Append("# ").AppendLine(projectName);
+        builder.AppendLine();
+        builder.AppendLine("This is a generated NativeAOT shared-library scaffold for DirectX/native compatibility exports.");
+        builder.AppendLine("The generated exports return conservative default values until each export is replaced with a ProGPU DirectX, host OS, or fail-fast implementation.");
+        builder.AppendLine();
+        builder.Append("- Target framework: `").Append(options.TargetFramework).AppendLine("`");
+        builder.Append("- NativeAOT mode: `").AppendLine("Shared`");
+        builder.Append("- Supported exports: `").Append(source.SupportedExports.Count).AppendLine("`");
+        builder.Append("- Unsupported exports: `").Append(source.UnsupportedExports.Count).AppendLine("`");
+        if (!string.IsNullOrWhiteSpace(options.RuntimeIdentifier))
+        {
+            builder.Append("- Runtime identifier: `").Append(options.RuntimeIdentifier).AppendLine("`");
+        }
+
+        builder.AppendLine();
+        builder.AppendLine("Publish with:");
+        builder.AppendLine();
+        builder.Append("```bash").AppendLine();
+        builder.Append("dotnet publish ").Append(projectName).Append(".csproj -c Release");
+        if (!string.IsNullOrWhiteSpace(options.RuntimeIdentifier))
+        {
+            builder.Append(" -r ").Append(options.RuntimeIdentifier);
+        }
+
+        builder.AppendLine();
+        builder.AppendLine("```");
+        return builder.ToString();
+    }
+
+    private static string SanitizeProjectName(string value)
+    {
+        var sanitized = SanitizeFileStem(value);
+        return sanitized.Length == 0 ? "ProGPU.DirectX.NativeFacade" : sanitized;
+    }
+
+    private static string SanitizeFileStem(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "NativeFacade";
+        }
+
+        var builder = new StringBuilder();
+        foreach (var ch in value)
+        {
+            builder.Append(char.IsLetterOrDigit(ch) || ch is '_' or '-' or '.' ? ch : '_');
+        }
+
+        return builder.ToString().Trim('.');
+    }
+
+    private static string EscapeXml(string value) =>
+        value
+            .Replace("&", "&amp;", StringComparison.Ordinal)
+            .Replace("<", "&lt;", StringComparison.Ordinal)
+            .Replace(">", "&gt;", StringComparison.Ordinal)
+            .Replace("\"", "&quot;", StringComparison.Ordinal)
+            .Replace("'", "&apos;", StringComparison.Ordinal);
 }
