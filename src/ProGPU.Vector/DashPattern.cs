@@ -2,9 +2,17 @@ using System;
 using System.Collections.Generic;
 using System.Numerics;
 
+#nullable enable
+#pragma warning disable IDE0057, IDE0059, IDE0078, IDE0300, IDE0301, IDE0305
+
 namespace ProGPU.Vector;
 
-public readonly struct LineDashSegment
+#if PROGPU_VECTOR_INTERNAL
+internal
+#else
+public
+#endif
+readonly struct LineDashSegment
 {
     public LineDashSegment(Vector2 start, Vector2 end)
     {
@@ -16,7 +24,12 @@ public readonly struct LineDashSegment
     public Vector2 End { get; }
 }
 
-public readonly struct DashPattern
+#if PROGPU_VECTOR_INTERNAL
+internal
+#else
+public
+#endif
+readonly struct DashPattern
 {
     private const float Epsilon = 0.0001f;
 

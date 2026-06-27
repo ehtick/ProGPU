@@ -3,15 +3,28 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Numerics;
 
+#nullable enable
+#pragma warning disable IDE0057, IDE0059, IDE0078, IDE0300, IDE0301, IDE0305
+
 namespace ProGPU.Vector;
 
-public abstract class PathSegment
+#if PROGPU_VECTOR_INTERNAL
+internal
+#else
+public
+#endif
+abstract class PathSegment
 {
     public bool IsSmoothJoin { get; set; }
     public bool IsStroked { get; set; } = true;
 }
 
-public class LineSegment : PathSegment
+#if PROGPU_VECTOR_INTERNAL
+internal
+#else
+public
+#endif
+class LineSegment : PathSegment
 {
     public Vector2 Point { get; set; }
 
@@ -23,7 +36,12 @@ public class LineSegment : PathSegment
     }
 }
 
-public class QuadraticBezierSegment : PathSegment
+#if PROGPU_VECTOR_INTERNAL
+internal
+#else
+public
+#endif
+class QuadraticBezierSegment : PathSegment
 {
     public Vector2 ControlPoint { get; set; }
     public Vector2 Point { get; set; }
@@ -37,7 +55,12 @@ public class QuadraticBezierSegment : PathSegment
     }
 }
 
-public class CubicBezierSegment : PathSegment
+#if PROGPU_VECTOR_INTERNAL
+internal
+#else
+public
+#endif
+class CubicBezierSegment : PathSegment
 {
     public Vector2 ControlPoint1 { get; set; }
     public Vector2 ControlPoint2 { get; set; }
@@ -53,19 +76,34 @@ public class CubicBezierSegment : PathSegment
     }
 }
 
-public enum SweepDirection
+#if PROGPU_VECTOR_INTERNAL
+internal
+#else
+public
+#endif
+enum SweepDirection
 {
     Counterclockwise = 0,
     Clockwise = 1
 }
 
-public enum FillRule
+#if PROGPU_VECTOR_INTERNAL
+internal
+#else
+public
+#endif
+enum FillRule
 {
     EvenOdd = 0,
     Nonzero = 1
 }
 
-public class ArcSegment : PathSegment
+#if PROGPU_VECTOR_INTERNAL
+internal
+#else
+public
+#endif
+class ArcSegment : PathSegment
 {
     public Vector2 Point { get; set; }
     public Vector2 Size { get; set; }
@@ -92,7 +130,12 @@ public class ArcSegment : PathSegment
     }
 }
 
-public readonly struct ArcDashSegment
+#if PROGPU_VECTOR_INTERNAL
+internal
+#else
+public
+#endif
+readonly struct ArcDashSegment
 {
     public ArcDashSegment(Vector2 start, ArcSegment arc)
     {
@@ -104,7 +147,12 @@ public readonly struct ArcDashSegment
     public ArcSegment Arc { get; }
 }
 
-public readonly struct QuadraticBezierDashSegment
+#if PROGPU_VECTOR_INTERNAL
+internal
+#else
+public
+#endif
+readonly struct QuadraticBezierDashSegment
 {
     public QuadraticBezierDashSegment(Vector2 start, QuadraticBezierSegment segment)
     {
@@ -116,7 +164,12 @@ public readonly struct QuadraticBezierDashSegment
     public QuadraticBezierSegment Segment { get; }
 }
 
-public readonly struct CubicBezierDashSegment
+#if PROGPU_VECTOR_INTERNAL
+internal
+#else
+public
+#endif
+readonly struct CubicBezierDashSegment
 {
     public CubicBezierDashSegment(Vector2 start, CubicBezierSegment segment)
     {
@@ -128,7 +181,12 @@ public readonly struct CubicBezierDashSegment
     public CubicBezierSegment Segment { get; }
 }
 
-public class PathFigure
+#if PROGPU_VECTOR_INTERNAL
+internal
+#else
+public
+#endif
+class PathFigure
 {
     public Vector2 StartPoint { get; set; }
     public List<PathSegment> Segments { get; } = new();
@@ -144,7 +202,12 @@ public class PathFigure
     }
 }
 
-public class PathGeometry
+#if PROGPU_VECTOR_INTERNAL
+internal
+#else
+public
+#endif
+class PathGeometry
 {
     public List<PathFigure> Figures { get; } = new();
     public FillRule FillRule { get; set; } = FillRule.Nonzero;

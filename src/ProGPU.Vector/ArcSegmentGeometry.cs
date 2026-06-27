@@ -2,9 +2,17 @@ using System;
 using System.Collections.Generic;
 using System.Numerics;
 
+#nullable enable
+#pragma warning disable IDE0057, IDE0059, IDE0078, IDE0300, IDE0301, IDE0305
+
 namespace ProGPU.Vector;
 
-public readonly struct ArcShaderParameters
+#if PROGPU_VECTOR_INTERNAL
+internal
+#else
+public
+#endif
+readonly struct ArcShaderParameters
 {
     public ArcShaderParameters(
         Vector2 center,
@@ -31,7 +39,12 @@ public readonly struct ArcShaderParameters
     public float DeltaTheta { get; }
 }
 
-public static class ArcSegmentGeometry
+#if PROGPU_VECTOR_INTERNAL
+internal
+#else
+public
+#endif
+static class ArcSegmentGeometry
 {
     public const float DefaultFlattenAngleRadians = MathF.PI / 8.0f;
     public const int MaxFlattenSegmentCount = 64;

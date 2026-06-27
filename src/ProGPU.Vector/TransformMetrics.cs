@@ -1,9 +1,17 @@
 using System;
 using System.Numerics;
 
+#nullable enable
+#pragma warning disable IDE0057, IDE0059, IDE0078, IDE0300, IDE0301, IDE0305
+
 namespace ProGPU.Vector;
 
-public static class TransformMetrics
+#if PROGPU_VECTOR_INTERNAL
+internal
+#else
+public
+#endif
+static class TransformMetrics
 {
     public static float GetStrokeScale(Matrix4x4 transform)
     {
