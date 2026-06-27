@@ -253,6 +253,42 @@ public sealed class GpuHitTestingTests
     }
 
     [Fact]
+    public void RenderCommandCacheFeedsGpuCombinedPathFillHitTesting()
+    {
+        using var context = new WgpuContext();
+        context.Initialize(null);
+
+        var combined = new PathGeometry
+        {
+            IsCombined = true,
+            PathA = PrimitivePathGeometry.CreateRectangle(0f, 0f, 20f, 20f),
+            PathB = PrimitivePathGeometry.CreateRectangle(5f, 5f, 10f, 10f),
+            Op = 0
+        };
+        var builder = new GpuRenderCommandHitTestCacheBuilder();
+        builder.AddCommand(new RenderCommand
+        {
+            Type = RenderCommandType.DrawPath,
+            Path = combined,
+            Brush = new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f))
+        }, Matrix4x4.Identity, id: 92);
+        var index = builder.BuildIndex(maxDepth: 2, maxPrimitivesPerNode: 1);
+
+        var primitive = Assert.Single(index.Primitives);
+        Assert.Equal(GpuHitTestPrimitiveKind.PathFill, primitive.Kind);
+        Assert.True(index.PathSegments.Count > 0);
+
+        bool outerHit = GpuHitTestEngine.TryHitTestPoint(context, index, new Vector2(2f, 2f), out GpuHitTestResult outerResult);
+        bool holeHit = GpuHitTestEngine.TryHitTestPoint(context, index, new Vector2(10f, 10f), out GpuHitTestResult holeResult);
+
+        Assert.True(outerHit);
+        Assert.Equal(92, outerResult.Id);
+        Assert.False(holeHit);
+        Assert.False(holeResult.HasHit);
+        Assert.True(holeResult.CandidateCount > 0);
+    }
+
+    [Fact]
     public void RenderCommandCacheFeedsGpuPathStrokeHitTesting()
     {
         using var context = new WgpuContext();
@@ -775,6 +811,61 @@ public sealed class GpuHitTestingTests
         Assert.Equal(1, hitCount);
         Assert.Equal(42, results[0].Id);
         Assert.Equal((uint)GpuHitTestIntersectionDetail.Intersects, results[0].IntersectionDetail);
+        Assert.Equal(1u, summary.CandidateCount);
+        Assert.Equal(1u, summary.PreciseTests);
+    }
+
+    [Fact]
+    public void TryQueryBoundsAllRejectsCombinedPathDifferenceHoleOnGpu()
+    {
+        using var context = new WgpuContext();
+        context.Initialize(null);
+
+        var combined = new PathGeometry
+        {
+            IsCombined = true,
+            PathA = PrimitivePathGeometry.CreateRectangle(0f, 0f, 20f, 20f),
+            PathB = PrimitivePathGeometry.CreateRectangle(5f, 5f, 10f, 10f),
+            Op = 0
+        };
+        var builder = new GpuRenderCommandHitTestCacheBuilder();
+        builder.AddCommand(new RenderCommand
+        {
+            Type = RenderCommandType.DrawPath,
+            Path = combined,
+            Brush = new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f))
+        }, Matrix4x4.Identity, id: 93);
+        var index = builder.BuildIndex(maxDepth: 2, maxPrimitivesPerNode: 1);
+        var results = new GpuHitTestResult[4];
+
+        bool hit = GpuHitTestEngine.TryQueryBoundsAll(
+            context,
+            index,
+            new Vector2(8f, 8f),
+            new Vector2(9f, 9f),
+            results,
+            out int hitCount,
+            out GpuHitTestResult summary);
+
+        Assert.False(hit);
+        Assert.Equal(0, hitCount);
+        Assert.Equal(1u, summary.CandidateCount);
+        Assert.Equal(1u, summary.PreciseTests);
+
+        Array.Clear(results);
+        hit = GpuHitTestEngine.TryQueryBoundsAll(
+            context,
+            index,
+            new Vector2(1f, 1f),
+            new Vector2(2f, 2f),
+            results,
+            out hitCount,
+            out summary);
+
+        Assert.True(hit);
+        Assert.Equal(1, hitCount);
+        Assert.Equal(93, results[0].Id);
+        Assert.Equal((uint)GpuHitTestIntersectionDetail.FullyContains, results[0].IntersectionDetail);
         Assert.Equal(1u, summary.CandidateCount);
         Assert.Equal(1u, summary.PreciseTests);
     }
