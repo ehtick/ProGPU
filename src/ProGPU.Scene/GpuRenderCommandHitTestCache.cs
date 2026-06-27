@@ -179,15 +179,28 @@ public sealed class GpuRenderCommandHitTestCacheBuilder
             return;
         }
 
-        var (records, segments) = PathAtlas.CompilePath(
-            command.Path,
-            out float minX,
-            out float minY,
-            out float maxX,
-            out float maxY);
+        GpuPathRecord[] records;
+        GpuPathSegment[] segments;
+        float minX;
+        float minY;
+        float maxX;
+        float maxY;
+        try
+        {
+            (records, segments) = PathAtlas.CompilePath(
+                command.Path,
+                out minX,
+                out minY,
+                out maxX,
+                out maxY);
+        }
+        catch (InvalidOperationException)
+        {
+            return;
+        }
+
         if (records.Length == 0 || segments.Length == 0)
         {
-            AddPathBounds(command, activeTransform, id, zIndex);
             return;
         }
 
@@ -228,32 +241,6 @@ public sealed class GpuRenderCommandHitTestCacheBuilder
                 transform,
                 zIndex));
         }
-    }
-
-    private void AddPathBounds(RenderCommand command, Matrix4x4 activeTransform, int id, float zIndex)
-    {
-        if (command.Path == null || command.Brush == null && command.Pen == null)
-        {
-            return;
-        }
-
-        if (!command.Path.TryGetBounds(out Vector2 min, out Vector2 max))
-        {
-            return;
-        }
-
-        Matrix4x4 transform = command.Transform == default
-            ? activeTransform
-            : command.Transform * activeTransform;
-
-        if (command.Pen is { Thickness: > 0f } pen)
-        {
-            var padding = new Vector2(pen.Thickness * 0.5f);
-            min -= padding;
-            max += padding;
-        }
-
-        AddPrimitive(GpuHitTestPrimitive.Bounds(id, min, max, transform, zIndex));
     }
 
     private void AddBounds(Rect rect, Matrix4x4 transform, int id, float zIndex)

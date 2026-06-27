@@ -122,6 +122,31 @@ public sealed class GpuHitTestingTests
     }
 
     [Fact]
+    public void RenderCommandCacheSkipsUncompiledPathsInsteadOfAddingBoundsHit()
+    {
+        var combined = new PathGeometry
+        {
+            IsCombined = true,
+            PathB = PrimitivePathGeometry.CreateRectangle(0f, 0f, 20f, 20f),
+            Op = 2
+        };
+
+        var builder = new GpuRenderCommandHitTestCacheBuilder();
+        builder.AddCommand(new RenderCommand
+        {
+            Type = RenderCommandType.DrawPath,
+            HitTestId = 77,
+            Path = combined,
+            Brush = new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f))
+        }, Matrix4x4.Identity);
+
+        var index = builder.BuildIndex(maxDepth: 2, maxPrimitivesPerNode: 1);
+
+        Assert.Empty(index.Primitives);
+        Assert.Empty(index.PathSegments);
+    }
+
+    [Fact]
     public void RenderCommandCacheFeedsGpuHitTesting()
     {
         using var context = new WgpuContext();
