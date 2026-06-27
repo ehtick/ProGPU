@@ -5338,6 +5338,21 @@ public unsafe class Compositor : IDisposable
             {
                 return; // Completely clipped!
             }
+
+            if (!isRotated &&
+                !QuadClipper.TryClipAxisAlignedQuad(
+                    _activeClipRect.Value,
+                    ref v0,
+                    ref v1,
+                    ref v2,
+                    ref v3,
+                    ref uv0,
+                    ref uv1,
+                    ref uv2,
+                    ref uv3))
+            {
+                return;
+            }
         }
 
         int originalVertexCount = _textureVerticesList.Count;

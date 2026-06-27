@@ -49,6 +49,11 @@ internal static class QuadClipper
             return false;
         }
 
+        var originalUv0 = uv0;
+        var originalUv1 = uv1;
+        var originalUv2 = uv2;
+        var originalUv3 = uv3;
+
         var nx0 = Math.Clamp(x0, clipLeft, clipRight);
         var nx1 = Math.Clamp(x1, clipLeft, clipRight);
         var ny0 = Math.Clamp(y0, clipTop, clipBottom);
@@ -63,10 +68,23 @@ internal static class QuadClipper
         v1 = new Vector2(nx1, ny0);
         v2 = new Vector2(nx1, ny1);
         v3 = new Vector2(nx0, ny1);
-        uv0 = new Vector2(u0, tv0);
-        uv1 = new Vector2(u1, tv0);
-        uv2 = new Vector2(u1, tv1);
-        uv3 = new Vector2(u0, tv1);
+        uv0 = InterpolateUv(originalUv0, originalUv1, originalUv2, originalUv3, u0, tv0);
+        uv1 = InterpolateUv(originalUv0, originalUv1, originalUv2, originalUv3, u1, tv0);
+        uv2 = InterpolateUv(originalUv0, originalUv1, originalUv2, originalUv3, u1, tv1);
+        uv3 = InterpolateUv(originalUv0, originalUv1, originalUv2, originalUv3, u0, tv1);
         return true;
+    }
+
+    private static Vector2 InterpolateUv(
+        Vector2 uv0,
+        Vector2 uv1,
+        Vector2 uv2,
+        Vector2 uv3,
+        float x,
+        float y)
+    {
+        var top = Vector2.Lerp(uv0, uv1, x);
+        var bottom = Vector2.Lerp(uv3, uv2, x);
+        return Vector2.Lerp(top, bottom, y);
     }
 }
