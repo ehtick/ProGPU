@@ -133,6 +133,9 @@ public sealed class GpuRenderCommandHitTestCacheBuilder
             case RenderCommandType.DrawPolyline:
                 AddPolyline(command, activeTransform, primitiveId, zIndex, provider);
                 break;
+            case RenderCommandType.DrawExtension:
+                AddExtension(command, activeTransform, primitiveId, zIndex, provider);
+                break;
         }
     }
 
@@ -596,16 +599,91 @@ public sealed class GpuRenderCommandHitTestCacheBuilder
         TryAddPathStrokePrimitive(path, transform, id, zIndex, pen);
     }
 
-    private static ReadOnlySpan<Vector2> GetPolylinePoints(RenderCommand command, IRenderDataProvider? provider)
+    private void AddExtension(
+        RenderCommand command,
+        Matrix4x4 transform,
+        int id,
+        float zIndex,
+        IRenderDataProvider? provider)
     {
-        if (provider != null && command.PointBufferCount > 0)
+        if (command.ExtensionId == CompositorBuiltInExtensions.Spline)
         {
-            return provider.GetPoints(command.PointBufferOffset, command.PointBufferCount);
+            AddSpline(command, transform, id, zIndex, provider);
+        }
+    }
+
+    private void AddSpline(
+        RenderCommand command,
+        Matrix4x4 transform,
+        int id,
+        float zIndex,
+        IRenderDataProvider? provider)
+    {
+        if (command.Pen is not { Thickness: > 0f } pen)
+        {
+            return;
         }
 
-        return command.PolylinePoints is { Length: > 0 } points
-            ? points
-            : ReadOnlySpan<Vector2>.Empty;
+        var path = command.GeometryCache?.StrokePath;
+        if (path == null)
+        {
+            ReadOnlySpan<Vector2> controlPoints = GetPointBuffer(command, provider);
+            ReadOnlySpan<double> knots = GetDoubleBuffer(
+                command.DoubleBufferOffset,
+                command.DoubleBufferCount,
+                command.SplineKnots,
+                provider);
+            ReadOnlySpan<double> weights = GetDoubleBuffer(
+                command.WeightBufferOffset,
+                command.WeightBufferCount,
+                command.SplineWeights,
+                provider);
+            path = RenderCommandGeometryCache.CreateSplinePath(
+                controlPoints,
+                knots,
+                weights,
+                command.SplineDegree,
+                command.IsClosed);
+        }
+
+        if (pen.HasDashPattern)
+        {
+            if (TryGetDashedStrokePath(command, path, pen, out var strokePath, out var strokePen))
+            {
+                TryAddPathStrokePrimitive(strokePath, transform, id, zIndex, strokePen);
+            }
+
+            return;
+        }
+
+        TryAddPathStrokePrimitive(path, transform, id, zIndex, pen);
+    }
+
+    private static ReadOnlySpan<Vector2> GetPolylinePoints(RenderCommand command, IRenderDataProvider? provider)
+    {
+        return GetPointBuffer(command, provider);
+    }
+
+    private static ReadOnlySpan<Vector2> GetPointBuffer(RenderCommand command, IRenderDataProvider? provider)
+    {
+        return provider != null && command.PointBufferCount > 0
+            ? provider.GetPoints(command.PointBufferOffset, command.PointBufferCount)
+            : command.PolylinePoints is { Length: > 0 } points
+                ? points
+                : ReadOnlySpan<Vector2>.Empty;
+    }
+
+    private static ReadOnlySpan<double> GetDoubleBuffer(
+        int offset,
+        int count,
+        double[]? inlineValues,
+        IRenderDataProvider? provider)
+    {
+        return provider != null && count > 0
+            ? provider.GetDoubles(offset, count)
+            : inlineValues is { Length: > 0 } values
+                ? values
+                : ReadOnlySpan<double>.Empty;
     }
 
     private void AddPrimitive(GpuHitTestPrimitive primitive)

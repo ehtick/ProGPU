@@ -284,6 +284,16 @@ public sealed class RenderCommandGeometryCache
         return path;
     }
 
+    public static PathGeometry CreateSplinePath(
+        ReadOnlySpan<Vector2> controlPoints,
+        ReadOnlySpan<double> knots,
+        ReadOnlySpan<double> weights,
+        int degree,
+        bool isClosed)
+    {
+        return SplineGeometry.CreatePath(controlPoints, knots, weights, degree, isClosed);
+    }
+
     private static int ComputeDashedStrokeSignature(Pen pen)
     {
         var hash = new HashCode();
@@ -1075,7 +1085,9 @@ public class DrawingContext : IRenderDataProvider
             WeightBufferOffset = weightOffset,
             WeightBufferCount = weightCount,
             SplineDegree = degree,
-            IsClosed = isClosed
+            IsClosed = isClosed,
+            GeometryCache = RenderCommandGeometryCache.ForStrokePath(
+                RenderCommandGeometryCache.CreateSplinePath(controlPoints, knots, weights, degree, isClosed))
         });
     }
 
