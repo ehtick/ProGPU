@@ -7,6 +7,7 @@
   <Project Path="ProGPU.Text/ProGPU.Text.csproj" />
   <Project Path="ProGPU.Compute/ProGPU.Compute.csproj" />
   <Project Path="ProGPU.Scene/ProGPU.Scene.csproj" />
+  <Project Path="ProGPU.Wpf.Interop/ProGPU.Wpf.Interop.csproj" />
   <Project Path="System.Drawing.Common/System.Drawing.Common.csproj" />
   <Project Path="PresentationCore/PresentationCore.csproj" />
   <Project Path="ProGPU.Layout/ProGPU.Layout.csproj" />
