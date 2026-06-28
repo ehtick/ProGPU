@@ -116,6 +116,10 @@ public interface IPortableWindowActivationServiceRegistrar
 
     void Register(PortableWindowActivationCallbacks callbacks);
 
+    bool TrySetActivationState(object window, bool isActive);
+
+    bool TryFlushDispatcherOperations(object window, string markerPriorityName, TimeSpan? timeout);
+
     void Clear();
 }
 
