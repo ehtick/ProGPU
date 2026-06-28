@@ -38,6 +38,15 @@ public interface IPortableFileDialogServiceRegistrar
     void Clear();
 }
 
+public interface IPortableMediaContextRenderServiceRegistrar
+{
+    Assembly SourceAssembly { get; }
+
+    IDisposable Register(Action<object?, TimeSpan> requestRender);
+
+    void Clear();
+}
+
 public static class PortableWpfServiceRegistry
 {
     private static readonly object SyncRoot = new();
@@ -45,6 +54,7 @@ public static class PortableWpfServiceRegistry
     private static readonly Dictionary<Assembly, IPortableLauncherServiceRegistrar> LauncherServices = new();
     private static readonly Dictionary<Assembly, IPortableMessageBoxServiceRegistrar> MessageBoxServices = new();
     private static readonly Dictionary<Assembly, IPortableFileDialogServiceRegistrar> FileDialogServices = new();
+    private static readonly Dictionary<Assembly, IPortableMediaContextRenderServiceRegistrar> MediaContextRenderServices = new();
 
     public static IDisposable RegisterClipboardService(IPortableClipboardServiceRegistrar service)
     {
@@ -142,6 +152,30 @@ public static class PortableWpfServiceRegistry
         }
     }
 
+    public static IDisposable RegisterMediaContextRenderService(IPortableMediaContextRenderServiceRegistrar service)
+    {
+        ArgumentNullException.ThrowIfNull(service);
+
+        lock (SyncRoot)
+        {
+            MediaContextRenderServices[service.SourceAssembly] = service;
+        }
+
+        return new Registration<IPortableMediaContextRenderServiceRegistrar>(service, MediaContextRenderServices);
+    }
+
+    public static bool TryGetMediaContextRenderService(
+        Assembly sourceAssembly,
+        out IPortableMediaContextRenderServiceRegistrar service)
+    {
+        ArgumentNullException.ThrowIfNull(sourceAssembly);
+
+        lock (SyncRoot)
+        {
+            return MediaContextRenderServices.TryGetValue(sourceAssembly, out service!);
+        }
+    }
+
     private sealed class Registration<TService> : IDisposable
         where TService : class
     {
@@ -183,6 +217,7 @@ public static class PortableWpfServiceRegistry
                 IPortableLauncherServiceRegistrar launcherService => launcherService.SourceAssembly,
                 IPortableMessageBoxServiceRegistrar messageBoxService => messageBoxService.SourceAssembly,
                 IPortableFileDialogServiceRegistrar fileDialogService => fileDialogService.SourceAssembly,
+                IPortableMediaContextRenderServiceRegistrar renderService => renderService.SourceAssembly,
                 _ => throw new InvalidOperationException("Unsupported portable WPF service registrar.")
             };
         }
