@@ -159,11 +159,20 @@ public sealed class PortableWindowInputEvent
     public bool Handled { get; set; }
 }
 
+public enum PortableWindowCloseResult
+{
+    NotInvoked = 0,
+    Closed = 1,
+    Canceled = 2
+}
+
 public interface IPortableWindowActivationServiceRegistrar
 {
     Assembly SourceAssembly { get; }
 
     void Register(PortableWindowActivationCallbacks callbacks);
+
+    bool TryCloseWindow(object window, out PortableWindowCloseResult result);
 
     bool TrySetActivationState(object window, bool isActive);
 
