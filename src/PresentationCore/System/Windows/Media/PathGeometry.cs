@@ -154,7 +154,7 @@ public class PathGeometry : Geometry
     public FillRule FillRule { get; set; } = FillRule.EvenOdd;
     public List<PathFigure> Figures { get; } = new();
 
-    public static PathGeometry Parse(string pathData)
+    public static new PathGeometry Parse(string pathData)
     {
         var geom = new PathGeometry();
         if (string.IsNullOrWhiteSpace(pathData)) return geom;

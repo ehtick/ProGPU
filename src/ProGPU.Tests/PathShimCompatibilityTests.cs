@@ -10,6 +10,7 @@ using DrawingGraphics = System.Drawing.Graphics;
 using DrawingGraphicsPath = System.Drawing.Drawing2D.GraphicsPath;
 using DrawingPens = System.Drawing.Pens;
 using WpfFillRule = System.Windows.Media.FillRule;
+using WpfGeometry = System.Windows.Media.Geometry;
 using WpfPathGeometry = System.Windows.Media.PathGeometry;
 
 namespace ProGPU.Tests;
@@ -252,6 +253,16 @@ public sealed class PathShimCompatibilityTests
         Assert.Equal(FillRule.Nonzero, vectorNonzero.FillRule);
         Assert.Single(vectorEvenOdd.Figures);
         Assert.Single(vectorNonzero.Figures);
+    }
+
+    [Fact]
+    public void WpfGeometryParseUsesPathGeometryParser()
+    {
+        var geometry = WpfGeometry.Parse("F1 M 0 0 L 10 0 L 10 10 Z");
+
+        var path = Assert.IsType<WpfPathGeometry>(geometry);
+        Assert.Equal(WpfFillRule.Nonzero, path.FillRule);
+        Assert.Single(path.Figures);
     }
 
     [Fact]

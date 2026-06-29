@@ -6,6 +6,11 @@ public abstract class Geometry : ProGPU.Scene.INativePathGeometrySource
 {
     public Transform? Transform { get; set; }
 
+    public static Geometry Parse(string source)
+    {
+        return PathGeometry.Parse(source);
+    }
+
     public abstract void Draw(ProGPU.Scene.DrawingContext context, ProGPU.Vector.Brush? fill, ProGPU.Vector.Pen? pen);
     public abstract Rect Bounds { get; }
     internal virtual bool TryGetPathGeometry(out ProGPU.Vector.PathGeometry path, out Matrix4x4 transform)
