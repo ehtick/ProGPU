@@ -5,10 +5,30 @@ public interface IPortableEffectSource
     bool TryGetPortableEffect(out PortableEffect effect);
 }
 
+public interface IPortableBitmapEffectInputSource
+{
+    bool TryGetPortableBitmapEffectInput(out PortableBitmapEffectInput input);
+}
+
 public enum PortableEffectKind
 {
     Blur = 0,
     DropShadow = 1
+}
+
+public sealed class PortableBitmapEffectInput
+{
+    public PortableBitmapEffectInput(
+        bool usesContextInput,
+        bool hasDefaultAreaToApplyEffect)
+    {
+        UsesContextInput = usesContextInput;
+        HasDefaultAreaToApplyEffect = hasDefaultAreaToApplyEffect;
+    }
+
+    public bool UsesContextInput { get; }
+
+    public bool HasDefaultAreaToApplyEffect { get; }
 }
 
 public sealed class PortableEffect
