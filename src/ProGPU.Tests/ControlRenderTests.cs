@@ -159,6 +159,41 @@ public class ControlRenderTests
     }
 
     [Fact]
+    public void StyleSettersApplyThroughDependencyProperties()
+    {
+        var button = new Button();
+        var style = new Style(typeof(Button));
+        style.Setters.Add(new Setter(nameof(FrameworkElement.Width), 200f));
+        style.Setters.Add(new Setter(nameof(FrameworkElement.Height), 44f));
+        style.Setters.Add(new Setter(nameof(Control.CornerRadius), 10f));
+        style.Setters.Add(new Setter(nameof(FrameworkElement.Padding), new Thickness(1f, 2f, 3f, 4f)));
+
+        button.Style = style;
+
+        Assert.Equal(200f, button.Width);
+        Assert.Equal(44f, button.Height);
+        Assert.Equal(10f, button.CornerRadius);
+        Assert.Equal(new Thickness(1f, 2f, 3f, 4f), button.Padding);
+    }
+
+    [Fact]
+    public void FrameworkElementStyleApplicationDoesNotUseClrPropertyReflection()
+    {
+        string source = File.ReadAllText(FindRepoFile("src", "ProGPU.WinUI", "Core", "FrameworkElement.cs"));
+        int applyStyleIndex = source.IndexOf("private void ApplyStyle()", StringComparison.Ordinal);
+        int marginPropertyIndex = source.IndexOf("public static readonly Microsoft.UI.Xaml.DependencyProperty MarginProperty", StringComparison.Ordinal);
+
+        Assert.True(applyStyleIndex >= 0, "ApplyStyle was not found.");
+        Assert.True(marginPropertyIndex > applyStyleIndex, "Could not isolate ApplyStyle body.");
+
+        string applyStyleSource = source[applyStyleIndex..marginPropertyIndex];
+        Assert.DoesNotContain("GetProperty(", applyStyleSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("SetValue(this", applyStyleSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("System.Reflection", applyStyleSource, StringComparison.Ordinal);
+        Assert.Contains("DependencyProperty.Lookup", applyStyleSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void RepeatButton_RaisesClickThroughTypedButtonHook()
     {
         var button = new RepeatButton
@@ -715,5 +750,21 @@ public class ControlRenderTests
         Assert.Contains(new TestEdge(0, 2), uniqueEdges);
         Assert.Contains(new TestEdge(1, 3), uniqueEdges);
         Assert.Contains(new TestEdge(2, 3), uniqueEdges);
+    }
+
+    private static string FindRepoFile(params string[] pathParts)
+    {
+        for (DirectoryInfo? directory = new(AppContext.BaseDirectory);
+             directory != null;
+             directory = directory.Parent)
+        {
+            string candidate = Path.Combine(new[] { directory.FullName }.Concat(pathParts).ToArray());
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        throw new FileNotFoundException($"Could not locate {Path.Combine(pathParts)}.");
     }
 }

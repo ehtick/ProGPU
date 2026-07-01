@@ -243,7 +243,7 @@ public static class SamplePagePresenter
         // Column 1: Styled Controls
         var rightStack = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(10f) };
         var rightHeader = new RichTextBlock { Font = AppState.GetFont(), FontSize = 14f, Margin = new Thickness(0, 0, 0, 15) };
-        rightHeader.Inlines.Add(new Bold(new Run("Styled via Reflection Setters")));
+        rightHeader.Inlines.Add(new Bold(new Run("Styled via Dependency Setters")));
         rightStack.AddChild(rightHeader);
 
         // Create the Style instance

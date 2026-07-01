@@ -488,28 +488,7 @@ public partial class FrameworkElement
             }
             else
             {
-                var prop = GetType().GetProperty(setter.Property, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
-                if (prop != null && prop.CanWrite)
-                {
-                    try
-                    {
-                        var val = setter.Value;
-                        if (val is StaticResourceRef staticRef)
-                        {
-                            val = ThemeManager.GetResource(staticRef.ResourceKey, this.ActualTheme);
-                        }
-                        else if (val is ThemeResource themeResource)
-                        {
-                            val = ThemeManager.GetResource(themeResource.ResourceKey, this.ActualTheme);
-                        }
-                        var convertedValue = ConvertValue(prop.PropertyType, val);
-                        prop.SetValue(this, convertedValue);
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Error applying style property '{setter.Property}' on {GetType().Name}: {ex.Message}");
-                    }
-                }
+                System.Diagnostics.Debug.WriteLine($"Unsupported style setter '{setter.Property}' on {GetType().Name}: no dependency property is registered.");
             }
         }
     }
