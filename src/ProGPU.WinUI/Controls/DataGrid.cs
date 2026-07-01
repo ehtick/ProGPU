@@ -16,7 +16,6 @@ using ProGPU.Scene;
 using ProGPU.Text;
 using System.Collections.Concurrent;
 using System.Globalization;
-using System.Linq.Expressions;
 
 namespace Microsoft.UI.Xaml.Controls;
 
@@ -46,7 +45,7 @@ public interface IDataGridValueProvider
 
 public class DataGrid : Control
 {
-    private static readonly ConcurrentDictionary<DataGridValueAccessorKey, DataGridValueAccessor> s_valueAccessors = new();
+    private static readonly ConcurrentDictionary<DataGridValueAccessorKey, DataGridValueAccessor> s_registeredValueAccessors = new();
 
     private float _fontSize = 13f;
     private float _rowHeight = 28f;
@@ -156,6 +155,76 @@ public class DataGrid : Control
         {
             Style = defaultStyle;
         }
+    }
+
+    public static void RegisterValueAccessor<TItem, TValue>(
+        string propertyName,
+        Func<TItem, TValue> getter,
+        Action<TItem, TValue>? setter = null)
+    {
+        if (string.IsNullOrWhiteSpace(propertyName))
+        {
+            throw new ArgumentException("Property name must be non-empty.", nameof(propertyName));
+        }
+        ArgumentNullException.ThrowIfNull(getter);
+
+        RegisterValueAccessor(
+            typeof(TItem),
+            propertyName,
+            typeof(TValue),
+            item => getter((TItem)item),
+            setter == null
+                ? null
+                : (item, value) => setter((TItem)item, CastRegisteredValue<TValue>(value)));
+    }
+
+    public static void RegisterValueAccessor<TItem>(
+        string propertyName,
+        Type valueType,
+        Func<TItem, object?> getter,
+        Action<TItem, object?>? setter = null)
+    {
+        if (string.IsNullOrWhiteSpace(propertyName))
+        {
+            throw new ArgumentException("Property name must be non-empty.", nameof(propertyName));
+        }
+        ArgumentNullException.ThrowIfNull(valueType);
+        ArgumentNullException.ThrowIfNull(getter);
+
+        RegisterValueAccessor(
+            typeof(TItem),
+            propertyName,
+            valueType,
+            item => getter((TItem)item),
+            setter == null
+                ? null
+                : (item, value) => setter((TItem)item, value));
+    }
+
+    public static bool UnregisterValueAccessor<TItem>(string propertyName)
+    {
+        if (string.IsNullOrWhiteSpace(propertyName))
+        {
+            return false;
+        }
+
+        return s_registeredValueAccessors.TryRemove(new DataGridValueAccessorKey(typeof(TItem), propertyName), out _);
+    }
+
+    private static void RegisterValueAccessor(
+        Type itemType,
+        string propertyName,
+        Type valueType,
+        Func<object, object?> getter,
+        Action<object, object?>? setter)
+    {
+        var key = new DataGridValueAccessorKey(itemType, propertyName);
+        s_registeredValueAccessors[key] = new DataGridValueAccessor(valueType, getter, setter);
+    }
+
+    private static TValue CastRegisteredValue<TValue>(object? value)
+    {
+        return value == null ? default! : (TValue)value;
     }
 
     public void AddItem(object item)
@@ -361,47 +430,14 @@ public class DataGrid : Control
 
     private static DataGridValueAccessor GetValueAccessor(Type itemType, string propName)
     {
-        return s_valueAccessors.GetOrAdd(new DataGridValueAccessorKey(itemType, propName), CreateValueAccessor);
-    }
-
-    private static DataGridValueAccessor CreateValueAccessor(DataGridValueAccessorKey key)
-    {
-        if (string.IsNullOrWhiteSpace(key.PropertyName))
+        if (string.IsNullOrWhiteSpace(propName))
         {
             return DataGridValueAccessor.Missing;
         }
 
-        var property = key.ItemType.GetProperty(
-            key.PropertyName,
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
-        if (property == null || property.GetIndexParameters().Length != 0)
-        {
-            return DataGridValueAccessor.Missing;
-        }
-
-        Func<object, object?>? getter = null;
-        if (property.CanRead)
-        {
-            var instance = Expression.Parameter(typeof(object), "instance");
-            var typedInstance = Expression.Convert(instance, property.DeclaringType!);
-            var propertyAccess = Expression.Property(typedInstance, property);
-            var boxedValue = Expression.Convert(propertyAccess, typeof(object));
-            getter = Expression.Lambda<Func<object, object?>>(boxedValue, instance).Compile();
-        }
-
-        Action<object, object?>? setter = null;
-        if (property.CanWrite)
-        {
-            var instance = Expression.Parameter(typeof(object), "instance");
-            var value = Expression.Parameter(typeof(object), "value");
-            var typedInstance = Expression.Convert(instance, property.DeclaringType!);
-            var propertyAccess = Expression.Property(typedInstance, property);
-            var convertedValue = Expression.Convert(value, property.PropertyType);
-            var assign = Expression.Assign(propertyAccess, convertedValue);
-            setter = Expression.Lambda<Action<object, object?>>(assign, instance, value).Compile();
-        }
-
-        return new DataGridValueAccessor(property.PropertyType, getter, setter);
+        return s_registeredValueAccessors.TryGetValue(new DataGridValueAccessorKey(itemType, propName), out var accessor)
+            ? accessor
+            : DataGridValueAccessor.Missing;
     }
 
     private readonly record struct DataGridValueAccessorKey(Type ItemType, string PropertyName);
