@@ -159,11 +159,6 @@ namespace Microsoft.UI.Xaml.Controls
             InvalidateMeasure();
         }
 
-        public TtfFont? GetActiveFont()
-        {
-            return Font ?? PopupService.DefaultFont;
-        }
-
         public override void OnPointerMoved(PointerRoutedEventArgs e)
         {
             base.OnPointerMoved(e);

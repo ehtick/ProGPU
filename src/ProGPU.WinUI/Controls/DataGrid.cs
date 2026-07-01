@@ -86,11 +86,6 @@ public class DataGrid : Control
         }
     }
 
-    public TtfFont? GetActiveFont()
-    {
-        return Font ?? PopupService.DefaultFont;
-    }
-
     public float FontSize
     {
         get => _fontSize;

@@ -11,7 +11,6 @@ using System.Reflection;
 using ProGPU.Layout;
 using ProGPU.Scene;
 using ProGPU.Vector;
-using ProGPU.Text;
 
 namespace Microsoft.UI.Xaml.Controls;
 
@@ -308,30 +307,8 @@ public class DevTools : Border
             }
         };
 
-        // Explicitly resolve and set Font for Pivot & DataGrid
+        // Explicitly resolve and set Font for Pivot & DataGrid.
         var resolvedFont = PopupService.DefaultFont;
-        if (resolvedFont == null)
-        {
-            try
-            {
-                var asm = AppDomain.CurrentDomain.GetAssemblies();
-                foreach (var assembly in asm)
-                {
-                    var type = assembly.GetType("ProGPU.Samples.AppState") ?? assembly.GetType("ProGPU.Samples.Program");
-                    if (type != null)
-                    {
-                        var method = type.GetMethod("GetFont");
-                        if (method != null && method.Invoke(null, null) is TtfFont staticFont)
-                        {
-                            resolvedFont = staticFont;
-                            break;
-                        }
-                    }
-                }
-            }
-            catch { }
-        }
-
         if (resolvedFont != null)
         {
             _pivot.Font = resolvedFont;

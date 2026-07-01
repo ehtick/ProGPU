@@ -298,12 +298,13 @@ public static class InputSystem
 
     private static bool HasBackground(FrameworkElement fe)
     {
-        var prop = fe.GetType().GetProperty("Background");
-        if (prop != null)
+        return fe switch
         {
-            return prop.GetValue(fe) != null;
-        }
-        return false;
+            Control control => control.Background != null,
+            Border border => border.Background != null,
+            ContentPresenter presenter => presenter.Background != null,
+            _ => false
+        };
     }
 
     private static FrameworkElement? HitTestInternal(Visual visual, Vector2 screenPoint, Matrix4x4 parentTransform)
@@ -321,17 +322,9 @@ public static class InputSystem
             Vector2 localPoint = new Vector2(localPt3.X, localPt3.Y);
 
             Rect localBounds = new Rect(Vector2.Zero, visual.Size);
-            if (visual.GetType().Name == "SelectionAdorner")
+            if (visual is IHitTestBoundsProvider hitTestBoundsProvider)
             {
-                float zoomScale = 1.0f;
-                var zoomProp = visual.GetType().GetProperty("ZoomScale");
-                if (zoomProp != null)
-                {
-                    zoomScale = (float)(zoomProp.GetValue(visual) ?? 1.0f);
-                }
-                float expandY = 32f / zoomScale;
-                float expandX = 12f / zoomScale;
-                localBounds = new Rect(-expandX, -expandY, visual.Size.X + 2f * expandX, visual.Size.Y + expandY + expandX);
+                localBounds = hitTestBoundsProvider.GetHitTestBounds(localBounds);
             }
             if (!localBounds.Contains(localPoint))
                 return null;
@@ -971,4 +964,3 @@ public static class InputSystem
         }
     }
 }
-

@@ -11,7 +11,6 @@ using Silk.NET.Input;
 using ProGPU.Layout;
 using ProGPU.Vector;
 using ProGPU.Scene;
-using ProGPU.Text;
 
 namespace Microsoft.UI.Xaml.Controls;
 
@@ -219,11 +218,6 @@ public class TabView : FrameworkElement
             float contentH = Math.Max(0f, arrangeRect.Height - headerH);
             SelectedItem.Content.Arrange(new Rect(arrangeRect.X, contentY, arrangeRect.Width, contentH));
         }
-    }
-
-    public TtfFont? GetActiveFont()
-    {
-        return Font ?? PopupService.DefaultFont;
     }
 
     public override void OnRender(DrawingContext context)

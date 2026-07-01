@@ -102,42 +102,6 @@ public class Pivot : FrameworkElement
         Padding = new Thickness(16, 8, 16, 8);
     }
 
-    public TtfFont? GetActiveFont()
-    {
-        if (Font != null) return Font;
-        
-        // Walk up parent tree to find an active font
-        var p = Parent;
-        while (p != null)
-        {
-            var prop = p.GetType().GetProperty("Font");
-            if (prop != null && prop.GetValue(p) is TtfFont f) return f;
-            p = p.Parent;
-        }
-
-        if (PopupService.DefaultFont != null) return PopupService.DefaultFont;
-
-        // Fallback reflectively on AppState/Program.GetFont()
-        try
-        {
-            var asm = AppDomain.CurrentDomain.GetAssemblies();
-            foreach (var assembly in asm)
-            {
-                var type = assembly.GetType("ProGPU.Samples.AppState") ?? assembly.GetType("ProGPU.Samples.Program");
-                if (type != null)
-                {
-                    var method = type.GetMethod("GetFont");
-                    if (method != null && method.Invoke(null, null) is TtfFont staticFont)
-                    {
-                        return staticFont;
-                    }
-                }
-            }
-        }
-        catch { }
-        return null;
-    }
-
     private void StartTransition()
     {
         _transitionProgress = 0f;

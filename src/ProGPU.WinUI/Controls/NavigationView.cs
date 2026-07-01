@@ -11,7 +11,6 @@ using System.Numerics;
 using ProGPU.Layout;
 using ProGPU.Scene;
 using ProGPU.Vector;
-using ProGPU.Text;
 
 namespace Microsoft.UI.Xaml.Controls;
 
@@ -244,11 +243,6 @@ public class NavigationView : FrameworkElement
     private void OnMenuItemsChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
         RebuildPaneChildren();
-    }
-
-    public TtfFont? GetActiveFont()
-    {
-        return Font ?? PopupService.DefaultFont;
     }
 
     private void AddVisibleItems(NavigationViewItem item, int level, List<NavigationViewItem> list)

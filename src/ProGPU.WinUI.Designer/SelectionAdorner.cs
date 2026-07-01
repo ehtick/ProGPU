@@ -11,7 +11,7 @@ using ProGPU.Text;
 
 namespace ProGPU.WinUI.Designer;
 
-public class SelectionAdorner : Panel
+public class SelectionAdorner : Panel, IHitTestBoundsProvider
 {
     private readonly Thumb _topLeftThumb = new();
     private readonly Thumb _topCenterThumb = new();
@@ -27,6 +27,18 @@ public class SelectionAdorner : Panel
     public DesignerCanvas? ParentCanvas { get; }
 
     public float ZoomScale => ParentCanvas?.ZoomScale ?? 1.0f;
+
+    public Rect GetHitTestBounds(Rect defaultBounds)
+    {
+        float zoomScale = MathF.Max(ZoomScale, 0.001f);
+        float expandY = 32f / zoomScale;
+        float expandX = 12f / zoomScale;
+        return new Rect(
+            -expandX,
+            -expandY,
+            defaultBounds.Width + 2f * expandX,
+            defaultBounds.Height + expandY + expandX);
+    }
 
     public SelectionAdorner(FrameworkElement associatedElement, DesignerCanvas parentCanvas)
     {

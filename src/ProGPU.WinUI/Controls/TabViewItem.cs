@@ -8,7 +8,6 @@ using System.Numerics;
 using ProGPU.Layout;
 using ProGPU.Vector;
 using ProGPU.Scene;
-using ProGPU.Text;
 
 namespace Microsoft.UI.Xaml.Controls;
 
@@ -138,36 +137,6 @@ public class TabViewItem : ContentControl
                 e.Handled = true;
             }
         }
-    }
-
-    public TtfFont? GetActiveFont()
-    {
-        var p = Parent;
-        while (p != null)
-        {
-            var prop = p.GetType().GetProperty("Font");
-            if (prop != null && prop.GetValue(p) is TtfFont f) return f;
-            p = p.Parent;
-        }
-
-        try
-        {
-            var asm = AppDomain.CurrentDomain.GetAssemblies();
-            foreach (var assembly in asm)
-            {
-                var type = assembly.GetType("ProGPU.Samples.Program");
-                if (type != null)
-                {
-                    var method = type.GetMethod("GetFont");
-                    if (method != null && method.Invoke(null, null) is TtfFont staticFont)
-                    {
-                        return staticFont;
-                    }
-                }
-            }
-        }
-        catch { }
-        return null;
     }
 
     public override void OnRender(DrawingContext context)

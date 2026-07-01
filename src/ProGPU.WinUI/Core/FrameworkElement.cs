@@ -197,6 +197,11 @@ public partial class FrameworkElement
         set => SetValue(FontProperty, value);
     }
 
+    public ProGPU.Text.TtfFont? GetActiveFont()
+    {
+        return Font;
+    }
+
     protected override void RaisePropertyChanged(string propertyName)
     {
         base.RaisePropertyChanged(propertyName);
@@ -797,4 +802,3 @@ public partial class FrameworkElement
         }
     }
 }
-

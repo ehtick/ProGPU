@@ -244,11 +244,6 @@ public class RichTextBlock : FrameworkElement
         base.OnThemeChanged();
     }
 
-    public TtfFont? GetActiveFont()
-    {
-        return Font ?? PopupService.DefaultFont;
-    }
-
     private TtfFont? ActiveFont => GetActiveFont();
 
     public float FontSize
