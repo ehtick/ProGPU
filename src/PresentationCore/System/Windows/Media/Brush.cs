@@ -6,6 +6,8 @@ namespace System.Windows.Media;
 public abstract class Brush : Freezable, ProGPU.Wpf.Interop.IPortableInvalidationSource
 {
     private double _opacity = 1.0;
+    private Transform? _relativeTransform;
+    private Transform? _transform;
     private uint _changeVersion;
 
     public event EventHandler? Changed;
@@ -21,6 +23,36 @@ public abstract class Brush : Freezable, ProGPU.Wpf.Interop.IPortableInvalidatio
             }
 
             _opacity = value;
+            OnChanged();
+        }
+    }
+
+    public Transform? RelativeTransform
+    {
+        get => _relativeTransform;
+        set
+        {
+            if (ReferenceEquals(_relativeTransform, value))
+            {
+                return;
+            }
+
+            _relativeTransform = value;
+            OnChanged();
+        }
+    }
+
+    public Transform? Transform
+    {
+        get => _transform;
+        set
+        {
+            if (ReferenceEquals(_transform, value))
+            {
+                return;
+            }
+
+            _transform = value;
             OnChanged();
         }
     }

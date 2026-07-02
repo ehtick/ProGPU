@@ -401,6 +401,25 @@ public abstract class GradientBrush : Brush
         }
     }
 
+    protected void ApplyBrushTransform(ProGpuBrush brush, Rect targetBounds)
+    {
+        if (!TryGetEffectiveBrushTransform(targetBounds, out var effectiveTransform)
+            || !TryCreateCoordinateBrushTransform(effectiveTransform, out var coordinateTransform))
+        {
+            return;
+        }
+
+        switch (brush)
+        {
+            case ProGpuLinearGradientBrush linear:
+                linear.CoordinateTransform = coordinateTransform;
+                break;
+            case ProGpuRadialGradientBrush radial:
+                radial.CoordinateTransform = coordinateTransform;
+                break;
+        }
+    }
+
     protected static Vector4 ToVector(Color color)
     {
         return new Vector4(
@@ -422,9 +441,102 @@ public abstract class GradientBrush : Brush
             bounds.Y + point.Y * bounds.Height);
     }
 
+    protected bool TryGetPortableBrushTransform(Transform? transform, out PortableMatrix3x2 matrix)
+    {
+        matrix = PortableMatrix3x2.Identity;
+        if (transform == null || ReferenceEquals(transform, global::System.Windows.Media.Transform.Identity))
+        {
+            return false;
+        }
+
+        if (transform is IPortableTransformMatrixSource matrixSource
+            && matrixSource.TryGetPortableTransformMatrix(out matrix)
+            && !matrix.IsIdentity)
+        {
+            return true;
+        }
+
+        matrix = PortableMatrix3x2.Identity;
+        return false;
+    }
+
     private void OnGradientStopsChanged(object? sender, EventArgs e)
     {
         OnChanged();
+    }
+
+    private bool TryGetEffectiveBrushTransform(Rect targetBounds, out Matrix4x4 effectiveTransform)
+    {
+        effectiveTransform = Matrix4x4.Identity;
+        var hasTransform = false;
+
+        if (RelativeTransform != null
+            && !ReferenceEquals(RelativeTransform, global::System.Windows.Media.Transform.Identity)
+            && IsUsable(targetBounds))
+        {
+            effectiveTransform *= CreateRelativeBoundsBrushTransform(RelativeTransform.Value, targetBounds);
+            hasTransform = true;
+        }
+
+        if (Transform != null && !ReferenceEquals(Transform, global::System.Windows.Media.Transform.Identity))
+        {
+            effectiveTransform *= Transform.Value;
+            hasTransform = true;
+        }
+
+        return hasTransform;
+    }
+
+    private static bool TryCreateCoordinateBrushTransform(Matrix4x4 transform, out Matrix4x4 coordinateTransform)
+    {
+        coordinateTransform = Matrix4x4.Identity;
+        return Is2DAffineBrushTransform(transform)
+            && Matrix4x4.Invert(transform, out coordinateTransform)
+            && Is2DAffineBrushTransform(coordinateTransform);
+    }
+
+    private static Matrix4x4 CreateRelativeBoundsBrushTransform(Matrix4x4 relativeTransform, Rect bounds)
+    {
+        return Matrix4x4.CreateTranslation((float)-bounds.X, (float)-bounds.Y, 0)
+            * Matrix4x4.CreateScale((float)(1 / bounds.Width), (float)(1 / bounds.Height), 1)
+            * relativeTransform
+            * Matrix4x4.CreateScale((float)bounds.Width, (float)bounds.Height, 1)
+            * Matrix4x4.CreateTranslation((float)bounds.X, (float)bounds.Y, 0);
+    }
+
+    private static bool IsUsable(Rect bounds)
+    {
+        return !bounds.IsEmpty
+            && bounds.Width > 0
+            && bounds.Height > 0
+            && double.IsFinite(bounds.X)
+            && double.IsFinite(bounds.Y)
+            && double.IsFinite(bounds.Width)
+            && double.IsFinite(bounds.Height);
+    }
+
+    private static bool Is2DAffineBrushTransform(Matrix4x4 transform)
+    {
+        return NearlyZero(transform.M13)
+            && NearlyZero(transform.M14)
+            && NearlyZero(transform.M23)
+            && NearlyZero(transform.M24)
+            && NearlyZero(transform.M31)
+            && NearlyZero(transform.M32)
+            && NearlyEqual(transform.M33, 1)
+            && NearlyZero(transform.M34)
+            && NearlyZero(transform.M43)
+            && NearlyEqual(transform.M44, 1);
+    }
+
+    private static bool NearlyZero(float value)
+    {
+        return MathF.Abs(value) <= 0.0001f;
+    }
+
+    private static bool NearlyEqual(float left, float right)
+    {
+        return MathF.Abs(left - right) <= 0.0001f;
     }
 
     private static ProGpuGradientSpreadMethod ToNativeSpreadMethod(GradientSpreadMethod spreadMethod)
@@ -542,23 +654,27 @@ public sealed class LinearGradientBrush : GradientBrush, IPortableBrushSource
 
     public override ProGpuBrush ToNative()
     {
-        return CreateNativeBrush(StartPoint, EndPoint);
+        var brush = CreateNativeBrush(StartPoint, EndPoint);
+        ApplyBrushTransform(brush, Rect.Empty);
+        return brush;
     }
 
     public override ProGpuBrush ToNative(Rect targetBounds)
     {
-        if (MappingMode != BrushMappingMode.RelativeToBoundingBox)
-        {
-            return ToNative();
-        }
-
-        return CreateNativeBrush(
-            MapRelativePoint(StartPoint, targetBounds),
-            MapRelativePoint(EndPoint, targetBounds));
+        var brush = MappingMode == BrushMappingMode.RelativeToBoundingBox
+            ? CreateNativeBrush(
+                MapRelativePoint(StartPoint, targetBounds),
+                MapRelativePoint(EndPoint, targetBounds))
+            : CreateNativeBrush(StartPoint, EndPoint);
+        ApplyBrushTransform(brush, targetBounds);
+        return brush;
     }
 
     bool IPortableBrushSource.TryGetPortableBrush(out PortableBrush brush)
     {
+        bool hasTransform = TryGetPortableBrushTransform(Transform, out PortableMatrix3x2 transform);
+        bool hasRelativeTransform = TryGetPortableBrushTransform(RelativeTransform, out PortableMatrix3x2 relativeTransform);
+
         brush = PortableBrush.LinearGradient(
             new PortablePoint(StartPoint.X, StartPoint.Y),
             new PortablePoint(EndPoint.X, EndPoint.Y),
@@ -566,7 +682,11 @@ public sealed class LinearGradientBrush : GradientBrush, IPortableBrushSource
             Opacity,
             ToPortableMappingMode(),
             ToPortableSpreadMethod(),
-            ToPortableColorInterpolationMode());
+            ToPortableColorInterpolationMode(),
+            hasTransform,
+            transform,
+            hasRelativeTransform,
+            relativeTransform);
         return true;
     }
 
@@ -674,25 +794,29 @@ public sealed class RadialGradientBrush : GradientBrush, IPortableBrushSource
 
     public override ProGpuBrush ToNative()
     {
-        return CreateNativeBrush(Center, GradientOrigin, RadiusX, RadiusY);
+        var brush = CreateNativeBrush(Center, GradientOrigin, RadiusX, RadiusY);
+        ApplyBrushTransform(brush, Rect.Empty);
+        return brush;
     }
 
     public override ProGpuBrush ToNative(Rect targetBounds)
     {
-        if (MappingMode != BrushMappingMode.RelativeToBoundingBox)
-        {
-            return ToNative();
-        }
-
-        return CreateNativeBrush(
-            MapRelativePoint(Center, targetBounds),
-            MapRelativePoint(GradientOrigin, targetBounds),
-            RadiusX * targetBounds.Width,
-            RadiusY * targetBounds.Height);
+        var brush = MappingMode == BrushMappingMode.RelativeToBoundingBox
+            ? CreateNativeBrush(
+                MapRelativePoint(Center, targetBounds),
+                MapRelativePoint(GradientOrigin, targetBounds),
+                RadiusX * targetBounds.Width,
+                RadiusY * targetBounds.Height)
+            : CreateNativeBrush(Center, GradientOrigin, RadiusX, RadiusY);
+        ApplyBrushTransform(brush, targetBounds);
+        return brush;
     }
 
     bool IPortableBrushSource.TryGetPortableBrush(out PortableBrush brush)
     {
+        bool hasTransform = TryGetPortableBrushTransform(Transform, out PortableMatrix3x2 transform);
+        bool hasRelativeTransform = TryGetPortableBrushTransform(RelativeTransform, out PortableMatrix3x2 relativeTransform);
+
         brush = PortableBrush.RadialGradient(
             new PortablePoint(Center.X, Center.Y),
             new PortablePoint(GradientOrigin.X, GradientOrigin.Y),
@@ -702,7 +826,11 @@ public sealed class RadialGradientBrush : GradientBrush, IPortableBrushSource
             Opacity,
             ToPortableMappingMode(),
             ToPortableSpreadMethod(),
-            ToPortableColorInterpolationMode());
+            ToPortableColorInterpolationMode(),
+            hasTransform,
+            transform,
+            hasRelativeTransform,
+            relativeTransform);
         return true;
     }
 

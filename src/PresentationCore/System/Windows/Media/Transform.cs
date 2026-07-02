@@ -6,6 +6,8 @@ namespace System.Windows.Media;
 
 public abstract class Transform : IPortableTransformMatrixSource
 {
+    public static Transform Identity { get; } = new IdentityTransform();
+
     public abstract Matrix4x4 Value { get; }
 
     bool IPortableTransformMatrixSource.TryGetPortableTransformMatrix(out PortableMatrix3x2 matrix)
@@ -50,6 +52,11 @@ public abstract class Transform : IPortableTransformMatrixSource
     private static bool NearlyEqual(float left, float right)
     {
         return Math.Abs(left - right) <= 0.00001f;
+    }
+
+    private sealed class IdentityTransform : Transform
+    {
+        public override Matrix4x4 Value => Matrix4x4.Identity;
     }
 }
 
