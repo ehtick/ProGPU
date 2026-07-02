@@ -218,11 +218,11 @@ namespace ProGPU.Transpiler
     {
         public string Type { get; }
         public string Name { get; }
-        public Expression Initializer { get; }
+        public Expression? Initializer { get; }
         public int? ArraySize { get; }
         public bool IsConst { get; set; }
         public bool IsUniform { get; set; }
-        public VariableDeclarationStatement(string type, string name, Expression initializer, int? arraySize = null)
+        public VariableDeclarationStatement(string type, string name, Expression? initializer, int? arraySize = null)
         {
             Type = type;
             Name = name;
@@ -235,8 +235,8 @@ namespace ProGPU.Transpiler
     {
         public Expression Condition { get; }
         public Statement ThenBranch { get; }
-        public Statement ElseBranch { get; }
-        public IfStatement(Expression condition, Statement thenBranch, Statement elseBranch)
+        public Statement? ElseBranch { get; }
+        public IfStatement(Expression condition, Statement thenBranch, Statement? elseBranch)
         {
             Condition = condition;
             ThenBranch = thenBranch;
@@ -246,12 +246,12 @@ namespace ProGPU.Transpiler
 
     public class ForStatement : Statement
     {
-        public Statement Initializer { get; }
-        public Expression Condition { get; }
+        public Statement? Initializer { get; }
+        public Expression? Condition { get; }
         public IReadOnlyList<Expression> Increments { get; }
-        public Expression Increment => Increments.Count == 1 ? Increments[0] : null;
+        public Expression? Increment => Increments.Count == 1 ? Increments[0] : null;
         public Statement Body { get; }
-        public ForStatement(Statement initializer, Expression condition, Expression increment, Statement body)
+        public ForStatement(Statement? initializer, Expression? condition, Expression? increment, Statement body)
             : this(
                 initializer,
                 condition,
@@ -260,7 +260,7 @@ namespace ProGPU.Transpiler
         {
         }
 
-        public ForStatement(Statement initializer, Expression condition, IReadOnlyList<Expression> increments, Statement body)
+        public ForStatement(Statement? initializer, Expression? condition, IReadOnlyList<Expression>? increments, Statement body)
         {
             Initializer = initializer;
             Condition = condition;
@@ -271,8 +271,8 @@ namespace ProGPU.Transpiler
 
     public class ReturnStatement : Statement
     {
-        public Expression Expression { get; }
-        public ReturnStatement(Expression expression)
+        public Expression? Expression { get; }
+        public ReturnStatement(Expression? expression)
         {
             Expression = expression;
         }
@@ -294,9 +294,9 @@ namespace ProGPU.Transpiler
 
     public class Scope
     {
-        public Scope Parent { get; }
+        public Scope? Parent { get; }
         public Dictionary<string, string> Variables { get; } = new Dictionary<string, string>();
-        public Scope(Scope parent = null)
+        public Scope(Scope? parent = null)
         {
             Parent = parent;
         }
@@ -304,7 +304,7 @@ namespace ProGPU.Transpiler
         {
             Variables[name] = type;
         }
-        public string Lookup(string name)
+        public string? Lookup(string name)
         {
             if (Variables.TryGetValue(name, out var type)) return type;
             return Parent?.Lookup(name);
@@ -1385,7 +1385,7 @@ namespace ProGPU.Transpiler
                     arraySize = ParseArraySizeAfterOpenBracket();
                 }
 
-                Expression initializer = null;
+                Expression? initializer = null;
                 if (Match(TokenType.Operator, "="))
                 {
                     initializer = ParseExpression();
@@ -1505,7 +1505,7 @@ namespace ProGPU.Transpiler
                 var thenStmts = ParseStatement();
                 Statement thenBranch = thenStmts.Count == 1 ? thenStmts[0] : new BlockStatement(thenStmts);
 
-                Statement elseBranch = null;
+                Statement? elseBranch = null;
                 if (Match(TokenType.Keyword, "else"))
                 {
                     var elseStmts = ParseStatement();
@@ -1519,7 +1519,7 @@ namespace ProGPU.Transpiler
             {
                 Consume(TokenType.Punctuation, "(", "Expected '(' after 'for'");
 
-                Statement initializer = null;
+                Statement? initializer = null;
                 if (!Match(TokenType.Punctuation, ";"))
                 {
                     if (IsTypeName(Peek()))
@@ -1539,7 +1539,7 @@ namespace ProGPU.Transpiler
                     }
                 }
 
-                Expression condition = null;
+                Expression? condition = null;
                 if (!Match(TokenType.Punctuation, ";"))
                 {
                     condition = ParseExpression();
@@ -1561,7 +1561,7 @@ namespace ProGPU.Transpiler
 
             if (Match(TokenType.Keyword, "return"))
             {
-                Expression expr = null;
+                Expression? expr = null;
                 if (!Match(TokenType.Punctuation, ";"))
                 {
                     expr = ParseExpression();
@@ -1611,7 +1611,7 @@ namespace ProGPU.Transpiler
                     arraySize = ParseArraySizeAfterOpenBracket();
                 }
 
-                Expression initializer = null;
+                Expression? initializer = null;
                 if (Match(TokenType.Operator, "="))
                 {
                     initializer = ParseExpression();
@@ -1643,7 +1643,7 @@ namespace ProGPU.Transpiler
             throw new NotSupportedException("Only positive integer constant ShaderToy array sizes are supported.");
         }
 
-        private void RegisterIntegerConstant(string type, string name, bool isConst, Expression initializer)
+        private void RegisterIntegerConstant(string type, string name, bool isConst, Expression? initializer)
         {
             if (!isConst || initializer == null || type is not ("int" or "uint"))
             {
@@ -2135,7 +2135,7 @@ namespace ProGPU.Transpiler
             }
             if (expr is IdentifierExpression id)
             {
-                string type = _currentScope.Lookup(id.Name);
+                string? type = _currentScope.Lookup(id.Name);
                 if (type == null)
                 {
                     type = id.Name switch
@@ -2447,7 +2447,10 @@ namespace ProGPU.Transpiler
                 
                 foreach (var v in _globalVarsWithInitializers)
                 {
-                    sb.AppendLine($"    {ResolveIdentifier(v.Name)} = {GenerateExpression(v.Initializer)};");
+                    if (v.Initializer != null)
+                    {
+                        sb.AppendLine($"    {ResolveIdentifier(v.Name)} = {GenerateExpression(v.Initializer)};");
+                    }
                 }
 
                 foreach (var stmt in node.Body.Statements)
@@ -2713,7 +2716,7 @@ namespace ProGPU.Transpiler
             return sb.ToString();
         }
 
-        private string GenerateForInitializer(Statement initializer, string preludeIndent, out string prelude)
+        private string GenerateForInitializer(Statement? initializer, string preludeIndent, out string prelude)
         {
             prelude = "";
             if (initializer == null)
@@ -2784,7 +2787,8 @@ namespace ProGPU.Transpiler
                 {
                     return b ? "true" : "false";
                 }
-                return lit.Value.ToString();
+                return lit.Value?.ToString()
+                    ?? throw new InvalidOperationException("Literal expression value cannot be null.");
             }
             if (expr is IdentifierExpression id)
             {

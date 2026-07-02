@@ -368,7 +368,7 @@ fn fs_main(input: VertexOutputWireframe, @builtin(front_facing) is_front: bool) 
 
         private class CachedGeometry
         {
-            public GpuBuffer VertexBuffer;
+            public GpuBuffer VertexBuffer = null!;
             public uint VertexCount;
             public int Version;
         }

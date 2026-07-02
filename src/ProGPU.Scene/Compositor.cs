@@ -9049,7 +9049,7 @@ public unsafe class Compositor : IDisposable
             Texture = new TextureBindingLayout
             {
                 SampleType = TextureSampleType.Float,
-                ViewDimension = TextureViewDimension.TextureViewDimension2D,
+                ViewDimension = TextureViewDimension.Dimension2D,
                 Multisampled = false
             }
         };

@@ -6,7 +6,7 @@ namespace ProGPU.Scene
 {
     public class ImageEffectParams
     {
-        public GpuTexture Texture { get; set; }
+        public GpuTexture Texture { get; set; } = null!;
         public Rect Rect { get; set; }
         public float Brightness { get; set; } = 0f; // Offset [-1, 1]
         public float Contrast { get; set; } = 1f;   // Multiplier [0, 2]
