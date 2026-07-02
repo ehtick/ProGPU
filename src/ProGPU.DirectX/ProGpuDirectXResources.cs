@@ -23,7 +23,8 @@ public abstract class ProGpuDirectXResource : IDisposable
     {
         if (_isDisposed)
         {
-            throw new ObjectDisposedException(GetType().Name);
+            throw new ObjectDisposedException(
+                string.IsNullOrWhiteSpace(Label) ? nameof(ProGpuDirectXResource) : Label);
         }
     }
 

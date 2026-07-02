@@ -578,12 +578,29 @@ fn fs_main() -> @location(0) vec4<f32> {
     }
 
     [Fact]
+    public void NativeDependencyInspectorCreatesAssemblyImageHintsFromAnchorTypes()
+    {
+        var hints = ProGpuDirectXNativeDependencyInspector.CreateModuleHintsFromAssemblyImages(
+            [typeof(NativeDependencyFixture), typeof(NativeDependencyFixture)],
+            "TestAssemblyImage");
+
+        Assert.Contains(
+            hints,
+            hint => hint.ModuleName.Equals("d3d11.dll", StringComparison.OrdinalIgnoreCase)
+                && hint.Source == "TestAssemblyImage");
+        Assert.Equal(
+            hints.Count,
+            hints.DistinctBy(static hint => (hint.AssemblyName, hint.ModuleName, hint.Source)).Count());
+    }
+
+    [Fact]
     public void NativeDependencyInspectorUsesExplicitMetadataWithoutReflectionScanning()
     {
         var source = File.ReadAllText(FindRepoFile("src", "ProGPU.DirectX", "ProGpuDirectXNativeDependencyInspector.cs"));
 
         Assert.Contains("CreateReport(", source, StringComparison.Ordinal);
         Assert.Contains("CreateModuleHintsFromText", source, StringComparison.Ordinal);
+        Assert.Contains("CreateModuleHintsFromAssemblyImages", source, StringComparison.Ordinal);
         Assert.DoesNotContain("System.Reflection", source, StringComparison.Ordinal);
         Assert.DoesNotContain("BindingFlags", source, StringComparison.Ordinal);
         Assert.DoesNotContain("GetTypes(", source, StringComparison.Ordinal);
@@ -826,6 +843,21 @@ fn fs_main() -> @location(0) vec4<f32> {
         Assert.Equal(ProGpuDirectXNativeModuleKind.ManagedAssemblyHint, managedAttempt.Kind);
         Assert.Equal(ProGpuDirectXNativeCompatibilityAction.ManagedAssemblyReferenceOnly, managedAttempt.Action);
         Assert.Equal(ProGpuDirectXNativeResolverModuleStatus.Ignored, managedAttempt.Status);
+    }
+
+    [Fact]
+    public void NativeResolverRegistersDistinctAnchorAssemblies()
+    {
+        var report = CreateNativeDependencyFixtureReport();
+        var plan = ProGpuDirectXNativeCompatibilityPlanner.Create(report);
+
+        var registrations = ProGpuDirectXNativeResolver.RegisterAnchorAssemblies(
+            [typeof(NativeDependencyFixture), typeof(NativeDependencyFixture)],
+            plan);
+
+        var registration = Assert.Single(registrations);
+        Assert.Equal(ProGpuDirectXNativeResolverRegistrationStatus.Installed, registration.Status);
+        Assert.Equal(typeof(NativeDependencyFixture).Assembly.GetName().Name, registration.AssemblyName);
     }
 
     [Fact]

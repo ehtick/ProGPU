@@ -451,4 +451,35 @@ public static class ProGpuDirectXNativeResolver
             return registration.Installed;
         }
     }
+
+    public static IReadOnlyList<ProGpuDirectXNativeResolverRegistration> RegisterAnchorAssemblies(
+        IEnumerable<Type> anchorTypes,
+        ProGpuDirectXNativeCompatibilityPlan plan,
+        ProGpuDirectXNativeResolverOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(anchorTypes);
+
+        var registrations = new List<ProGpuDirectXNativeResolverRegistration>();
+        var seenAssemblies = new HashSet<Assembly>();
+        foreach (var anchorType in anchorTypes)
+        {
+            if (anchorType is null)
+            {
+                throw new ArgumentException("Native resolver anchor registration cannot include a null anchor type.", nameof(anchorTypes));
+            }
+
+            var assembly = anchorType.Assembly;
+            if (!seenAssemblies.Add(assembly))
+            {
+                continue;
+            }
+
+            TryRegister(assembly, plan, options, out var registration);
+            registrations.Add(registration);
+        }
+
+        return registrations
+            .OrderBy(static registration => registration.AssemblyName, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
 }

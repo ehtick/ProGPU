@@ -154,6 +154,58 @@ public static class ProGpuDirectXNativeDependencyInspector
         return CreateModuleHints(assemblyName, source, modules);
     }
 
+    public static IReadOnlyList<ProGpuDirectXNativeModuleHint> CreateModuleHintsFromAssemblyImages(
+        IEnumerable<Type> anchorTypes,
+        string source = "AssemblyImage")
+    {
+        ArgumentNullException.ThrowIfNull(anchorTypes);
+
+        var hints = new List<ProGpuDirectXNativeModuleHint>();
+        var seenAssemblies = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var anchorType in anchorTypes)
+        {
+            if (anchorType is null)
+            {
+                throw new ArgumentException("Assembly image native dependency hints cannot include a null anchor type.", nameof(anchorTypes));
+            }
+
+            var assembly = anchorType.Assembly;
+            var assemblyName = assembly.GetName().Name ?? assembly.FullName ?? string.Empty;
+            if (!seenAssemblies.Add(assembly.FullName ?? assemblyName))
+            {
+                continue;
+            }
+
+            var location = assembly.Location;
+            if (string.IsNullOrWhiteSpace(location) || !File.Exists(location))
+            {
+                continue;
+            }
+
+            try
+            {
+                hints.AddRange(CreateModuleHintsFromBytes(
+                    assemblyName,
+                    File.ReadAllBytes(location),
+                    source));
+            }
+            catch (Exception ex) when (IsAssemblyImageReadFailure(ex))
+            {
+                hints.Add(new ProGpuDirectXNativeModuleHint(
+                    assemblyName,
+                    $"{assemblyName}.dll",
+                    $"{source}ReadFailed:{DescribeAssemblyImageReadFailure(ex)}"));
+            }
+        }
+
+        return hints
+            .DistinctBy(static hint => (hint.AssemblyName, hint.ModuleName, hint.Source))
+            .OrderBy(static hint => hint.ModuleName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static hint => hint.AssemblyName, StringComparer.Ordinal)
+            .ThenBy(static hint => hint.Source, StringComparer.Ordinal)
+            .ToArray();
+    }
+
     private static void ExtractAsciiModuleNames(ReadOnlySpan<byte> bytes, HashSet<string> modules)
     {
         var builder = new StringBuilder();
@@ -274,6 +326,26 @@ public static class ProGpuDirectXNativeDependencyInspector
         return value.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
             || value.EndsWith(".dylib", StringComparison.OrdinalIgnoreCase)
             || value.EndsWith(".so", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsAssemblyImageReadFailure(Exception exception)
+    {
+        return exception is IOException
+            or UnauthorizedAccessException
+            or NotSupportedException
+            or ArgumentException;
+    }
+
+    private static string DescribeAssemblyImageReadFailure(Exception exception)
+    {
+        return exception switch
+        {
+            IOException => "IO",
+            UnauthorizedAccessException => "UnauthorizedAccess",
+            NotSupportedException => "NotSupported",
+            ArgumentException => "InvalidArgument",
+            _ => "Unavailable"
+        };
     }
 
     private static string NormalizeModuleName(string? moduleName)
