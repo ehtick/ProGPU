@@ -1,6 +1,9 @@
+using System.Numerics;
+using System.Windows.Media.Composition;
+
 namespace System.Windows.Media;
 
-public abstract class Brush : ProGPU.Wpf.Interop.IPortableInvalidationSource
+public abstract class Brush : Freezable, ProGPU.Wpf.Interop.IPortableInvalidationSource
 {
     private double _opacity = 1.0;
     private uint _changeVersion;
@@ -24,11 +27,38 @@ public abstract class Brush : ProGPU.Wpf.Interop.IPortableInvalidationSource
 
     public uint ChangeVersion => _changeVersion;
 
-    public abstract ProGPU.Vector.Brush ToNative();
+    public virtual ProGPU.Vector.Brush ToNative()
+    {
+        return new ProGPU.Vector.SolidColorBrush(Vector4.Zero);
+    }
 
     public virtual ProGPU.Vector.Brush ToNative(Rect targetBounds)
     {
         return ToNative();
+    }
+
+    internal virtual DUCE.ResourceHandle AddRefOnChannelCore(DUCE.Channel channel)
+    {
+        return DUCE.ResourceHandle.Null;
+    }
+
+    internal virtual void ReleaseOnChannelCore(DUCE.Channel channel)
+    {
+    }
+
+    internal virtual DUCE.ResourceHandle GetHandleCore(DUCE.Channel channel)
+    {
+        return DUCE.ResourceHandle.Null;
+    }
+
+    internal virtual int GetChannelCountCore()
+    {
+        return 0;
+    }
+
+    internal virtual DUCE.Channel GetChannelCore(int index)
+    {
+        throw new ArgumentOutOfRangeException(nameof(index));
     }
 
     protected void OnChanged()
