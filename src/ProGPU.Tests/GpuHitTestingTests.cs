@@ -1,4 +1,7 @@
+using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using ProGPU.Backend;
@@ -18,6 +21,17 @@ public sealed class GpuHitTestingTests
         Assert.Equal(40, Marshal.SizeOf<GpuHitTestQuery>());
         Assert.Equal(32, Marshal.SizeOf<GpuHitTestResult>());
         Assert.Equal(48, Marshal.SizeOf<GpuPathSegment>());
+    }
+
+    [Fact]
+    public void AllHitQueryClearsResultBufferWithoutPerQueryHeapArray()
+    {
+        string source = File.ReadAllText(FindRepoFile("src", "ProGPU.Vector", "GpuHitTesting.cs")).Replace("\r\n", "\n");
+
+        Assert.DoesNotContain("new GpuHitTestResult[requestedCount + 1]", source, StringComparison.Ordinal);
+        Assert.Contains("stackalloc GpuHitTestResult[resultBufferElementCount]", source, StringComparison.Ordinal);
+        Assert.Contains("ArrayPool<GpuHitTestResult>.Shared.Rent(resultBufferElementCount)", source, StringComparison.Ordinal);
+        Assert.Contains("deviceIndex.ResultListBuffer.Write(initialResults)", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -2757,6 +2771,22 @@ public sealed class GpuHitTestingTests
         figure.Segments.Add(new LineSegment(new Vector2(10f, 10f)));
         path.Figures.Add(figure);
         return path;
+    }
+
+    private static string FindRepoFile(params string[] pathParts)
+    {
+        for (DirectoryInfo? directory = new(AppContext.BaseDirectory);
+             directory != null;
+             directory = directory.Parent)
+        {
+            string candidate = Path.Combine(new[] { directory.FullName }.Concat(pathParts).ToArray());
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        throw new FileNotFoundException($"Could not locate {Path.Combine(pathParts)}.");
     }
 
     private sealed class CountingPathHitTestCompilationCache : IPathHitTestCompilationCache

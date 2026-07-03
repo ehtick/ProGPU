@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Numerics;
 using System.Runtime.InteropServices;
@@ -1287,6 +1288,8 @@ public static unsafe class GpuHitTestEngine
         int requestedCount = Math.Min(results.Length, GpuHitTestDeviceIndex.MaxHitResultCount);
         lock (context.RenderLock)
         {
+            int resultSize = Marshal.SizeOf<GpuHitTestResult>();
+            int resultBufferElementCount = requestedCount + 1;
             var initialResult = new GpuHitTestResult
             {
                 Hit = 0,
@@ -1294,8 +1297,11 @@ public static unsafe class GpuHitTestEngine
                 PrimitiveIndex = uint.MaxValue,
                 ZIndex = float.NegativeInfinity
             };
-            var initialResults = new GpuHitTestResult[requestedCount + 1];
-            Array.Fill(initialResults, initialResult);
+            GpuHitTestResult[]? rentedInitialResults = null;
+            Span<GpuHitTestResult> initialResults = resultBufferElementCount <= 64
+                ? stackalloc GpuHitTestResult[resultBufferElementCount]
+                : (rentedInitialResults = ArrayPool<GpuHitTestResult>.Shared.Rent(resultBufferElementCount)).AsSpan(0, resultBufferElementCount);
+            initialResults.Fill(initialResult);
 
             deviceIndex.QueryBuffer.WriteSingle(query);
             deviceIndex.ResultListBuffer.Write(initialResults);
@@ -1315,7 +1321,7 @@ public static unsafe class GpuHitTestEngine
                 entries[1] = new BindGroupEntry { Binding = 1, Buffer = deviceIndex.NodeBuffer.BufferPtr, Offset = 0, Size = deviceIndex.NodeBuffer.Size };
                 entries[2] = new BindGroupEntry { Binding = 2, Buffer = deviceIndex.PrimitiveIndexBuffer.BufferPtr, Offset = 0, Size = deviceIndex.PrimitiveIndexBuffer.Size };
                 entries[3] = new BindGroupEntry { Binding = 3, Buffer = deviceIndex.PrimitiveBuffer.BufferPtr, Offset = 0, Size = deviceIndex.PrimitiveBuffer.Size };
-                entries[4] = new BindGroupEntry { Binding = 4, Buffer = deviceIndex.ResultListBuffer.BufferPtr, Offset = 0, Size = checked((uint)(initialResults.Length * Marshal.SizeOf<GpuHitTestResult>())) };
+                entries[4] = new BindGroupEntry { Binding = 4, Buffer = deviceIndex.ResultListBuffer.BufferPtr, Offset = 0, Size = checked((uint)(initialResults.Length * resultSize)) };
                 entries[5] = new BindGroupEntry { Binding = 5, Buffer = deviceIndex.PathSegmentBuffer.BufferPtr, Offset = 0, Size = deviceIndex.PathSegmentBuffer.Size };
 
                 var bgDesc = new BindGroupDescriptor
@@ -1360,11 +1366,10 @@ public static unsafe class GpuHitTestEngine
                 context.Wgpu.CommandEncoderRelease(encoder);
                 encoder = null;
 
-                uint readSize = checked((uint)(initialResults.Length * Marshal.SizeOf<GpuHitTestResult>()));
+                uint readSize = checked((uint)(initialResults.Length * resultSize));
                 byte[] bytes = deviceIndex.ResultListBuffer.ReadBytes(0, readSize);
                 summary = MemoryMarshal.Read<GpuHitTestResult>(bytes);
                 hitCount = 0;
-                int resultSize = Marshal.SizeOf<GpuHitTestResult>();
                 for (int i = 0; i < requestedCount; i++)
                 {
                     var result = MemoryMarshal.Read<GpuHitTestResult>(bytes.AsSpan((i + 1) * resultSize));
@@ -1398,6 +1403,11 @@ public static unsafe class GpuHitTestEngine
                 if (bindGroupLayout != null)
                 {
                     context.Wgpu.BindGroupLayoutRelease(bindGroupLayout);
+                }
+
+                if (rentedInitialResults != null)
+                {
+                    ArrayPool<GpuHitTestResult>.Shared.Return(rentedInitialResults);
                 }
             }
         }
