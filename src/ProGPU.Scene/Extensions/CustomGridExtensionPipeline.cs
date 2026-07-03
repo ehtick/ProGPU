@@ -1,5 +1,6 @@
 using System;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Silk.NET.WebGPU;
 using ProGPU.Vector;
@@ -109,19 +110,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             {
                 var shaderModule = compositor.PipelineCache.GetOrCreateShader("CustomGridShader", GridShaderCode, "Custom Grid WGSL Shader");
                 
-                var layouts = new VertexBufferLayout[]
-                {
-                    new VertexBufferLayout
-                    {
-                        ArrayStride = (uint)Marshal.SizeOf<VectorVertex>(),
-                        StepMode = VertexStepMode.Vertex,
-                        AttributeCount = 8,
-                        Attributes = (VertexAttribute*)Marshal.AllocHGlobal(Marshal.SizeOf<VertexAttribute>() * 8)
-                    }
-                };
-
                 // Populate attributes matching VectorVertex structure
-                var attrs = layouts[0].Attributes;
+                Span<VertexAttribute> attrs = stackalloc VertexAttribute[8];
                 attrs[0] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 0, ShaderLocation = 0 }; // Position
                 attrs[1] = new VertexAttribute { Format = VertexFormat.Float32x4, Offset = 8, ShaderLocation = 1 }; // Color
                 attrs[2] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 24, ShaderLocation = 2 }; // TexCoord
@@ -131,26 +121,36 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                 attrs[6] = new VertexAttribute { Format = VertexFormat.Float32, Offset = 48, ShaderLocation = 6 };   // StrokeThickness
                 attrs[7] = new VertexAttribute { Format = VertexFormat.Float32, Offset = 52, ShaderLocation = 7 };   // ShapeType
 
-                var pipeline = compositor.PipelineCache.GetOrCreateRenderPipeline(
-                    isOffscreen ? "CustomGridPipeline_Offscreen" : "CustomGridPipeline",
-                    shaderModule,
-                    vertexBufferLayouts: layouts,
-                    topology: PrimitiveTopology.TriangleList,
-                    targetFormat: compositor.RenderFormat,
-                    sampleCount: isOffscreen ? 1u : 4u
-                );
-
-                Marshal.FreeHGlobal((IntPtr)layouts[0].Attributes);
-
-                if (isOffscreen)
+                Span<VertexBufferLayout> layouts = stackalloc VertexBufferLayout[1];
+                fixed (VertexAttribute* attrsPtr = attrs)
                 {
-                    _cachedPipelineOffscreen = pipeline;
-                    activePipeline = _cachedPipelineOffscreen;
-                }
-                else
-                {
-                    _cachedPipeline = pipeline;
-                    activePipeline = _cachedPipeline;
+                    layouts[0] = new VertexBufferLayout
+                    {
+                        ArrayStride = (uint)Unsafe.SizeOf<VectorVertex>(),
+                        StepMode = VertexStepMode.Vertex,
+                        AttributeCount = 8,
+                        Attributes = attrsPtr
+                    };
+
+                    var pipeline = compositor.PipelineCache.GetOrCreateRenderPipeline(
+                        isOffscreen ? "CustomGridPipeline_Offscreen" : "CustomGridPipeline",
+                        shaderModule,
+                        layouts,
+                        topology: PrimitiveTopology.TriangleList,
+                        targetFormat: compositor.RenderFormat,
+                        sampleCount: isOffscreen ? 1u : 4u
+                    );
+
+                    if (isOffscreen)
+                    {
+                        _cachedPipelineOffscreen = pipeline;
+                        activePipeline = _cachedPipelineOffscreen;
+                    }
+                    else
+                    {
+                        _cachedPipeline = pipeline;
+                        activePipeline = _cachedPipeline;
+                    }
                 }
             }
 

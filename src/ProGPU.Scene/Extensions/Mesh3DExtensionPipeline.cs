@@ -1,5 +1,6 @@
 using System;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Collections.Generic;
 using Silk.NET.WebGPU;
@@ -405,6 +406,47 @@ fn fs_main(input: VertexOutputWireframe, @builtin(front_facing) is_front: bool) 
         private unsafe RenderPipeline* _cachedBackFacePipeline;
         private unsafe RenderPipeline* _cachedWireframePipeline;
 
+        private unsafe RenderPipeline* CreateMeshPipeline(
+            Compositor compositor,
+            string shaderKey,
+            string shaderCode,
+            string shaderLabel,
+            string pipelineKey,
+            CullMode cullMode)
+        {
+            var shaderModule = compositor.PipelineCache.GetOrCreateShader(shaderKey, shaderCode, shaderLabel);
+
+            Span<VertexAttribute> attrs = stackalloc VertexAttribute[2];
+            attrs[0] = new VertexAttribute { Format = VertexFormat.Float32x3, Offset = 0, ShaderLocation = 0 }; // Position
+            attrs[1] = new VertexAttribute { Format = VertexFormat.Float32x3, Offset = 12, ShaderLocation = 1 }; // Normal
+
+            Span<VertexBufferLayout> layouts = stackalloc VertexBufferLayout[1];
+            fixed (VertexAttribute* attrsPtr = attrs)
+            {
+                layouts[0] = new VertexBufferLayout
+                {
+                    ArrayStride = (uint)Unsafe.SizeOf<GpuVertex3D>(),
+                    StepMode = VertexStepMode.Vertex,
+                    AttributeCount = 2,
+                    Attributes = attrsPtr
+                };
+
+                return compositor.PipelineCache.GetOrCreateRenderPipeline(
+                    pipelineKey,
+                    shaderModule,
+                    layouts,
+                    topology: PrimitiveTopology.TriangleList,
+                    targetFormat: TextureFormat.Rgba8Unorm,
+                    enableDepthStencil: true,
+                    depthFormat: TextureFormat.Depth24PlusStencil8,
+                    sampleCount: 4u,
+                    depthWriteEnabled: true,
+                    depthCompare: CompareFunction.LessEqual,
+                    cullMode: cullMode
+                );
+            }
+        }
+
         public unsafe void BeginFrame(Compositor compositor)
         {
             _currentCompileIndex = 0;
@@ -524,111 +566,36 @@ fn fs_main(input: VertexOutputWireframe, @builtin(front_facing) is_front: bool) 
             // 4. Create solid pipeline if needed
             if (_cachedPipeline == null)
             {
-                var shaderModule = compositor.PipelineCache.GetOrCreateShader("Mesh3DSolidShader_3D_v3", Mesh3DSolidShaderCode, "Mesh3D WGSL 3D Solid Shader");
-
-                var layouts = new VertexBufferLayout[]
-                {
-                    new VertexBufferLayout
-                    {
-                        ArrayStride = (uint)Marshal.SizeOf<GpuVertex3D>(),
-                        StepMode = VertexStepMode.Vertex,
-                        AttributeCount = 2,
-                        Attributes = (VertexAttribute*)Marshal.AllocHGlobal(Marshal.SizeOf<VertexAttribute>() * 2)
-                    }
-                };
-
-                var attrs = layouts[0].Attributes;
-                attrs[0] = new VertexAttribute { Format = VertexFormat.Float32x3, Offset = 0, ShaderLocation = 0 }; // Position
-                attrs[1] = new VertexAttribute { Format = VertexFormat.Float32x3, Offset = 12, ShaderLocation = 1 }; // Normal
-
-                _cachedPipeline = compositor.PipelineCache.GetOrCreateRenderPipeline(
+                _cachedPipeline = CreateMeshPipeline(
+                    compositor,
+                    "Mesh3DSolidShader_3D_v3",
+                    Mesh3DSolidShaderCode,
+                    "Mesh3D WGSL 3D Solid Shader",
                     "Mesh3DPipeline_3D_v3",
-                    shaderModule,
-                    vertexBufferLayouts: layouts,
-                    topology: PrimitiveTopology.TriangleList,
-                    targetFormat: TextureFormat.Rgba8Unorm,
-                    enableDepthStencil: true,
-                    depthFormat: TextureFormat.Depth24PlusStencil8,
-                    sampleCount: 4u,
-                    depthWriteEnabled: true,
-                    depthCompare: CompareFunction.LessEqual,
-                    cullMode: CullMode.Back
-                );
-
-                Marshal.FreeHGlobal((IntPtr)layouts[0].Attributes);
+                    CullMode.Back);
             }
 
             if (_cachedBackFacePipeline == null)
             {
-                var shaderModule = compositor.PipelineCache.GetOrCreateShader("Mesh3DSolidShader_3D_v3", Mesh3DSolidShaderCode, "Mesh3D WGSL 3D Solid Shader");
-
-                var layouts = new VertexBufferLayout[]
-                {
-                    new VertexBufferLayout
-                    {
-                        ArrayStride = (uint)Marshal.SizeOf<GpuVertex3D>(),
-                        StepMode = VertexStepMode.Vertex,
-                        AttributeCount = 2,
-                        Attributes = (VertexAttribute*)Marshal.AllocHGlobal(Marshal.SizeOf<VertexAttribute>() * 2)
-                    }
-                };
-
-                var attrs = layouts[0].Attributes;
-                attrs[0] = new VertexAttribute { Format = VertexFormat.Float32x3, Offset = 0, ShaderLocation = 0 }; // Position
-                attrs[1] = new VertexAttribute { Format = VertexFormat.Float32x3, Offset = 12, ShaderLocation = 1 }; // Normal
-
-                _cachedBackFacePipeline = compositor.PipelineCache.GetOrCreateRenderPipeline(
+                _cachedBackFacePipeline = CreateMeshPipeline(
+                    compositor,
+                    "Mesh3DSolidShader_3D_v3",
+                    Mesh3DSolidShaderCode,
+                    "Mesh3D WGSL 3D Solid Shader",
                     "Mesh3DBackFacePipeline_3D_v3",
-                    shaderModule,
-                    vertexBufferLayouts: layouts,
-                    topology: PrimitiveTopology.TriangleList,
-                    targetFormat: TextureFormat.Rgba8Unorm,
-                    enableDepthStencil: true,
-                    depthFormat: TextureFormat.Depth24PlusStencil8,
-                    sampleCount: 4u,
-                    depthWriteEnabled: true,
-                    depthCompare: CompareFunction.LessEqual,
-                    cullMode: CullMode.Front
-                );
-
-                Marshal.FreeHGlobal((IntPtr)layouts[0].Attributes);
+                    CullMode.Front);
             }
 
             // Create wireframe pipeline if needed (TriangleList with double sided rendering)
             if (_cachedWireframePipeline == null)
             {
-                var shaderModule = compositor.PipelineCache.GetOrCreateShader("Mesh3DWireframeShader_3D_v3", Mesh3DWireframeShaderCode, "Mesh3D WGSL 3D Wireframe Shader");
-
-                var layouts = new VertexBufferLayout[]
-                {
-                    new VertexBufferLayout
-                    {
-                        ArrayStride = (uint)Marshal.SizeOf<GpuVertex3D>(),
-                        StepMode = VertexStepMode.Vertex,
-                        AttributeCount = 2,
-                        Attributes = (VertexAttribute*)Marshal.AllocHGlobal(Marshal.SizeOf<VertexAttribute>() * 2)
-                    }
-                };
-
-                var attrs = layouts[0].Attributes;
-                attrs[0] = new VertexAttribute { Format = VertexFormat.Float32x3, Offset = 0, ShaderLocation = 0 }; // Position
-                attrs[1] = new VertexAttribute { Format = VertexFormat.Float32x3, Offset = 12, ShaderLocation = 1 }; // Normal
-
-                _cachedWireframePipeline = compositor.PipelineCache.GetOrCreateRenderPipeline(
+                _cachedWireframePipeline = CreateMeshPipeline(
+                    compositor,
+                    "Mesh3DWireframeShader_3D_v3",
+                    Mesh3DWireframeShaderCode,
+                    "Mesh3D WGSL 3D Wireframe Shader",
                     "Mesh3DWireframePipeline_3D_v3",
-                    shaderModule,
-                    vertexBufferLayouts: layouts,
-                    topology: PrimitiveTopology.TriangleList,
-                    targetFormat: TextureFormat.Rgba8Unorm,
-                    enableDepthStencil: true,
-                    depthFormat: TextureFormat.Depth24PlusStencil8,
-                    sampleCount: 4u,
-                    depthWriteEnabled: true,
-                    depthCompare: CompareFunction.LessEqual,
-                    cullMode: CullMode.None
-                );
-
-                Marshal.FreeHGlobal((IntPtr)layouts[0].Attributes);
+                    CullMode.None);
             }
 
             // 5. Create or get cached BindGroup

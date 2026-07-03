@@ -208,22 +208,32 @@ public class DiagnosticsLoggingSourceTests
         string wpfShaderEffect = File.ReadAllText(FindRepoFile("src", "ProGPU.Scene", "Extensions", "WpfShaderEffectExtensionPipeline.cs"));
         string imageEffect = File.ReadAllText(FindRepoFile("src", "ProGPU.Scene", "Extensions", "ImageEffectExtensionPipeline.cs"));
         string shaderToy = File.ReadAllText(FindRepoFile("src", "ProGPU.Scene", "Extensions", "ShaderToyExtensionPipeline.cs"));
+        string line3D = File.ReadAllText(FindRepoFile("src", "ProGPU.Scene", "Extensions", "Line3DExtensionPipeline.cs"));
+        string customGrid = File.ReadAllText(FindRepoFile("src", "ProGPU.Scene", "Extensions", "CustomGridExtensionPipeline.cs"));
+        string acisSolid = File.ReadAllText(FindRepoFile("src", "ProGPU.Scene", "Extensions", "AcisSolidExtensionPipeline.cs"));
+        string hatch = File.ReadAllText(FindRepoFile("src", "ProGPU.Scene", "Extensions", "HatchExtensionPipeline.cs"));
+        string mesh3D = File.ReadAllText(FindRepoFile("src", "ProGPU.Scene", "Extensions", "Mesh3DExtensionPipeline.cs"));
         string pipelineCache = File.ReadAllText(FindRepoFile("src", "ProGPU.Backend", "RenderPipelineCache.cs"));
 
-        AssertStackBackedLayout(wpfShaderEffect);
-        AssertStackBackedLayout(imageEffect);
-        AssertStackBackedLayout(shaderToy);
+        AssertStackBackedLayout(wpfShaderEffect, 3, "VectorVertex");
+        AssertStackBackedLayout(imageEffect, 3, "VectorVertex");
+        AssertStackBackedLayout(shaderToy, 3, "VectorVertex");
+        AssertStackBackedLayout(line3D, 8, "VectorVertex");
+        AssertStackBackedLayout(customGrid, 8, "VectorVertex");
+        AssertStackBackedLayout(acisSolid, 8, "VectorVertex");
+        AssertStackBackedLayout(hatch, 8, "VectorVertex");
+        AssertStackBackedLayout(mesh3D, 2, "GpuVertex3D");
 
         Assert.Contains("ReadOnlySpan<VertexBufferLayout> vertexBufferLayouts", pipelineCache, StringComparison.Ordinal);
         Assert.Contains("fixed (VertexBufferLayout* pLayouts = vertexBufferLayouts)", pipelineCache, StringComparison.Ordinal);
 
-        static void AssertStackBackedLayout(string source)
+        static void AssertStackBackedLayout(string source, int attributeCount, string vertexType)
         {
-            Assert.Contains("Span<VertexAttribute> attrs = stackalloc VertexAttribute[3];", source, StringComparison.Ordinal);
+            Assert.Contains($"Span<VertexAttribute> attrs = stackalloc VertexAttribute[{attributeCount}];", source, StringComparison.Ordinal);
             Assert.Contains("Span<VertexBufferLayout> layouts = stackalloc VertexBufferLayout[1];", source, StringComparison.Ordinal);
-            Assert.Contains("ArrayStride = (uint)Unsafe.SizeOf<VectorVertex>()", source, StringComparison.Ordinal);
+            Assert.Contains($"ArrayStride = (uint)Unsafe.SizeOf<{vertexType}>()", source, StringComparison.Ordinal);
             Assert.DoesNotContain("new VertexBufferLayout[]", source, StringComparison.Ordinal);
-            Assert.DoesNotContain("Marshal.AllocHGlobal(Marshal.SizeOf<VertexAttribute>() * 3)", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("Marshal.AllocHGlobal(Marshal.SizeOf<VertexAttribute>()", source, StringComparison.Ordinal);
             Assert.DoesNotContain("Marshal.FreeHGlobal((IntPtr)layouts[0].Attributes)", source, StringComparison.Ordinal);
         }
     }
