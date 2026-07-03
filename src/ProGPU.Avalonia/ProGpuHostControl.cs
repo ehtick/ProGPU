@@ -186,6 +186,7 @@ public class ProGpuHostControl : Control
     private static readonly PfnBufferMapCallback s_mapCallback;
     private bool _isRendering = false;
     private bool _renderRequested = false;
+    private bool _renderDispatchQueued = false;
 
     private static unsafe void OnMapCallback(BufferMapAsyncStatus status, void* userData)
     {
@@ -415,6 +416,7 @@ public class ProGpuHostControl : Control
 
         // 5. Setup Composition Custom Visual
         SetupCompositionSurface();
+        Dispatcher.UIThread.Post(QueueRenderUpdate, DispatcherPriority.Render);
 
         ThemeManager.ThemeChanged += OnThemeChanged;
 
@@ -1175,23 +1177,54 @@ public class ProGpuHostControl : Control
 
     // --- Render Update Pipeline ---
 
-    private async void QueueRenderUpdate()
+    private void QueueRenderUpdate()
     {
         if (!_isInitialized || WinuiRoot == null) return;
 
+        _renderRequested = true;
+
+        if (_renderDispatchQueued || _isRendering)
+        {
+            return;
+        }
+
+        _renderDispatchQueued = true;
+        Dispatcher.UIThread.Post(ProcessQueuedRenderUpdate, DispatcherPriority.Render);
+    }
+
+    private async void ProcessQueuedRenderUpdate()
+    {
+        _renderDispatchQueued = false;
+
+        if (!_isInitialized || WinuiRoot == null)
+        {
+            _renderRequested = false;
+            return;
+        }
+
+        if (_isRendering)
+        {
+            return;
+        }
+
         if (!_isZeroCopySupported && _customVisual == null)
         {
-            if (!TryUseCustomVisualFallback()) return;
+            if (!TryUseCustomVisualFallback())
+            {
+                _renderRequested = false;
+                return;
+            }
         }
 
         if (_isZeroCopySupported && _drawingSurface == null)
         {
-            if (!TryUseCustomVisualFallback()) return;
+            if (!TryUseCustomVisualFallback())
+            {
+                _renderRequested = false;
+                return;
+            }
         }
 
-        _renderRequested = true;
-
-        if (_isRendering) return;
         _isRendering = true;
 
         try
@@ -1209,6 +1242,11 @@ public class ProGpuHostControl : Control
         finally
         {
             _isRendering = false;
+            if (_renderRequested && !_renderDispatchQueued)
+            {
+                _renderDispatchQueued = true;
+                Dispatcher.UIThread.Post(ProcessQueuedRenderUpdate, DispatcherPriority.Render);
+            }
         }
     }
 
@@ -1296,6 +1334,17 @@ public class ProGpuHostControl : Control
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
     {
         base.OnPropertyChanged(change);
+        if (change.Property == WinuiRootProperty)
+        {
+            if (_winuiInputState != null)
+            {
+                _winuiInputState.Root = WinuiRoot;
+            }
+
+            InvalidateMeasure();
+            QueueRenderUpdate();
+        }
+
         if (change.Property == CornerRadiusProperty)
         {
             UpdateClipGeometry();
@@ -1307,7 +1356,6 @@ public class ProGpuHostControl : Control
     {
         context.DrawRectangle(Brushes.Transparent, null, new AvaloniaRect(0, 0, Bounds.Width, Bounds.Height));
         base.Render(context);
-        QueueRenderUpdate();
     }
 }
 

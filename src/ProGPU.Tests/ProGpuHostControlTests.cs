@@ -88,6 +88,28 @@ public class ProGpuHostControlTests
     }
 
     [Fact]
+    public void AvaloniaHostCoalescesRenderRequestsOutsidePaintCallback()
+    {
+        string source = File.ReadAllText(FindProGpuHostControlSource()).Replace("\r\n", "\n");
+        int renderIndex = source.IndexOf("public override void Render(", StringComparison.Ordinal);
+        int customVisualIndex = source.IndexOf("public unsafe class ProGpuCustomVisualHandler", StringComparison.Ordinal);
+
+        Assert.True(renderIndex >= 0, "Expected ProGpuHostControl.Render override.");
+        Assert.True(customVisualIndex > renderIndex, "Expected custom visual handler after host control.");
+
+        string renderMethod = source[renderIndex..customVisualIndex];
+
+        Assert.Contains("private bool _renderDispatchQueued = false;", source, StringComparison.Ordinal);
+        Assert.Contains("private void QueueRenderUpdate()", source, StringComparison.Ordinal);
+        Assert.Contains("private async void ProcessQueuedRenderUpdate()", source, StringComparison.Ordinal);
+        Assert.Contains("Dispatcher.UIThread.Post(ProcessQueuedRenderUpdate, DispatcherPriority.Render);", source, StringComparison.Ordinal);
+        Assert.Contains("if (change.Property == WinuiRootProperty)", source, StringComparison.Ordinal);
+        Assert.Contains("InvalidateMeasure();", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("private async void QueueRenderUpdate()", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("QueueRenderUpdate();", renderMethod, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ReleaseSharedResourcesIgnoresPartiallyInitializedSwapchainImages()
     {
         var control = new ProGpuHostControl();
