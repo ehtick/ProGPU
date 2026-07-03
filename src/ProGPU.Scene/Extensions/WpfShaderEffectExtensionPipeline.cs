@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using ProGPU.Backend;
@@ -736,38 +737,36 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                 return null;
             }
 
-            var layouts = new VertexBufferLayout[]
-            {
-                new()
-                {
-                    ArrayStride = (uint)Marshal.SizeOf<VectorVertex>(),
-                    StepMode = VertexStepMode.Vertex,
-                    AttributeCount = 3,
-                    Attributes = (VertexAttribute*)Marshal.AllocHGlobal(Marshal.SizeOf<VertexAttribute>() * 3)
-                }
-            };
-
-            var attrs = layouts[0].Attributes;
+            Span<VertexAttribute> attrs = stackalloc VertexAttribute[3];
             attrs[0] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 0, ShaderLocation = 0 };
             attrs[1] = new VertexAttribute { Format = VertexFormat.Float32x4, Offset = 8, ShaderLocation = 1 };
             attrs[2] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 24, ShaderLocation = 2 };
 
-            var pipelineFailed = false;
-            Action<ErrorType, string> pipelineErrorHandler = (_, msg) =>
+            Span<VertexBufferLayout> layouts = stackalloc VertexBufferLayout[1];
+            fixed (VertexAttribute* attrsPtr = attrs)
             {
-                pipelineFailed = true;
-                parameters.LastError = msg;
-            };
-            WgpuContext.OnWebGpuError += pipelineErrorHandler;
+                layouts[0] = new VertexBufferLayout
+                {
+                    ArrayStride = (uint)Unsafe.SizeOf<VectorVertex>(),
+                    StepMode = VertexStepMode.Vertex,
+                    AttributeCount = 3,
+                    Attributes = attrsPtr
+                };
 
-            try
-            {
+                var pipelineFailed = false;
+                Action<ErrorType, string> pipelineErrorHandler = (_, msg) =>
+                {
+                    pipelineFailed = true;
+                    parameters.LastError = msg;
+                };
+                WgpuContext.OnWebGpuError += pipelineErrorHandler;
+
                 try
                 {
                     var pipeline = compositor.PipelineCache.GetOrCreateRenderPipeline(
                         pipelineKey,
                         shaderModule,
-                        vertexBufferLayouts: layouts,
+                        layouts,
                         topology: PrimitiveTopology.TriangleList,
                         targetFormat: compositor.RenderFormat,
                         sampleCount: isOffscreen ? 1u : 4u,
@@ -792,12 +791,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                 }
                 finally
                 {
-                    Marshal.FreeHGlobal((IntPtr)layouts[0].Attributes);
+                    WgpuContext.OnWebGpuError -= pipelineErrorHandler;
                 }
-            }
-            finally
-            {
-                WgpuContext.OnWebGpuError -= pipelineErrorHandler;
             }
         }
         catch (Exception ex)

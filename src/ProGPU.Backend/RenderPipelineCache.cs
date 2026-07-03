@@ -93,6 +93,100 @@ public unsafe class RenderPipelineCache : IDisposable
         PipelineLayout* pipelineLayout = null,
         GpuTextureAlphaMode sourceAlphaMode = GpuTextureAlphaMode.Straight)
     {
+        return GetOrCreateRenderPipelineCore(
+            key,
+            shaderModule,
+            vertexEntry,
+            fragmentEntry,
+            targetFormat,
+            topology,
+            vertexBufferLayouts.AsSpan(),
+            enableBlend,
+            enableDepthStencil,
+            depthFormat,
+            stencilCompare,
+            stencilFail,
+            stencilDepthFail,
+            stencilPass,
+            sampleCount,
+            depthWriteEnabled,
+            depthCompare,
+            cullMode,
+            blendMode,
+            pipelineLayout,
+            sourceAlphaMode);
+    }
+
+    public RenderPipeline* GetOrCreateRenderPipeline(
+        string key,
+        ShaderModule* shaderModule,
+        ReadOnlySpan<VertexBufferLayout> vertexBufferLayouts,
+        string vertexEntry = "vs_main",
+        string fragmentEntry = "fs_main",
+        TextureFormat targetFormat = TextureFormat.Bgra8Unorm,
+        PrimitiveTopology topology = PrimitiveTopology.TriangleList,
+        bool enableBlend = true,
+        bool enableDepthStencil = false,
+        TextureFormat depthFormat = TextureFormat.Depth24PlusStencil8,
+        CompareFunction stencilCompare = CompareFunction.Always,
+        StencilOperation stencilFail = StencilOperation.Keep,
+        StencilOperation stencilDepthFail = StencilOperation.Keep,
+        StencilOperation stencilPass = StencilOperation.Keep,
+        uint sampleCount = 1,
+        bool depthWriteEnabled = false,
+        CompareFunction depthCompare = CompareFunction.Always,
+        CullMode cullMode = CullMode.None,
+        GpuBlendMode blendMode = GpuBlendMode.SrcOver,
+        PipelineLayout* pipelineLayout = null,
+        GpuTextureAlphaMode sourceAlphaMode = GpuTextureAlphaMode.Straight)
+    {
+        return GetOrCreateRenderPipelineCore(
+            key,
+            shaderModule,
+            vertexEntry,
+            fragmentEntry,
+            targetFormat,
+            topology,
+            vertexBufferLayouts,
+            enableBlend,
+            enableDepthStencil,
+            depthFormat,
+            stencilCompare,
+            stencilFail,
+            stencilDepthFail,
+            stencilPass,
+            sampleCount,
+            depthWriteEnabled,
+            depthCompare,
+            cullMode,
+            blendMode,
+            pipelineLayout,
+            sourceAlphaMode);
+    }
+
+    private RenderPipeline* GetOrCreateRenderPipelineCore(
+        string key,
+        ShaderModule* shaderModule,
+        string vertexEntry,
+        string fragmentEntry,
+        TextureFormat targetFormat,
+        PrimitiveTopology topology,
+        ReadOnlySpan<VertexBufferLayout> vertexBufferLayouts,
+        bool enableBlend,
+        bool enableDepthStencil,
+        TextureFormat depthFormat,
+        CompareFunction stencilCompare,
+        StencilOperation stencilFail,
+        StencilOperation stencilDepthFail,
+        StencilOperation stencilPass,
+        uint sampleCount,
+        bool depthWriteEnabled,
+        CompareFunction depthCompare,
+        CullMode cullMode,
+        GpuBlendMode blendMode,
+        PipelineLayout* pipelineLayout,
+        GpuTextureAlphaMode sourceAlphaMode)
+    {
         if (_isDisposed) throw new ObjectDisposedException(nameof(RenderPipelineCache));
         if (_renderPipelines.TryGetValue(key, out var cachedPipeline)) return (RenderPipeline*)cachedPipeline;
 
@@ -117,19 +211,14 @@ public unsafe class RenderPipelineCache : IDisposable
             Targets = &colorTarget
         };
 
-        // Vertex buffer layouts pinning
         VertexBufferLayout* layoutsPtr = null;
-        int layoutsCount = 0;
-        if (vertexBufferLayouts != null && vertexBufferLayouts.Length > 0)
-        {
-            layoutsCount = vertexBufferLayouts.Length;
-        }
+        int layoutsCount = vertexBufferLayouts.Length;
 
         RenderPipeline* pipeline = null;
 
         fixed (VertexBufferLayout* pLayouts = vertexBufferLayouts)
         {
-            if (vertexBufferLayouts != null && vertexBufferLayouts.Length > 0)
+            if (vertexBufferLayouts.Length > 0)
             {
                 layoutsPtr = pLayouts;
             }

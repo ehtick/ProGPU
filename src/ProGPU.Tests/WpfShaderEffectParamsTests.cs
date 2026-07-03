@@ -191,13 +191,27 @@ public class WpfShaderEffectParamsTests
             "ProGPU.Scene",
             "Extensions",
             "WpfShaderEffectExtensionPipeline.cs")).Replace("\r\n", "\n");
+        var pipelineCache = File.ReadAllText(FindRepoFile(
+            "src",
+            "ProGPU.Backend",
+            "RenderPipelineCache.cs")).Replace("\r\n", "\n");
 
         Assert.Contains("Span<int> activeRegisters = stackalloc int[WpfShaderEffectParams.MaxSamplerRegisterCount];", source, StringComparison.Ordinal);
         Assert.Contains("var activeRegisterCount = CollectActiveSamplerRegisters(p, activeRegisters);", source, StringComparison.Ordinal);
         Assert.Contains("var activeRegisterSpan = activeRegisters[..activeRegisterCount];", source, StringComparison.Ordinal);
         Assert.Contains("Registers = activeRegisters.ToArray()", source, StringComparison.Ordinal);
+        Assert.Contains("Span<VertexAttribute> attrs = stackalloc VertexAttribute[3];", source, StringComparison.Ordinal);
+        Assert.Contains("Span<VertexBufferLayout> layouts = stackalloc VertexBufferLayout[1];", source, StringComparison.Ordinal);
+        Assert.Contains("ArrayStride = (uint)Unsafe.SizeOf<VectorVertex>()", source, StringComparison.Ordinal);
+        Assert.Contains("compositor.PipelineCache.GetOrCreateRenderPipeline(\n                        pipelineKey,\n                        shaderModule,\n                        layouts,", source, StringComparison.Ordinal);
+        Assert.Contains("ReadOnlySpan<VertexBufferLayout> vertexBufferLayouts", pipelineCache, StringComparison.Ordinal);
+        Assert.Contains("private RenderPipeline* GetOrCreateRenderPipelineCore(", pipelineCache, StringComparison.Ordinal);
+        Assert.Contains("fixed (VertexBufferLayout* pLayouts = vertexBufferLayouts)", pipelineCache, StringComparison.Ordinal);
         Assert.DoesNotContain("private static int[] CollectActiveSamplerRegisters", source, StringComparison.Ordinal);
         Assert.DoesNotContain("return registers[..count].ToArray();", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("new VertexBufferLayout[]", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Marshal.AllocHGlobal(Marshal.SizeOf<VertexAttribute>() * 3)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Marshal.FreeHGlobal((IntPtr)layouts[0].Attributes)", source, StringComparison.Ordinal);
     }
 
     private static int GetRenderCacheKey(WpfShaderEffect effect)
