@@ -678,12 +678,17 @@ public unsafe class WgpuContext : IDisposable
     [DllImport("wgpu_native", EntryPoint = "wgpuDevicePoll")]
     private static extern unsafe bool wgpuDevicePoll(Device* device, bool wait, void* wrappedSubmissionIndex);
 
-    public void WaitIdle()
+    public void PollDevice(bool wait)
     {
         if (Device != null && !_isDisposed)
         {
-            wgpuDevicePoll(Device, true, null);
+            wgpuDevicePoll(Device, wait, null);
         }
+    }
+
+    public void WaitIdle()
+    {
+        PollDevice(wait: true);
     }
 
     public ShaderModuleVerificationStatus GetShaderModuleVerificationStatus(ShaderModule* module, out string errors)

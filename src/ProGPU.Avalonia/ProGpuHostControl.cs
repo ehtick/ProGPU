@@ -34,9 +34,6 @@ namespace ProGPU.Avalonia;
 
 public class ProGpuHostControl : Control
 {
-    [DllImport("wgpu_native", EntryPoint = "wgpuDevicePoll")]
-    private static extern unsafe bool wgpuDevicePoll(Device* device, bool wait, void* wrappedSubmissionIndex);
-
     private class SwapchainImage : IDisposable
     {
         public IntPtr SharedHandle = IntPtr.Zero;
@@ -234,7 +231,7 @@ public class ProGpuHostControl : Control
                 {
                     if (_wgpuContext != null && _wgpuContext.Device != null)
                     {
-                        wgpuDevicePoll(_wgpuContext.Device, false, null);
+                        _wgpuContext.PollDevice(wait: false);
                     }
                     Thread.Sleep(2);
                 }
@@ -1316,20 +1313,11 @@ public class ProGpuHostControl : Control
 
 public unsafe class ProGpuCustomVisualHandler : CompositionCustomVisualHandler, IDisposable
 {
-    [DllImport("wgpu_native", EntryPoint = "wgpuDevicePoll")]
-    private static extern bool wgpuDevicePoll(Device* device, bool wait, void* wrappedSubmissionIndex);
-
     private readonly WgpuContext? _wgpuContext;
     private readonly WinuiCompositor? _compositor;
     private GpuTexture? _offscreenTexture;
-    private GpuBuffer* _stagingBuffer;
-    private uint _stagingBufferSize;
-    private uint _bytesPerRow;
+    private GpuTextureReadbackBuffer? _readbackBuffer;
     private WriteableBitmap? _writeableBitmap;
-    private bool _isMappingPending;
-    private bool _isStagingBufferMapActive;
-    private BufferMapAsyncStatus _lastMapStatus = BufferMapAsyncStatus.ValidationError;
-    private readonly PfnBufferMapCallback _bufferMapCallback;
 
     private readonly object _stateLock = new();
     private Microsoft.UI.Xaml.FrameworkElement? _winuiRoot;
@@ -1341,19 +1329,12 @@ public unsafe class ProGpuCustomVisualHandler : CompositionCustomVisualHandler, 
     {
         _wgpuContext = wgpuContext;
         _compositor = compositor;
-        _bufferMapCallback = PfnBufferMapCallback.From(OnBufferMapped);
     }
 
     internal bool Matches(WgpuContext context, WinuiCompositor compositor)
     {
         return ReferenceEquals(_wgpuContext, context) &&
                ReferenceEquals(_compositor, compositor);
-    }
-
-    private void OnBufferMapped(BufferMapAsyncStatus status, void* userData)
-    {
-        _lastMapStatus = status;
-        _isMappingPending = false;
     }
 
     public override void OnMessage(object message)
@@ -1401,24 +1382,10 @@ public unsafe class ProGpuCustomVisualHandler : CompositionCustomVisualHandler, 
             _offscreenTexture.Resize(width, height);
         }
 
-        uint bytesPerPixel = 4;
-        uint unalignedBytesPerRow = width * bytesPerPixel;
-        _bytesPerRow = (unalignedBytesPerRow + 255) & ~255u;
-        uint requiredBufferSize = _bytesPerRow * height;
+        const uint bytesPerPixel = 4;
 
-        if (_stagingBuffer == null || _stagingBufferSize < requiredBufferSize)
-        {
-            QueueStagingBufferDisposal();
-            
-            var bufferDesc = new BufferDescriptor
-            {
-                Usage = BufferUsage.MapRead | BufferUsage.CopyDst,
-                Size = requiredBufferSize,
-                MappedAtCreation = false
-            };
-            _stagingBuffer = _wgpuContext.Wgpu.DeviceCreateBuffer(_wgpuContext.Device, &bufferDesc);
-            _stagingBufferSize = requiredBufferSize;
-        }
+        _readbackBuffer ??= new GpuTextureReadbackBuffer(_wgpuContext);
+        _readbackBuffer.EnsureCapacity(width, height, bytesPerPixel);
 
         _writeableBitmap?.Dispose();
         _writeableBitmap = new WriteableBitmap(
@@ -1456,7 +1423,7 @@ public unsafe class ProGpuCustomVisualHandler : CompositionCustomVisualHandler, 
         }
 
         // Direct WebGPU rendering to offscreen target texture
-        if (_offscreenTexture != null && _stagingBuffer != null)
+        if (_offscreenTexture != null && _readbackBuffer != null)
         {
             _compositor.RenderOffscreen(
                 localRoot,
@@ -1465,83 +1432,16 @@ public unsafe class ProGpuCustomVisualHandler : CompositionCustomVisualHandler, 
                 0.0f
             );
 
-            uint bytesPerPixel = 4;
-            uint bufferSize = _bytesPerRow * hostFrame.RenderTargetHeight;
-            
-            var encoderDesc = new CommandEncoderDescriptor();
-            var encoder = _wgpuContext.Wgpu.DeviceCreateCommandEncoder(_wgpuContext.Device, &encoderDesc);
-            
-            var copySrc = new ImageCopyTexture
+            if (_writeableBitmap != null)
             {
-                Texture = _offscreenTexture.TexturePtr,
-                MipLevel = 0,
-                Origin = new Origin3D { X = 0, Y = 0, Z = 0 },
-                Aspect = TextureAspect.All
-            };
-            
-            var copyDst = new ImageCopyBuffer
-            {
-                Buffer = _stagingBuffer,
-                Layout = new TextureDataLayout
+                using (var locked = _writeableBitmap.Lock())
                 {
-                    Offset = 0,
-                    BytesPerRow = _bytesPerRow,
-                    RowsPerImage = hostFrame.RenderTargetHeight
-                }
-            };
-            
-            var copySize = new Extent3D
-            {
-                Width = hostFrame.RenderTargetWidth,
-                Height = hostFrame.RenderTargetHeight,
-                DepthOrArrayLayers = 1
-            };
-            
-            _wgpuContext.Wgpu.CommandEncoderCopyTextureToBuffer(encoder, &copySrc, &copyDst, &copySize);
-            
-            var cmdBufferDesc = new CommandBufferDescriptor();
-            var cmdBuffer = _wgpuContext.Wgpu.CommandEncoderFinish(encoder, &cmdBufferDesc);
-            
-            _wgpuContext.Wgpu.QueueSubmit(_wgpuContext.Queue, 1, &cmdBuffer);
-            _wgpuContext.Wgpu.CommandBufferRelease(cmdBuffer);
-            _wgpuContext.Wgpu.CommandEncoderRelease(encoder);
-            
-            _lastMapStatus = BufferMapAsyncStatus.ValidationError;
-            _isMappingPending = true;
-            _wgpuContext.Wgpu.BufferMapAsync(_stagingBuffer, MapMode.Read, 0, (nuint)bufferSize, _bufferMapCallback, null);
-            
-            while (_isMappingPending)
-            {
-                wgpuDevicePoll(_wgpuContext.Device, false, null);
-                Thread.Sleep(1);
-            }
-
-            if (_lastMapStatus == BufferMapAsyncStatus.Success)
-            {
-                _isStagingBufferMapActive = true;
-                try
-                {
-                    void* mappedPtr = _wgpuContext.Wgpu.BufferGetConstMappedRange(_stagingBuffer, 0, (nuint)bufferSize);
-                    if (mappedPtr != null && _writeableBitmap != null)
-                    {
-                        using (var locked = _writeableBitmap.Lock())
-                        {
-                            byte* srcBytes = (byte*)mappedPtr;
-                            byte* dstBytes = (byte*)locked.Address;
-                            uint rowBytes = hostFrame.RenderTargetWidth * bytesPerPixel;
-
-                            for (uint y = 0; y < hostFrame.RenderTargetHeight; y++)
-                            {
-                                byte* srcRow = srcBytes + (y * _bytesPerRow);
-                                byte* dstRow = dstBytes + (y * (uint)locked.RowBytes);
-                                System.Buffer.MemoryCopy(srcRow, dstRow, rowBytes, rowBytes);
-                            }
-                        }
-                    }
-                }
-                finally
-                {
-                    UnmapActiveStagingBuffer();
+                    _readbackBuffer.TryReadTextureRows(
+                        _offscreenTexture,
+                        hostFrame.RenderTargetWidth,
+                        hostFrame.RenderTargetHeight,
+                        (void*)locked.Address,
+                        (uint)locked.RowBytes);
                 }
             }
         }
@@ -1572,47 +1472,14 @@ public unsafe class ProGpuCustomVisualHandler : CompositionCustomVisualHandler, 
             _winuiRoot = null;
         }
 
-        QueueStagingBufferDisposal();
+        _readbackBuffer?.Dispose();
+        _readbackBuffer = null;
 
         _writeableBitmap?.Dispose();
         _writeableBitmap = null;
 
         _offscreenTexture?.Dispose();
         _offscreenTexture = null;
-
-    }
-
-    private void QueueStagingBufferDisposal()
-    {
-        if (_stagingBuffer == null)
-        {
-            return;
-        }
-
-        UnmapActiveStagingBuffer();
-
-        if (_wgpuContext is { IsDisposed: false })
-        {
-            _wgpuContext.QueueBufferDisposal((IntPtr)_stagingBuffer);
-        }
-
-        _stagingBuffer = null;
-        _stagingBufferSize = 0;
-        _bytesPerRow = 0;
-        _isMappingPending = false;
-        _lastMapStatus = BufferMapAsyncStatus.ValidationError;
-    }
-
-    private void UnmapActiveStagingBuffer()
-    {
-        if (_stagingBuffer == null || !_isStagingBufferMapActive || _wgpuContext is not { IsDisposed: false })
-        {
-            _isStagingBufferMapActive = false;
-            return;
-        }
-
-        _wgpuContext.Wgpu.BufferUnmap(_stagingBuffer);
-        _isStagingBufferMapActive = false;
     }
 }
 

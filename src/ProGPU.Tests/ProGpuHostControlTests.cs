@@ -183,45 +183,62 @@ public class ProGpuHostControlTests
     public void AvaloniaHostStagingBuffersUseDeferredDisposalQueue()
     {
         string source = File.ReadAllText(FindProGpuHostControlSource()).Replace("\r\n", "\n");
+        string readbackSource = File.ReadAllText(FindProGpuBackendSource("GpuTextureReadbackBuffer.cs")).Replace("\r\n", "\n");
 
         Assert.Contains("_context.QueueBufferDisposal(StagingBuffer)", source, StringComparison.Ordinal);
-        Assert.Contains("_wgpuContext.QueueBufferDisposal((IntPtr)_stagingBuffer)", source, StringComparison.Ordinal);
+        Assert.Contains("_context.QueueBufferDisposal((IntPtr)_buffer)", readbackSource, StringComparison.Ordinal);
         Assert.DoesNotContain("Wgpu.BufferDestroy((GpuBuffer*)StagingBuffer)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Wgpu.BufferRelease((GpuBuffer*)StagingBuffer)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Wgpu.BufferDestroy(_stagingBuffer)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Wgpu.BufferRelease(_stagingBuffer)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Wgpu.BufferDestroy(_buffer)", readbackSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("Wgpu.BufferRelease(_buffer)", readbackSource, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void AvaloniaCustomVisualFallbackUnmapsMappedStagingBuffers()
+    public void AvaloniaCustomVisualFallbackUsesSharedReadbackBuffer()
     {
         string source = File.ReadAllText(FindProGpuHostControlSource()).Replace("\r\n", "\n");
+        string readbackSource = File.ReadAllText(FindProGpuBackendSource("GpuTextureReadbackBuffer.cs")).Replace("\r\n", "\n");
 
-        Assert.Contains("private bool _isStagingBufferMapActive;", source, StringComparison.Ordinal);
-        Assert.Contains("private BufferMapAsyncStatus _lastMapStatus = BufferMapAsyncStatus.ValidationError;", source, StringComparison.Ordinal);
-        Assert.Contains("_lastMapStatus = status;", source, StringComparison.Ordinal);
-        Assert.Contains("if (_lastMapStatus == BufferMapAsyncStatus.Success)", source, StringComparison.Ordinal);
-        Assert.Contains("finally\n                {\n                    UnmapActiveStagingBuffer();\n                }", source, StringComparison.Ordinal);
-        Assert.Contains("_wgpuContext.Wgpu.BufferUnmap(_stagingBuffer);", source, StringComparison.Ordinal);
+        Assert.Contains("private GpuTextureReadbackBuffer? _readbackBuffer;", source, StringComparison.Ordinal);
+        Assert.Contains("_readbackBuffer.TryReadTextureRows(", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("private GpuBuffer* _stagingBuffer;", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("BufferMapAsync(_stagingBuffer", source, StringComparison.Ordinal);
 
-        int disposalHelperIndex = source.IndexOf(
-            "private void QueueStagingBufferDisposal()",
-            StringComparison.Ordinal);
-        int unmapCallIndex = source.IndexOf(
-            "UnmapActiveStagingBuffer();",
-            disposalHelperIndex,
-            StringComparison.Ordinal);
-        int queueDisposalIndex = source.IndexOf(
-            "_wgpuContext.QueueBufferDisposal((IntPtr)_stagingBuffer)",
-            disposalHelperIndex,
-            StringComparison.Ordinal);
+        Assert.Contains("private void UnmapActiveBuffer()", readbackSource, StringComparison.Ordinal);
+        Assert.Contains("_context.Wgpu.BufferUnmap(_buffer);", readbackSource, StringComparison.Ordinal);
+        Assert.Contains("finally\n        {\n            UnmapActiveBuffer();\n        }", readbackSource, StringComparison.Ordinal);
+        Assert.Contains("QueueBufferDisposal();", readbackSource, StringComparison.Ordinal);
+    }
 
-        Assert.True(disposalHelperIndex >= 0, "Expected staging-buffer disposal helper.");
-        Assert.True(unmapCallIndex > disposalHelperIndex, "Expected disposal helper to unmap active staging buffer.");
-        Assert.True(queueDisposalIndex > unmapCallIndex, "Mapped staging buffers must be unmapped before queued disposal.");
+    [Fact]
+    public void GpuTextureReadbackBufferAlignsRowsToWebGpuPitch()
+    {
+        Assert.Equal(0u, GpuTextureReadbackBuffer.AlignBytesPerRow(0, 4));
+        Assert.Equal(256u, GpuTextureReadbackBuffer.AlignBytesPerRow(1, 4));
+        Assert.Equal(256u, GpuTextureReadbackBuffer.AlignBytesPerRow(64, 4));
+        Assert.Equal(512u, GpuTextureReadbackBuffer.AlignBytesPerRow(65, 4));
+        Assert.Equal(512u, GpuTextureReadbackBuffer.AlignBytesPerRow(1, 257));
+    }
+
+    [Fact]
+    public void GpuTextureReadbackBufferRejectsInvalidPixelStride()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => GpuTextureReadbackBuffer.AlignBytesPerRow(1, 0));
     }
 
     private static string FindProGpuHostControlSource()
+    {
+        return FindProGpuSource("ProGPU.Avalonia", "ProGpuHostControl.cs");
+    }
+
+    private static string FindProGpuBackendSource(string fileName)
+    {
+        return FindProGpuSource("ProGPU.Backend", fileName);
+    }
+
+    private static string FindProGpuSource(string projectDirectory, string fileName)
     {
         for (DirectoryInfo? directory = new(AppContext.BaseDirectory);
              directory != null;
@@ -229,8 +246,8 @@ public class ProGpuHostControlTests
         {
             foreach (string candidate in new[]
                      {
-                         Path.Combine(directory.FullName, "ProGPU.Avalonia", "ProGpuHostControl.cs"),
-                         Path.Combine(directory.FullName, "src", "ProGPU.Avalonia", "ProGpuHostControl.cs")
+                         Path.Combine(directory.FullName, projectDirectory, fileName),
+                         Path.Combine(directory.FullName, "src", projectDirectory, fileName)
                      })
             {
                 if (File.Exists(candidate))
@@ -240,6 +257,6 @@ public class ProGpuHostControlTests
             }
         }
 
-        throw new FileNotFoundException("Could not locate ProGPU.Avalonia ProGpuHostControl.cs.");
+        throw new FileNotFoundException($"Could not locate {projectDirectory} {fileName}.");
     }
 }
