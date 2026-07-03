@@ -168,6 +168,11 @@ public class DiagnosticsLoggingSourceTests
         Assert.Contains("PooledRemovalBuffer.Add(ref activePaths", pathAtlas, StringComparison.Ordinal);
         Assert.Contains("PooledRemovalBuffer.Return(activePaths, activePathCount)", pathAtlas, StringComparison.Ordinal);
         Assert.DoesNotContain("var activePaths = new List<PathInfo>();", pathAtlas, StringComparison.Ordinal);
+        Assert.Contains("private void ClearAtlasTexture()", pathAtlas, StringComparison.Ordinal);
+        Assert.Contains("byte[] clearData = ArrayPool<byte>.Shared.Rent(clearByteCount);", pathAtlas, StringComparison.Ordinal);
+        Assert.Contains("clearData.AsSpan(0, clearByteCount).Clear();", pathAtlas, StringComparison.Ordinal);
+        Assert.Contains("ArrayPool<byte>.Shared.Return(clearData)", pathAtlas, StringComparison.Ordinal);
+        Assert.DoesNotContain("byte[] clearData = new byte[_atlasSize * _atlasSize * 4];", pathAtlas, StringComparison.Ordinal);
         Assert.Contains("nint[]? bindGroupsToRelease = null;", pathAtlas, StringComparison.Ordinal);
         Assert.Contains("PooledRemovalBuffer.Add(ref bindGroupsToRelease", pathAtlas, StringComparison.Ordinal);
         Assert.Contains("PooledRemovalBuffer.Return(bindGroupsToRelease, bindGroupToReleaseCount)", pathAtlas, StringComparison.Ordinal);

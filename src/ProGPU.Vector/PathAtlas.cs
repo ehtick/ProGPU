@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Numerics;
 using System.Runtime.InteropServices;
@@ -177,8 +178,7 @@ public unsafe class PathAtlas : IDisposable
             "Dynamic Path Atlas"
         );
 
-        byte[] clearData = new byte[_atlasSize * _atlasSize * 4];
-        _atlasTexture.WritePixels(new ReadOnlySpan<byte>(clearData));
+        ClearAtlasTexture();
 
         _pipelineCache = new RenderPipelineCache(_context);
         var shaderModule = _pipelineCache.GetOrCreateShader("PathRasterizer", Shaders.PathRasterizerShader, "PathRasterizerShader");
@@ -502,8 +502,7 @@ public unsafe class PathAtlas : IDisposable
             _currentY = 2;
             _currentRowHeight = 0;
 
-            byte[] clearData = new byte[_atlasSize * _atlasSize * 4];
-            _atlasTexture.WritePixels(new ReadOnlySpan<byte>(clearData));
+            ClearAtlasTexture();
 
             _pendingPaths.Clear();
 
@@ -559,6 +558,21 @@ public unsafe class PathAtlas : IDisposable
         finally
         {
             PooledRemovalBuffer.Return(activePaths, activePathCount);
+        }
+    }
+
+    private void ClearAtlasTexture()
+    {
+        int clearByteCount = checked((int)((ulong)_atlasSize * _atlasSize * 4UL));
+        byte[] clearData = ArrayPool<byte>.Shared.Rent(clearByteCount);
+        try
+        {
+            clearData.AsSpan(0, clearByteCount).Clear();
+            _atlasTexture.WritePixels(clearData.AsSpan(0, clearByteCount));
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(clearData);
         }
     }
 
