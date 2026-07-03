@@ -192,6 +192,35 @@ public class ProGpuHostControlTests
         Assert.DoesNotContain("Wgpu.BufferRelease(_stagingBuffer)", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void AvaloniaCustomVisualFallbackUnmapsMappedStagingBuffers()
+    {
+        string source = File.ReadAllText(FindProGpuHostControlSource()).Replace("\r\n", "\n");
+
+        Assert.Contains("private bool _isStagingBufferMapActive;", source, StringComparison.Ordinal);
+        Assert.Contains("private BufferMapAsyncStatus _lastMapStatus = BufferMapAsyncStatus.ValidationError;", source, StringComparison.Ordinal);
+        Assert.Contains("_lastMapStatus = status;", source, StringComparison.Ordinal);
+        Assert.Contains("if (_lastMapStatus == BufferMapAsyncStatus.Success)", source, StringComparison.Ordinal);
+        Assert.Contains("finally\n                {\n                    UnmapActiveStagingBuffer();\n                }", source, StringComparison.Ordinal);
+        Assert.Contains("_wgpuContext.Wgpu.BufferUnmap(_stagingBuffer);", source, StringComparison.Ordinal);
+
+        int disposalHelperIndex = source.IndexOf(
+            "private void QueueStagingBufferDisposal()",
+            StringComparison.Ordinal);
+        int unmapCallIndex = source.IndexOf(
+            "UnmapActiveStagingBuffer();",
+            disposalHelperIndex,
+            StringComparison.Ordinal);
+        int queueDisposalIndex = source.IndexOf(
+            "_wgpuContext.QueueBufferDisposal((IntPtr)_stagingBuffer)",
+            disposalHelperIndex,
+            StringComparison.Ordinal);
+
+        Assert.True(disposalHelperIndex >= 0, "Expected staging-buffer disposal helper.");
+        Assert.True(unmapCallIndex > disposalHelperIndex, "Expected disposal helper to unmap active staging buffer.");
+        Assert.True(queueDisposalIndex > unmapCallIndex, "Mapped staging buffers must be unmapped before queued disposal.");
+    }
+
     private static string FindProGpuHostControlSource()
     {
         for (DirectoryInfo? directory = new(AppContext.BaseDirectory);
