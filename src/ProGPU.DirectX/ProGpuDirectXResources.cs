@@ -189,9 +189,35 @@ public sealed class ProGpuDirectXBuffer : ProGpuDirectXResource
         var readSize = sizeInBytes ?? (Descriptor.SizeInBytes - offsetBytes);
         ValidateReadRange(offsetBytes, readSize);
 
+        if (readSize == 0)
+        {
+            return [];
+        }
+
+        var bytes = new byte[checked((int)readSize)];
+        ReadBytes(bytes, offsetBytes);
+        return bytes;
+    }
+
+    public void ReadBytes(Span<byte> destination, uint offsetBytes = 0)
+    {
+        ThrowIfDisposed();
+        if ((Descriptor.CpuAccess & DxCpuAccessFlags.Read) == 0)
+        {
+            throw new InvalidOperationException("Buffer was not created with CPU read access.");
+        }
+
+        var readSize = checked((uint)destination.Length);
+        ValidateReadRange(offsetBytes, readSize);
+        if (readSize == 0)
+        {
+            return;
+        }
+
         if (_backendBuffer is { BufferPtr: not null })
         {
-            return _backendBuffer.ReadBytes(offsetBytes, readSize);
+            _backendBuffer.ReadBytes(destination, offsetBytes);
+            return;
         }
 
         if (_cpuShadow is null)
@@ -199,13 +225,19 @@ public sealed class ProGpuDirectXBuffer : ProGpuDirectXResource
             throw new InvalidOperationException("Buffer does not have readable CPU storage.");
         }
 
-        return _cpuShadow.AsSpan(checked((int)offsetBytes), checked((int)readSize)).ToArray();
+        _cpuShadow.AsSpan(checked((int)offsetBytes), checked((int)readSize)).CopyTo(destination);
     }
 
     public unsafe T[] Read<T>(uint elementCount, uint offsetBytes = 0) where T : unmanaged
     {
-        var bytes = ReadBytes(offsetBytes, checked((uint)(elementCount * sizeof(T))));
-        return MemoryMarshal.Cast<byte, T>(bytes).ToArray();
+        var values = new T[checked((int)elementCount)];
+        Read(values, offsetBytes);
+        return values;
+    }
+
+    public unsafe void Read<T>(Span<T> destination, uint offsetBytes = 0) where T : unmanaged
+    {
+        ReadBytes(MemoryMarshal.AsBytes(destination), offsetBytes);
     }
 
     internal void CopyCpuShadowFrom(ProGpuDirectXBuffer source)
@@ -226,7 +258,26 @@ public sealed class ProGpuDirectXBuffer : ProGpuDirectXResource
     internal byte[] ReadWriteShadowBytes(uint offsetBytes, uint sizeInBytes)
     {
         ValidateReadRange(offsetBytes, sizeInBytes);
-        return _writeShadow.AsSpan(checked((int)offsetBytes), checked((int)sizeInBytes)).ToArray();
+        if (sizeInBytes == 0)
+        {
+            return [];
+        }
+
+        var bytes = new byte[checked((int)sizeInBytes)];
+        ReadWriteShadowBytes(bytes, offsetBytes);
+        return bytes;
+    }
+
+    internal void ReadWriteShadowBytes(Span<byte> destination, uint offsetBytes)
+    {
+        var sizeInBytes = checked((uint)destination.Length);
+        ValidateReadRange(offsetBytes, sizeInBytes);
+        if (sizeInBytes == 0)
+        {
+            return;
+        }
+
+        _writeShadow.AsSpan(checked((int)offsetBytes), checked((int)sizeInBytes)).CopyTo(destination);
     }
 
     internal void CompleteMappedSubresource(ProGpuDirectXMappedSubresource mapping)
@@ -265,11 +316,11 @@ public sealed class ProGpuDirectXBuffer : ProGpuDirectXResource
             return;
         }
 
-        var bytes = _backendBuffer.ReadBytes(offsetBytes, sizeInBytes);
-        bytes.CopyTo(_writeShadow.AsSpan(checked((int)offsetBytes), checked((int)sizeInBytes)));
+        var writeShadowSpan = _writeShadow.AsSpan(checked((int)offsetBytes), checked((int)sizeInBytes));
+        _backendBuffer.ReadBytes(writeShadowSpan, offsetBytes);
         if (_cpuShadow is not null && !ReferenceEquals(_cpuShadow, _writeShadow))
         {
-            bytes.CopyTo(_cpuShadow.AsSpan(checked((int)offsetBytes), checked((int)sizeInBytes)));
+            writeShadowSpan.CopyTo(_cpuShadow.AsSpan(checked((int)offsetBytes), checked((int)sizeInBytes)));
         }
     }
 
@@ -499,7 +550,17 @@ public sealed class ProGpuDirectXMappedSubresource : IDisposable
         ThrowIfUnmapped();
         var dataSize = checked((uint)(elementCount * sizeof(T)));
         ValidateMappedRange(offsetBytes, dataSize);
-        return MemoryMarshal.Cast<byte, T>(Span.Slice(checked((int)offsetBytes), checked((int)dataSize))).ToArray();
+        var values = new T[checked((int)elementCount)];
+        Read(values, offsetBytes);
+        return values;
+    }
+
+    public unsafe void Read<T>(Span<T> destination, uint offsetBytes = 0) where T : unmanaged
+    {
+        ThrowIfUnmapped();
+        var dataSize = checked((uint)(destination.Length * sizeof(T)));
+        ValidateMappedRange(offsetBytes, dataSize);
+        Span.Slice(checked((int)offsetBytes), checked((int)dataSize)).CopyTo(MemoryMarshal.AsBytes(destination));
     }
 
     public void Unmap()

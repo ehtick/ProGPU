@@ -1,5 +1,6 @@
 using Silk.NET.Core.Native;
 using Silk.NET.WebGPU;
+using System.Buffers;
 using System.Runtime.InteropServices;
 
 namespace ProGPU.DirectX;
@@ -2258,23 +2259,33 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
         uint indexCount)
     {
         var bytesPerIndex = format == DxIndexFormat.UInt16 ? 2u : 4u;
-        var bytes = sourceIndexBuffer.ReadWriteShadowBytes(
-            checked(startIndexLocation * bytesPerIndex),
-            checked(indexCount * bytesPerIndex));
+        var offsetBytes = checked(startIndexLocation * bytesPerIndex);
+        var sizeInBytes = checked(indexCount * bytesPerIndex);
+        var result = new uint[checked((int)indexCount)];
 
         if (format == DxIndexFormat.UInt16)
         {
-            var source = MemoryMarshal.Cast<byte, ushort>(bytes);
-            var result = new uint[source.Length];
-            for (var i = 0; i < source.Length; i++)
+            var rentedBytes = ArrayPool<byte>.Shared.Rent(checked((int)sizeInBytes));
+            try
             {
-                result[i] = source[i];
+                var sourceBytes = rentedBytes.AsSpan(0, checked((int)sizeInBytes));
+                sourceIndexBuffer.ReadWriteShadowBytes(sourceBytes, offsetBytes);
+                var source = MemoryMarshal.Cast<byte, ushort>(sourceBytes);
+                for (var i = 0; i < source.Length; i++)
+                {
+                    result[i] = source[i];
+                }
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(rentedBytes);
             }
 
             return result;
         }
 
-        return MemoryMarshal.Cast<byte, uint>(bytes).ToArray();
+        sourceIndexBuffer.ReadWriteShadowBytes(MemoryMarshal.AsBytes(result.AsSpan()), offsetBytes);
+        return result;
     }
 
     private static uint[] CreateWireframeLineIndicesForSequentialVertices(DxPrimitiveTopology topology, uint vertexCount)
@@ -2284,7 +2295,7 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
             return [];
         }
 
-        var indices = new uint[vertexCount];
+        var indices = new uint[checked((int)vertexCount)];
         for (uint i = 0; i < vertexCount; i++)
         {
             indices[i] = i;

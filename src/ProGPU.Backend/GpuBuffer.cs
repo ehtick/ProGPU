@@ -162,11 +162,27 @@ public unsafe class GpuBuffer : IDisposable
             return [];
         }
 
+        var bytes = new byte[checked((int)readSize)];
+        ReadBytes(bytes, offsetBytes);
+        return bytes;
+    }
+
+    public void ReadBytes(Span<byte> destination, uint offsetBytes = 0)
+    {
+        if (_isDisposed || BufferPtr == null) throw new ObjectDisposedException(nameof(GpuBuffer));
+
+        var readSize = checked((uint)destination.Length);
+        ValidateReadRange(offsetBytes, readSize);
+        if (readSize == 0)
+        {
+            return;
+        }
+
         if (Usage.HasFlag(BufferUsage.MapRead))
         {
             var mappedRange = CreateAlignedReadbackRange(offsetBytes, readSize, offsetAlignment: 8);
-            var mappedBytes = MapReadBuffer(BufferPtr, mappedRange.OffsetBytes, mappedRange.SizeBytes, destroyAfterRead: false);
-            return mappedBytes.AsSpan(checked((int)mappedRange.LeadingBytes), checked((int)readSize)).ToArray();
+            MapReadBuffer(BufferPtr, mappedRange.OffsetBytes, mappedRange.SizeBytes, mappedRange.LeadingBytes, destination, destroyAfterRead: false);
+            return;
         }
 
         if (!Usage.HasFlag(BufferUsage.CopySrc))
@@ -218,11 +234,16 @@ public unsafe class GpuBuffer : IDisposable
         _context.Wgpu.CommandBufferRelease(commandBuffer);
         _context.Wgpu.CommandEncoderRelease(encoder);
 
-        var readbackBytes = MapReadBuffer(readbackBuffer, 0, copyRange.SizeBytes, destroyAfterRead: true);
-        return readbackBytes.AsSpan(checked((int)copyRange.LeadingBytes), checked((int)readSize)).ToArray();
+        MapReadBuffer(readbackBuffer, 0, copyRange.SizeBytes, copyRange.LeadingBytes, destination, destroyAfterRead: true);
     }
 
-    private byte[] MapReadBuffer(Buffer* buffer, uint offsetBytes, uint sizeBytes, bool destroyAfterRead)
+    private void MapReadBuffer(
+        Buffer* buffer,
+        uint offsetBytes,
+        uint sizeBytes,
+        uint leadingBytes,
+        Span<byte> destination,
+        bool destroyAfterRead)
     {
         var mapSignal = new System.Threading.ManualResetEventSlim(false);
         var mapStatus = BufferMapAsyncStatus.ValidationError;
@@ -252,11 +273,12 @@ public unsafe class GpuBuffer : IDisposable
             throw new InvalidOperationException($"Failed to map readback buffer. WebGPU Status: {mapStatus}");
         }
 
-        var bytes = new byte[sizeBytes];
         var mappedPtr = _context.Wgpu.BufferGetConstMappedRange(buffer, offsetBytes, (nuint)sizeBytes);
         if (mappedPtr != null)
         {
-            Marshal.Copy((nint)mappedPtr, bytes, 0, checked((int)sizeBytes));
+            new ReadOnlySpan<byte>(
+                (byte*)mappedPtr + checked((int)leadingBytes),
+                destination.Length).CopyTo(destination);
         }
 
         _context.Wgpu.BufferUnmap(buffer);
@@ -264,8 +286,6 @@ public unsafe class GpuBuffer : IDisposable
         {
             QueueTemporaryReadbackBufferDisposal(buffer);
         }
-
-        return bytes;
     }
 
     private void CleanupMappedReadBuffer(Buffer* buffer, bool destroyAfterRead)

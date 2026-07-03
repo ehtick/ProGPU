@@ -211,6 +211,35 @@ public class DiagnosticsLoggingSourceTests
         Assert.DoesNotContain("var layoutsToRelease = new List<nint>();", pathAtlas, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void DirectXBufferReadbackUsesCallerOwnedBuffers()
+    {
+        string gpuBuffer = File.ReadAllText(FindRepoFile("src", "ProGPU.Backend", "GpuBuffer.cs"));
+        string resources = File.ReadAllText(FindRepoFile("src", "ProGPU.DirectX", "ProGpuDirectXResources.cs"));
+        string deviceContext = File.ReadAllText(FindRepoFile("src", "ProGPU.DirectX", "ProGpuDirectXDeviceContext.cs"));
+
+        Assert.Contains("public void ReadBytes(Span<byte> destination, uint offsetBytes = 0)", gpuBuffer, StringComparison.Ordinal);
+        Assert.Contains("ReadBytes(bytes, offsetBytes);", gpuBuffer, StringComparison.Ordinal);
+        Assert.Contains("MapReadBuffer(BufferPtr, mappedRange.OffsetBytes, mappedRange.SizeBytes, mappedRange.LeadingBytes, destination", gpuBuffer, StringComparison.Ordinal);
+        Assert.Contains("MapReadBuffer(readbackBuffer, 0, copyRange.SizeBytes, copyRange.LeadingBytes, destination", gpuBuffer, StringComparison.Ordinal);
+        Assert.Contains("new ReadOnlySpan<byte>(", gpuBuffer, StringComparison.Ordinal);
+        Assert.DoesNotContain("private byte[] MapReadBuffer", gpuBuffer, StringComparison.Ordinal);
+        Assert.DoesNotContain("return mappedBytes.AsSpan", gpuBuffer, StringComparison.Ordinal);
+        Assert.DoesNotContain("return readbackBytes.AsSpan", gpuBuffer, StringComparison.Ordinal);
+
+        Assert.Contains("public void ReadBytes(Span<byte> destination, uint offsetBytes = 0)", resources, StringComparison.Ordinal);
+        Assert.Contains("public unsafe void Read<T>(Span<T> destination, uint offsetBytes = 0)", resources, StringComparison.Ordinal);
+        Assert.Contains("_backendBuffer.ReadBytes(destination, offsetBytes);", resources, StringComparison.Ordinal);
+        Assert.Contains("_backendBuffer.ReadBytes(writeShadowSpan, offsetBytes);", resources, StringComparison.Ordinal);
+        Assert.Contains("internal void ReadWriteShadowBytes(Span<byte> destination, uint offsetBytes)", resources, StringComparison.Ordinal);
+        Assert.DoesNotContain("var bytes = _backendBuffer.ReadBytes(offsetBytes, sizeInBytes);", resources, StringComparison.Ordinal);
+
+        Assert.Contains("using System.Buffers;", deviceContext, StringComparison.Ordinal);
+        Assert.Contains("sourceIndexBuffer.ReadWriteShadowBytes(sourceBytes, offsetBytes);", deviceContext, StringComparison.Ordinal);
+        Assert.Contains("sourceIndexBuffer.ReadWriteShadowBytes(MemoryMarshal.AsBytes(result.AsSpan()), offsetBytes);", deviceContext, StringComparison.Ordinal);
+        Assert.DoesNotContain("return MemoryMarshal.Cast<byte, uint>(bytes).ToArray();", deviceContext, StringComparison.Ordinal);
+    }
+
     private static string FindRepoFile(params string[] pathParts)
     {
         for (DirectoryInfo? directory = new(AppContext.BaseDirectory);
