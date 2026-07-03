@@ -81,7 +81,7 @@ public sealed class GpuRenderCommandHitTestCacheBuilder
             return;
         }
 
-        int primitiveId = id ?? (command.HitTestId != 0 ? command.HitTestId : _nextId++);
+        var primitiveId = ResolvePrimitiveId(id, command.HitTestId);
         float zIndex = _primitives.Count;
         switch (command.Type)
         {
@@ -145,6 +145,31 @@ public sealed class GpuRenderCommandHitTestCacheBuilder
             case RenderCommandType.DrawExtension:
                 AddExtension(command, activeTransform, primitiveId, zIndex, provider);
                 break;
+        }
+    }
+
+    private int ResolvePrimitiveId(int? explicitId, int hitTestId)
+    {
+        if (explicitId is { } value)
+        {
+            ReserveGeneratedId(value);
+            return value;
+        }
+
+        if (hitTestId != 0)
+        {
+            ReserveGeneratedId(hitTestId);
+            return hitTestId;
+        }
+
+        return _nextId++;
+    }
+
+    private void ReserveGeneratedId(int id)
+    {
+        if (id >= _nextId)
+        {
+            _nextId = id + 1;
         }
     }
 

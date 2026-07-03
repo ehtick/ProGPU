@@ -64,7 +64,10 @@ public sealed class ProGpuDirectXBuffer : ProGpuDirectXResource
             _cpuShadow = new byte[descriptor.SizeInBytes];
         }
 
-        _writeShadow = _cpuShadow ?? new byte[descriptor.SizeInBytes];
+        var shadowSize = checked((int)AlignToWebGpuBufferCopySize(descriptor.SizeInBytes));
+        _writeShadow = _cpuShadow is { Length: var cpuShadowLength } && cpuShadowLength == shadowSize
+            ? _cpuShadow
+            : new byte[shadowSize];
 
         if (device.Context is { } context && device.IsGpuBacked)
         {
@@ -97,7 +100,6 @@ public sealed class ProGpuDirectXBuffer : ProGpuDirectXResource
             throw new ArgumentOutOfRangeException(nameof(data), "Buffer write exceeds the DirectX buffer bounds.");
         }
 
-        _backendBuffer?.Write(data, offsetBytes);
         var bytes = MemoryMarshal.AsBytes(data);
         bytes.CopyTo(_writeShadow.AsSpan(checked((int)offsetBytes), checked((int)dataSize)));
         if (_cpuShadow is not null && !ReferenceEquals(_cpuShadow, _writeShadow))
@@ -105,6 +107,7 @@ public sealed class ProGpuDirectXBuffer : ProGpuDirectXResource
             bytes.CopyTo(_cpuShadow.AsSpan(checked((int)offsetBytes), checked((int)dataSize)));
         }
 
+        UploadWriteShadowRange(offsetBytes, dataSize);
         LastWriteSizeInBytes = dataSize;
         LastWriteOffsetInBytes = offsetBytes;
         Generation++;
@@ -208,7 +211,8 @@ public sealed class ProGpuDirectXBuffer : ProGpuDirectXResource
     internal void CopyCpuShadowFrom(ProGpuDirectXBuffer source)
     {
         var copySize = checked((int)Math.Min(Descriptor.SizeInBytes, source.Descriptor.SizeInBytes));
-        source._writeShadow.AsSpan(0, copySize).CopyTo(_writeShadow);
+        var shadowCopySize = Math.Min(_writeShadow.Length, source._writeShadow.Length);
+        source._writeShadow.AsSpan(0, shadowCopySize).CopyTo(_writeShadow);
         if (_cpuShadow is not null && !ReferenceEquals(_cpuShadow, _writeShadow))
         {
             _writeShadow.AsSpan(0, copySize).CopyTo(_cpuShadow);
@@ -238,7 +242,7 @@ public sealed class ProGpuDirectXBuffer : ProGpuDirectXResource
                 checked((int)mapping.OffsetBytes),
                 checked((int)mapping.SizeInBytes));
 
-            _backendBuffer?.Write(mappedBytes, mapping.OffsetBytes);
+            UploadWriteShadowRange(mapping.OffsetBytes, mapping.SizeInBytes);
             if (_cpuShadow is not null && !ReferenceEquals(_cpuShadow, _writeShadow))
             {
                 mappedBytes.CopyTo(_cpuShadow.AsSpan(
@@ -267,6 +271,31 @@ public sealed class ProGpuDirectXBuffer : ProGpuDirectXResource
         {
             bytes.CopyTo(_cpuShadow.AsSpan(checked((int)offsetBytes), checked((int)sizeInBytes)));
         }
+    }
+
+    private void UploadWriteShadowRange(uint offsetBytes, uint sizeInBytes)
+    {
+        if (_backendBuffer is not { BufferPtr: not null })
+        {
+            return;
+        }
+
+        var alignedOffset = AlignDown(offsetBytes, 4);
+        var leadingBytes = offsetBytes - alignedOffset;
+        var alignedSize = AlignToWebGpuBufferCopySize(leadingBytes + sizeInBytes);
+        _backendBuffer.WriteAlignedBytes(
+            _writeShadow.AsSpan(checked((int)alignedOffset), checked((int)alignedSize)),
+            alignedOffset);
+    }
+
+    private static uint AlignDown(uint value, uint alignment)
+    {
+        return value - (value % alignment);
+    }
+
+    private static uint AlignToWebGpuBufferCopySize(uint size)
+    {
+        return (size + 3) & ~3u;
     }
 
     private static void ValidateDescriptor(DxBufferDescriptor descriptor, bool isGpuBacked)

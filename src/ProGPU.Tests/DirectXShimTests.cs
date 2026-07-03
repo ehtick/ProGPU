@@ -3403,6 +3403,28 @@ VertexOut VSMain(float3 pos : POSITION0, float2 uv : TEXCOORD0)
     }
 
     [Fact]
+    public void HlslTextPixelShaderMapsScalarPositionParameterToBuiltin()
+    {
+        using var device = ProGpuDirectXDevice.CreateMetadataDevice();
+        using var shader = device.CreateShader(new DxShaderDescriptor
+        {
+            Stage = DxShaderStage.Pixel,
+            SourceKind = DxShaderSourceKind.HlslText,
+            Source = """
+float4 PSMain(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
+{
+    return float4(position.xy + uv, 0.0, 1.0);
+}
+""",
+            EntryPoint = "PSMain"
+        });
+
+        Assert.NotNull(shader.BackendSource);
+        Assert.Contains("fn PSMain(@builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32>)", shader.BackendSource, StringComparison.Ordinal);
+        Assert.Contains("return vec4<f32>(position.xy + uv, 0.0, 1.0);", shader.BackendSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void HlslTextShaderTranslatesTexture2DArraySampleCallsInsideExpressions()
     {
         using var device = ProGpuDirectXDevice.CreateMetadataDevice();
@@ -9744,6 +9766,31 @@ float4 PSMain() : SV_Target
         Assert.Equal(
             [100u, 200u, 300u, 400u],
             MemoryMarshal.Cast<byte, uint>(buffer.BackendBuffer!.ReadBytes(0, 16)).ToArray());
+    }
+
+    [Fact]
+    public void GpuBackedBufferSupportsUnalignedMappedWritesAndLogicalReadback()
+    {
+        using var wgpu = new WgpuContext();
+        wgpu.Initialize(null);
+        using var device = ProGpuDirectXDevice.FromContext(wgpu);
+        using var buffer = device.CreateBuffer(new DxBufferDescriptor
+        {
+            SizeInBytes = 7,
+            Usage = DxBufferUsage.CopySource | DxBufferUsage.CopyDestination,
+            CpuAccess = DxCpuAccessFlags.Write
+        });
+
+        buffer.Write<byte>([0, 1, 2, 3, 4, 5, 6]);
+        using var mapping = buffer.Map(DxMapMode.WriteNoOverwrite, offsetBytes: 2, sizeInBytes: 3);
+        mapping.Write<byte>([0xA0, 0xA1, 0xA2]);
+        mapping.Unmap();
+
+        Assert.Equal(2u, buffer.LastWriteOffsetInBytes);
+        Assert.Equal(3u, buffer.LastWriteSizeInBytes);
+        Assert.Equal(
+            [0, 1, 0xA0, 0xA1, 0xA2, 5, 6],
+            buffer.BackendBuffer!.ReadBytes());
     }
 
     [Fact]

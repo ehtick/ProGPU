@@ -1423,13 +1423,19 @@ public sealed unsafe class ProGpuDirectXDeviceContext : IDisposable
                 return;
             }
 
+            var copySize = Math.Min(source.AllocatedSize, destination.AllocatedSize);
+            if (copySize == 0)
+            {
+                return;
+            }
+
             context.Wgpu.CommandEncoderCopyBufferToBuffer(
                 encoder,
                 source.BufferPtr,
                 0,
                 destination.BufferPtr,
                 0,
-                source.Size);
+                copySize);
 
             var commandBufferDesc = new CommandBufferDescriptor();
             commandBuffer = context.Wgpu.CommandEncoderFinish(encoder, &commandBufferDesc);

@@ -216,6 +216,39 @@ public sealed class GpuHitTestingTests
     }
 
     [Fact]
+    public void RenderCommandCacheKeepsGeneratedIdsDistinctFromExplicitHitTestIds()
+    {
+        var builder = new GpuRenderCommandHitTestCacheBuilder();
+        builder.AddCommand(new RenderCommand
+        {
+            Type = RenderCommandType.DrawRect,
+            HitTestId = 1,
+            Rect = new Rect(0f, 0f, 10f, 10f),
+            Brush = new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f))
+        }, Matrix4x4.Identity);
+        builder.AddCommand(new RenderCommand
+        {
+            Type = RenderCommandType.DrawRect,
+            Rect = new Rect(20f, 0f, 10f, 10f),
+            Brush = new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f))
+        }, Matrix4x4.Identity);
+        builder.AddCommand(new RenderCommand
+        {
+            Type = RenderCommandType.DrawRect,
+            Rect = new Rect(40f, 0f, 10f, 10f),
+            Brush = new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f))
+        }, Matrix4x4.Identity);
+
+        var index = builder.BuildIndex(maxDepth: 2, maxPrimitivesPerNode: 1);
+
+        Assert.Collection(
+            index.Primitives,
+            explicitPrimitive => Assert.Equal(1, explicitPrimitive.Id),
+            firstGenerated => Assert.Equal(2, firstGenerated.Id),
+            secondGenerated => Assert.Equal(3, secondGenerated.Id));
+    }
+
+    [Fact]
     public void RenderCommandCacheCachesLineStrokeHelperDataForGpuHitTesting()
     {
         var builder = new GpuRenderCommandHitTestCacheBuilder();

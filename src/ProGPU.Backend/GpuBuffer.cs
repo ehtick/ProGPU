@@ -9,9 +9,12 @@ namespace ProGPU.Backend;
 public unsafe class GpuBuffer : IDisposable
 {
     private readonly WgpuContext _context;
+    private byte[]? _partialWriteShadow;
+    private bool _hasUnmirroredWrites;
     
     public Buffer* BufferPtr { get; private set; }
     public uint Size { get; private set; }
+    public uint AllocatedSize { get; private set; }
     public BufferUsage Usage { get; private set; }
     
     private bool _isDisposed;
@@ -22,6 +25,7 @@ public unsafe class GpuBuffer : IDisposable
         Size = size;
         Usage = usage;
         var allocatedSize = AlignToQueueWriteSize(size);
+        AllocatedSize = allocatedSize;
 
         var labelPtr = SilkMarshal.StringToPtr(label);
         var desc = new BufferDescriptor
@@ -43,32 +47,98 @@ public unsafe class GpuBuffer : IDisposable
 
     public void Write<T>(ReadOnlySpan<T> data, uint offsetBytes = 0) where T : unmanaged
     {
+        WriteBytes(MemoryMarshal.AsBytes(data), offsetBytes);
+    }
+
+    public void WriteBytes(ReadOnlySpan<byte> data, uint offsetBytes = 0)
+    {
         if (_isDisposed || BufferPtr == null) throw new ObjectDisposedException(nameof(GpuBuffer));
-        
-        uint dataSize = (uint)(data.Length * sizeof(T));
+
+        var dataSize = checked((uint)data.Length);
         if (offsetBytes + dataSize > Size)
         {
             throw new ArgumentOutOfRangeException(nameof(data), $"Data size {dataSize} at offset {offsetBytes} exceeds buffer size {Size}.");
         }
 
-        fixed (T* ptr = data)
+        if (dataSize == 0)
         {
-            if (dataSize % 4 == 0)
+            return;
+        }
+
+        if (IsQueueWriteAligned(offsetBytes, dataSize))
+        {
+            QueueWriteAligned(data, offsetBytes);
+            if (_partialWriteShadow is null)
             {
-                _context.Wgpu.QueueWriteBuffer(_context.Queue, BufferPtr, offsetBytes, ptr, dataSize);
+                _hasUnmirroredWrites = true;
             }
             else
             {
-                uint paddedSize = (dataSize + 3) & ~3u;
-                byte* temp = stackalloc byte[(int)paddedSize];
-                System.Buffer.MemoryCopy(ptr, temp, paddedSize, dataSize);
-                for (uint i = dataSize; i < paddedSize; i++)
-                {
-                    temp[i] = 0;
-                }
-                _context.Wgpu.QueueWriteBuffer(_context.Queue, BufferPtr, offsetBytes, temp, paddedSize);
+                data.CopyTo(_partialWriteShadow.AsSpan(checked((int)offsetBytes), checked((int)dataSize)));
             }
+
+            return;
         }
+
+        var uploadRange = CreateAlignedUploadRange(offsetBytes, dataSize);
+        EnsurePartialWriteShadow();
+        data.CopyTo(_partialWriteShadow!.AsSpan(checked((int)offsetBytes), checked((int)dataSize)));
+        WriteAlignedBytes(
+            _partialWriteShadow.AsSpan(checked((int)uploadRange.OffsetBytes), checked((int)uploadRange.SizeBytes)),
+            uploadRange.OffsetBytes);
+    }
+
+    public void WriteAlignedBytes(ReadOnlySpan<byte> data, uint offsetBytes = 0)
+    {
+        if (_isDisposed || BufferPtr == null) throw new ObjectDisposedException(nameof(GpuBuffer));
+
+        var dataSize = checked((uint)data.Length);
+        if (!IsQueueWriteAligned(offsetBytes, dataSize))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(data),
+                "Aligned GPU buffer writes require 4-byte aligned offsets and sizes.");
+        }
+
+        ValidateAllocatedWriteRange(offsetBytes, dataSize);
+        if (dataSize == 0)
+        {
+            return;
+        }
+
+        QueueWriteAligned(data, offsetBytes);
+        if (_partialWriteShadow is null)
+        {
+            _hasUnmirroredWrites = true;
+        }
+        else
+        {
+            data.CopyTo(_partialWriteShadow.AsSpan(checked((int)offsetBytes), checked((int)dataSize)));
+        }
+    }
+
+    private void QueueWriteAligned(ReadOnlySpan<byte> data, uint offsetBytes)
+    {
+        fixed (byte* ptr = data)
+        {
+            _context.Wgpu.QueueWriteBuffer(_context.Queue, BufferPtr, offsetBytes, ptr, (uint)data.Length);
+        }
+    }
+
+    private void EnsurePartialWriteShadow()
+    {
+        if (_partialWriteShadow is not null)
+        {
+            return;
+        }
+
+        if (_hasUnmirroredWrites)
+        {
+            throw new InvalidOperationException(
+                "Unaligned GPU buffer writes after prior unmirrored writes cannot preserve existing boundary bytes. Use WriteAlignedBytes with a caller-preserved aligned span.");
+        }
+
+        _partialWriteShadow = new byte[AllocatedSize];
     }
 
     private static uint AlignToQueueWriteSize(uint size)
@@ -225,13 +295,21 @@ public unsafe class GpuBuffer : IDisposable
         }
     }
 
+    private void ValidateAllocatedWriteRange(uint offsetBytes, uint sizeBytes)
+    {
+        if (offsetBytes > AllocatedSize || sizeBytes > AllocatedSize - offsetBytes)
+        {
+            throw new ArgumentOutOfRangeException(nameof(sizeBytes), "GPU buffer write exceeds the allocated buffer bounds.");
+        }
+    }
+
     private ReadbackRange CreateAlignedReadbackRange(uint offsetBytes, uint sizeBytes, uint offsetAlignment)
     {
         var alignedOffset = AlignDown(offsetBytes, offsetAlignment);
         var leadingBytes = offsetBytes - alignedOffset;
         var minimumSize = (ulong)leadingBytes + sizeBytes;
         var alignedSize = AlignUp(minimumSize, 4);
-        var availableSize = Size - alignedOffset;
+        var availableSize = AllocatedSize - alignedOffset;
         if (alignedSize > availableSize)
         {
             throw new ArgumentOutOfRangeException(
@@ -240,6 +318,27 @@ public unsafe class GpuBuffer : IDisposable
         }
 
         return new ReadbackRange(alignedOffset, alignedSize, leadingBytes);
+    }
+
+    private ReadbackRange CreateAlignedUploadRange(uint offsetBytes, uint sizeBytes)
+    {
+        var alignedOffset = AlignDown(offsetBytes, 4);
+        var leadingBytes = offsetBytes - alignedOffset;
+        var alignedSize = AlignUp((ulong)leadingBytes + sizeBytes, 4);
+        var availableSize = AllocatedSize - alignedOffset;
+        if (alignedSize > availableSize)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(sizeBytes),
+                "GPU buffer upload cannot form an aligned enclosing range inside the allocated buffer bounds.");
+        }
+
+        return new ReadbackRange(alignedOffset, alignedSize, leadingBytes);
+    }
+
+    private static bool IsQueueWriteAligned(uint offsetBytes, uint sizeBytes)
+    {
+        return offsetBytes % 4 == 0 && sizeBytes % 4 == 0;
     }
 
     private static uint AlignDown(uint value, uint alignment)

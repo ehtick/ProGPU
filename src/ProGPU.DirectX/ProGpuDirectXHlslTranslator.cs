@@ -2502,6 +2502,11 @@ internal static class ProGpuDirectXHlslTranslator
 
     private static string GetParameterAttribute(string semantic, IReadOnlyDictionary<string, uint> semanticLocations)
     {
+        if (IsSystemSemantic(semantic, "SV_Position"))
+        {
+            return "@builtin(position)";
+        }
+
         if (IsSystemSemantic(semantic, "SV_VertexID"))
         {
             return "@builtin(vertex_index)";
