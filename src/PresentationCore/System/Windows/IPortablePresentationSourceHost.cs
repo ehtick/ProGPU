@@ -4,6 +4,14 @@ namespace System.Windows;
 
 public delegate bool PortableHitTestAllBufferOverride(double x, double y, Span<object?> results, out int resultCount);
 
+public delegate bool PortableGeometryHitTestBufferOverride(
+    double minX,
+    double minY,
+    double maxX,
+    double maxY,
+    Span<object?> results,
+    out int resultCount);
+
 public interface IPortablePresentationSourceHost : IDisposable
 {
     event EventHandler? RenderRequested;
@@ -28,7 +36,11 @@ public interface IPortablePresentationSourceHost : IDisposable
 
     Func<double, double, double, double, object?[]?>? HitTestBoundsOverride { get; set; }
 
+    PortableGeometryHitTestBufferOverride? HitTestBoundsBufferOverride { get; set; }
+
     Func<double, double, double, double, object?[]?>? HitTestEllipseBoundsOverride { get; set; }
+
+    PortableGeometryHitTestBufferOverride? HitTestEllipseBoundsBufferOverride { get; set; }
 
     void SetDeviceScale(double dpiScaleX, double dpiScaleY);
 
