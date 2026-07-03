@@ -236,9 +236,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         {
             if (cmd.Pen == null) return;
 
-            ReadOnlySpan<Line3D> edgesSpan = provider != null ? 
-                provider.GetLines3D(cmd.Line3DBufferOffset, cmd.Line3DBufferCount) : 
-                CollectionsMarshal.AsSpan(cmd.Edges3D ?? new List<Line3D>());
+            ReadOnlySpan<Line3D> edgesSpan = provider != null
+                ? provider.GetLines3D(cmd.Line3DBufferOffset, cmd.Line3DBufferCount)
+                : cmd.Edges3D is { } edges
+                    ? CollectionsMarshal.AsSpan(edges)
+                    : ReadOnlySpan<Line3D>.Empty;
 
             if (edgesSpan.IsEmpty) return;
 
