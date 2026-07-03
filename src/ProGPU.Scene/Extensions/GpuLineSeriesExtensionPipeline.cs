@@ -237,9 +237,7 @@ fn fs_main(in : VSOut) -> @location(0) vec4<f32> {
                 {
                     // Uncached fallback path: upload direct
                     var tempBuffer = new GpuSeriesBuffer();
-                    var array = new float[pointsCount * 2];
-                    floatsSpan.Slice(0, pointsCount * 2).CopyTo(array);
-                    tempBuffer.Upload(array, pointsCount);
+                    tempBuffer.Upload(floatsSpan.Slice(0, pointsCount * 2), pointsCount);
                     staticBuffer = tempBuffer;
                 }
             }

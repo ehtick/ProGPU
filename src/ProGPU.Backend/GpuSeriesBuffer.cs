@@ -29,10 +29,15 @@ namespace ProGPU.Backend
 
         public void Upload(float[] interleavedCoords, int pointsCount)
         {
+            Upload(interleavedCoords.AsSpan(), pointsCount);
+        }
+
+        public void Upload(ReadOnlySpan<float> interleavedCoords, int pointsCount)
+        {
             if (_isDisposed) throw new ObjectDisposedException(nameof(GpuSeriesBuffer));
 
             PointsCount = pointsCount;
-            uint requiredBytes = (uint)(interleavedCoords.Length * sizeof(float));
+            uint requiredBytes = checked((uint)(interleavedCoords.Length * sizeof(float)));
 
             var context = WgpuContext.Current;
             if (context == null)
@@ -69,10 +74,7 @@ namespace ProGPU.Backend
 
             if (pointsCount > 0 && Buffer != null)
             {
-                fixed (float* ptr = interleavedCoords)
-                {
-                    Buffer.Write(new ReadOnlySpan<float>(ptr, interleavedCoords.Length));
-                }
+                Buffer.Write(interleavedCoords);
             }
         }
 

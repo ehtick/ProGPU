@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Silk.NET.WebGPU;
@@ -220,25 +221,33 @@ fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
                 {
                     // Uncached fallback path: upload direct
                     var tempBuffer = new GpuSeriesBuffer();
-                    var array = new float[pointsCount * 3];
                     bool isOriginally2D = floatsSpan.Length == pointsCount * 2;
                     if (isOriginally2D)
                     {
+                        var array = ArrayPool<float>.Shared.Rent(pointsCount * 3);
                         float radiusVal = cmd.RadiusX;
                         int srcIdx = 0;
                         int destIdx = 0;
-                        for (int i = 0; i < pointsCount; i++)
+                        try
                         {
-                            array[destIdx++] = floatsSpan[srcIdx++];
-                            array[destIdx++] = floatsSpan[srcIdx++];
-                            array[destIdx++] = radiusVal;
+                            for (int i = 0; i < pointsCount; i++)
+                            {
+                                array[destIdx++] = floatsSpan[srcIdx++];
+                                array[destIdx++] = floatsSpan[srcIdx++];
+                                array[destIdx++] = radiusVal;
+                            }
+
+                            tempBuffer.Upload(array.AsSpan(0, pointsCount * 3), pointsCount);
+                        }
+                        finally
+                        {
+                            ArrayPool<float>.Shared.Return(array);
                         }
                     }
                     else
                     {
-                        floatsSpan.Slice(0, pointsCount * 3).CopyTo(array);
+                        tempBuffer.Upload(floatsSpan.Slice(0, pointsCount * 3), pointsCount);
                     }
-                    tempBuffer.Upload(array, pointsCount);
                     staticBuffer = tempBuffer;
                 }
             }

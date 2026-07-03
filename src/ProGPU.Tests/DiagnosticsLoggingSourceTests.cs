@@ -50,6 +50,9 @@ public class DiagnosticsLoggingSourceTests
     public void CompositorTransientStateSnapshotsUseArrayPool()
     {
         string source = File.ReadAllText(FindRepoFile("src", "ProGPU.Scene", "Compositor.cs"));
+        string seriesBuffer = File.ReadAllText(FindRepoFile("src", "ProGPU.Backend", "GpuSeriesBuffer.cs"));
+        string lineSeriesPipeline = File.ReadAllText(FindRepoFile("src", "ProGPU.Scene", "Extensions", "GpuLineSeriesExtensionPipeline.cs"));
+        string scatterSeriesPipeline = File.ReadAllText(FindRepoFile("src", "ProGPU.Scene", "Extensions", "GpuScatterSeriesExtensionPipeline.cs"));
 
         Assert.Contains("using System.Buffers;", source, StringComparison.Ordinal);
         Assert.Contains("private static T[] RentStackSnapshot<T>(Stack<T> stack, out int count)", source, StringComparison.Ordinal);
@@ -105,6 +108,20 @@ public class DiagnosticsLoggingSourceTests
         Assert.DoesNotContain("detached ??= new List<Visual>();", source, StringComparison.Ordinal);
         Assert.DoesNotContain("stale ??= new List<Visual>();", source, StringComparison.Ordinal);
         Assert.DoesNotContain("_maskTexturePool.ToArray()", source, StringComparison.Ordinal);
+        Assert.Contains("public void Upload(ReadOnlySpan<float> interleavedCoords, int pointsCount)", seriesBuffer, StringComparison.Ordinal);
+        Assert.Contains("Buffer.Write(interleavedCoords)", seriesBuffer, StringComparison.Ordinal);
+        Assert.Contains("tempBuffer.Upload(floatsSpan.Slice(0, pointsCount * 2), pointsCount)", source, StringComparison.Ordinal);
+        Assert.Contains("tempBuffer.Upload(floatsSpan.Slice(0, pointsCount * 3), pointsCount)", source, StringComparison.Ordinal);
+        Assert.Contains("var array = ArrayPool<float>.Shared.Rent(pointsCount * 3)", source, StringComparison.Ordinal);
+        Assert.Contains("ArrayPool<float>.Shared.Return(array)", source, StringComparison.Ordinal);
+        Assert.Contains("tempBuffer.Upload(floatsSpan.Slice(0, pointsCount * 2), pointsCount)", lineSeriesPipeline, StringComparison.Ordinal);
+        Assert.Contains("tempBuffer.Upload(floatsSpan.Slice(0, pointsCount * 3), pointsCount)", scatterSeriesPipeline, StringComparison.Ordinal);
+        Assert.Contains("var array = ArrayPool<float>.Shared.Rent(pointsCount * 3)", scatterSeriesPipeline, StringComparison.Ordinal);
+        Assert.Contains("ArrayPool<float>.Shared.Return(array)", scatterSeriesPipeline, StringComparison.Ordinal);
+        Assert.DoesNotContain("var array = new float[pointsCount * 2];", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("var array = new float[pointsCount * 3];", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("var array = new float[pointsCount * 2];", lineSeriesPipeline, StringComparison.Ordinal);
+        Assert.DoesNotContain("var array = new float[pointsCount * 3];", scatterSeriesPipeline, StringComparison.Ordinal);
     }
 
     [Fact]
