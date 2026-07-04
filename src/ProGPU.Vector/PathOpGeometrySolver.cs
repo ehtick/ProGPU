@@ -86,13 +86,9 @@ namespace ProGPU.Vector
 
             // GPU Solver Path
             var context = WgpuContext.Current;
-            if (context == null)
+            if (context == null && WgpuContext.TryGetFirstActiveContext(out var activeContext))
             {
-                var active = WgpuContext.ActiveContexts;
-                if (active.Count > 0)
-                {
-                    context = active[0];
-                }
+                context = activeContext;
             }
 
             if (context == null)

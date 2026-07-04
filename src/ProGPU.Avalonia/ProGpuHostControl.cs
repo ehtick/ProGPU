@@ -322,16 +322,7 @@ public class ProGpuHostControl : Control
     {
         lock (s_contextLeaseLock)
         {
-            WgpuContext? context = null;
-            var active = WgpuContext.ActiveContexts;
-            for (int i = 0; i < active.Count; i++)
-            {
-                if (!active[i].IsDisposed)
-                {
-                    context = active[i];
-                    break;
-                }
-            }
+            WgpuContext.TryGetFirstActiveContext(out var context);
 
             var ownsContext = false;
             if (context == null)

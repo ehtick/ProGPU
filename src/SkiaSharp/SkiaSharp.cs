@@ -596,11 +596,9 @@ internal static class SKContextHelper
         if (WgpuContext.Current != null && !WgpuContext.Current.IsDisposed)
             return WgpuContext.Current;
 
-        var active = WgpuContext.ActiveContexts;
-        foreach (var ctx in active)
+        if (WgpuContext.TryGetFirstActiveContext(out var ctx))
         {
-            if (!ctx.IsDisposed)
-                return ctx;
+            return ctx;
         }
 
         if (_fallbackContext == null || _fallbackContext.IsDisposed)

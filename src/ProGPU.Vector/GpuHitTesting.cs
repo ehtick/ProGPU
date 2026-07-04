@@ -1029,13 +1029,9 @@ public static unsafe class GpuHitTestEngine
     public static bool TryHitTestPoint(GpuHitTestIndex index, Vector2 point, out GpuHitTestResult result)
     {
         var context = WgpuContext.Current;
-        if (context == null)
+        if (context == null && WgpuContext.TryGetFirstActiveContext(out var activeContext))
         {
-            var activeContexts = WgpuContext.ActiveContexts;
-            if (activeContexts.Count > 0)
-            {
-                context = activeContexts[0];
-            }
+            context = activeContext;
         }
 
         if (context == null)

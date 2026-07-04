@@ -25,12 +25,9 @@ internal static class GpuProvider
                 return current;
             }
 
-            foreach (var active in WgpuContext.ActiveContexts)
+            if (WgpuContext.TryGetFirstActiveContext(out var active))
             {
-                if (!active.IsDisposed)
-                {
-                    return active;
-                }
+                return active;
             }
             if (_context != null && !_context.IsDisposed)
             {

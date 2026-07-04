@@ -67,6 +67,38 @@ public class DiagnosticsLoggingSourceTests
     }
 
     [Fact]
+    public void WgpuContextFirstActiveLookupAvoidsSnapshotArrays()
+    {
+        string source = File.ReadAllText(FindRepoFile("src", "ProGPU.Backend", "WgpuContext.cs"));
+        string gpuHitTesting = File.ReadAllText(FindRepoFile("src", "ProGPU.Vector", "GpuHitTesting.cs"));
+        string pathOps = File.ReadAllText(FindRepoFile("src", "ProGPU.Vector", "PathOpGeometrySolver.cs"));
+        string presentationCoreGpuProvider = File.ReadAllText(FindRepoFile("src", "PresentationCore", "GpuProvider.cs"));
+        string systemDrawingGpuProvider = File.ReadAllText(FindRepoFile("src", "System.Drawing.Common", "GpuProvider.cs"));
+        string skiaSharp = File.ReadAllText(FindRepoFile("src", "SkiaSharp", "SkiaSharp.cs"));
+        string avaloniaHost = File.ReadAllText(FindRepoFile("src", "ProGPU.Avalonia", "ProGpuHostControl.cs"));
+
+        Assert.Contains("using System.Diagnostics.CodeAnalysis;", source, StringComparison.Ordinal);
+        Assert.Contains("public static bool TryGetFirstActiveContext([NotNullWhen(true)] out WgpuContext? context)", source, StringComparison.Ordinal);
+        Assert.Contains("for (var i = 0; i < _activeContexts.Count; i++)", source, StringComparison.Ordinal);
+        Assert.Contains("var active = _activeContexts[i];", source, StringComparison.Ordinal);
+        Assert.Contains("context = active;", source, StringComparison.Ordinal);
+        Assert.Contains("return _activeContexts.ToArray();", source, StringComparison.Ordinal);
+
+        Assert.Contains("WgpuContext.TryGetFirstActiveContext(out var activeContext)", gpuHitTesting, StringComparison.Ordinal);
+        Assert.DoesNotContain("var activeContexts = WgpuContext.ActiveContexts;", gpuHitTesting, StringComparison.Ordinal);
+        Assert.Contains("WgpuContext.TryGetFirstActiveContext(out var activeContext)", pathOps, StringComparison.Ordinal);
+        Assert.DoesNotContain("var active = WgpuContext.ActiveContexts;", pathOps, StringComparison.Ordinal);
+        Assert.Contains("WgpuContext.TryGetFirstActiveContext(out var active)", presentationCoreGpuProvider, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var active in WgpuContext.ActiveContexts)", presentationCoreGpuProvider, StringComparison.Ordinal);
+        Assert.Contains("WgpuContext.TryGetFirstActiveContext(out var active)", systemDrawingGpuProvider, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var active in WgpuContext.ActiveContexts)", systemDrawingGpuProvider, StringComparison.Ordinal);
+        Assert.Contains("WgpuContext.TryGetFirstActiveContext(out var ctx)", skiaSharp, StringComparison.Ordinal);
+        Assert.DoesNotContain("var active = WgpuContext.ActiveContexts;", skiaSharp, StringComparison.Ordinal);
+        Assert.Contains("WgpuContext.TryGetFirstActiveContext(out var context);", avaloniaHost, StringComparison.Ordinal);
+        Assert.DoesNotContain("var active = WgpuContext.ActiveContexts;", avaloniaHost, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void CompositorTransientStateSnapshotsUseArrayPool()
     {
         string source = File.ReadAllText(FindRepoFile("src", "ProGPU.Scene", "Compositor.cs"));

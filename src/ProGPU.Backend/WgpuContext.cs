@@ -1,6 +1,7 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 using Silk.NET.Core.Contexts;
 using Silk.NET.Core.Native;
@@ -353,6 +354,25 @@ public unsafe class WgpuContext : IDisposable
                 return _activeContexts.ToArray();
             }
         }
+    }
+
+    public static bool TryGetFirstActiveContext([NotNullWhen(true)] out WgpuContext? context)
+    {
+        lock (_activeContexts)
+        {
+            for (var i = 0; i < _activeContexts.Count; i++)
+            {
+                var active = _activeContexts[i];
+                if (!active.IsDisposed)
+                {
+                    context = active;
+                    return true;
+                }
+            }
+        }
+
+        context = null;
+        return false;
     }
 
     [ThreadStatic]
