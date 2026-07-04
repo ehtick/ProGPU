@@ -793,8 +793,8 @@ public unsafe class Compositor : IDisposable
     private bool _isDisposed;
     public bool IsDisposed => _isDisposed;
 
-    private readonly Stack<Rect> _clipStack = new();
-    private readonly Stack<bool> _clipScopeIsGeometryMask = new();
+    private SmallValueStack<Rect> _clipStack;
+    private SmallValueStack<bool> _clipScopeIsGeometryMask;
     private Rect? _activeClipRect;
 
     private SmallValueStack<float> _opacityStack;
@@ -1642,7 +1642,7 @@ public unsafe class Compositor : IDisposable
             finally
             {
                 _activeClipRect = savedActiveClipRect;
-                RestoreStack(_clipStack, savedClipStack, savedClipStackCount);
+                RestoreStack(ref _clipStack, savedClipStack, savedClipStackCount);
                 RestoreClipScopeStack(savedClipScopeIsGeometryMask, savedClipScopeIsGeometryMaskCount);
                 _activeOpacity = savedActiveOpacity;
                 RestoreStack(ref _opacityStack, savedOpacityStack, savedOpacityStackCount);
@@ -1679,7 +1679,7 @@ public unsafe class Compositor : IDisposable
             finally
             {
                 _activeClipRect = savedActiveClipRect;
-                RestoreStack(_clipStack, savedClipStack, savedClipStackCount);
+                RestoreStack(ref _clipStack, savedClipStack, savedClipStackCount);
                 RestoreClipScopeStack(savedClipScopeIsGeometryMask, savedClipScopeIsGeometryMaskCount);
                 _activeOpacity = savedActiveOpacity;
                 RestoreStack(ref _opacityStack, savedOpacityStack, savedOpacityStackCount);
@@ -1801,7 +1801,7 @@ public unsafe class Compositor : IDisposable
             finally
             {
                 _activeClipRect = savedActiveClipRect;
-                RestoreStack(_clipStack, savedClipStack, savedClipStackCount);
+                RestoreStack(ref _clipStack, savedClipStack, savedClipStackCount);
                 RestoreClipScopeStack(savedClipScopeIsGeometryMask, savedClipScopeIsGeometryMaskCount);
                 _activeOpacity = savedActiveOpacity;
                 RestoreStack(ref _opacityStack, savedOpacityStack, savedOpacityStackCount);
@@ -2486,7 +2486,7 @@ public unsafe class Compositor : IDisposable
 
     private void RestoreClipScopeStack(bool[] savedClipScopeIsGeometryMask, int count)
     {
-        RestoreStack(_clipScopeIsGeometryMask, savedClipScopeIsGeometryMask, count);
+        RestoreStack(ref _clipScopeIsGeometryMask, savedClipScopeIsGeometryMask, count);
     }
 
     private static T[] RentStackSnapshot<T>(Stack<T> stack, out int count)
@@ -6256,6 +6256,8 @@ public unsafe class Compositor : IDisposable
             _maskBindGroupsOffscreen.Clear();
             ReturnMaskRenderPassDrawCallLists();
             _drawCallListPool.Clear();
+            _clipStack.Dispose();
+            _clipScopeIsGeometryMask.Dispose();
             _opacityStack.Dispose();
 
             DisposeMaskTexturePool();
@@ -7327,7 +7329,7 @@ public unsafe class Compositor : IDisposable
             RestoreList(_drawCalls, savedDrawCalls, savedDrawCallsCount);
             RestoreList(_activeBrushes, savedActiveBrushes, savedActiveBrushesCount);
             RestoreList(_activeGradientStops, savedActiveGradientStops, savedActiveGradientStopsCount);
-            RestoreStack(_clipStack, savedClipStack, savedClipStackCount);
+            RestoreStack(ref _clipStack, savedClipStack, savedClipStackCount);
             RestoreClipScopeStack(savedClipScopeIsGeometryMask, savedClipScopeIsGeometryMaskCount);
             _activeClipRect = savedActiveClipRect;
 
@@ -7751,7 +7753,7 @@ public unsafe class Compositor : IDisposable
             RestoreList(_compiledTextRecords, dxfSavedCompiledTextRecords, dxfSavedCompiledTextRecordsCount);
 
             _activeClipRect = dxfSavedActiveClipRect;
-            RestoreStack(_clipStack, dxfSavedClipStack, dxfSavedClipStackCount);
+            RestoreStack(ref _clipStack, dxfSavedClipStack, dxfSavedClipStackCount);
             RestoreClipScopeStack(dxfSavedClipScopeIsGeometryMask, dxfSavedClipScopeIsGeometryMaskCount);
 
             RestoreStack(ref _opacityStack, dxfSavedOpacityStack, dxfSavedOpacityStackCount);
@@ -8239,7 +8241,7 @@ public unsafe class Compositor : IDisposable
             RestoreList(_compiledTextRecords, dxfSavedCompiledTextRecords, dxfSavedCompiledTextRecordsCount);
 
             _activeClipRect = dxfSavedActiveClipRect;
-            RestoreStack(_clipStack, dxfSavedClipStack, dxfSavedClipStackCount);
+            RestoreStack(ref _clipStack, dxfSavedClipStack, dxfSavedClipStackCount);
             RestoreClipScopeStack(dxfSavedClipScopeIsGeometryMask, dxfSavedClipScopeIsGeometryMaskCount);
 
             RestoreStack(ref _opacityStack, dxfSavedOpacityStack, dxfSavedOpacityStackCount);
