@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Numerics;
 
 #nullable enable
@@ -525,8 +524,78 @@ static class ArcSegmentGeometry
 
         DashPattern.NormalizeState(dashPattern, ref patternIndex, ref distanceInPattern);
 
-        var segments = new List<ArcDashSegment>();
+        var normalizedPatternIndex = patternIndex;
+        var normalizedDistanceInPattern = distanceInPattern;
+        var dashSpanCount = CountArcDashSpans(
+            totalLength,
+            dashPattern,
+            ref patternIndex,
+            ref distanceInPattern);
+        finalPatternIndex = patternIndex;
+        finalDistanceInPattern = distanceInPattern;
+        if (dashSpanCount == 0)
+        {
+            return true;
+        }
+
+        dashSegments = new ArcDashSegment[dashSpanCount];
+        var dashSegmentCount = FillArcDashSegments(
+            start,
+            arc,
+            cumulativeLengths,
+            totalLength,
+            dashPattern,
+            normalizedPatternIndex,
+            normalizedDistanceInPattern,
+            dashSegments);
+        if (dashSegmentCount == 0)
+        {
+            dashSegments = Array.Empty<ArcDashSegment>();
+        }
+        else if (dashSegmentCount != dashSegments.Length)
+        {
+            Array.Resize(ref dashSegments, dashSegmentCount);
+        }
+
+        return true;
+    }
+
+    private static int CountArcDashSpans(
+        float totalLength,
+        ReadOnlySpan<float> dashPattern,
+        ref int patternIndex,
+        ref float distanceInPattern)
+    {
+        var count = 0;
         var distance = 0.0f;
+        while (distance < totalLength - Epsilon)
+        {
+            var remainingInElement = dashPattern[patternIndex] - distanceInPattern;
+            var step = MathF.Min(remainingInElement, totalLength - distance);
+            if ((patternIndex % 2) == 0 && step > Epsilon)
+            {
+                count++;
+            }
+
+            DashPattern.Advance(dashPattern, ref patternIndex, ref distanceInPattern, remainingInElement, step);
+            distance += step;
+        }
+
+        return count;
+    }
+
+    private static int FillArcDashSegments(
+        Vector2 start,
+        ArcSegment arc,
+        float[] cumulativeLengths,
+        float totalLength,
+        ReadOnlySpan<float> dashPattern,
+        int patternIndex,
+        float distanceInPattern,
+        ArcDashSegment[] dashSegments)
+    {
+        var distance = 0.0f;
+        var dashSegmentCount = 0;
         while (distance < totalLength - Epsilon)
         {
             var remainingInElement = dashPattern[patternIndex] - distanceInPattern;
@@ -543,7 +612,7 @@ static class ArcSegmentGeometry
                         out var dashStart,
                         out var dashArc))
                 {
-                    segments.Add(new ArcDashSegment(dashStart, dashArc));
+                    dashSegments[dashSegmentCount++] = new ArcDashSegment(dashStart, dashArc);
                 }
             }
 
@@ -551,10 +620,7 @@ static class ArcSegmentGeometry
             distance += step;
         }
 
-        dashSegments = segments.ToArray();
-        finalPatternIndex = patternIndex;
-        finalDistanceInPattern = distanceInPattern;
-        return true;
+        return dashSegmentCount;
     }
 
     private static bool TryBuildArcLengthTable(

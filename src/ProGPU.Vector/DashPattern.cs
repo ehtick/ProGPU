@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Numerics;
 
 #nullable enable
@@ -129,28 +128,84 @@ readonly struct DashPattern
             return false;
         }
 
-        var direction = delta / length;
-        var segments = new List<LineDashSegment>();
-        var distance = 0.0f;
-        while (distance < length - Epsilon)
+        var normalizedPatternIndex = patternIndex;
+        var normalizedDistanceInPattern = distanceInPattern;
+        var segmentCount = CountLineSegments(
+            Intervals,
+            ref patternIndex,
+            ref distanceInPattern,
+            length);
+        if (segmentCount == 0)
         {
-            var remainingInElement = _intervals[patternIndex] - distanceInPattern;
-            var step = MathF.Min(remainingInElement, length - distance);
-            if ((patternIndex % 2) == 0 && step > Epsilon)
-            {
-                segments.Add(new LineDashSegment(
-                    start + direction * distance,
-                    start + direction * (distance + step)));
-            }
-
-            Advance(Intervals, ref patternIndex, ref distanceInPattern, remainingInElement, step);
-            distance += step;
+            finalPatternIndex = patternIndex;
+            finalDistanceInPattern = distanceInPattern;
+            return true;
         }
 
-        dashSegments = segments.ToArray();
+        dashSegments = new LineDashSegment[segmentCount];
+        FillLineSegments(
+            Intervals,
+            start,
+            end,
+            length,
+            normalizedPatternIndex,
+            normalizedDistanceInPattern,
+            dashSegments);
         finalPatternIndex = patternIndex;
         finalDistanceInPattern = distanceInPattern;
         return true;
+    }
+
+    private static int CountLineSegments(
+        ReadOnlySpan<float> intervals,
+        ref int patternIndex,
+        ref float distanceInPattern,
+        float length)
+    {
+        var count = 0;
+        var distance = 0.0f;
+        while (distance < length - Epsilon)
+        {
+            var remainingInElement = intervals[patternIndex] - distanceInPattern;
+            var step = MathF.Min(remainingInElement, length - distance);
+            if ((patternIndex % 2) == 0 && step > Epsilon)
+            {
+                count++;
+            }
+
+            Advance(intervals, ref patternIndex, ref distanceInPattern, remainingInElement, step);
+            distance += step;
+        }
+
+        return count;
+    }
+
+    private static void FillLineSegments(
+        ReadOnlySpan<float> intervals,
+        Vector2 start,
+        Vector2 end,
+        float length,
+        int patternIndex,
+        float distanceInPattern,
+        LineDashSegment[] dashSegments)
+    {
+        var direction = (end - start) / length;
+        var distance = 0.0f;
+        var segmentIndex = 0;
+        while (distance < length - Epsilon)
+        {
+            var remainingInElement = intervals[patternIndex] - distanceInPattern;
+            var step = MathF.Min(remainingInElement, length - distance);
+            if ((patternIndex % 2) == 0 && step > Epsilon)
+            {
+                dashSegments[segmentIndex++] = new LineDashSegment(
+                    start + direction * distance,
+                    start + direction * (distance + step));
+            }
+
+            Advance(intervals, ref patternIndex, ref distanceInPattern, remainingInElement, step);
+            distance += step;
+        }
     }
 
     public static bool TryValidateState(

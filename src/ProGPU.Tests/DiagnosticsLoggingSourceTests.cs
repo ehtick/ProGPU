@@ -219,6 +219,38 @@ public class DiagnosticsLoggingSourceTests
     }
 
     [Fact]
+    public void VectorDashHelpersAvoidTemporaryListMaterialization()
+    {
+        string dashPattern = File.ReadAllText(FindRepoFile("src", "ProGPU.Vector", "DashPattern.cs"));
+        string bezierSegments = File.ReadAllText(FindRepoFile("src", "ProGPU.Vector", "BezierSegmentGeometry.cs"));
+        string arcSegments = File.ReadAllText(FindRepoFile("src", "ProGPU.Vector", "ArcSegmentGeometry.cs"));
+
+        Assert.Contains("private static int CountLineSegments(", dashPattern, StringComparison.Ordinal);
+        Assert.Contains("private static void FillLineSegments(", dashPattern, StringComparison.Ordinal);
+        Assert.DoesNotContain("using System.Collections.Generic;", dashPattern, StringComparison.Ordinal);
+        Assert.DoesNotContain("new List<LineDashSegment>", dashPattern, StringComparison.Ordinal);
+        Assert.DoesNotContain("segments.ToArray()", dashPattern, StringComparison.Ordinal);
+
+        Assert.Contains("private static bool TryPrepareDashSegments(", bezierSegments, StringComparison.Ordinal);
+        Assert.Contains("private static int CountDashParameterSpans(", bezierSegments, StringComparison.Ordinal);
+        Assert.Contains("private static int FillQuadraticBezierDashSegments(", bezierSegments, StringComparison.Ordinal);
+        Assert.Contains("private static int FillCubicBezierDashSegments(", bezierSegments, StringComparison.Ordinal);
+        Assert.DoesNotContain("using System.Collections.Generic;", bezierSegments, StringComparison.Ordinal);
+        Assert.DoesNotContain("new List<DashParameterSpan>", bezierSegments, StringComparison.Ordinal);
+        Assert.DoesNotContain("new List<QuadraticBezierDashSegment>", bezierSegments, StringComparison.Ordinal);
+        Assert.DoesNotContain("new List<CubicBezierDashSegment>", bezierSegments, StringComparison.Ordinal);
+        Assert.DoesNotContain("private readonly struct DashParameterSpan", bezierSegments, StringComparison.Ordinal);
+        Assert.DoesNotContain("parameterSpans = spans.ToArray()", bezierSegments, StringComparison.Ordinal);
+        Assert.DoesNotContain("segments.ToArray()", bezierSegments, StringComparison.Ordinal);
+
+        Assert.Contains("private static int CountArcDashSpans(", arcSegments, StringComparison.Ordinal);
+        Assert.Contains("private static int FillArcDashSegments(", arcSegments, StringComparison.Ordinal);
+        Assert.DoesNotContain("using System.Collections.Generic;", arcSegments, StringComparison.Ordinal);
+        Assert.DoesNotContain("new List<ArcDashSegment>", arcSegments, StringComparison.Ordinal);
+        Assert.DoesNotContain("dashSegments = segments.ToArray()", arcSegments, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void GpuHitTestIndexBuilderUsesPooledPrimitiveBuckets()
     {
         string source = File.ReadAllText(FindRepoFile("src", "ProGPU.Vector", "GpuHitTesting.cs"));

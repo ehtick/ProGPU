@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Numerics;
 
 namespace ProGPU.Vector;
@@ -158,42 +157,54 @@ public static class BezierSegmentGeometry
         int lengthSegmentCount = DefaultLengthSegmentCount)
     {
         dashSegments = Array.Empty<QuadraticBezierDashSegment>();
+        finalPatternIndex = patternIndex;
+        finalDistanceInPattern = distanceInPattern;
+
         if (!TryBuildQuadraticLengthTable(
                 start,
                 segment,
                 lengthSegmentCount,
                 out var cumulativeLengths,
                 out _)
-            || !TryCreateDashParameterSpans(
+            || !TryPrepareDashSegments(
                 cumulativeLengths,
                 dashPattern,
-                patternIndex,
-                distanceInPattern,
-                out var parameterSpans,
-                out finalPatternIndex,
-                out finalDistanceInPattern))
+                ref patternIndex,
+                ref distanceInPattern,
+                out var normalizedPatternIndex,
+                out var normalizedDistanceInPattern,
+                out var dashSpanCount))
         {
-            finalPatternIndex = patternIndex;
-            finalDistanceInPattern = distanceInPattern;
             return false;
         }
 
-        var segments = new List<QuadraticBezierDashSegment>(parameterSpans.Length);
-        foreach (var parameterSpan in parameterSpans)
+        finalPatternIndex = patternIndex;
+        finalDistanceInPattern = distanceInPattern;
+
+        if (dashSpanCount == 0)
         {
-            if (TryCreateSubQuadraticBezierSegment(
-                    start,
-                    segment,
-                    parameterSpan.Start,
-                    parameterSpan.End,
-                    out var dashStart,
-                    out var dashSegment))
-            {
-                segments.Add(new QuadraticBezierDashSegment(dashStart, dashSegment));
-            }
+            return true;
         }
 
-        dashSegments = segments.ToArray();
+        dashSegments = new QuadraticBezierDashSegment[dashSpanCount];
+        var dashSegmentCount = FillQuadraticBezierDashSegments(
+            start,
+            segment,
+            cumulativeLengths,
+            dashPattern,
+            normalizedPatternIndex,
+            normalizedDistanceInPattern,
+            dashSegments);
+
+        if (dashSegmentCount == 0)
+        {
+            dashSegments = Array.Empty<QuadraticBezierDashSegment>();
+        }
+        else if (dashSegmentCount != dashSegments.Length)
+        {
+            Array.Resize(ref dashSegments, dashSegmentCount);
+        }
+
         return true;
     }
 
@@ -209,42 +220,54 @@ public static class BezierSegmentGeometry
         int lengthSegmentCount = DefaultLengthSegmentCount)
     {
         dashSegments = Array.Empty<CubicBezierDashSegment>();
+        finalPatternIndex = patternIndex;
+        finalDistanceInPattern = distanceInPattern;
+
         if (!TryBuildCubicLengthTable(
                 start,
                 segment,
                 lengthSegmentCount,
                 out var cumulativeLengths,
                 out _)
-            || !TryCreateDashParameterSpans(
+            || !TryPrepareDashSegments(
                 cumulativeLengths,
                 dashPattern,
-                patternIndex,
-                distanceInPattern,
-                out var parameterSpans,
-                out finalPatternIndex,
-                out finalDistanceInPattern))
+                ref patternIndex,
+                ref distanceInPattern,
+                out var normalizedPatternIndex,
+                out var normalizedDistanceInPattern,
+                out var dashSpanCount))
         {
-            finalPatternIndex = patternIndex;
-            finalDistanceInPattern = distanceInPattern;
             return false;
         }
 
-        var segments = new List<CubicBezierDashSegment>(parameterSpans.Length);
-        foreach (var parameterSpan in parameterSpans)
+        finalPatternIndex = patternIndex;
+        finalDistanceInPattern = distanceInPattern;
+
+        if (dashSpanCount == 0)
         {
-            if (TryCreateSubCubicBezierSegment(
-                    start,
-                    segment,
-                    parameterSpan.Start,
-                    parameterSpan.End,
-                    out var dashStart,
-                    out var dashSegment))
-            {
-                segments.Add(new CubicBezierDashSegment(dashStart, dashSegment));
-            }
+            return true;
         }
 
-        dashSegments = segments.ToArray();
+        dashSegments = new CubicBezierDashSegment[dashSpanCount];
+        var dashSegmentCount = FillCubicBezierDashSegments(
+            start,
+            segment,
+            cumulativeLengths,
+            dashPattern,
+            normalizedPatternIndex,
+            normalizedDistanceInPattern,
+            dashSegments);
+
+        if (dashSegmentCount == 0)
+        {
+            dashSegments = Array.Empty<CubicBezierDashSegment>();
+        }
+        else if (dashSegmentCount != dashSegments.Length)
+        {
+            Array.Resize(ref dashSegments, dashSegmentCount);
+        }
+
         return true;
     }
 
@@ -315,18 +338,18 @@ public static class BezierSegmentGeometry
         return totalLength > Epsilon;
     }
 
-    private static bool TryCreateDashParameterSpans(
+    private static bool TryPrepareDashSegments(
         float[] cumulativeLengths,
         ReadOnlySpan<float> dashPattern,
-        int patternIndex,
-        float distanceInPattern,
-        out DashParameterSpan[] parameterSpans,
-        out int finalPatternIndex,
-        out float finalDistanceInPattern)
+        ref int patternIndex,
+        ref float distanceInPattern,
+        out int normalizedPatternIndex,
+        out float normalizedDistanceInPattern,
+        out int dashSpanCount)
     {
-        parameterSpans = Array.Empty<DashParameterSpan>();
-        finalPatternIndex = patternIndex;
-        finalDistanceInPattern = distanceInPattern;
+        normalizedPatternIndex = patternIndex;
+        normalizedDistanceInPattern = distanceInPattern;
+        dashSpanCount = 0;
 
         if (cumulativeLengths.Length < 2 ||
             !DashPattern.TryValidateState(dashPattern, patternIndex, distanceInPattern))
@@ -336,8 +359,24 @@ public static class BezierSegmentGeometry
 
         DashPattern.NormalizeState(dashPattern, ref patternIndex, ref distanceInPattern);
 
+        normalizedPatternIndex = patternIndex;
+        normalizedDistanceInPattern = distanceInPattern;
+        dashSpanCount = CountDashParameterSpans(
+            cumulativeLengths,
+            dashPattern,
+            ref patternIndex,
+            ref distanceInPattern);
+        return true;
+    }
+
+    private static int CountDashParameterSpans(
+        float[] cumulativeLengths,
+        ReadOnlySpan<float> dashPattern,
+        ref int patternIndex,
+        ref float distanceInPattern)
+    {
+        var count = 0;
         var totalLength = cumulativeLengths[^1];
-        var spans = new List<DashParameterSpan>();
         var distance = 0.0f;
         while (distance < totalLength - Epsilon)
         {
@@ -345,19 +384,92 @@ public static class BezierSegmentGeometry
             var step = MathF.Min(remainingInElement, totalLength - distance);
             if ((patternIndex % 2) == 0 && step > Epsilon)
             {
-                spans.Add(new DashParameterSpan(
-                    GetParameterAtDistance(cumulativeLengths, distance),
-                    GetParameterAtDistance(cumulativeLengths, distance + step)));
+                count++;
             }
 
             DashPattern.Advance(dashPattern, ref patternIndex, ref distanceInPattern, remainingInElement, step);
             distance += step;
         }
 
-        parameterSpans = spans.ToArray();
-        finalPatternIndex = patternIndex;
-        finalDistanceInPattern = distanceInPattern;
-        return true;
+        return count;
+    }
+
+    private static int FillQuadraticBezierDashSegments(
+        Vector2 start,
+        QuadraticBezierSegment segment,
+        float[] cumulativeLengths,
+        ReadOnlySpan<float> dashPattern,
+        int patternIndex,
+        float distanceInPattern,
+        QuadraticBezierDashSegment[] dashSegments)
+    {
+        var totalLength = cumulativeLengths[^1];
+        var distance = 0.0f;
+        var dashSegmentCount = 0;
+        while (distance < totalLength - Epsilon)
+        {
+            var remainingInElement = dashPattern[patternIndex] - distanceInPattern;
+            var step = MathF.Min(remainingInElement, totalLength - distance);
+            if ((patternIndex % 2) == 0 && step > Epsilon)
+            {
+                var startParameter = GetParameterAtDistance(cumulativeLengths, distance);
+                var endParameter = GetParameterAtDistance(cumulativeLengths, distance + step);
+                if (TryCreateSubQuadraticBezierSegment(
+                        start,
+                        segment,
+                        startParameter,
+                        endParameter,
+                        out var dashStart,
+                        out var dashSegment))
+                {
+                    dashSegments[dashSegmentCount++] = new QuadraticBezierDashSegment(dashStart, dashSegment);
+                }
+            }
+
+            DashPattern.Advance(dashPattern, ref patternIndex, ref distanceInPattern, remainingInElement, step);
+            distance += step;
+        }
+
+        return dashSegmentCount;
+    }
+
+    private static int FillCubicBezierDashSegments(
+        Vector2 start,
+        CubicBezierSegment segment,
+        float[] cumulativeLengths,
+        ReadOnlySpan<float> dashPattern,
+        int patternIndex,
+        float distanceInPattern,
+        CubicBezierDashSegment[] dashSegments)
+    {
+        var totalLength = cumulativeLengths[^1];
+        var distance = 0.0f;
+        var dashSegmentCount = 0;
+        while (distance < totalLength - Epsilon)
+        {
+            var remainingInElement = dashPattern[patternIndex] - distanceInPattern;
+            var step = MathF.Min(remainingInElement, totalLength - distance);
+            if ((patternIndex % 2) == 0 && step > Epsilon)
+            {
+                var startParameter = GetParameterAtDistance(cumulativeLengths, distance);
+                var endParameter = GetParameterAtDistance(cumulativeLengths, distance + step);
+                if (TryCreateSubCubicBezierSegment(
+                        start,
+                        segment,
+                        startParameter,
+                        endParameter,
+                        out var dashStart,
+                        out var dashSegment))
+                {
+                    dashSegments[dashSegmentCount++] = new CubicBezierDashSegment(dashStart, dashSegment);
+                }
+            }
+
+            DashPattern.Advance(dashPattern, ref patternIndex, ref distanceInPattern, remainingInElement, step);
+            distance += step;
+        }
+
+        return dashSegmentCount;
     }
 
     private static bool TryNormalizeParameters(ref float startParameter, ref float endParameter)
@@ -492,15 +604,4 @@ public static class BezierSegmentGeometry
         return float.IsFinite(value.X) && float.IsFinite(value.Y);
     }
 
-    private readonly struct DashParameterSpan
-    {
-        public DashParameterSpan(float start, float end)
-        {
-            Start = start;
-            End = end;
-        }
-
-        public float Start { get; }
-        public float End { get; }
-    }
 }
