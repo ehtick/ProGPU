@@ -2,6 +2,37 @@
 
 ProGPU is a high-performance, GPU-first UI framework and composition substrate for .NET, built on top of Silk.NET and WebGPU (wgpu-native). It provides a lightweight, low-allocation alternative to traditional heavyweight UI frameworks by routing all vector graphics, text layout, and composition operations directly to the GPU using native WebGPU draw pipelines.
 
+## NuGet Packages
+
+ProGPU release packages are built from `eng/progpu-package-list.sh` by the `Release` GitHub Actions workflow. Samples, tests, diagnostics, and framework shim projects are intentionally not packed.
+
+| Package | Purpose | Project |
+| --- | --- | --- |
+| `ProGPU.Backend` | WebGPU device, swapchain, Silk.NET windowing, and platform backend services. | `src/ProGPU.Backend/ProGPU.Backend.csproj` |
+| `ProGPU.DirectX` | DirectX-compatible facade and shader-oriented API surface implemented on ProGPU/WebGPU. | `src/ProGPU.DirectX/ProGPU.DirectX.csproj` |
+| `ProGPU.Transpiler` | Shader/source transformation helpers used by generated GPU pipelines. | `src/ProGPU.Transpiler/ProGPU.Transpiler.csproj` |
+| `ProGPU.Compute` | Compute pipeline helpers for GPU-side effects, acceleration, and future hit-test indexes. | `src/ProGPU.Compute/ProGPU.Compute.csproj` |
+| `ProGPU.Vector` | Vector primitives, paths, geometry, brushes, pens, and rasterization data models. | `src/ProGPU.Vector/ProGPU.Vector.csproj` |
+| `ProGPU.Text` | Text layout, glyph metrics, and GPU-ready text rendering helpers. | `src/ProGPU.Text/ProGPU.Text.csproj` |
+| `ProGPU.Scene` | Scene graph, compositor commands, retained visuals, effects, and presentation primitives. | `src/ProGPU.Scene/ProGPU.Scene.csproj` |
+| `ProGPU.Layout` | Measure/arrange layout substrate shared by higher-level UI adapters. | `src/ProGPU.Layout/ProGPU.Layout.csproj` |
+| `ProGPU.Virtualization` | Virtualization helpers for large retained visual and item surfaces. | `src/ProGPU.Virtualization/ProGPU.Virtualization.csproj` |
+| `ProGPU.WinUI` | WinUI-shaped controls and app model implemented on ProGPU. | `src/ProGPU.WinUI/ProGPU.WinUI.csproj` |
+| `ProGPU.WinUI.Charts` | Chart controls and chart rendering primitives for the WinUI-shaped layer. | `src/ProGPU.WinUI.Charts/ProGPU.WinUI.Charts.csproj` |
+| `ProGPU.WinUI.Designer` | Designer/editor controls and diagnostics for ProGPU WinUI surfaces. | `src/ProGPU.WinUI.Designer/ProGPU.WinUI.Designer.csproj` |
+| `ProGPU.Avalonia` | Avalonia integration and compositor backend adapter. | `src/ProGPU.Avalonia/ProGPU.Avalonia.csproj` |
+| `ProGPU.Uno` | Uno/WinUI integration and compositor backend adapter. | `src/ProGPU.Uno/ProGPU.Uno.csproj` |
+| `ProGPU.Dxf` | DXF import/rendering support for ProGPU vector scenes. | `src/ProGPU.Dxf/ProGPU.Dxf.csproj` |
+| `ProGPU.Wpf.Interop` | Small WPF interop contracts consumed by the ProGPU WPF SDK lane. | `src/ProGPU.Wpf.Interop/ProGPU.Wpf.Interop.csproj` |
+
+Local package build:
+
+```bash
+PROGPU_PACKAGE_VERSION=11.0.0-dev ./eng/progpu-pack.sh
+```
+
+The release workflow validates docs, restores, builds, tests, packs `.nupkg`/`.snupkg` artifacts, and can publish to NuGet.org when `NUGET_API_KEY` is configured. See [docs/release.md](docs/release.md).
+
 ---
 
 ## Architectural Hierarchy
@@ -1077,4 +1108,3 @@ GpuSharingInterop.COMHelper.CallUpdateSubresource(context, image.WinTexture2D, 0
 
 ### 6. Graceful Runtime Fallback
 If graphics interop is not supported by the environment (e.g. software rendering, missing drivers, or Linux configurations lacking Vulkan opaque handles), the control gracefully falls back to the **Decoupled Render-Thread Blitting Pipeline** (Phase 2). This ensures 100% functionality and visual parity across all host configurations!
-

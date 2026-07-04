@@ -1,0 +1,46 @@
+name: Docs
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - README.md
+      - docs/**
+      - eng/progpu-package-list.sh
+      - eng/progpu-verify-docs.sh
+      - .github/workflows/**
+  push:
+    branches:
+      - main
+    paths:
+      - README.md
+      - docs/**
+      - eng/progpu-package-list.sh
+      - eng/progpu-verify-docs.sh
+      - .github/workflows/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-docs:
+    name: Verify release documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify package docs
+        run: ./eng/progpu-verify-docs.sh
+
+      - name: Upload docs snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: progpu-docs
+          path: |
+            README.md
+            docs/**

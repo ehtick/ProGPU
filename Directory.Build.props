@@ -5,6 +5,31 @@
     <PackageVersion Condition="'$(PackageVersion)' == ''">$(Version)</PackageVersion>
     <Description Condition="'$(Description)' == ''">ProGPU runtime package for GPU-accelerated .NET composition, rendering, vector graphics, text, and WebGPU platform integration.</Description>
     <PackageDescription Condition="'$(PackageDescription)' == ''">$(Description)</PackageDescription>
+    <Authors Condition="'$(Authors)' == ''">Wieslaw Soltes</Authors>
+    <Company Condition="'$(Company)' == ''">ProGPU</Company>
+    <PackageProjectUrl Condition="'$(PackageProjectUrl)' == ''">https://github.com/wieslawsoltes/ProGPU</PackageProjectUrl>
+    <RepositoryUrl Condition="'$(RepositoryUrl)' == ''">https://github.com/wieslawsoltes/ProGPU</RepositoryUrl>
+    <RepositoryType Condition="'$(RepositoryType)' == ''">git</RepositoryType>
+    <PackageLicenseExpression Condition="'$(PackageLicenseExpression)' == ''">MIT</PackageLicenseExpression>
+    <PackageTags Condition="'$(PackageTags)' == ''">progpu;webgpu;silk.net;gpu;composition;vector;text;ui;rendering</PackageTags>
+    <PublishRepositoryUrl Condition="'$(PublishRepositoryUrl)' == ''">true</PublishRepositoryUrl>
+    <IsPackable Condition="'$(IsPackable)' == ''">false</IsPackable>
+    <IsPackable Condition="'$(MSBuildProjectName)' == 'ProGPU.Backend'">true</IsPackable>
+    <IsPackable Condition="'$(MSBuildProjectName)' == 'ProGPU.DirectX'">true</IsPackable>
+    <IsPackable Condition="'$(MSBuildProjectName)' == 'ProGPU.Transpiler'">true</IsPackable>
+    <IsPackable Condition="'$(MSBuildProjectName)' == 'ProGPU.Compute'">true</IsPackable>
+    <IsPackable Condition="'$(MSBuildProjectName)' == 'ProGPU.Vector'">true</IsPackable>
+    <IsPackable Condition="'$(MSBuildProjectName)' == 'ProGPU.Text'">true</IsPackable>
+    <IsPackable Condition="'$(MSBuildProjectName)' == 'ProGPU.Scene'">true</IsPackable>
+    <IsPackable Condition="'$(MSBuildProjectName)' == 'ProGPU.Layout'">true</IsPackable>
+    <IsPackable Condition="'$(MSBuildProjectName)' == 'ProGPU.Virtualization'">true</IsPackable>
+    <IsPackable Condition="'$(MSBuildProjectName)' == 'ProGPU.WinUI'">true</IsPackable>
+    <IsPackable Condition="'$(MSBuildProjectName)' == 'ProGPU.WinUI.Charts'">true</IsPackable>
+    <IsPackable Condition="'$(MSBuildProjectName)' == 'ProGPU.WinUI.Designer'">true</IsPackable>
+    <IsPackable Condition="'$(MSBuildProjectName)' == 'ProGPU.Avalonia'">true</IsPackable>
+    <IsPackable Condition="'$(MSBuildProjectName)' == 'ProGPU.Uno'">true</IsPackable>
+    <IsPackable Condition="'$(MSBuildProjectName)' == 'ProGPU.Dxf'">true</IsPackable>
+    <IsPackable Condition="'$(MSBuildProjectName)' == 'ProGPU.Wpf.Interop'">true</IsPackable>
     <AssemblyVersion Condition="'$(AssemblyVersion)' == ''">11.0.0.0</AssemblyVersion>
     <FileVersion Condition="'$(FileVersion)' == ''">11.0.0.0</FileVersion>
     <InformationalVersion Condition="'$(InformationalVersion)' == ''">$(Version)</InformationalVersion>

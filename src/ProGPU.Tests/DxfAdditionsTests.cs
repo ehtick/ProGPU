@@ -11,6 +11,24 @@ namespace ProGPU.Tests;
 
 public class DxfAdditionsTests
 {
+    private static netDxf.DxfDocument? TryLoadDiagnosticDxf(string path)
+    {
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            return netDxf.DxfDocument.Load(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.WriteLine($"[Diagnostic] Skipping inaccessible DXF file '{path}': {ex.Message}");
+            return null;
+        }
+    }
+
     [Fact]
     public void AcisSatParser_ParseSampleSat_ReconstructsEdgesCorrectly()
     {
@@ -610,13 +628,13 @@ EOF";
     public void DxfDocumentRenderer_Render_LargeDxfFile()
     {
         string path = "/Users/wieslawsoltes/Downloads/dwg/dxf/Schemat IOS Karvina CZ.dxf";
-        if (!File.Exists(path)) return;
+        var doc = TryLoadDiagnosticDxf(path);
+        if (doc == null) return;
 
         string fontPath = "/System/Library/Fonts/Supplemental/Arial.ttf";
         if (!File.Exists(fontPath)) fontPath = "Arial.ttf";
         var font = File.Exists(fontPath) ? new ProGPU.Text.TtfFont(fontPath) : null!;
 
-        var doc = netDxf.DxfDocument.Load(path);
         var drawingContext = new ProGPU.Scene.DrawingContext();
         var ctx = new DxfRenderContext(drawingContext, font);
 
@@ -662,9 +680,9 @@ EOF";
     public void DxfGpuTransforms_DiagnosticMatrix()
     {
         string path = "/Users/wieslawsoltes/Downloads/dwg/dxf/Schemat IOS Karvina CZ.dxf";
-        if (!File.Exists(path)) return;
+        var doc = TryLoadDiagnosticDxf(path);
+        if (doc == null) return;
 
-        var doc = netDxf.DxfDocument.Load(path);
         var drawingContext = new ProGPU.Scene.DrawingContext();
         var ctx = new DxfRenderContext(drawingContext, null!);
         ctx.EnableGpuTransforms = true;
@@ -777,13 +795,13 @@ EOF";
     public void Dxf_Render_UserFile_Diagnostic()
     {
         string path = "/Users/wieslawsoltes/Downloads/dwg/dxf/160074-M12102B.dxf";
-        if (!File.Exists(path)) return;
+        var doc = TryLoadDiagnosticDxf(path);
+        if (doc == null) return;
 
         string fontPath = "/System/Library/Fonts/Supplemental/Arial.ttf";
         if (!File.Exists(fontPath)) fontPath = "Arial.ttf";
         var font = File.Exists(fontPath) ? new ProGPU.Text.TtfFont(fontPath) : null!;
 
-        var doc = netDxf.DxfDocument.Load(path);
         var drawingContext = new ProGPU.Scene.DrawingContext();
         var ctx = new DxfRenderContext(drawingContext, font);
 
@@ -800,5 +818,4 @@ EOF";
         Assert.NotEmpty(drawingContext.Commands);
     }
 }
-
 
