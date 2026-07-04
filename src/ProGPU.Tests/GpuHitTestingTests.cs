@@ -209,6 +209,30 @@ public sealed class GpuHitTestingTests
     }
 
     [Fact]
+    public void RenderCommandCacheUsesGlyphRunCommandBoundsWhenAvailable()
+    {
+        var builder = new GpuRenderCommandHitTestCacheBuilder();
+        builder.AddCommand(new RenderCommand
+        {
+            Type = RenderCommandType.DrawGlyphRun,
+            Rect = new Rect(10f, 20f, 30f, 12f),
+            FontSize = 12f,
+            GlyphPositions =
+            [
+                new Vector2(1f, 2f),
+                new Vector2(10_000f, 10_000f)
+            ]
+        }, Matrix4x4.CreateTranslation(2f, 3f, 0f), id: 77);
+
+        var index = builder.BuildIndex(maxDepth: 2, maxPrimitivesPerNode: 1);
+
+        var primitive = Assert.Single(index.Primitives);
+        Assert.Equal(77, primitive.Id);
+        Assert.Equal(new Vector2(12f, 23f), primitive.BoundsMin);
+        Assert.Equal(new Vector2(42f, 35f), primitive.BoundsMax);
+    }
+
+    [Fact]
     public void RenderCommandCacheAttachesGeometryClipMetadataToPrimitives()
     {
         var builder = new GpuRenderCommandHitTestCacheBuilder();

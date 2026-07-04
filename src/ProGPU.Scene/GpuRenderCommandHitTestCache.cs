@@ -544,6 +544,12 @@ public sealed class GpuRenderCommandHitTestCacheBuilder
 
     private void AddGlyphBounds(RenderCommand command, Matrix4x4 transform, int id, float zIndex)
     {
+        if (!command.Rect.IsEmpty)
+        {
+            AddBounds(command.Rect, transform, id, zIndex);
+            return;
+        }
+
         if (command.GlyphPositions is not { Length: > 0 } positions)
         {
             AddTextBounds(command, transform, id, zIndex);
