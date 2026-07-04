@@ -661,7 +661,7 @@ public unsafe class Compositor : IDisposable
 
     private readonly List<MaskRenderPassInfo> _maskRenderPasses = new();
     private readonly List<GpuTexture> _masksToReturnToPool = new();
-    private readonly Stack<List<CompositorDrawCall>> _drawCallListPool = new();
+    private SmallValueStack<List<CompositorDrawCall>> _drawCallListPool;
     private const int MaxPooledDrawCallLists = 64;
     private const int MaxPooledDrawCallListCapacity = 4096;
 
@@ -6233,7 +6233,7 @@ public unsafe class Compositor : IDisposable
             _maskBindGroups.Clear();
             _maskBindGroupsOffscreen.Clear();
             ReturnMaskRenderPassDrawCallLists();
-            _drawCallListPool.Clear();
+            _drawCallListPool.Dispose();
             _clipStack.Dispose();
             _clipScopeIsGeometryMask.Dispose();
             _opacityStack.Dispose();

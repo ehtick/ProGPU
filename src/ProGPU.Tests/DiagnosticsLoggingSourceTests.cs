@@ -132,7 +132,7 @@ public class DiagnosticsLoggingSourceTests
         Assert.Contains("RentListSnapshot(_textVerticesList", source, StringComparison.Ordinal);
         Assert.Contains("RentListSnapshot(_drawCalls", source, StringComparison.Ordinal);
         Assert.Contains("ReturnListSnapshot(savedVectorVertices", source, StringComparison.Ordinal);
-        Assert.Contains("private readonly Stack<List<CompositorDrawCall>> _drawCallListPool = new();", source, StringComparison.Ordinal);
+        Assert.Contains("private SmallValueStack<List<CompositorDrawCall>> _drawCallListPool;", source, StringComparison.Ordinal);
         Assert.Contains("private List<CompositorDrawCall> RentDrawCallList(int capacity)", source, StringComparison.Ordinal);
         Assert.Contains("private List<CompositorDrawCall> RentMaskDrawCallList(int capacity)", source, StringComparison.Ordinal);
         Assert.Contains("private void ReturnMaskRenderPassDrawCallLists()", source, StringComparison.Ordinal);
@@ -162,16 +162,19 @@ public class DiagnosticsLoggingSourceTests
         Assert.Contains("_blendModeStack.Dispose();", source, StringComparison.Ordinal);
         Assert.Contains("RestoreStack(ref _maskStack", source, StringComparison.Ordinal);
         Assert.Contains("_maskStack.Dispose();", source, StringComparison.Ordinal);
+        Assert.Contains("_drawCallListPool.Dispose();", source, StringComparison.Ordinal);
         Assert.DoesNotContain("private readonly Stack<Rect> _clipStack", source, StringComparison.Ordinal);
         Assert.DoesNotContain("private readonly Stack<bool> _clipScopeIsGeometryMask", source, StringComparison.Ordinal);
         Assert.DoesNotContain("private readonly Stack<float> _opacityStack", source, StringComparison.Ordinal);
         Assert.DoesNotContain("private readonly Stack<GpuBlendMode> _blendModeStack", source, StringComparison.Ordinal);
         Assert.DoesNotContain("private readonly Stack<GpuTexture> _maskStack", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("private readonly Stack<List<CompositorDrawCall>> _drawCallListPool", source, StringComparison.Ordinal);
         Assert.DoesNotContain("new Stack<Rect>", source, StringComparison.Ordinal);
         Assert.DoesNotContain("new Stack<bool>", source, StringComparison.Ordinal);
         Assert.DoesNotContain("new Stack<float>", source, StringComparison.Ordinal);
         Assert.DoesNotContain("new Stack<GpuBlendMode>", source, StringComparison.Ordinal);
         Assert.DoesNotContain("new Stack<GpuTexture>", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("new Stack<List<CompositorDrawCall>>", source, StringComparison.Ordinal);
         Assert.DoesNotContain("private static T[] RentStackSnapshot<T>(Stack<T>", source, StringComparison.Ordinal);
         Assert.DoesNotContain("private static void RestoreStack<T>(Stack<T>", source, StringComparison.Ordinal);
         Assert.DoesNotContain("RestoreStack(_clipStack", source, StringComparison.Ordinal);
