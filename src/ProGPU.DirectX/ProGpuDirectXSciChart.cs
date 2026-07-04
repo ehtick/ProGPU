@@ -1209,8 +1209,8 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
             return;
         }
 
-        var copiedPoints = points[..count].ToArray();
-        var vertexBuffer = CreatePolygonFillVertexBuffer(copiedPoints, brush, out var submittedVertexCount);
+        var pointSpan = points[..count];
+        var vertexBuffer = CreatePolygonFillVertexBuffer(pointSpan, brush, out var submittedVertexCount);
         if (vertexBuffer is null)
         {
             return;
@@ -1224,7 +1224,7 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
 
         _primitiveDraws.Add(new ProGpuDirectXSciChartPrimitiveDraw(
             ProGpuDirectXSciChartPrimitiveKind.PolygonFill,
-            copiedPoints,
+            CopyPrimitivePoints(pointSpan),
             null,
             brush,
             1d,
@@ -1259,8 +1259,8 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
             return;
         }
 
-        var copiedLines = lines[..count].ToArray();
-        var vertexBuffer = CreateAreaFillVertexBuffer(copiedLines, brush, gradientRotationAngle, out var submittedVertexCount);
+        var lineSpan = lines[..count];
+        var vertexBuffer = CreateAreaFillVertexBuffer(lineSpan, brush, gradientRotationAngle, out var submittedVertexCount);
         if (vertexBuffer is null)
         {
             return;
@@ -1274,7 +1274,7 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
 
         _primitiveDraws.Add(new ProGpuDirectXSciChartPrimitiveDraw(
             ProGpuDirectXSciChartPrimitiveKind.AreaFill,
-            CopyAreaPoints(copiedLines),
+            CopyAreaPoints(lineSpan),
             null,
             brush,
             1d,
@@ -2481,8 +2481,8 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
             return;
         }
 
-        var copiedPoints = points[..count].ToArray();
-        var lineVertices = CreateLineVertices(copiedPoints, pen.ColorArgb);
+        var pointSpan = points[..count];
+        var lineVertices = CreateLineVertices(pointSpan, pen.ColorArgb);
         var vertexBuffer = CreateLineBatchVertexBuffer(
             lineVertices,
             default,
@@ -2507,7 +2507,7 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
 
         _primitiveDraws.Add(new ProGpuDirectXSciChartPrimitiveDraw(
             kind,
-            copiedPoints,
+            CopyPrimitivePoints(pointSpan),
             pen,
             null,
             1d,
@@ -2934,6 +2934,14 @@ public sealed class ProGpuDirectXSciChartRenderContext2D : IDisposable
         }
 
         return points;
+    }
+
+    private static ProGpuDirectXSciChartPoint[] CopyPrimitivePoints(
+        ReadOnlySpan<ProGpuDirectXSciChartPoint> points)
+    {
+        var copiedPoints = new ProGpuDirectXSciChartPoint[points.Length];
+        points.CopyTo(copiedPoints);
+        return copiedPoints;
     }
 
     private ProGpuDirectXBuffer? CreateMountainFillVertexBuffer(

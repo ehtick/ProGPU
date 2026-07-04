@@ -457,6 +457,25 @@ public class DiagnosticsLoggingSourceTests
     }
 
     [Fact]
+    public void SciChartPrimitiveUploadsUseCallerSpansBeforeDurableHistoryCopies()
+    {
+        string source = File.ReadAllText(FindRepoFile("src", "ProGPU.DirectX", "ProGpuDirectXSciChart.cs"));
+
+        Assert.Contains("var pointSpan = points[..count];", source, StringComparison.Ordinal);
+        Assert.Contains("var vertexBuffer = CreatePolygonFillVertexBuffer(pointSpan, brush, out var submittedVertexCount);", source, StringComparison.Ordinal);
+        Assert.Contains("var lineSpan = lines[..count];", source, StringComparison.Ordinal);
+        Assert.Contains("var vertexBuffer = CreateAreaFillVertexBuffer(lineSpan, brush, gradientRotationAngle, out var submittedVertexCount);", source, StringComparison.Ordinal);
+        Assert.Contains("var lineVertices = CreateLineVertices(pointSpan, pen.ColorArgb);", source, StringComparison.Ordinal);
+        Assert.Contains("CopyPrimitivePoints(pointSpan)", source, StringComparison.Ordinal);
+        Assert.Contains("points.CopyTo(copiedPoints);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("var copiedPoints = points[..count].ToArray();", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("var copiedLines = lines[..count].ToArray();", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("CreatePolygonFillVertexBuffer(copiedPoints", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("CreateAreaFillVertexBuffer(copiedLines", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("CreateLineVertices(copiedPoints", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void DirectXTextureReadbackUsesCallerOwnedBuffers()
     {
         string texture = File.ReadAllText(FindRepoFile("src", "ProGPU.Backend", "GpuTexture.cs"));
