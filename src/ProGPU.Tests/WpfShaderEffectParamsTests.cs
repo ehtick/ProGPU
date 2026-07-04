@@ -184,6 +184,19 @@ public class WpfShaderEffectParamsTests
     }
 
     [Fact]
+    public void ShaderEffectParamsScansSamplersWithIndexedLoops()
+    {
+        var source = File.ReadAllText(FindRepoFile(
+            "src",
+            "ProGPU.Scene",
+            "WpfShaderEffectParams.cs")).Replace("\r\n", "\n");
+
+        Assert.Contains("var samplers = Samplers;\n        for (var i = 0; i < samplers.Length; i++)", source, StringComparison.Ordinal);
+        Assert.Contains("var sampler = samplers[i];", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var sampler in Samplers)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ShaderEffectPipelineCollectsSamplerRegistersWithoutPerRenderArray()
     {
         var source = File.ReadAllText(FindRepoFile(

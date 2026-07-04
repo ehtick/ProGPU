@@ -95,8 +95,10 @@ public sealed class WpfShaderEffectParams
             return true;
         }
 
-        foreach (var sampler in Samplers)
+        var samplers = Samplers;
+        for (var i = 0; i < samplers.Length; i++)
         {
+            var sampler = samplers[i];
             if (sampler.Texture != null)
             {
                 return true;
@@ -117,8 +119,10 @@ public sealed class WpfShaderEffectParams
             return true;
         }
 
-        foreach (var sampler in Samplers)
+        var samplers = Samplers;
+        for (var i = 0; i < samplers.Length; i++)
         {
+            var sampler = samplers[i];
             if (sampler.RegisterIndex == registerIndex && sampler.Texture != null)
             {
                 texture = sampler.Texture;
@@ -158,8 +162,10 @@ public sealed class WpfShaderEffectParams
             return true;
         }
 
-        foreach (var sampler in Samplers)
+        var samplers = Samplers;
+        for (var i = 0; i < samplers.Length; i++)
         {
+            var sampler = samplers[i];
             if (sampler.Texture != null)
             {
                 texture = sampler.Texture;
