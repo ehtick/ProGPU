@@ -288,8 +288,10 @@ public sealed unsafe class ProGpuDirectXBindingSnapshot : IDisposable
 
     private static bool CanCreateBackendBindGroup(IReadOnlyList<ProGpuDirectXBindingEntry> entries)
     {
-        foreach (var entry in entries)
+        var entryCount = entries.Count;
+        for (var entryIndex = 0; entryIndex < entryCount; entryIndex++)
         {
+            var entry = entries[entryIndex];
             if (entry.Stage == DxShaderStage.Geometry)
             {
                 return false;

@@ -962,6 +962,7 @@ public class DiagnosticsLoggingSourceTests
         string gpuBuffer = ReadSource("src", "ProGPU.Backend", "GpuBuffer.cs");
         string resources = ReadSource("src", "ProGPU.DirectX", "ProGpuDirectXResources.cs");
         string deviceContext = ReadSource("src", "ProGPU.DirectX", "ProGpuDirectXDeviceContext.cs");
+        string bindings = ReadSource("src", "ProGPU.DirectX", "ProGpuDirectXBindings.cs");
         string pipelines = ReadSource("src", "ProGPU.DirectX", "ProGpuDirectXPipelines.cs");
         string shaderBytecode = ReadSource("src", "ProGPU.DirectX", "ProGpuDirectXShaderBytecode.cs");
         string hlslTranslator = ReadSource("src", "ProGPU.DirectX", "ProGpuDirectXHlslTranslator.cs");
@@ -1009,6 +1010,9 @@ public class DiagnosticsLoggingSourceTests
         Assert.Contains("for (var i = 0; i < entries.Count; i++)", deviceContext, StringComparison.Ordinal);
         Assert.Contains("entries[i] = entry with", deviceContext, StringComparison.Ordinal);
         Assert.Contains("entries.Sort(static (left, right) =>", deviceContext, StringComparison.Ordinal);
+        Assert.Contains("var entryCount = entries.Count;\n        for (var entryIndex = 0; entryIndex < entryCount; entryIndex++)", bindings, StringComparison.Ordinal);
+        Assert.Contains("var entry = entries[entryIndex];", bindings, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var entry in entries)", bindings, StringComparison.Ordinal);
         Assert.Contains("var constantBufferEnumerator = _constantBuffers.GetEnumerator();", deviceContext, StringComparison.Ordinal);
         Assert.Contains("var shaderResourceViewEnumerator = _shaderResourceViews.GetEnumerator();", deviceContext, StringComparison.Ordinal);
         Assert.Contains("var samplerEnumerator = _samplers.GetEnumerator();", deviceContext, StringComparison.Ordinal);
