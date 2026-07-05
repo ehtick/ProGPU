@@ -482,6 +482,7 @@ public class DiagnosticsLoggingSourceTests
         string deviceContext = File.ReadAllText(FindRepoFile("src", "ProGPU.DirectX", "ProGpuDirectXDeviceContext.cs"));
         string pipelines = File.ReadAllText(FindRepoFile("src", "ProGPU.DirectX", "ProGpuDirectXPipelines.cs"));
         string shaderBytecode = File.ReadAllText(FindRepoFile("src", "ProGPU.DirectX", "ProGpuDirectXShaderBytecode.cs"));
+        string hlslTranslator = File.ReadAllText(FindRepoFile("src", "ProGPU.DirectX", "ProGpuDirectXHlslTranslator.cs"));
 
         Assert.Contains("public void ReadBytes(Span<byte> destination, uint offsetBytes = 0)", gpuBuffer, StringComparison.Ordinal);
         Assert.Contains("ReadBytes(bytes, offsetBytes);", gpuBuffer, StringComparison.Ordinal);
@@ -569,6 +570,16 @@ public class DiagnosticsLoggingSourceTests
         Assert.Contains("var resource = ResourceBindings[resourceIndex];", shaderBytecode, StringComparison.Ordinal);
         Assert.Contains("var inputSignatureCount = InputSignature.Count;\n        for (var parameterIndex = 0; parameterIndex < inputSignatureCount; parameterIndex++)", shaderBytecode, StringComparison.Ordinal);
         Assert.Contains("var parameter = InputSignature[parameterIndex];", shaderBytecode, StringComparison.Ordinal);
+        Assert.Contains("var matches = s_cbufferRegex.Matches(source);", hlslTranslator, StringComparison.Ordinal);
+        Assert.Contains("for (var matchIndex = 0; matchIndex < matches.Count; matchIndex++)", hlslTranslator, StringComparison.Ordinal);
+        Assert.Contains("var usedSrvRegisters = CreateExplicitRegisterSet(pendingResources, HlslResourceRegisterGroup.ShaderResource);", hlslTranslator, StringComparison.Ordinal);
+        Assert.Contains("pendingResources.Sort(static (left, right) => left.Match.Index.CompareTo(right.Match.Index));", hlslTranslator, StringComparison.Ordinal);
+        Assert.Contains("resources.Sort(static (left, right) =>", hlslTranslator, StringComparison.Ordinal);
+        Assert.Contains("private static HashSet<uint> CreateExplicitRegisterSet(MatchCollection matches)", hlslTranslator, StringComparison.Ordinal);
+        Assert.Contains("private static HashSet<uint> CreateExplicitRegisterSet(\n        IReadOnlyList<PendingHlslShaderResource> resources,", hlslTranslator, StringComparison.Ordinal);
+        Assert.Contains("var components = new List<string>(rows);", hlslTranslator, StringComparison.Ordinal);
+        Assert.Contains("var vectorComponents = new List<string>((int)componentCount);", hlslTranslator, StringComparison.Ordinal);
+        Assert.Contains("var arguments = new string[rawArguments.Count];", hlslTranslator, StringComparison.Ordinal);
         Assert.DoesNotContain("private static uint[] ReadSourceIndices(", deviceContext, StringComparison.Ordinal);
         Assert.DoesNotContain("var sourceIndices = ReadSourceIndices(", deviceContext, StringComparison.Ordinal);
         Assert.DoesNotContain("sourceIndexBuffer.ReadWriteShadowBytes(MemoryMarshal.AsBytes(result.AsSpan()), offsetBytes);", deviceContext, StringComparison.Ordinal);
@@ -609,6 +620,16 @@ public class DiagnosticsLoggingSourceTests
         Assert.DoesNotContain("Chunks.FirstOrDefault", shaderBytecode, StringComparison.Ordinal);
         Assert.DoesNotContain("foreach (var resource in ResourceBindings)", shaderBytecode, StringComparison.Ordinal);
         Assert.DoesNotContain("foreach (var parameter in InputSignature)", shaderBytecode, StringComparison.Ordinal);
+        Assert.DoesNotContain("s_cbufferRegex.Matches(source).Cast<Match>().ToArray()", hlslTranslator, StringComparison.Ordinal);
+        Assert.DoesNotContain(".Where(resource => IsShaderResourceSlotKind(resource.Kind))", hlslTranslator, StringComparison.Ordinal);
+        Assert.DoesNotContain(".Where(resource => IsUnorderedAccessSlotKind(resource.Kind))", hlslTranslator, StringComparison.Ordinal);
+        Assert.DoesNotContain(".Where(resource => IsSamplerSlotKind(resource.Kind))", hlslTranslator, StringComparison.Ordinal);
+        Assert.DoesNotContain("pendingResources.OrderBy", hlslTranslator, StringComparison.Ordinal);
+        Assert.DoesNotContain(".OrderBy(resource => resource.Kind)", hlslTranslator, StringComparison.Ordinal);
+        Assert.DoesNotContain("fields.Max", hlslTranslator, StringComparison.Ordinal);
+        Assert.DoesNotContain("Enumerable.Range(0, rows)", hlslTranslator, StringComparison.Ordinal);
+        Assert.DoesNotContain("Enumerable.Range(0, (int)componentCount)", hlslTranslator, StringComparison.Ordinal);
+        Assert.DoesNotContain(".Select(argument => TranslateExpression(argument", hlslTranslator, StringComparison.Ordinal);
         Assert.DoesNotContain("return MemoryMarshal.Cast<byte, uint>(bytes).ToArray();", deviceContext, StringComparison.Ordinal);
     }
 

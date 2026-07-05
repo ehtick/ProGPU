@@ -583,17 +583,20 @@ internal static class ProGpuDirectXHlslTranslator
     private static List<HlslConstantBuffer> ParseConstantBuffers(string source)
     {
         var constantBuffers = new List<HlslConstantBuffer>();
-        var matches = s_cbufferRegex.Matches(source).Cast<Match>().ToArray();
+        var matches = s_cbufferRegex.Matches(source);
         var usedRegisters = CreateExplicitRegisterSet(matches);
         uint nextRegister = 0;
-        foreach (var match in matches)
+        for (var matchIndex = 0; matchIndex < matches.Count; matchIndex++)
         {
+            var match = matches[matchIndex];
             var name = match.Groups["name"].Value;
             var register = ResolveRegister(match, usedRegisters, ref nextRegister);
             var parsedFields = new List<(string Type, string Name)>();
 
-            foreach (Match fieldMatch in s_cbufferFieldRegex.Matches(match.Groups["body"].Value))
+            var fieldMatches = s_cbufferFieldRegex.Matches(match.Groups["body"].Value);
+            for (var fieldIndex = 0; fieldIndex < fieldMatches.Count; fieldIndex++)
             {
+                var fieldMatch = fieldMatches[fieldIndex];
                 parsedFields.Add((
                     fieldMatch.Groups["type"].Value,
                     fieldMatch.Groups["name"].Value));
@@ -622,8 +625,9 @@ internal static class ProGpuDirectXHlslTranslator
         var result = new List<HlslConstantBufferField>(fields.Count);
         uint registerIndex = 0;
         uint componentIndex = 0;
-        foreach (var (type, name) in fields)
+        for (var fieldIndex = 0; fieldIndex < fields.Count; fieldIndex++)
         {
+            var (type, name) = fields[fieldIndex];
             var registerSpan = GetCBufferRegisterSpan(type);
             if (registerSpan > 1)
             {
@@ -661,8 +665,9 @@ internal static class ProGpuDirectXHlslTranslator
     private static bool RequiresPackedConstantBufferLayout(IReadOnlyList<HlslConstantBufferField> fields)
     {
         uint wgslOffset = 0;
-        foreach (var field in fields)
+        for (var fieldIndex = 0; fieldIndex < fields.Count; fieldIndex++)
         {
+            var field = fields[fieldIndex];
             wgslOffset = AlignTo(wgslOffset, GetWgslUniformAlignment(field.Type));
             var hlslOffset = field.RegisterIndex * 16 + field.ComponentIndex * 4;
             if (wgslOffset != hlslOffset)
@@ -683,7 +688,14 @@ internal static class ProGpuDirectXHlslTranslator
             return 0;
         }
 
-        return fields.Max(field => field.RegisterIndex + GetCBufferRegisterSpan(field.Type));
+        uint registerCount = 0;
+        for (var fieldIndex = 0; fieldIndex < fields.Count; fieldIndex++)
+        {
+            var field = fields[fieldIndex];
+            registerCount = Math.Max(registerCount, field.RegisterIndex + GetCBufferRegisterSpan(field.Type));
+        }
+
+        return registerCount;
     }
 
     private static List<HlslShaderResource> ParseShaderResources(
@@ -692,21 +704,17 @@ internal static class ProGpuDirectXHlslTranslator
     {
         var resources = new List<HlslShaderResource>();
         var pendingResources = CreatePendingShaderResources(source);
-        var usedSrvRegisters = CreateExplicitRegisterSet(pendingResources
-            .Where(resource => IsShaderResourceSlotKind(resource.Kind))
-            .Select(resource => resource.Match));
-        var usedUavRegisters = CreateExplicitRegisterSet(pendingResources
-            .Where(resource => IsUnorderedAccessSlotKind(resource.Kind))
-            .Select(resource => resource.Match));
-        var usedSamplerRegisters = CreateExplicitRegisterSet(pendingResources
-            .Where(resource => IsSamplerSlotKind(resource.Kind))
-            .Select(resource => resource.Match));
+        var usedSrvRegisters = CreateExplicitRegisterSet(pendingResources, HlslResourceRegisterGroup.ShaderResource);
+        var usedUavRegisters = CreateExplicitRegisterSet(pendingResources, HlslResourceRegisterGroup.UnorderedAccess);
+        var usedSamplerRegisters = CreateExplicitRegisterSet(pendingResources, HlslResourceRegisterGroup.Sampler);
         uint nextSrvRegister = 0;
         uint nextUavRegister = 0;
         uint nextSamplerRegister = 0;
 
-        foreach (var pendingResource in pendingResources.OrderBy(resource => resource.Match.Index))
+        pendingResources.Sort(static (left, right) => left.Match.Index.CompareTo(right.Match.Index));
+        for (var pendingIndex = 0; pendingIndex < pendingResources.Count; pendingIndex++)
         {
+            var pendingResource = pendingResources[pendingIndex];
             var match = pendingResource.Match;
             var register = pendingResource.Kind switch
             {
@@ -781,10 +789,12 @@ internal static class ProGpuDirectXHlslTranslator
             }
         }
 
-        return resources
-            .OrderBy(resource => resource.Kind)
-            .ThenBy(resource => resource.Register)
-            .ToList();
+        resources.Sort(static (left, right) =>
+        {
+            var comparison = left.Kind.CompareTo(right.Kind);
+            return comparison != 0 ? comparison : left.Register.CompareTo(right.Register);
+        });
+        return resources;
     }
 
     private static List<PendingHlslShaderResource> CreatePendingShaderResources(string source)
@@ -810,17 +820,19 @@ internal static class ProGpuDirectXHlslTranslator
         HlslShaderResourceKind kind,
         MatchCollection matches)
     {
-        foreach (Match match in matches)
+        for (var matchIndex = 0; matchIndex < matches.Count; matchIndex++)
         {
+            var match = matches[matchIndex];
             resources.Add(new PendingHlslShaderResource(kind, match));
         }
     }
 
-    private static HashSet<uint> CreateExplicitRegisterSet(IEnumerable<Match> matches)
+    private static HashSet<uint> CreateExplicitRegisterSet(MatchCollection matches)
     {
         var registers = new HashSet<uint>();
-        foreach (var match in matches)
+        for (var matchIndex = 0; matchIndex < matches.Count; matchIndex++)
         {
+            var match = matches[matchIndex];
             if (match.Groups["slot"].Success)
             {
                 registers.Add(uint.Parse(match.Groups["slot"].Value));
@@ -828,6 +840,40 @@ internal static class ProGpuDirectXHlslTranslator
         }
 
         return registers;
+    }
+
+    private static HashSet<uint> CreateExplicitRegisterSet(
+        IReadOnlyList<PendingHlslShaderResource> resources,
+        HlslResourceRegisterGroup group)
+    {
+        var registers = new HashSet<uint>();
+        for (var resourceIndex = 0; resourceIndex < resources.Count; resourceIndex++)
+        {
+            var resource = resources[resourceIndex];
+            if (!IsResourceRegisterGroup(resource.Kind, group))
+            {
+                continue;
+            }
+
+            var match = resource.Match;
+            if (match.Groups["slot"].Success)
+            {
+                registers.Add(uint.Parse(match.Groups["slot"].Value));
+            }
+        }
+
+        return registers;
+    }
+
+    private static bool IsResourceRegisterGroup(HlslShaderResourceKind kind, HlslResourceRegisterGroup group)
+    {
+        return group switch
+        {
+            HlslResourceRegisterGroup.ShaderResource => IsShaderResourceSlotKind(kind),
+            HlslResourceRegisterGroup.UnorderedAccess => IsUnorderedAccessSlotKind(kind),
+            HlslResourceRegisterGroup.Sampler => IsSamplerSlotKind(kind),
+            _ => false
+        };
     }
 
     private static uint ResolveRegister(Match match, HashSet<uint> usedRegisters, ref uint nextRegister)
@@ -1055,9 +1101,16 @@ internal static class ProGpuDirectXHlslTranslator
             var columnValues = new List<string>(columns);
             for (var column = 0; column < columns; column++)
             {
-                var components = Enumerable.Range(0, rows)
-                    .Select(row => GetPackedRegisterComponent(constantBuffer.VariableName, field.RegisterIndex + (uint)column, (uint)row, "float"))
-                    .ToArray();
+                var components = new List<string>(rows);
+                for (var row = 0; row < rows; row++)
+                {
+                    components.Add(GetPackedRegisterComponent(
+                        constantBuffer.VariableName,
+                        field.RegisterIndex + (uint)column,
+                        (uint)row,
+                        "float"));
+                }
+
                 columnValues.Add($"vec{rows}<f32>({string.Join(", ", components)})");
             }
 
@@ -1072,13 +1125,16 @@ internal static class ProGpuDirectXHlslTranslator
 
         var scalarType = GetScalarType(field.Type);
         var wgslScalarType = MapType(scalarType);
-        var vectorComponents = Enumerable.Range(0, (int)componentCount)
-            .Select(component => GetPackedRegisterComponent(
+        var vectorComponents = new List<string>((int)componentCount);
+        for (uint component = 0; component < componentCount; component++)
+        {
+            vectorComponents.Add(GetPackedRegisterComponent(
                 constantBuffer.VariableName,
                 field.RegisterIndex,
-                field.ComponentIndex + (uint)component,
-                scalarType))
-            .ToArray();
+                field.ComponentIndex + component,
+                scalarType));
+        }
+
         return $"vec{componentCount}<{wgslScalarType}>({string.Join(", ", vectorComponents)})";
     }
 
@@ -1276,9 +1332,12 @@ internal static class ProGpuDirectXHlslTranslator
             }
 
             var rawArguments = SplitTopLevelArguments(expression[(openParen + 1)..closeParen]);
-            var arguments = rawArguments
-                .Select(argument => TranslateExpression(argument, constantBuffers, shaderResources, localTypes))
-                .ToArray();
+            var arguments = new string[rawArguments.Count];
+            for (var argumentIndex = 0; argumentIndex < rawArguments.Count; argumentIndex++)
+            {
+                arguments[argumentIndex] = TranslateExpression(rawArguments[argumentIndex], constantBuffers, shaderResources, localTypes);
+            }
+
             builder.Append(TranslateIntrinsic(name, rawArguments, arguments, constantBuffers, localTypes));
             searchIndex = closeParen + 1;
         }
@@ -2798,6 +2857,13 @@ internal static class ProGpuDirectXHlslTranslator
         bool UsesStorageTextureRead = false);
 
     private sealed record PendingHlslShaderResource(HlslShaderResourceKind Kind, Match Match);
+
+    private enum HlslResourceRegisterGroup
+    {
+        ShaderResource,
+        UnorderedAccess,
+        Sampler
+    }
 
     private enum HlslShaderResourceKind
     {
