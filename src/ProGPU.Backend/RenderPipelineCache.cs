@@ -423,17 +423,22 @@ public unsafe class RenderPipelineCache : IDisposable
         {
             if (!_context.IsDisposed)
             {
-                foreach (var p in _renderPipelines.Values)
+                var renderPipelineEnumerator = _renderPipelines.Values.GetEnumerator();
+                while (renderPipelineEnumerator.MoveNext())
                 {
-                    _context.QueueRenderPipelineDisposal((nint)p);
+                    _context.QueueRenderPipelineDisposal((nint)renderPipelineEnumerator.Current);
                 }
-                foreach (var p in _computePipelines.Values)
+
+                var computePipelineEnumerator = _computePipelines.Values.GetEnumerator();
+                while (computePipelineEnumerator.MoveNext())
                 {
-                    _context.QueueComputePipelineDisposal((nint)p);
+                    _context.QueueComputePipelineDisposal((nint)computePipelineEnumerator.Current);
                 }
-                foreach (var s in _shaders.Values)
+
+                var shaderModuleEnumerator = _shaders.Values.GetEnumerator();
+                while (shaderModuleEnumerator.MoveNext())
                 {
-                    _context.QueueShaderModuleDisposal((nint)s);
+                    _context.QueueShaderModuleDisposal((nint)shaderModuleEnumerator.Current);
                 }
             }
             _renderPipelines.Clear();

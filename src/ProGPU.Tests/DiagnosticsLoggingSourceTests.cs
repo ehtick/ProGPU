@@ -699,6 +699,15 @@ public class DiagnosticsLoggingSourceTests
 
         Assert.Contains("ReadOnlySpan<VertexBufferLayout> vertexBufferLayouts", pipelineCache, StringComparison.Ordinal);
         Assert.Contains("fixed (VertexBufferLayout* pLayouts = vertexBufferLayouts)", pipelineCache, StringComparison.Ordinal);
+        Assert.Contains("var renderPipelineEnumerator = _renderPipelines.Values.GetEnumerator();", pipelineCache, StringComparison.Ordinal);
+        Assert.Contains("renderPipelineEnumerator.Current", pipelineCache, StringComparison.Ordinal);
+        Assert.Contains("var computePipelineEnumerator = _computePipelines.Values.GetEnumerator();", pipelineCache, StringComparison.Ordinal);
+        Assert.Contains("computePipelineEnumerator.Current", pipelineCache, StringComparison.Ordinal);
+        Assert.Contains("var shaderModuleEnumerator = _shaders.Values.GetEnumerator();", pipelineCache, StringComparison.Ordinal);
+        Assert.Contains("shaderModuleEnumerator.Current", pipelineCache, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var p in _renderPipelines.Values)", pipelineCache, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var p in _computePipelines.Values)", pipelineCache, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var s in _shaders.Values)", pipelineCache, StringComparison.Ordinal);
 
         static void AssertStackBackedLayout(string source, int attributeCount, string vertexType)
         {
