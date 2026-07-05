@@ -1715,8 +1715,11 @@ public unsafe class Compositor : IDisposable
 
                 var diagContext = new DrawingContext();
                 RenderDiagnostics(diagContext, width, height);
-                foreach (var cmd in diagContext.Commands)
+                var diagnosticCommands = diagContext.Commands;
+                var diagnosticCommandCount = diagnosticCommands.Count;
+                for (var commandIndex = 0; commandIndex < diagnosticCommandCount; commandIndex++)
                 {
+                    var cmd = diagnosticCommands[commandIndex];
                     var activeTransform = Matrix4x4.Identity;
                     switch (cmd.Type)
                     {
@@ -2909,8 +2912,11 @@ public unsafe class Compositor : IDisposable
         {
             node.OnRender(ctx);
 
-            foreach (var cmd in ctx.Commands)
+            var commands = ctx.Commands;
+            var commandCount = commands.Count;
+            for (var commandIndex = 0; commandIndex < commandCount; commandIndex++)
             {
+                var cmd = commands[commandIndex];
                 int vectorStart = _vectorVerticesList.Count;
                 int textStart = _textVerticesList.Count;
                 var activeTransform = cmd.UseGpuTransforms ? Matrix4x4.Identity : globalTransform;
@@ -3158,8 +3164,10 @@ public unsafe class Compositor : IDisposable
     private void CompilePicture(DrawingContext parentContext, GpuPicture? picture, Matrix4x4 globalTransform)
     {
         if (picture == null) return;
-        foreach (var cmd in picture.Commands)
+        var commands = picture.Commands;
+        for (var commandIndex = 0; commandIndex < commands.Length; commandIndex++)
         {
+            var cmd = commands[commandIndex];
             int vectorStart = _vectorVerticesList.Count;
             int textStart = _textVerticesList.Count;
             var activeTransform = cmd.UseGpuTransforms ? Matrix4x4.Identity : globalTransform;
@@ -7482,8 +7490,10 @@ public unsafe class Compositor : IDisposable
                 }
             }
 
-            foreach (var cmd in commands)
+            var commandCount = commands.Count;
+            for (var commandIndex = 0; commandIndex < commandCount; commandIndex++)
             {
+                var cmd = commands[commandIndex];
                 bool savedUseGpuTransformsActive = _useGpuTransformsActive;
                 if (cmd.UseGpuTransforms)
                 {
@@ -7901,8 +7911,11 @@ public unsafe class Compositor : IDisposable
                 }
             }
 
-            foreach (var cmd in context.Commands)
+            var commands = context.Commands;
+            var commandCount = commands.Count;
+            for (var commandIndex = 0; commandIndex < commandCount; commandIndex++)
             {
+                var cmd = commands[commandIndex];
                 bool savedUseGpuTransformsActive = _useGpuTransformsActive;
                 if (cmd.UseGpuTransforms)
                 {
@@ -8295,8 +8308,10 @@ public unsafe class Compositor : IDisposable
         try
         {
             _atlas.BeginBatch();
-            foreach (var record in staticBuffer.TextRecords)
+            var textRecords = staticBuffer.TextRecords;
+            for (var recordIndex = 0; recordIndex < textRecords.Length; recordIndex++)
             {
+                var record = textRecords[recordIndex];
                 CompileTextCommand(record.Command, null, record.Transform);
             }
 
