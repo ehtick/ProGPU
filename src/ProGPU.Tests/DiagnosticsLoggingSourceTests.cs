@@ -138,6 +138,10 @@ public class DiagnosticsLoggingSourceTests
         Assert.Contains("private void ReturnMaskRenderPassDrawCallLists()", source, StringComparison.Ordinal);
         Assert.Contains("ReturnMaskRenderPassDrawCallLists();", source, StringComparison.Ordinal);
         Assert.Contains("RentMaskDrawCallList(maskDrawCallCount)", source, StringComparison.Ordinal);
+        Assert.Contains("var maskPassCount = _maskRenderPasses.Count;\n        for (var maskPassIndex = 0; maskPassIndex < maskPassCount; maskPassIndex++)", source, StringComparison.Ordinal);
+        Assert.Contains("var maskPass = _maskRenderPasses[maskPassIndex];", source, StringComparison.Ordinal);
+        Assert.Contains("var maskDrawCalls = maskPass.DrawCalls;\n            var maskDrawCallCount = maskDrawCalls.Count;", source, StringComparison.Ordinal);
+        Assert.Contains("var dc = maskDrawCalls[drawCallIndex];", source, StringComparison.Ordinal);
         Assert.Contains("var staticDrawCallList = RentDrawCallList(commands.Count)", source, StringComparison.Ordinal);
         Assert.Contains("var staticDrawCallList = RentDrawCallList(context.Commands.Count)", source, StringComparison.Ordinal);
         Assert.Contains("ReturnDrawCallList(staticDrawCalls)", source, StringComparison.Ordinal);
@@ -160,6 +164,8 @@ public class DiagnosticsLoggingSourceTests
         Assert.DoesNotContain("foreach (var cmd in commands)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("foreach (var cmd in context.Commands)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("foreach (var record in staticBuffer.TextRecords)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var maskPass in _maskRenderPasses)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var dc in maskPass.DrawCalls)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("_maskDrawCallListPool", source, StringComparison.Ordinal);
         Assert.Contains("private static void AddRemovalItem<T>(ref T[]? buffer, ref int count, int capacity, T item)", source, StringComparison.Ordinal);
         Assert.Contains("private static void ReturnRemovalBuffer<T>(T[]? buffer, int count)", source, StringComparison.Ordinal);

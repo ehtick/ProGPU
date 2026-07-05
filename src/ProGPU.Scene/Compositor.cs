@@ -2797,8 +2797,10 @@ public unsafe class Compositor : IDisposable
 
     private void ReturnMaskRenderPassDrawCallLists()
     {
-        foreach (var maskPass in _maskRenderPasses)
+        var maskPassCount = _maskRenderPasses.Count;
+        for (var maskPassIndex = 0; maskPassIndex < maskPassCount; maskPassIndex++)
         {
+            var maskPass = _maskRenderPasses[maskPassIndex];
             ReturnMaskDrawCallList(maskPass.DrawCalls);
         }
 
@@ -9305,8 +9307,10 @@ public unsafe class Compositor : IDisposable
     {
         if (_maskRenderPasses.Count == 0) return;
 
-        foreach (var maskPass in _maskRenderPasses)
+        var maskPassCount = _maskRenderPasses.Count;
+        for (var maskPassIndex = 0; maskPassIndex < maskPassCount; maskPassIndex++)
         {
+            var maskPass = _maskRenderPasses[maskPassIndex];
             var targetView = maskPass.MaskTexture.ViewPtr;
 
             var colorAttachment = new RenderPassColorAttachment
@@ -9337,8 +9341,11 @@ public unsafe class Compositor : IDisposable
             DrawCallType? currentType = null;
             var textureEntries = stackalloc BindGroupEntry[2];
 
-            foreach (var dc in maskPass.DrawCalls)
+            var maskDrawCalls = maskPass.DrawCalls;
+            var maskDrawCallCount = maskDrawCalls.Count;
+            for (var drawCallIndex = 0; drawCallIndex < maskDrawCallCount; drawCallIndex++)
             {
+                var dc = maskDrawCalls[drawCallIndex];
                 if (!ApplyDrawCallScissor(pass, dc, useRenderTargetViewport: !isOffscreen))
                 {
                     continue;
