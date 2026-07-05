@@ -372,8 +372,9 @@ namespace ProGPU.Vector
 
         private static bool IsEmptyFigures(List<PathFigure> figures)
         {
-            foreach (var figure in figures)
+            for (int figureIndex = 0; figureIndex < figures.Count; figureIndex++)
             {
+                var figure = figures[figureIndex];
                 if (figure.Segments.Count > 0) return false;
             }
             return true;
@@ -381,11 +382,14 @@ namespace ProGPU.Vector
 
         private static void CopyFigures(List<PathFigure> src, List<PathFigure> dest)
         {
-            foreach (var figure in src)
+            for (int figureIndex = 0; figureIndex < src.Count; figureIndex++)
             {
+                var figure = src[figureIndex];
                 var newFigure = new PathFigure(figure.StartPoint, figure.IsClosed) { IsFilled = figure.IsFilled };
-                foreach (var seg in figure.Segments)
+                var figureSegments = figure.Segments;
+                for (int segmentIndex = 0; segmentIndex < figureSegments.Count; segmentIndex++)
                 {
+                    var seg = figureSegments[segmentIndex];
                     if (seg is LineSegment line) newFigure.Segments.Add(new LineSegment(line.Point, line.IsSmoothJoin, line.IsStroked));
                     else if (seg is QuadraticBezierSegment quad) newFigure.Segments.Add(new QuadraticBezierSegment(quad.ControlPoint, quad.Point, quad.IsSmoothJoin, quad.IsStroked));
                     else if (seg is CubicBezierSegment cubic) newFigure.Segments.Add(new CubicBezierSegment(cubic.ControlPoint1, cubic.ControlPoint2, cubic.Point, cubic.IsSmoothJoin, cubic.IsStroked));
@@ -474,7 +478,8 @@ namespace ProGPU.Vector
 
         public static (GpuPathRecord[] Records, GpuPathSegment[] Segments) CompilePath(PathGeometry path, out float localMinX, out float localMinY, out float localMaxX, out float localMaxY)
         {
-            var segments = new List<GpuPathSegment>();
+            var figures = path.Figures;
+            var segments = new List<GpuPathSegment>(EstimateSegmentCapacity(figures));
             float minX = float.MaxValue;
             float minY = float.MaxValue;
             float maxX = float.MinValue;
@@ -488,15 +493,18 @@ namespace ProGPU.Vector
                 maxY = Math.Max(maxY, p.Y);
             }
 
-            foreach (var figure in path.Figures)
+            for (int figureIndex = 0; figureIndex < figures.Count; figureIndex++)
             {
-                if (figure.Segments.Count == 0) continue;
+                var figure = figures[figureIndex];
+                var figureSegments = figure.Segments;
+                if (figureSegments.Count == 0) continue;
 
                 Vector2 currentPoint = figure.StartPoint;
                 UpdateBounds(currentPoint);
 
-                foreach (var segment in figure.Segments)
+                for (int segmentIndex = 0; segmentIndex < figureSegments.Count; segmentIndex++)
                 {
+                    var segment = figureSegments[segmentIndex];
                     if (segment is LineSegment line)
                     {
                         segments.Add(new GpuPathSegment
@@ -620,7 +628,45 @@ namespace ProGPU.Vector
                 FillRule = (uint)path.FillRule
             };
 
-            return (records, segments.ToArray());
+            return (records, CopySegments(segments));
+        }
+
+        private static int EstimateSegmentCapacity(List<PathFigure> figures)
+        {
+            int capacity = 0;
+            for (int figureIndex = 0; figureIndex < figures.Count; figureIndex++)
+            {
+                var figure = figures[figureIndex];
+                int segmentCount = figure.Segments.Count;
+                if (segmentCount == 0)
+                {
+                    continue;
+                }
+
+                capacity += segmentCount;
+                if (figure.IsClosed)
+                {
+                    capacity++;
+                }
+            }
+
+            return capacity;
+        }
+
+        private static GpuPathSegment[] CopySegments(List<GpuPathSegment> segments)
+        {
+            if (segments.Count == 0)
+            {
+                return Array.Empty<GpuPathSegment>();
+            }
+
+            var result = new GpuPathSegment[segments.Count];
+            for (int segmentIndex = 0; segmentIndex < result.Length; segmentIndex++)
+            {
+                result[segmentIndex] = segments[segmentIndex];
+            }
+
+            return result;
         }
 
     }

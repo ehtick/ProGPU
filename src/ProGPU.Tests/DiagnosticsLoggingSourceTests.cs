@@ -491,6 +491,7 @@ public class DiagnosticsLoggingSourceTests
     {
         string helper = File.ReadAllText(FindRepoFile("src", "ProGPU.Vector", "PooledRemovalBuffer.cs"));
         string pathAtlas = File.ReadAllText(FindRepoFile("src", "ProGPU.Vector", "PathAtlas.cs"));
+        string pathOps = File.ReadAllText(FindRepoFile("src", "ProGPU.Vector", "PathOpGeometrySolver.cs"));
 
         Assert.Contains("internal static class PooledRemovalBuffer", helper, StringComparison.Ordinal);
         Assert.Contains("ArrayPool<T>.Shared.Rent(Math.Max(1, capacity))", helper, StringComparison.Ordinal);
@@ -525,6 +526,19 @@ public class DiagnosticsLoggingSourceTests
         Assert.DoesNotContain("foreach (var figure in path.Figures)", pathAtlas, StringComparison.Ordinal);
         Assert.DoesNotContain("foreach (var segment in figure.Segments)", pathAtlas, StringComparison.Ordinal);
         Assert.DoesNotContain("return (records, segments.ToArray());", pathAtlas, StringComparison.Ordinal);
+
+        Assert.Contains("var figures = path.Figures;", pathOps, StringComparison.Ordinal);
+        Assert.Contains("for (int figureIndex = 0; figureIndex < figures.Count; figureIndex++)", pathOps, StringComparison.Ordinal);
+        Assert.Contains("var segments = new List<GpuPathSegment>(EstimateSegmentCapacity(figures));", pathOps, StringComparison.Ordinal);
+        Assert.Contains("for (int segmentIndex = 0; segmentIndex < figureSegments.Count; segmentIndex++)", pathOps, StringComparison.Ordinal);
+        Assert.Contains("return (records, CopySegments(segments));", pathOps, StringComparison.Ordinal);
+        Assert.Contains("private static int EstimateSegmentCapacity(List<PathFigure> figures)", pathOps, StringComparison.Ordinal);
+        Assert.Contains("private static GpuPathSegment[] CopySegments(List<GpuPathSegment> segments)", pathOps, StringComparison.Ordinal);
+        Assert.DoesNotContain("var segments = new List<GpuPathSegment>();", pathOps, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var figure in path.Figures)", pathOps, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var segment in figure.Segments)", pathOps, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var seg in figure.Segments)", pathOps, StringComparison.Ordinal);
+        Assert.DoesNotContain("return (records, segments.ToArray());", pathOps, StringComparison.Ordinal);
     }
 
     [Fact]
