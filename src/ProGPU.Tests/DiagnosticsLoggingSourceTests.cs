@@ -483,6 +483,18 @@ public class DiagnosticsLoggingSourceTests
         Assert.Contains("PooledRemovalBuffer.Return(layoutsToRelease, layoutToReleaseCount)", pathAtlas, StringComparison.Ordinal);
         Assert.DoesNotContain("var bindGroupsToRelease = new List<nint>();", pathAtlas, StringComparison.Ordinal);
         Assert.DoesNotContain("var layoutsToRelease = new List<nint>();", pathAtlas, StringComparison.Ordinal);
+        Assert.Contains("var figures = path.Figures;", pathAtlas, StringComparison.Ordinal);
+        Assert.Contains("for (int figureIndex = 0; figureIndex < figures.Count; figureIndex++)", pathAtlas, StringComparison.Ordinal);
+        Assert.Contains("for (int segmentIndex = 0; segmentIndex < segments.Count; segmentIndex++)", pathAtlas, StringComparison.Ordinal);
+        Assert.Contains("var segments = new List<GpuPathSegment>(EstimateSegmentCapacity(figures));", pathAtlas, StringComparison.Ordinal);
+        Assert.Contains("for (int segmentIndex = 0; segmentIndex < figureSegments.Count; segmentIndex++)", pathAtlas, StringComparison.Ordinal);
+        Assert.Contains("return (records, CopySegments(segments));", pathAtlas, StringComparison.Ordinal);
+        Assert.Contains("private static int EstimateSegmentCapacity(List<PathFigure> figures)", pathAtlas, StringComparison.Ordinal);
+        Assert.Contains("private static GpuPathSegment[] CopySegments(List<GpuPathSegment> segments)", pathAtlas, StringComparison.Ordinal);
+        Assert.DoesNotContain("var segments = new List<GpuPathSegment>();", pathAtlas, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var figure in path.Figures)", pathAtlas, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var segment in figure.Segments)", pathAtlas, StringComparison.Ordinal);
+        Assert.DoesNotContain("return (records, segments.ToArray());", pathAtlas, StringComparison.Ordinal);
     }
 
     [Fact]

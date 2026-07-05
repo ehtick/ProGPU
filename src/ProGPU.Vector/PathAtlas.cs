@@ -205,15 +205,19 @@ public unsafe class PathAtlas : IDisposable
         }
         var hash = new HashCode();
         hash.Add(path.FillRule);
-        foreach (var figure in path.Figures)
+        var figures = path.Figures;
+        for (int figureIndex = 0; figureIndex < figures.Count; figureIndex++)
         {
+            var figure = figures[figureIndex];
+            var segments = figure.Segments;
             hash.Add(figure.StartPoint.X);
             hash.Add(figure.StartPoint.Y);
             hash.Add(figure.IsClosed);
             hash.Add(figure.IsFilled);
-            hash.Add(figure.Segments.Count);
-            foreach (var segment in figure.Segments)
+            hash.Add(segments.Count);
+            for (int segmentIndex = 0; segmentIndex < segments.Count; segmentIndex++)
             {
+                var segment = segments[segmentIndex];
                 if (segment is LineSegment line)
                 {
                     hash.Add(0); // Segment type: Line
@@ -272,7 +276,8 @@ public unsafe class PathAtlas : IDisposable
             return CompilePath(combined, out localMinX, out localMinY, out localMaxX, out localMaxY);
         }
 
-        var segments = new List<GpuPathSegment>();
+        var figures = path.Figures;
+        var segments = new List<GpuPathSegment>(EstimateSegmentCapacity(figures));
         float minX = float.MaxValue;
         float minY = float.MaxValue;
         float maxX = float.MinValue;
@@ -286,15 +291,21 @@ public unsafe class PathAtlas : IDisposable
             maxY = Math.Max(maxY, p.Y);
         }
 
-        foreach (var figure in path.Figures)
+        for (int figureIndex = 0; figureIndex < figures.Count; figureIndex++)
         {
-            if (figure.Segments.Count == 0) continue;
+            var figure = figures[figureIndex];
+            var figureSegments = figure.Segments;
+            if (figureSegments.Count == 0)
+            {
+                continue;
+            }
 
             Vector2 currentPoint = figure.StartPoint;
             UpdateBounds(currentPoint);
 
-            foreach (var segment in figure.Segments)
+            for (int segmentIndex = 0; segmentIndex < figureSegments.Count; segmentIndex++)
             {
+                var segment = figureSegments[segmentIndex];
                 if (segment is LineSegment line)
                 {
                     segments.Add(new GpuPathSegment
@@ -418,7 +429,45 @@ public unsafe class PathAtlas : IDisposable
             FillRule = (uint)path.FillRule
         };
 
-        return (records, segments.ToArray());
+        return (records, CopySegments(segments));
+    }
+
+    private static int EstimateSegmentCapacity(List<PathFigure> figures)
+    {
+        int capacity = 0;
+        for (int i = 0; i < figures.Count; i++)
+        {
+            var figure = figures[i];
+            int segmentCount = figure.Segments.Count;
+            if (segmentCount == 0)
+            {
+                continue;
+            }
+
+            capacity += segmentCount;
+            if (figure.IsClosed)
+            {
+                capacity++;
+            }
+        }
+
+        return capacity;
+    }
+
+    private static GpuPathSegment[] CopySegments(List<GpuPathSegment> segments)
+    {
+        if (segments.Count == 0)
+        {
+            return Array.Empty<GpuPathSegment>();
+        }
+
+        var result = new GpuPathSegment[segments.Count];
+        for (int i = 0; i < result.Length; i++)
+        {
+            result[i] = segments[i];
+        }
+
+        return result;
     }
 
     public bool TryGetCompiledHitTestPath(
