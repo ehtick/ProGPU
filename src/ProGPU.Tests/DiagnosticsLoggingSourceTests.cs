@@ -679,10 +679,21 @@ public class DiagnosticsLoggingSourceTests
         Assert.DoesNotContain("foreach (var cached in _textureBindGroups.Values)", wpfShaderEffect, StringComparison.Ordinal);
 
         Assert.Contains("Compositor.TextureCacheKey[]? keysToRemove = null;", imageEffect, StringComparison.Ordinal);
+        Assert.Contains("var textureBindGroupEnumerator = _textureBindGroups.GetEnumerator();", imageEffect, StringComparison.Ordinal);
+        Assert.Contains("while (textureBindGroupEnumerator.MoveNext())", imageEffect, StringComparison.Ordinal);
+        Assert.Contains("var kvp = textureBindGroupEnumerator.Current;", imageEffect, StringComparison.Ordinal);
         Assert.Contains("PooledRemovalBuffer.Add(ref keysToRemove", imageEffect, StringComparison.Ordinal);
         Assert.Contains("PooledRemovalBuffer.Return(keysToRemove, keysToRemoveCount)", imageEffect, StringComparison.Ordinal);
+        Assert.Contains("for (int i = 0; i < _pool.Count; i++)", imageEffect, StringComparison.Ordinal);
+        Assert.Contains("var resource = _pool[i];", imageEffect, StringComparison.Ordinal);
+        Assert.Contains("var textureBindGroupValueEnumerator = _textureBindGroups.Values.GetEnumerator();", imageEffect, StringComparison.Ordinal);
+        Assert.Contains("while (textureBindGroupValueEnumerator.MoveNext())", imageEffect, StringComparison.Ordinal);
+        Assert.Contains("var cached = textureBindGroupValueEnumerator.Current;", imageEffect, StringComparison.Ordinal);
         Assert.DoesNotContain("List<Compositor.TextureCacheKey>? keysToRemove", imageEffect, StringComparison.Ordinal);
         Assert.DoesNotContain("keysToRemove ??= new List<Compositor.TextureCacheKey>();", imageEffect, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var kvp in _textureBindGroups)", imageEffect, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var resource in _pool)", imageEffect, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var cached in _textureBindGroups.Values)", imageEffect, StringComparison.Ordinal);
     }
 
     [Fact]
