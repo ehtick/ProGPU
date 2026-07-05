@@ -203,6 +203,19 @@ public class DiagnosticsLoggingSourceTests
     }
 
     [Fact]
+    public void GpuTextureMipGeneratorCacheDisposesPipelinesWithoutForeach()
+    {
+        string source = File.ReadAllText(FindRepoFile("src", "ProGPU.Backend", "GpuTexture.cs"));
+
+        Assert.Contains("private void QueuePipelinesForDisposal()", source, StringComparison.Ordinal);
+        Assert.Contains("var pipelineEnumerator = _pipelines.Values.GetEnumerator();", source, StringComparison.Ordinal);
+        Assert.Contains("while (pipelineEnumerator.MoveNext())", source, StringComparison.Ordinal);
+        Assert.Contains("_context.QueueRenderPipelineDisposal(pipelineEnumerator.Current);", source, StringComparison.Ordinal);
+        Assert.Contains("QueuePipelinesForDisposal();", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var pipeline in _pipelines.Values)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ComputeAcceleratorTracksTransientBindGroupsWithoutListSnapshots()
     {
         string source = File.ReadAllText(FindRepoFile("src", "ProGPU.Compute", "ComputeAccelerator.cs"));

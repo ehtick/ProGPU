@@ -149,10 +149,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             {
                 if (!_context.IsDisposed)
                 {
-                    foreach (var pipeline in _pipelines.Values)
-                    {
-                        _context.QueueRenderPipelineDisposal(pipeline);
-                    }
+                    QueuePipelinesForDisposal();
 
                     _context.QueuePipelineLayoutDisposal(_pipelineLayout);
                     _context.QueueBindGroupLayoutDisposal(_bindGroupLayout);
@@ -165,6 +162,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                 _bindGroupLayout = IntPtr.Zero;
                 _sampler = IntPtr.Zero;
                 _shader = IntPtr.Zero;
+            }
+        }
+
+        private void QueuePipelinesForDisposal()
+        {
+            var pipelineEnumerator = _pipelines.Values.GetEnumerator();
+            while (pipelineEnumerator.MoveNext())
+            {
+                _context.QueueRenderPipelineDisposal(pipelineEnumerator.Current);
             }
         }
 
