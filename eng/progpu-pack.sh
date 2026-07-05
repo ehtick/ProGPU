@@ -14,6 +14,22 @@ package_version="${PROGPU_PACKAGE_VERSION:-11.0.0-dev}"
 package_output="${PROGPU_PACKAGE_OUTPUT:-${repo_root}/artifacts/packages/${configuration}}"
 
 mkdir -p "${package_output}"
+rm -f \
+  "${package_output}"/*.${package_version}.nupkg \
+  "${package_output}"/*.${package_version}.snupkg
+
+is_expected_package_artifact() {
+  local file_name="$1"
+  local package_id
+  for package_id in "${progpu_package_ids[@]}"; do
+    if [[ "${file_name}" == "${package_id}.${package_version}.nupkg" ||
+          "${file_name}" == "${package_id}.${package_version}.snupkg" ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
 
 echo "Packing ProGPU ${package_version} packages to ${package_output}..."
 for index in "${!progpu_package_ids[@]}"; do
@@ -38,6 +54,24 @@ for index in "${!progpu_package_ids[@]}"; do
     echo "Expected package was not produced: ${package_output}/${package_id}.${package_version}.nupkg" >&2
     exit 1
   fi
+
+  if [[ ! -f "${package_output}/${package_id}.${package_version}.snupkg" ]]; then
+    echo "Expected symbol package was not produced: ${package_output}/${package_id}.${package_version}.snupkg" >&2
+    exit 1
+  fi
 done
+
+unexpected_package_found=0
+while IFS= read -r -d '' artifact; do
+  file_name="$(basename "${artifact}")"
+  if ! is_expected_package_artifact "${file_name}"; then
+    echo "Unexpected package artifact in output: ${artifact}" >&2
+    unexpected_package_found=1
+  fi
+done < <(find "${package_output}" -maxdepth 1 -type f \( -name "*.${package_version}.nupkg" -o -name "*.${package_version}.snupkg" \) -print0)
+
+if [[ "${unexpected_package_found}" -ne 0 ]]; then
+  exit 1
+fi
 
 echo "ProGPU NuGet package build succeeded for ${package_version}."

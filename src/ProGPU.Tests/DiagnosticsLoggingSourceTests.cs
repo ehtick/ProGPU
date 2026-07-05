@@ -47,6 +47,22 @@ public class DiagnosticsLoggingSourceTests
     }
 
     [Fact]
+    public void ProGpuPackScriptCleansAndAuditsVersionedPackageArtifacts()
+    {
+        string source = File.ReadAllText(FindRepoFile("eng", "progpu-pack.sh"));
+
+        Assert.Contains("\"${package_output}\"/*.${package_version}.nupkg", source, StringComparison.Ordinal);
+        Assert.Contains("\"${package_output}\"/*.${package_version}.snupkg", source, StringComparison.Ordinal);
+        Assert.Contains("is_expected_package_artifact()", source, StringComparison.Ordinal);
+        Assert.Contains("\"${file_name}\" == \"${package_id}.${package_version}.nupkg\"", source, StringComparison.Ordinal);
+        Assert.Contains("\"${file_name}\" == \"${package_id}.${package_version}.snupkg\"", source, StringComparison.Ordinal);
+        Assert.Contains("Expected symbol package was not produced:", source, StringComparison.Ordinal);
+        Assert.Contains("Unexpected package artifact in output:", source, StringComparison.Ordinal);
+        Assert.Contains("find \"${package_output}\" -maxdepth 1 -type f", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("artifacts/packages/Release/*.nupkg", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TextLayoutUsesSingleGlyphBufferForWrappingAndAlignment()
     {
         string source = File.ReadAllText(FindRepoFile("src", "ProGPU.Text", "TextLayout.cs"));
