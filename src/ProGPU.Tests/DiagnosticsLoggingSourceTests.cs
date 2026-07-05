@@ -47,44 +47,59 @@ public class DiagnosticsLoggingSourceTests
     }
 
     [Fact]
-    public void TextLayoutWrappingAndFlatteningUseIndexedTraversal()
+    public void TextLayoutUsesSingleGlyphBufferForWrappingAndAlignment()
     {
         string source = File.ReadAllText(FindRepoFile("src", "ProGPU.Text", "TextLayout.cs"));
 
-        Assert.Contains("private const int DefaultLineGlyphCapacity = 16;", source, StringComparison.Ordinal);
+        Assert.Contains("private readonly struct LineRange", source, StringComparison.Ordinal);
+        Assert.Contains("public int Start { get; }", source, StringComparison.Ordinal);
+        Assert.Contains("public int Count { get; }", source, StringComparison.Ordinal);
         Assert.Contains("private static int EstimateGlyphCapacity(string text)", source, StringComparison.Ordinal);
         Assert.Contains("private static int EstimateLineCapacity(string text)", source, StringComparison.Ordinal);
-        Assert.Contains("private static List<TextRunGlyph> CreateLineGlyphList(int estimatedGlyphCapacity)", source, StringComparison.Ordinal);
-        Assert.Contains("return new List<TextRunGlyph>(Math.Min(Math.Max(1, estimatedGlyphCapacity), DefaultLineGlyphCapacity));", source, StringComparison.Ordinal);
+        Assert.Contains("private static void AddLineRange(List<LineRange> lines, int start, int end)", source, StringComparison.Ordinal);
+        Assert.Contains("lines.Add(new LineRange(start, end - start));", source, StringComparison.Ordinal);
         Assert.Contains("int estimatedGlyphCapacity = EstimateGlyphCapacity(Text);", source, StringComparison.Ordinal);
         Assert.Contains("Glyphs.EnsureCapacity(estimatedGlyphCapacity);", source, StringComparison.Ordinal);
-        Assert.Contains("var lines = new List<List<TextRunGlyph>>(EstimateLineCapacity(Text));", source, StringComparison.Ordinal);
-        Assert.Contains("var currentLine = CreateLineGlyphList(estimatedGlyphCapacity);", source, StringComparison.Ordinal);
-        Assert.Contains("currentLine = CreateLineGlyphList(Text.Length - i);", source, StringComparison.Ordinal);
+        Assert.Contains("var lines = new List<LineRange>(EstimateLineCapacity(Text));", source, StringComparison.Ordinal);
+        Assert.Contains("int currentLineStart = 0;", source, StringComparison.Ordinal);
         Assert.Contains("for (int pathIndex = 0; pathIndex < FallbackFontPaths.Length; pathIndex++)", source, StringComparison.Ordinal);
         Assert.Contains("var path = FallbackFontPaths[pathIndex];", source, StringComparison.Ordinal);
         Assert.Contains("for (int fallbackIndex = 0; fallbackIndex < _fallbackFonts.Count; fallbackIndex++)", source, StringComparison.Ordinal);
         Assert.Contains("var fbFont = _fallbackFonts[fallbackIndex];", source, StringComparison.Ordinal);
-        Assert.Contains("int wrapStartIndex = lastWordStartIdxInLine;", source, StringComparison.Ordinal);
-        Assert.Contains("int previousLineCount = currentLine.Count;", source, StringComparison.Ordinal);
-        Assert.Contains("var previousLine = currentLine;", source, StringComparison.Ordinal);
-        Assert.Contains("currentLine = new List<TextRunGlyph>(Math.Max(wrapCount + 1, DefaultLineGlyphCapacity));", source, StringComparison.Ordinal);
-        Assert.Contains("for (int wrapIndex = wrapStartIndex; wrapIndex < previousLineCount; wrapIndex++)", source, StringComparison.Ordinal);
-        Assert.Contains("var wg = previousLine[wrapIndex];", source, StringComparison.Ordinal);
-        Assert.Contains("previousLine.RemoveRange(wrapStartIndex, wrapCount);", source, StringComparison.Ordinal);
+        Assert.Contains("lastWordStartIndex = Glyphs.Count;", source, StringComparison.Ordinal);
+        Assert.Contains("if (lastWordStartIndex > currentLineStart)", source, StringComparison.Ordinal);
+        Assert.Contains("int wrapStartIndex = lastWordStartIndex;", source, StringComparison.Ordinal);
+        Assert.Contains("int previousLineEnd = Glyphs.Count;", source, StringComparison.Ordinal);
+        Assert.Contains("AddLineRange(lines, currentLineStart, wrapStartIndex);", source, StringComparison.Ordinal);
+        Assert.Contains("for (int wrapIndex = wrapStartIndex; wrapIndex < previousLineEnd; wrapIndex++)", source, StringComparison.Ordinal);
+        Assert.Contains("var wg = Glyphs[wrapIndex];", source, StringComparison.Ordinal);
+        Assert.Contains("Glyphs.Add(remapped);", source, StringComparison.Ordinal);
+        Assert.Contains("Glyphs.RemoveRange(wrapStartIndex, wrapCount);", source, StringComparison.Ordinal);
+        Assert.Contains("currentLineStart = wrapStartIndex;", source, StringComparison.Ordinal);
+        Assert.Contains("lastWordStartIndex = currentLineStart;", source, StringComparison.Ordinal);
+        Assert.Contains("AddLineRange(lines, currentLineStart, Glyphs.Count);", source, StringComparison.Ordinal);
         Assert.Contains("for (int lineIndex = 0; lineIndex < lines.Count; lineIndex++)", source, StringComparison.Ordinal);
         Assert.Contains("var line = lines[lineIndex];", source, StringComparison.Ordinal);
-        Assert.Contains("for (int glyphIndex = 0; glyphIndex < line.Count; glyphIndex++)", source, StringComparison.Ordinal);
-        Assert.Contains("Glyphs.Add(line[glyphIndex]);", source, StringComparison.Ordinal);
+        Assert.Contains("int lineEnd = line.Start + line.Count;", source, StringComparison.Ordinal);
+        Assert.Contains("for (int glyphIndex = line.Start; glyphIndex < lineEnd; glyphIndex++)", source, StringComparison.Ordinal);
+        Assert.Contains("var g = Glyphs[glyphIndex];", source, StringComparison.Ordinal);
+        Assert.Contains("Glyphs[glyphIndex] = remap;", source, StringComparison.Ordinal);
         Assert.DoesNotContain("foreach (var path in FallbackFontPaths)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("foreach (var fbFont in _fallbackFonts)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("private const int DefaultLineGlyphCapacity", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("CreateLineGlyphList", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("var currentLine =", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("currentLine.Add", source, StringComparison.Ordinal);
         Assert.DoesNotContain("currentLine.GetRange", source, StringComparison.Ordinal);
         Assert.DoesNotContain("foreach (var wg in wrappedGlyphs)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("foreach (var line in lines)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("foreach (var g in line)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Glyphs.AddRange(line)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Glyphs.Add(line[glyphIndex])", source, StringComparison.Ordinal);
         Assert.DoesNotContain("new List<List<TextRunGlyph>>()", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("new List<List<TextRunGlyph>>", source, StringComparison.Ordinal);
         Assert.DoesNotContain("new List<TextRunGlyph>()", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("new List<TextRunGlyph>", source, StringComparison.Ordinal);
     }
 
     [Fact]
