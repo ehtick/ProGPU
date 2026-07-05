@@ -1126,6 +1126,36 @@ public class DiagnosticsLoggingSourceTests
     }
 
     [Fact]
+    public void SciChartRenderContextsDisposeCachesWithoutForeach()
+    {
+        string source = File.ReadAllText(FindRepoFile("src", "ProGPU.DirectX", "ProGpuDirectXSciChart.cs"));
+
+        Assert.Contains("for (var resourceIndex = 0; resourceIndex < _transientResources.Count; resourceIndex++)", source, StringComparison.Ordinal);
+        Assert.Contains("_transientResources[resourceIndex].Dispose();", source, StringComparison.Ordinal);
+        Assert.Contains("private static void DisposeCachedPipelines<TKey>(Dictionary<TKey, ProGpuDirectXGraphicsPipeline> pipelines)", source, StringComparison.Ordinal);
+        Assert.Contains("var pipelineEnumerator = pipelines.Values.GetEnumerator();", source, StringComparison.Ordinal);
+        Assert.Contains("pipelineEnumerator.Current.Dispose();", source, StringComparison.Ordinal);
+        Assert.Contains("private static void DisposeCachedSamplers<TKey>(Dictionary<TKey, ProGpuDirectXSamplerState> samplers)", source, StringComparison.Ordinal);
+        Assert.Contains("var samplerEnumerator = samplers.Values.GetEnumerator();", source, StringComparison.Ordinal);
+        Assert.Contains("samplerEnumerator.Current.Dispose();", source, StringComparison.Ordinal);
+        Assert.Contains("DisposeCachedPipelines(_texturePipelines);", source, StringComparison.Ordinal);
+        Assert.Contains("DisposeCachedPipelines(_heightContourPipelines);", source, StringComparison.Ordinal);
+        Assert.Contains("DisposeCachedSamplers(_samplers);", source, StringComparison.Ordinal);
+        Assert.Contains("DisposeCachedPipelines(_pipelines);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var resource in _transientResources)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var pipeline in _texturePipelines.Values)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var pipeline in _linePipelines.Values)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var pipeline in _columnFillPipelines.Values)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var pipeline in _textureVertexPipelines.Values)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var pipeline in _spritePipelines.Values)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var pipeline in _instancedSpritePipelines.Values)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var pipeline in _shapedHeatmapPipelines.Values)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var pipeline in _heightContourPipelines.Values)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var sampler in _samplers.Values)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var pipeline in _pipelines.Values)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void SciChartVerticalPixelUploadsUseCallerSpansAndPooledScratch()
     {
         string source = File.ReadAllText(FindRepoFile("src", "ProGPU.DirectX", "ProGpuDirectXSciChart.cs"));

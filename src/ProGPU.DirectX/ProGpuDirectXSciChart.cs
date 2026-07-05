@@ -5674,12 +5674,32 @@ fn vs_main(input: VertexIn) -> VertexOut {
 
     private void DisposeTransientResources()
     {
-        foreach (var resource in _transientResources)
+        for (var resourceIndex = 0; resourceIndex < _transientResources.Count; resourceIndex++)
         {
-            resource.Dispose();
+            _transientResources[resourceIndex].Dispose();
         }
 
         _transientResources.Clear();
+    }
+
+    private static void DisposeCachedPipelines<TKey>(Dictionary<TKey, ProGpuDirectXGraphicsPipeline> pipelines)
+        where TKey : notnull
+    {
+        var pipelineEnumerator = pipelines.Values.GetEnumerator();
+        while (pipelineEnumerator.MoveNext())
+        {
+            pipelineEnumerator.Current.Dispose();
+        }
+    }
+
+    private static void DisposeCachedSamplers<TKey>(Dictionary<TKey, ProGpuDirectXSamplerState> samplers)
+        where TKey : notnull
+    {
+        var samplerEnumerator = samplers.Values.GetEnumerator();
+        while (samplerEnumerator.MoveNext())
+        {
+            samplerEnumerator.Current.Dispose();
+        }
     }
 
     private void ThrowIfDisposed()
@@ -5698,50 +5718,15 @@ fn vs_main(input: VertexIn) -> VertexOut {
         }
 
         DisposeTransientResources();
-        foreach (var pipeline in _texturePipelines.Values)
-        {
-            pipeline.Dispose();
-        }
-
-        foreach (var pipeline in _linePipelines.Values)
-        {
-            pipeline.Dispose();
-        }
-
-        foreach (var pipeline in _columnFillPipelines.Values)
-        {
-            pipeline.Dispose();
-        }
-
-        foreach (var pipeline in _textureVertexPipelines.Values)
-        {
-            pipeline.Dispose();
-        }
-
-        foreach (var pipeline in _spritePipelines.Values)
-        {
-            pipeline.Dispose();
-        }
-
-        foreach (var pipeline in _instancedSpritePipelines.Values)
-        {
-            pipeline.Dispose();
-        }
-
-        foreach (var pipeline in _shapedHeatmapPipelines.Values)
-        {
-            pipeline.Dispose();
-        }
-
-        foreach (var pipeline in _heightContourPipelines.Values)
-        {
-            pipeline.Dispose();
-        }
-
-        foreach (var sampler in _samplers.Values)
-        {
-            sampler.Dispose();
-        }
+        DisposeCachedPipelines(_texturePipelines);
+        DisposeCachedPipelines(_linePipelines);
+        DisposeCachedPipelines(_columnFillPipelines);
+        DisposeCachedPipelines(_textureVertexPipelines);
+        DisposeCachedPipelines(_spritePipelines);
+        DisposeCachedPipelines(_instancedSpritePipelines);
+        DisposeCachedPipelines(_shapedHeatmapPipelines);
+        DisposeCachedPipelines(_heightContourPipelines);
+        DisposeCachedSamplers(_samplers);
 
         _textureVertexShader?.Dispose();
         _texturePixelShader?.Dispose();
@@ -7032,12 +7017,22 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
 
     private void DisposeTransientResources()
     {
-        foreach (var resource in _transientResources)
+        for (var resourceIndex = 0; resourceIndex < _transientResources.Count; resourceIndex++)
         {
-            resource.Dispose();
+            _transientResources[resourceIndex].Dispose();
         }
 
         _transientResources.Clear();
+    }
+
+    private static void DisposeCachedPipelines<TKey>(Dictionary<TKey, ProGpuDirectXGraphicsPipeline> pipelines)
+        where TKey : notnull
+    {
+        var pipelineEnumerator = pipelines.Values.GetEnumerator();
+        while (pipelineEnumerator.MoveNext())
+        {
+            pipelineEnumerator.Current.Dispose();
+        }
     }
 
     private void ThrowIfDisposed()
@@ -7056,10 +7051,7 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         }
 
         DisposeTransientResources();
-        foreach (var pipeline in _pipelines.Values)
-        {
-            pipeline.Dispose();
-        }
+        DisposeCachedPipelines(_pipelines);
 
         _vertexShader?.Dispose();
         _pixelShader?.Dispose();
