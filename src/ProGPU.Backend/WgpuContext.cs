@@ -205,58 +205,16 @@ public unsafe class WgpuContext : IDisposable
                     WaitIdle();
                 }
 
-                foreach (var bg in bindGroups.Span)
-                {
-                    Wgpu.BindGroupRelease((BindGroup*)bg);
-                }
-
-                foreach (var view in views.Span)
-                {
-                    Wgpu.TextureViewRelease((TextureView*)view);
-                }
-
-                foreach (var tex in textures.Span)
-                {
-                    // Release ownership without destroying; bind groups/views may still keep
-                    // the texture alive until the backend has drained all references.
-                    Wgpu.TextureRelease((Texture*)tex);
-                }
-
-                foreach (var buf in buffers.Span)
-                {
-                    Wgpu.BufferDestroy((Silk.NET.WebGPU.Buffer*)buf);
-                    Wgpu.BufferRelease((Silk.NET.WebGPU.Buffer*)buf);
-                }
-
-                foreach (var layout in layouts.Span)
-                {
-                    Wgpu.BindGroupLayoutRelease((BindGroupLayout*)layout);
-                }
-
-                foreach (var pipeLayout in pipeLayouts.Span)
-                {
-                    Wgpu.PipelineLayoutRelease((PipelineLayout*)pipeLayout);
-                }
-
-                foreach (var rp in renderPipes.Span)
-                {
-                    Wgpu.RenderPipelineRelease((RenderPipeline*)rp);
-                }
-
-                foreach (var cp in computePipes.Span)
-                {
-                    Wgpu.ComputePipelineRelease((ComputePipeline*)cp);
-                }
-
-                foreach (var sampler in samplers.Span)
-                {
-                    Wgpu.SamplerRelease((Sampler*)sampler);
-                }
-
-                foreach (var shader in shaders.Span)
-                {
-                    Wgpu.ShaderModuleRelease((ShaderModule*)shader);
-                }
+                ReleaseBindGroups(bindGroups.Span);
+                ReleaseTextureViews(views.Span);
+                ReleaseTextures(textures.Span);
+                ReleaseBuffers(buffers.Span);
+                ReleaseBindGroupLayouts(layouts.Span);
+                ReleasePipelineLayouts(pipeLayouts.Span);
+                ReleaseRenderPipelines(renderPipes.Span);
+                ReleaseComputePipelines(computePipes.Span);
+                ReleaseSamplers(samplers.Span);
+                ReleaseShaderModules(shaders.Span);
             }
             finally
             {
@@ -276,16 +234,18 @@ public unsafe class WgpuContext : IDisposable
 
     private PooledResourcePointerSnapshot SnapshotPendingResourcePointers(List<IntPtr> pending)
     {
-        if (pending.Count == 0)
+        var pendingCount = pending.Count;
+        if (pendingCount == 0)
         {
             return default;
         }
 
-        var snapshot = ArrayPool<IntPtr>.Shared.Rent(pending.Count);
+        var snapshot = ArrayPool<IntPtr>.Shared.Rent(pendingCount);
         var count = 0;
         _pendingSnapshotSeen.Clear();
-        foreach (var ptr in pending)
+        for (var pendingIndex = 0; pendingIndex < pendingCount; pendingIndex++)
         {
+            var ptr = pending[pendingIndex];
             if (ptr != IntPtr.Zero && _pendingSnapshotSeen.Add(ptr))
             {
                 snapshot[count++] = ptr;
@@ -300,6 +260,90 @@ public unsafe class WgpuContext : IDisposable
         }
 
         return new PooledResourcePointerSnapshot(snapshot, count);
+    }
+
+    private void ReleaseBindGroups(ReadOnlySpan<IntPtr> bindGroups)
+    {
+        for (var index = 0; index < bindGroups.Length; index++)
+        {
+            Wgpu.BindGroupRelease((BindGroup*)bindGroups[index]);
+        }
+    }
+
+    private void ReleaseTextureViews(ReadOnlySpan<IntPtr> views)
+    {
+        for (var index = 0; index < views.Length; index++)
+        {
+            Wgpu.TextureViewRelease((TextureView*)views[index]);
+        }
+    }
+
+    private void ReleaseTextures(ReadOnlySpan<IntPtr> textures)
+    {
+        for (var index = 0; index < textures.Length; index++)
+        {
+            // Release ownership without destroying; bind groups/views may still keep
+            // the texture alive until the backend has drained all references.
+            Wgpu.TextureRelease((Texture*)textures[index]);
+        }
+    }
+
+    private void ReleaseBuffers(ReadOnlySpan<IntPtr> buffers)
+    {
+        for (var index = 0; index < buffers.Length; index++)
+        {
+            var buffer = (Silk.NET.WebGPU.Buffer*)buffers[index];
+            Wgpu.BufferDestroy(buffer);
+            Wgpu.BufferRelease(buffer);
+        }
+    }
+
+    private void ReleaseBindGroupLayouts(ReadOnlySpan<IntPtr> layouts)
+    {
+        for (var index = 0; index < layouts.Length; index++)
+        {
+            Wgpu.BindGroupLayoutRelease((BindGroupLayout*)layouts[index]);
+        }
+    }
+
+    private void ReleasePipelineLayouts(ReadOnlySpan<IntPtr> pipeLayouts)
+    {
+        for (var index = 0; index < pipeLayouts.Length; index++)
+        {
+            Wgpu.PipelineLayoutRelease((PipelineLayout*)pipeLayouts[index]);
+        }
+    }
+
+    private void ReleaseRenderPipelines(ReadOnlySpan<IntPtr> renderPipelines)
+    {
+        for (var index = 0; index < renderPipelines.Length; index++)
+        {
+            Wgpu.RenderPipelineRelease((RenderPipeline*)renderPipelines[index]);
+        }
+    }
+
+    private void ReleaseComputePipelines(ReadOnlySpan<IntPtr> computePipelines)
+    {
+        for (var index = 0; index < computePipelines.Length; index++)
+        {
+            Wgpu.ComputePipelineRelease((ComputePipeline*)computePipelines[index]);
+        }
+    }
+
+    private void ReleaseSamplers(ReadOnlySpan<IntPtr> samplers)
+    {
+        for (var index = 0; index < samplers.Length; index++)
+        {
+            Wgpu.SamplerRelease((Sampler*)samplers[index]);
+        }
+    }
+
+    private void ReleaseShaderModules(ReadOnlySpan<IntPtr> shaders)
+    {
+        for (var index = 0; index < shaders.Length; index++)
+        {
+            Wgpu.ShaderModuleRelease((ShaderModule*)shaders[index]);
+        }
     }
 
     private readonly struct PooledResourcePointerSnapshot(IntPtr[]? buffer, int length) : IDisposable

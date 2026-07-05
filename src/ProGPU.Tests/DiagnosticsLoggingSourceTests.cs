@@ -137,15 +137,36 @@ public class DiagnosticsLoggingSourceTests
         Assert.Contains("using System.Buffers;", source, StringComparison.Ordinal);
         Assert.Contains("private readonly HashSet<IntPtr> _pendingSnapshotSeen = new();", source, StringComparison.Ordinal);
         Assert.Contains("PooledResourcePointerSnapshot buffers = default;", source, StringComparison.Ordinal);
-        Assert.Contains("ArrayPool<IntPtr>.Shared.Rent(pending.Count)", source, StringComparison.Ordinal);
+        Assert.Contains("ArrayPool<IntPtr>.Shared.Rent(pendingCount)", source, StringComparison.Ordinal);
         Assert.Contains("ArrayPool<IntPtr>.Shared.Return(snapshot)", source, StringComparison.Ordinal);
         Assert.Contains("private readonly struct PooledResourcePointerSnapshot", source, StringComparison.Ordinal);
         Assert.Contains("public ReadOnlySpan<IntPtr> Span", source, StringComparison.Ordinal);
-        Assert.Contains("foreach (var bg in bindGroups.Span)", source, StringComparison.Ordinal);
+        Assert.Contains("ReleaseBindGroups(bindGroups.Span);", source, StringComparison.Ordinal);
+        Assert.Contains("ReleaseTextureViews(views.Span);", source, StringComparison.Ordinal);
+        Assert.Contains("ReleaseTextures(textures.Span);", source, StringComparison.Ordinal);
+        Assert.Contains("ReleaseBuffers(buffers.Span);", source, StringComparison.Ordinal);
+        Assert.Contains("ReleaseBindGroupLayouts(layouts.Span);", source, StringComparison.Ordinal);
+        Assert.Contains("ReleasePipelineLayouts(pipeLayouts.Span);", source, StringComparison.Ordinal);
+        Assert.Contains("ReleaseRenderPipelines(renderPipes.Span);", source, StringComparison.Ordinal);
+        Assert.Contains("ReleaseComputePipelines(computePipes.Span);", source, StringComparison.Ordinal);
+        Assert.Contains("ReleaseSamplers(samplers.Span);", source, StringComparison.Ordinal);
+        Assert.Contains("ReleaseShaderModules(shaders.Span);", source, StringComparison.Ordinal);
+        Assert.Contains("private void ReleaseBindGroups(ReadOnlySpan<IntPtr> bindGroups)", source, StringComparison.Ordinal);
+        Assert.Contains("private void ReleaseBuffers(ReadOnlySpan<IntPtr> buffers)", source, StringComparison.Ordinal);
+        Assert.Contains("for (var index = 0; index < bindGroups.Length; index++)", source, StringComparison.Ordinal);
+        Assert.Contains("for (var index = 0; index < buffers.Length; index++)", source, StringComparison.Ordinal);
+        Assert.Contains("var pendingCount = pending.Count;", source, StringComparison.Ordinal);
+        Assert.Contains("for (var pendingIndex = 0; pendingIndex < pendingCount; pendingIndex++)", source, StringComparison.Ordinal);
+        Assert.Contains("var ptr = pending[pendingIndex];", source, StringComparison.Ordinal);
         Assert.Contains("finally\n            {\n                buffers.Dispose();", source, StringComparison.Ordinal);
         Assert.DoesNotContain("var snapshot = new List<IntPtr>(pending.Count)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("return snapshot.ToArray();", source, StringComparison.Ordinal);
         Assert.DoesNotContain("var seen = new HashSet<IntPtr>();", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var bg in bindGroups.Span)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var view in views.Span)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var tex in textures.Span)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var buf in buffers.Span)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var ptr in pending)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("foreach (var bg in bindGroups)\n", source, StringComparison.Ordinal);
     }
 
