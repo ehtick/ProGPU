@@ -39,8 +39,9 @@ public class TextLayout
         if (_fallbacksInitialized) return;
         _fallbacksInitialized = true;
 
-        foreach (var path in FallbackFontPaths)
+        for (int pathIndex = 0; pathIndex < FallbackFontPaths.Length; pathIndex++)
         {
+            var path = FallbackFontPaths[pathIndex];
             if (System.IO.File.Exists(path))
             {
                 try
@@ -134,8 +135,9 @@ public class TextLayout
             if (glyphIdx == 0 && codePoint != ' ' && codePoint != '\t' && codePoint != '\n')
             {
                 InitializeFallbacks();
-                foreach (var fbFont in _fallbackFonts)
+                for (int fallbackIndex = 0; fallbackIndex < _fallbackFonts.Count; fallbackIndex++)
                 {
+                    var fbFont = _fallbackFonts[fallbackIndex];
                     ushort fbIdx = fbFont.GetGlyphIndex(codePoint);
                     if (fbIdx != 0)
                     {
@@ -183,20 +185,21 @@ public class TextLayout
                 if (lastWordStartIdxInLine > 0)
                 {
                     // Wrap the last partial word to the next line
-                    int wrapCount = currentLine.Count - lastWordStartIdxInLine;
-                    var wrappedGlyphs = currentLine.GetRange(lastWordStartIdxInLine, wrapCount);
-                    currentLine.RemoveRange(lastWordStartIdxInLine, wrapCount);
+                    int wrapStartIndex = lastWordStartIdxInLine;
+                    int previousLineCount = currentLine.Count;
+                    int wrapCount = previousLineCount - wrapStartIndex;
+                    var previousLine = currentLine;
 
-                    lines.Add(currentLine);
-                    currentLine = new List<TextRunGlyph>();
+                    currentLine = new List<TextRunGlyph>(wrapCount + 1);
                     
                     cursorX = 0f;
                     cursorY += lineSpacing;
                     prevCodePoint = 0;
 
                     // Re-position the wrapped glyphs on the new line
-                    foreach (var wg in wrappedGlyphs)
+                    for (int wrapIndex = wrapStartIndex; wrapIndex < previousLineCount; wrapIndex++)
                     {
+                        var wg = previousLine[wrapIndex];
                         var remapped = wg;
                         float shift = wg.Position.X - lastWordStartCursorX;
                         remapped.Position = new Vector2(shift, cursorY + fontAscent + remapped.Glyph.BearY);
@@ -204,6 +207,9 @@ public class TextLayout
                         cursorX = shift + remapped.Glyph.Advance;
                         prevCodePoint = remapped.CodePoint;
                     }
+
+                    previousLine.RemoveRange(wrapStartIndex, wrapCount);
+                    lines.Add(previousLine);
                     
                     // Add the current character
                     if (prevCodePoint != 0)
@@ -245,13 +251,15 @@ public class TextLayout
         float maxLineWidth = 0f;
         float totalHeight = cursorY + lineSpacing;
 
-        foreach (var line in lines)
+        for (int lineIndex = 0; lineIndex < lines.Count; lineIndex++)
         {
+            var line = lines[lineIndex];
             if (line.Count == 0) continue;
 
             float lineWidth = 0f;
-            foreach (var g in line)
+            for (int glyphIndex = 0; glyphIndex < line.Count; glyphIndex++)
             {
+                var g = line[glyphIndex];
                 lineWidth = Math.Max(lineWidth, g.Position.X - g.Glyph.BearX + g.Glyph.Advance);
             }
             maxLineWidth = Math.Max(maxLineWidth, lineWidth);
@@ -278,7 +286,10 @@ public class TextLayout
             }
 
             // Flatten all glyphs to output list
-            Glyphs.AddRange(line);
+            for (int glyphIndex = 0; glyphIndex < line.Count; glyphIndex++)
+            {
+                Glyphs.Add(line[glyphIndex]);
+            }
         }
 
         MeasuredSize = new Vector2(

@@ -47,6 +47,35 @@ public class DiagnosticsLoggingSourceTests
     }
 
     [Fact]
+    public void TextLayoutWrappingAndFlatteningUseIndexedTraversal()
+    {
+        string source = File.ReadAllText(FindRepoFile("src", "ProGPU.Text", "TextLayout.cs"));
+
+        Assert.Contains("for (int pathIndex = 0; pathIndex < FallbackFontPaths.Length; pathIndex++)", source, StringComparison.Ordinal);
+        Assert.Contains("var path = FallbackFontPaths[pathIndex];", source, StringComparison.Ordinal);
+        Assert.Contains("for (int fallbackIndex = 0; fallbackIndex < _fallbackFonts.Count; fallbackIndex++)", source, StringComparison.Ordinal);
+        Assert.Contains("var fbFont = _fallbackFonts[fallbackIndex];", source, StringComparison.Ordinal);
+        Assert.Contains("int wrapStartIndex = lastWordStartIdxInLine;", source, StringComparison.Ordinal);
+        Assert.Contains("int previousLineCount = currentLine.Count;", source, StringComparison.Ordinal);
+        Assert.Contains("var previousLine = currentLine;", source, StringComparison.Ordinal);
+        Assert.Contains("currentLine = new List<TextRunGlyph>(wrapCount + 1);", source, StringComparison.Ordinal);
+        Assert.Contains("for (int wrapIndex = wrapStartIndex; wrapIndex < previousLineCount; wrapIndex++)", source, StringComparison.Ordinal);
+        Assert.Contains("var wg = previousLine[wrapIndex];", source, StringComparison.Ordinal);
+        Assert.Contains("previousLine.RemoveRange(wrapStartIndex, wrapCount);", source, StringComparison.Ordinal);
+        Assert.Contains("for (int lineIndex = 0; lineIndex < lines.Count; lineIndex++)", source, StringComparison.Ordinal);
+        Assert.Contains("var line = lines[lineIndex];", source, StringComparison.Ordinal);
+        Assert.Contains("for (int glyphIndex = 0; glyphIndex < line.Count; glyphIndex++)", source, StringComparison.Ordinal);
+        Assert.Contains("Glyphs.Add(line[glyphIndex]);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var path in FallbackFontPaths)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var fbFont in _fallbackFonts)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("currentLine.GetRange", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var wg in wrappedGlyphs)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var line in lines)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var g in line)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Glyphs.AddRange(line)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void WgpuContextPendingResourceCleanupUsesPooledSnapshots()
     {
         string source = File.ReadAllText(FindRepoFile("src", "ProGPU.Backend", "WgpuContext.cs"));
