@@ -12,6 +12,6 @@
     <ProjectReference Include="..\..\src\ProGPU.Vector\ProGPU.Vector.csproj" />
     <ProjectReference Include="..\..\src\ProGPU.Scene\ProGPU.Scene.csproj" />
     <ProjectReference Include="..\..\src\ProGPU.Dxf\ProGPU.Dxf.csproj" />
-    <PackageReference Include="netDxf.netstandard" Version="2.4.0" />
+    <PackageReference Include="netDxf.netstandard" />
   </ItemGroup>
 </Project>
