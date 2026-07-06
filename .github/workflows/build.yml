@@ -99,7 +99,7 @@ jobs:
 
       - name: Pack shipping packages
         shell: bash
-        run: PROGPU_PACKAGE_VERSION=11.0.0-ci.${{ github.run_number }} ./eng/progpu-pack.sh
+        run: PROGPU_PACKAGE_VERSION=0.1.0-ci.${{ github.run_number }} ./eng/progpu-pack.sh
 
       - name: Upload NuGet packages
         uses: actions/upload-artifact@v4

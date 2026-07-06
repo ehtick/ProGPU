@@ -25,7 +25,7 @@ The release workflow does not pack samples, tests, diagnostic tools, or framewor
 ## Local Package Build
 
 ```bash
-PROGPU_PACKAGE_VERSION=11.0.0-dev ./eng/progpu-pack.sh
+PROGPU_PACKAGE_VERSION=0.1.0-preview.1 ./eng/progpu-pack.sh
 ```
 
 The script writes packages and symbol packages to `artifacts/packages/Release` by default.
@@ -38,7 +38,7 @@ Set `PROGPU_PACKAGE_OUTPUT` to use a different folder.
 - `Release` runs docs validation, restore, build, tests, package creation, and artifact upload.
 
 Manual releases use `workflow_dispatch` with a package version. Tag releases use tags named `v*`,
-for example `v11.0.0-preview.1`.
+for example `v0.1.0-preview.1`.
 
 ## NuGet Publishing
 

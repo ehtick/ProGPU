@@ -28,7 +28,7 @@ ProGPU release packages are built from `eng/progpu-package-list.sh` by the `Rele
 Local package build:
 
 ```bash
-PROGPU_PACKAGE_VERSION=11.0.0-dev ./eng/progpu-pack.sh
+PROGPU_PACKAGE_VERSION=0.1.0-preview.1 ./eng/progpu-pack.sh
 ```
 
 The release workflow validates docs, restores, builds, tests, packs `.nupkg`/`.snupkg` artifacts, and can publish to NuGet.org when `NUGET_API_KEY` is configured. See [docs/release.md](docs/release.md).

@@ -70,6 +70,12 @@ public class DiagnosticsLoggingSourceTests
         string presentationCoreProject = ReadSource("src", "PresentationCore", "PresentationCore.csproj");
 
         Assert.Contains("<ProGPUStrongNameKeyFile>$(MSBuildThisFileDirectory)eng/ProGPU.snk</ProGPUStrongNameKeyFile>", directoryBuildProps, StringComparison.Ordinal);
+        Assert.Contains("<VersionPrefix Condition=\"'$(VersionPrefix)' == ''\">0.1.0</VersionPrefix>", directoryBuildProps, StringComparison.Ordinal);
+        Assert.Contains("<VersionSuffix Condition=\"'$(VersionSuffix)' == ''\">preview.1</VersionSuffix>", directoryBuildProps, StringComparison.Ordinal);
+        Assert.Contains("<Version Condition=\"'$(Version)' == ''\">$(VersionPrefix)-$(VersionSuffix)</Version>", directoryBuildProps, StringComparison.Ordinal);
+        Assert.Contains("<PackageVersion Condition=\"'$(PackageVersion)' == ''\">$(Version)</PackageVersion>", directoryBuildProps, StringComparison.Ordinal);
+        Assert.Contains("<AssemblyVersion Condition=\"'$(AssemblyVersion)' == ''\">0.1.0.0</AssemblyVersion>", directoryBuildProps, StringComparison.Ordinal);
+        Assert.Contains("<FileVersion Condition=\"'$(FileVersion)' == ''\">0.1.0.0</FileVersion>", directoryBuildProps, StringComparison.Ordinal);
         Assert.Contains("<SignAssembly Condition=\"'$(SignAssembly)' == ''\">true</SignAssembly>", directoryBuildProps, StringComparison.Ordinal);
         Assert.Contains("<AssemblyOriginatorKeyFile Condition=\"'$(AssemblyOriginatorKeyFile)' == ''\">$(ProGPUStrongNameKeyFile)</AssemblyOriginatorKeyFile>", directoryBuildProps, StringComparison.Ordinal);
         Assert.DoesNotContain("35MSSharedLib1024.snk", windowsBaseProject, StringComparison.Ordinal);
