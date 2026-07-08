@@ -5,6 +5,8 @@ public readonly record struct PortableWpfServiceKey(string Name)
     public static PortableWpfServiceKey PresentationCore { get; } = new(nameof(PresentationCore));
 
     public static PortableWpfServiceKey PresentationFramework { get; } = new(nameof(PresentationFramework));
+
+    public static PortableWpfServiceKey WinForms { get; } = new(nameof(WinForms));
 }
 
 public interface IPortableClipboardServiceRegistrar
@@ -39,6 +41,24 @@ public interface IPortableFileDialogServiceRegistrar
     PortableWpfServiceKey ServiceKey { get; }
 
     IDisposable Register(Func<PortableFileDialogRequest, string?> showDialog);
+
+    void Clear();
+}
+
+public interface IPortableColorDialogServiceRegistrar
+{
+    PortableWpfServiceKey ServiceKey { get; }
+
+    IDisposable Register(Func<PortableColorDialogRequest, int?> showDialog);
+
+    void Clear();
+}
+
+public interface IPortableFontDialogServiceRegistrar
+{
+    PortableWpfServiceKey ServiceKey { get; }
+
+    IDisposable Register(Func<PortableFontDialogRequest, PortableFontDialogResult?> showDialog);
 
     void Clear();
 }
@@ -168,6 +188,91 @@ public sealed class PortableFileDialogRequest
     public string Filter { get; }
 
     public int FilterIndex { get; }
+}
+
+public sealed class PortableColorDialogRequest
+{
+    private readonly int[] _customColors;
+
+    public PortableColorDialogRequest(int initialArgb, IReadOnlyList<int>? customColors)
+    {
+        InitialArgb = initialArgb;
+
+        if (customColors == null || customColors.Count == 0)
+        {
+            _customColors = Array.Empty<int>();
+        }
+        else
+        {
+            _customColors = new int[customColors.Count];
+            for (var i = 0; i < customColors.Count; i++)
+            {
+                _customColors[i] = customColors[i];
+            }
+        }
+    }
+
+    public int InitialArgb { get; }
+
+    public IReadOnlyList<int> CustomColors => _customColors;
+}
+
+public sealed class PortableFontDialogRequest
+{
+    public PortableFontDialogRequest(
+        string? familyName,
+        float size,
+        int style,
+        string? unit,
+        bool showEffects,
+        bool showColor,
+        int minSize,
+        int maxSize)
+    {
+        FamilyName = string.IsNullOrWhiteSpace(familyName) ? "Courier New" : familyName!;
+        Size = size > 0 && float.IsFinite(size) ? size : 10f;
+        Style = style;
+        Unit = string.IsNullOrWhiteSpace(unit) ? "Point" : unit!;
+        ShowEffects = showEffects;
+        ShowColor = showColor;
+        MinSize = minSize;
+        MaxSize = maxSize;
+    }
+
+    public string FamilyName { get; }
+
+    public float Size { get; }
+
+    public int Style { get; }
+
+    public string Unit { get; }
+
+    public bool ShowEffects { get; }
+
+    public bool ShowColor { get; }
+
+    public int MinSize { get; }
+
+    public int MaxSize { get; }
+}
+
+public sealed class PortableFontDialogResult
+{
+    public PortableFontDialogResult(string? familyName, float size, int style, string? unit)
+    {
+        FamilyName = string.IsNullOrWhiteSpace(familyName) ? "Courier New" : familyName!;
+        Size = size > 0 && float.IsFinite(size) ? size : 10f;
+        Style = style;
+        Unit = string.IsNullOrWhiteSpace(unit) ? "Point" : unit!;
+    }
+
+    public string FamilyName { get; }
+
+    public float Size { get; }
+
+    public int Style { get; }
+
+    public string Unit { get; }
 }
 
 public sealed class PortablePopupCreateRequest
@@ -343,6 +448,12 @@ public interface IPortableWindowActivationServiceRegistrar
 
     bool TryCloseWindow(object window, out PortableWindowCloseResult result);
 
+    bool TryIsWindowDisposed(object window, out bool isDisposed)
+    {
+        isDisposed = false;
+        return false;
+    }
+
     bool TrySetActivationState(object window, bool isActive);
 
     bool TryBeginInvokeInput(object window, Action callback);
@@ -355,6 +466,11 @@ public interface IPortableWindowActivationServiceRegistrar
     }
 
     bool TryFlushDispatcherOperations(object window, string markerPriorityName, TimeSpan? timeout);
+
+    bool TryPromoteDispatcherTimers(object window, int currentTimeInTicks)
+    {
+        return false;
+    }
 
     bool TryProcessDragDropEvent(
         object window,
@@ -378,7 +494,17 @@ public static class PortableWpfServiceRegistry
     private static readonly Dictionary<PortableWpfServiceKey, IPortableLauncherServiceRegistrar> LauncherServices = new();
     private static readonly Dictionary<PortableWpfServiceKey, IPortableMessageBoxServiceRegistrar> MessageBoxServices = new();
     private static readonly Dictionary<PortableWpfServiceKey, IPortableFileDialogServiceRegistrar> FileDialogServices = new();
+    private static readonly Dictionary<PortableWpfServiceKey, IPortableColorDialogServiceRegistrar> ColorDialogServices = new();
+    private static readonly Dictionary<PortableWpfServiceKey, IPortableFontDialogServiceRegistrar> FontDialogServices = new();
     private static readonly Dictionary<PortableWpfServiceKey, IPortablePopupServiceRegistrar> PopupServices = new();
+
+    public static event Action<IPortableClipboardServiceRegistrar>? ClipboardServiceRegistered;
+
+    public static event Action<IPortableFileDialogServiceRegistrar>? FileDialogServiceRegistered;
+
+    public static event Action<IPortableColorDialogServiceRegistrar>? ColorDialogServiceRegistered;
+
+    public static event Action<IPortableFontDialogServiceRegistrar>? FontDialogServiceRegistered;
 
     public static IDisposable RegisterWindowActivationService(IPortableWindowActivationServiceRegistrar service)
     {
@@ -415,6 +541,7 @@ public static class PortableWpfServiceRegistry
             ClipboardServices[service.ServiceKey] = service;
         }
 
+        ClipboardServiceRegistered?.Invoke(service);
         return new Registration<IPortableClipboardServiceRegistrar>(service, ClipboardServices);
     }
 
@@ -490,6 +617,7 @@ public static class PortableWpfServiceRegistry
             FileDialogServices[service.ServiceKey] = service;
         }
 
+        FileDialogServiceRegistered?.Invoke(service);
         return new Registration<IPortableFileDialogServiceRegistrar>(service, FileDialogServices);
     }
 
@@ -502,6 +630,58 @@ public static class PortableWpfServiceRegistry
         lock (SyncRoot)
         {
             return FileDialogServices.TryGetValue(serviceKey, out service!);
+        }
+    }
+
+    public static IDisposable RegisterColorDialogService(IPortableColorDialogServiceRegistrar service)
+    {
+        ArgumentNullException.ThrowIfNull(service);
+        ValidateServiceKey(service.ServiceKey, nameof(service));
+
+        lock (SyncRoot)
+        {
+            ColorDialogServices[service.ServiceKey] = service;
+        }
+
+        ColorDialogServiceRegistered?.Invoke(service);
+        return new Registration<IPortableColorDialogServiceRegistrar>(service, ColorDialogServices);
+    }
+
+    public static bool TryGetColorDialogService(
+        PortableWpfServiceKey serviceKey,
+        out IPortableColorDialogServiceRegistrar service)
+    {
+        ValidateServiceKey(serviceKey, nameof(serviceKey));
+
+        lock (SyncRoot)
+        {
+            return ColorDialogServices.TryGetValue(serviceKey, out service!);
+        }
+    }
+
+    public static IDisposable RegisterFontDialogService(IPortableFontDialogServiceRegistrar service)
+    {
+        ArgumentNullException.ThrowIfNull(service);
+        ValidateServiceKey(service.ServiceKey, nameof(service));
+
+        lock (SyncRoot)
+        {
+            FontDialogServices[service.ServiceKey] = service;
+        }
+
+        FontDialogServiceRegistered?.Invoke(service);
+        return new Registration<IPortableFontDialogServiceRegistrar>(service, FontDialogServices);
+    }
+
+    public static bool TryGetFontDialogService(
+        PortableWpfServiceKey serviceKey,
+        out IPortableFontDialogServiceRegistrar service)
+    {
+        ValidateServiceKey(serviceKey, nameof(serviceKey));
+
+        lock (SyncRoot)
+        {
+            return FontDialogServices.TryGetValue(serviceKey, out service!);
         }
     }
 
@@ -580,6 +760,8 @@ public static class PortableWpfServiceRegistry
                 IPortableLauncherServiceRegistrar launcherService => launcherService.ServiceKey,
                 IPortableMessageBoxServiceRegistrar messageBoxService => messageBoxService.ServiceKey,
                 IPortableFileDialogServiceRegistrar fileDialogService => fileDialogService.ServiceKey,
+                IPortableColorDialogServiceRegistrar colorDialogService => colorDialogService.ServiceKey,
+                IPortableFontDialogServiceRegistrar fontDialogService => fontDialogService.ServiceKey,
                 IPortablePopupServiceRegistrar popupService => popupService.ServiceKey,
                 _ => throw new InvalidOperationException("Unsupported portable WPF service registrar.")
             };

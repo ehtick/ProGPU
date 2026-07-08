@@ -50,4 +50,12 @@ public sealed class PortableWindowState
     public bool HasWindowStyle { get; set; }
 
     public int WindowStyle { get; set; }
+
+    public bool HasShowActivated { get; set; }
+
+    public bool ShowActivated { get; set; }
+
+    public bool HasOwner { get; set; }
+
+    public object? Owner { get; set; }
 }
