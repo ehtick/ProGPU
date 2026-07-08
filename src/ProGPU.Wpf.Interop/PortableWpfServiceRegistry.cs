@@ -310,6 +310,21 @@ public sealed class PortablePopupCreateRequest
     public bool IsChildPopup { get; }
 }
 
+public sealed class PortableWindowRegion
+{
+    public PortableWindowRegion(PortableRect bounds, IReadOnlyList<PortableRect>? excludedRects = null)
+    {
+        Bounds = bounds;
+        ExcludedRects = excludedRects ?? Array.Empty<PortableRect>();
+    }
+
+    public PortableRect Bounds { get; }
+
+    public IReadOnlyList<PortableRect> ExcludedRects { get; }
+
+    public bool IsEmpty => Bounds.IsEmpty || Bounds.Width <= 0 || Bounds.Height <= 0;
+}
+
 public sealed class PortableWindowActivationCallbacks
 {
     public PortableWindowActivationCallbacks(
@@ -326,7 +341,8 @@ public sealed class PortableWindowActivationCallbacks
         Action<object>? run = null,
         Action<object>? dispose = null,
         Func<object, bool>? dragMove = null,
-        Func<object, IntPtr>? getHandle = null)
+        Func<object, IntPtr>? getHandle = null,
+        Func<IntPtr, PortableWindowRegion, bool>? setWindowRegion = null)
     {
         Activate = activate ?? throw new ArgumentNullException(nameof(activate));
         Show = show;
@@ -342,6 +358,7 @@ public sealed class PortableWindowActivationCallbacks
         Dispose = dispose;
         DragMove = dragMove;
         GetHandle = getHandle;
+        SetWindowRegion = setWindowRegion;
     }
 
     public Func<object, object?> Activate { get; }
@@ -371,6 +388,8 @@ public sealed class PortableWindowActivationCallbacks
     public Func<object, bool>? DragMove { get; }
 
     public Func<object, IntPtr>? GetHandle { get; }
+
+    public Func<IntPtr, PortableWindowRegion, bool>? SetWindowRegion { get; }
 }
 
 public sealed class PortableWindowInputEvent
@@ -468,6 +487,11 @@ public interface IPortableWindowActivationServiceRegistrar
     bool TryFlushDispatcherOperations(object window, string markerPriorityName, TimeSpan? timeout);
 
     bool TryPromoteDispatcherTimers(object window, int currentTimeInTicks)
+    {
+        return false;
+    }
+
+    bool TrySetWindowRegion(IntPtr handle, PortableWindowRegion region)
     {
         return false;
     }
