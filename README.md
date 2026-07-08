@@ -23,6 +23,7 @@ ProGPU release packages are built from `eng/progpu-package-list.sh` by the `Rele
 | `ProGPU.Avalonia` | Avalonia integration and compositor backend adapter. | `src/ProGPU.Avalonia/ProGPU.Avalonia.csproj` |
 | `ProGPU.Uno` | Uno/WinUI integration and compositor backend adapter. | `src/ProGPU.Uno/ProGPU.Uno.csproj` |
 | `ProGPU.Dxf` | DXF import/rendering support for ProGPU vector scenes. | `src/ProGPU.Dxf/ProGPU.Dxf.csproj` |
+| `ProGPU.SkiaSharp` | ProGPU-backed portable SkiaSharp compatibility shim used by drawing and imaging adapters. | `src/SkiaSharp/SkiaSharp.csproj` |
 | `ProGPU.System.Drawing.Common` | ProGPU-backed portable System.Drawing.Common compatibility shim for LibreWinForms and GDI-style callers. | `src/System.Drawing.Common/System.Drawing.Common.csproj` |
 | `LibreWPF.Interop` | LibreWPF portable interop contracts consumed by the ProGPU/Silk.NET SDK lane. | `src/ProGPU.Wpf.Interop/ProGPU.Wpf.Interop.csproj` |
 
