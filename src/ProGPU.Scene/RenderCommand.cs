@@ -665,6 +665,18 @@ public class DrawingContext : IRenderDataProvider
         });
     }
 
+    public void DrawRectangle(Brush? brush, Pen? pen, Rect rect, Matrix4x4 transform)
+    {
+        Commands.Add(new RenderCommand
+        {
+            Type = RenderCommandType.DrawRect,
+            Rect = rect,
+            Brush = brush,
+            Pen = pen,
+            Transform = transform
+        });
+    }
+
     public void DrawPath(Brush? brush, Pen? pen, PathGeometry path)
     {
         Commands.Add(new RenderCommand
@@ -786,6 +798,24 @@ public class DrawingContext : IRenderDataProvider
             Rect = rect,
             Texture = texture,
             TextureSamplingMode = TextureSamplingMode.Linear
+        });
+    }
+
+    public void DrawTexture(
+        GpuTexture texture,
+        Rect rect,
+        Rect sourceRect,
+        Matrix4x4 transform,
+        TextureSamplingMode samplingMode = TextureSamplingMode.Linear)
+    {
+        Commands.Add(new RenderCommand
+        {
+            Type = RenderCommandType.DrawTexture,
+            Rect = rect,
+            SrcRect = sourceRect,
+            Transform = transform,
+            Texture = texture,
+            TextureSamplingMode = samplingMode
         });
     }
 
@@ -920,6 +950,26 @@ public class DrawingContext : IRenderDataProvider
         });
     }
 
+    public void DrawEllipse(
+        Brush? brush,
+        Pen? pen,
+        Vector2 center,
+        float radiusX,
+        float radiusY,
+        Matrix4x4 transform)
+    {
+        Commands.Add(new RenderCommand
+        {
+            Type = RenderCommandType.DrawEllipse,
+            Brush = brush,
+            Pen = pen,
+            Position2 = center,
+            RadiusX = radiusX,
+            RadiusY = radiusY,
+            Transform = transform
+        });
+    }
+
     public void FillEllipse(Brush brush, Vector2 center, float radiusX, float radiusY)
     {
         DrawEllipse(brush, null, center, radiusX, radiusY);
@@ -957,6 +1007,26 @@ public class DrawingContext : IRenderDataProvider
             Rect = rect,
             RadiusX = radiusX,
             RadiusY = radiusY
+        });
+    }
+
+    public void DrawRoundedRectangle(
+        Brush? brush,
+        Pen? pen,
+        Rect rect,
+        float radiusX,
+        float radiusY,
+        Matrix4x4 transform)
+    {
+        Commands.Add(new RenderCommand
+        {
+            Type = RenderCommandType.DrawRoundedRect,
+            Brush = brush,
+            Pen = pen,
+            Rect = rect,
+            RadiusX = radiusX,
+            RadiusY = radiusY,
+            Transform = transform
         });
     }
 
