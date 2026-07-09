@@ -1,5 +1,7 @@
+using System.Numerics;
 using System.Text;
 using ProGPU.Text;
+using ProGPU.Vector;
 using Xunit;
 
 namespace ProGPU.Tests;
@@ -73,7 +75,62 @@ public class SfntFontFaceTests
         Assert.Equal(1000, first.UnitsPerEm);
         Assert.Equal(1, second.FaceIndex);
         Assert.Equal(2048, second.UnitsPerEm);
+        Assert.Equal(2, TtfFont.GetFaceCount(fontData));
+        Assert.True(second.TryGetTable("head", out ReadOnlyMemory<byte> head));
+        Assert.Equal(2048, (head.Span[18] << 8) | head.Span[19]);
         Assert.Throws<ArgumentOutOfRangeException>(() => new TtfFont(fontData, 2));
+    }
+
+    [Fact]
+    public void TtfFontReadsClosestSbixStrikeAndDuplicateGlyph()
+    {
+        byte[] fontData = BuildSfntWithTables(
+            ("head", BuildHeadTable()),
+            ("maxp", BuildMaxpTable(3)),
+            ("cmap", BuildCmapFormat4Table()),
+            ("sbix", BuildSbixTable()));
+
+        var font = new TtfFont(fontData);
+
+        Assert.True(font.HasBitmapGlyphs);
+        Assert.False(font.HasTrueTypeOutlines);
+        Assert.True(font.TryGetBitmapGlyph(1, 35, out BitmapGlyphData direct));
+        Assert.Equal(40, direct.PixelsPerEm);
+        Assert.Equal(72, direct.PixelsPerInch);
+        Assert.Equal(-4, direct.OriginOffsetX);
+        Assert.Equal(12, direct.OriginOffsetY);
+        Assert.Equal(TtfFont.PngBitmapGraphicType, direct.GraphicType);
+        Assert.Equal(new byte[] { 40, 41, 42 }, direct.Data.ToArray());
+
+        Assert.True(font.TryGetBitmapGlyph(2, 19, out BitmapGlyphData duplicate));
+        Assert.Equal(20, duplicate.PixelsPerEm);
+        Assert.Equal(7, duplicate.OriginOffsetX);
+        Assert.Equal(8, duplicate.OriginOffsetY);
+        Assert.Equal(new byte[] { 20, 21, 22 }, duplicate.Data.ToArray());
+    }
+
+    [Fact]
+    public void TtfFontBuildsScaledAndTranslatedCompositeOutline()
+    {
+        (byte[] loca, byte[] glyf) = BuildCompositeGlyphTables();
+        byte[] fontData = BuildSfntWithTables(
+            ("head", BuildHeadTable()),
+            ("hhea", BuildHheaTable()),
+            ("maxp", BuildMaxpTable(3)),
+            ("hmtx", BuildHmtxTable()),
+            ("cmap", BuildCmapFormat4Table()),
+            ("loca", loca),
+            ("glyf", glyf));
+
+        var font = new TtfFont(fontData);
+        var outline = font.GetGlyphOutline(2);
+
+        Assert.NotNull(outline);
+        Assert.Single(outline.Figures);
+        Assert.Equal(new Vector2(50, 20), outline.Figures[0].StartPoint);
+        Assert.Contains(
+            outline.Figures[0].Segments,
+            segment => segment is LineSegment { Point: var point } && point == new Vector2(200, 170));
     }
 
     [Fact]
@@ -340,13 +397,116 @@ public class SfntFontFaceTests
         return table;
     }
 
-    private static byte[] BuildMaxpTable()
+    private static byte[] BuildMaxpTable(ushort glyphCount = 2)
     {
         using var stream = new MemoryStream();
         using var writer = new BinaryWriter(stream);
 
         WriteUInt(writer, 0x00010000);
-        WriteUShort(writer, 2);
+        WriteUShort(writer, glyphCount);
+        return stream.ToArray();
+    }
+
+    private static byte[] BuildSbixTable()
+    {
+        byte[] strike20 = BuildSbixStrike(20, -2, 6, new byte[] { 20, 21, 22 });
+        byte[] strike40 = BuildSbixStrike(40, -4, 12, new byte[] { 40, 41, 42 });
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+
+        WriteUShort(writer, 1);
+        WriteUShort(writer, 1);
+        WriteUInt(writer, 2);
+        WriteUInt(writer, 16);
+        WriteUInt(writer, (uint)(16 + strike20.Length));
+        writer.Write(strike20);
+        writer.Write(strike40);
+        return stream.ToArray();
+    }
+
+    private static byte[] BuildSbixStrike(
+        ushort pixelsPerEm,
+        short originOffsetX,
+        short originOffsetY,
+        byte[] imageData)
+    {
+        const uint dataStart = 20;
+        uint duplicateStart = dataStart + 8u + (uint)imageData.Length;
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+
+        WriteUShort(writer, pixelsPerEm);
+        WriteUShort(writer, 72);
+        WriteUInt(writer, dataStart);
+        WriteUInt(writer, dataStart);
+        WriteUInt(writer, duplicateStart);
+        WriteUInt(writer, duplicateStart + 10);
+
+        WriteShort(writer, originOffsetX);
+        WriteShort(writer, originOffsetY);
+        WriteTag(writer, "png ");
+        writer.Write(imageData);
+
+        WriteShort(writer, 7);
+        WriteShort(writer, 8);
+        WriteTag(writer, "dupe");
+        WriteUShort(writer, 1);
+        return stream.ToArray();
+    }
+
+    private static (byte[] Loca, byte[] Glyf) BuildCompositeGlyphTables()
+    {
+        byte[] simple = BuildSimpleSquareGlyph();
+        byte[] composite = BuildCompositeGlyph();
+        using var locaStream = new MemoryStream();
+        using var locaWriter = new BinaryWriter(locaStream);
+        WriteUShort(locaWriter, 0);
+        WriteUShort(locaWriter, 0);
+        WriteUShort(locaWriter, (ushort)(simple.Length / 2));
+        WriteUShort(locaWriter, (ushort)((simple.Length + composite.Length) / 2));
+
+        return (locaStream.ToArray(), simple.Concat(composite).ToArray());
+    }
+
+    private static byte[] BuildSimpleSquareGlyph()
+    {
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+
+        WriteShort(writer, 1);
+        WriteShort(writer, 0);
+        WriteShort(writer, 0);
+        WriteShort(writer, 100);
+        WriteShort(writer, 100);
+        WriteUShort(writer, 3);
+        WriteUShort(writer, 0);
+        writer.Write(new byte[] { 1, 1, 1, 1 });
+        foreach (short value in new short[] { 0, 100, 0, -100 })
+        {
+            WriteShort(writer, value);
+        }
+        foreach (short value in new short[] { 0, 0, 100, 0 })
+        {
+            WriteShort(writer, value);
+        }
+        return stream.ToArray();
+    }
+
+    private static byte[] BuildCompositeGlyph()
+    {
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+
+        WriteShort(writer, -1);
+        WriteShort(writer, 50);
+        WriteShort(writer, 20);
+        WriteShort(writer, 200);
+        WriteShort(writer, 170);
+        WriteUShort(writer, 0x000B); // word XY arguments and a uniform scale
+        WriteUShort(writer, 1);
+        WriteShort(writer, 50);
+        WriteShort(writer, 20);
+        WriteShort(writer, 0x6000); // 1.5 in F2Dot14
         return stream.ToArray();
     }
 

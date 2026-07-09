@@ -49,13 +49,52 @@ public struct GlyphUniforms
     public float Pad2;
 }
 
+public readonly struct BitmapGlyphData
+{
+    public BitmapGlyphData(
+        ushort pixelsPerEm,
+        ushort pixelsPerInch,
+        short originOffsetX,
+        short originOffsetY,
+        uint graphicType,
+        ReadOnlyMemory<byte> data)
+    {
+        PixelsPerEm = pixelsPerEm;
+        PixelsPerInch = pixelsPerInch;
+        OriginOffsetX = originOffsetX;
+        OriginOffsetY = originOffsetY;
+        GraphicType = graphicType;
+        Data = data;
+    }
+
+    public ushort PixelsPerEm { get; }
+    public ushort PixelsPerInch { get; }
+    public short OriginOffsetX { get; }
+    public short OriginOffsetY { get; }
+    public uint GraphicType { get; }
+    public ReadOnlyMemory<byte> Data { get; }
+}
+
 public class TtfFont
 {
+    public const uint JpegBitmapGraphicType = 0x6A706720;
+    public const uint PngBitmapGraphicType = 0x706E6720;
+    public const uint TiffBitmapGraphicType = 0x74696666;
+
     private readonly byte[] _data;
+    private readonly SfntFontFace _face;
     private readonly Dictionary<string, (uint offset, uint length)> _tables = new();
-    private uint _baseOffset = 0;
 
     public int FaceIndex { get; }
+    public string FamilyName { get; }
+    public string SubfamilyName { get; }
+    public string FullName { get; }
+    public ushort WeightClass { get; private set; } = 400;
+    public ushort WidthClass { get; private set; } = 5;
+    public bool IsItalic { get; private set; }
+    public bool HasTrueTypeOutlines { get; private set; }
+    public bool HasBitmapGlyphs => _tables.ContainsKey("sbix");
+    public bool UsesSymbolCharacterMap => _face.UsesSymbolCharacterMap;
 
     // Font parameters
     public ushort UnitsPerEm { get; private set; }
@@ -72,22 +111,6 @@ public class TtfFont
     // loca and glyf offsets
     private uint _locaOffset;
     private uint _glyfOffset;
-
-    // Cmap format 4 variables
-    private uint _cmapOffset;
-    private ushort _segCount;
-    private ushort[] _endCodes = null!;
-    private ushort[] _startCodes = null!;
-    private short[] _idDeltas = null!;
-    private ushort[] _idRangeOffsets = null!;
-    private uint _idRangeOffsetsTableOffset;
-
-    // Cmap format 12 variables
-    private uint _cmap12Offset;
-    private uint _numGroups12;
-    private uint[] _startCharCodes12 = null!;
-    private uint[] _endCharCodes12 = null!;
-    private uint[] _startGlyphIds12 = null!;
 
     // COLR & CPAL color tables variables
     private uint _colrOffset;
@@ -117,11 +140,15 @@ public class TtfFont
         ArgumentOutOfRangeException.ThrowIfNegative(faceIndex);
         _data = fontData;
         FaceIndex = faceIndex;
-        ParseTableDirectory(faceIndex);
+        _face = SfntFontFace.Load(fontData, faceIndex);
+        FamilyName = GetName(SfntNameIds.PreferredFamilyName, SfntNameIds.FamilyName) ?? string.Empty;
+        SubfamilyName = GetName(SfntNameIds.PreferredSubfamilyName, SfntNameIds.SubfamilyName) ?? string.Empty;
+        FullName = GetName(SfntNameIds.FullName) ?? FamilyName;
+        ParseTableDirectory();
         ParseHeadTable();
         ParseHheaTable();
         ParseMaxpTable();
-        ParseCmapTable();
+        ParseFontAttributes();
         ParseColrTable();
         ParseCpalTable();
     }
@@ -152,51 +179,81 @@ public class TtfFont
                       (_data[offset + 2] << 8) | 
                       _data[offset + 3]);
     }
+
+    private static ushort ReadUShort(ReadOnlySpan<byte> data, int offset)
+    {
+        return (ushort)((data[offset] << 8) | data[offset + 1]);
+    }
+
+    private static short ReadShort(ReadOnlySpan<byte> data, int offset)
+    {
+        return unchecked((short)ReadUShort(data, offset));
+    }
+
+    private static uint ReadUInt(ReadOnlySpan<byte> data, int offset)
+    {
+        return (uint)((data[offset] << 24) |
+                      (data[offset + 1] << 16) |
+                      (data[offset + 2] << 8) |
+                      data[offset + 3]);
+    }
     #endregion
 
-    private void ParseTableDirectory(int faceIndex)
+    private void ParseTableDirectory()
     {
-        if (_data.Length >= 16 && _data[0] == 0x74 && _data[1] == 0x74 && _data[2] == 0x63 && _data[3] == 0x66) // "ttcf"
+        foreach (var (tag, record) in _face.Tables)
         {
-            uint faceCount = ReadUInt(8);
-            if ((uint)faceIndex >= faceCount)
+            _tables[tag] = (record.Offset, record.Length);
+        }
+
+        if (!_tables.ContainsKey("head") || !_tables.ContainsKey("cmap"))
+        {
+            throw new FormatException("Font file is missing essential SFNT tables (head or cmap).");
+        }
+
+        if (_tables.TryGetValue("loca", out var loca) && _tables.TryGetValue("glyf", out var glyf))
+        {
+            _locaOffset = loca.offset;
+            _glyfOffset = glyf.offset;
+            HasTrueTypeOutlines = true;
+        }
+    }
+
+    private string? GetName(params ushort[] nameIds)
+    {
+        foreach (var nameId in nameIds)
+        {
+            if (_face.TryGetName(nameId, out var name))
             {
-                throw new ArgumentOutOfRangeException(nameof(faceIndex));
+                return name;
+            }
+        }
+
+        return null;
+    }
+
+    private void ParseFontAttributes()
+    {
+        if (TryGetTable("OS/2", out var os2))
+        {
+            var span = os2.Span;
+            if (span.Length >= 8)
+            {
+                WeightClass = ReadUShort(span, 4);
+                WidthClass = ReadUShort(span, 6);
             }
 
-            _baseOffset = ReadUInt(12 + (uint)(faceIndex * 4));
+            if (span.Length >= 64)
+            {
+                var selection = ReadUShort(span, 62);
+                IsItalic = (selection & 0x0001) != 0 || (selection & 0x0200) != 0;
+            }
         }
-        else if (faceIndex != 0)
+
+        if (!IsItalic && TryGetTable("head", out var head) && head.Length >= 46)
         {
-            throw new ArgumentOutOfRangeException(nameof(faceIndex));
+            IsItalic = (ReadUShort(head.Span, 44) & 0x0002) != 0;
         }
-
-        uint numTables = ReadUShort(_baseOffset + 4);
-        uint offset = _baseOffset + 12;
-
-        for (int i = 0; i < numTables; i++)
-        {
-            char c0 = (char)_data[offset];
-            char c1 = (char)_data[offset + 1];
-            char c2 = (char)_data[offset + 2];
-            char c3 = (char)_data[offset + 3];
-            string tag = $"{c0}{c1}{c2}{c3}";
-
-            uint checksum = ReadUInt(offset + 4);
-            uint tableOffset = ReadUInt(offset + 8);
-            uint length = ReadUInt(offset + 12);
-
-            _tables[tag] = (tableOffset, length);
-            offset += 16;
-        }
-
-        if (!_tables.ContainsKey("head") || !_tables.ContainsKey("cmap") || !_tables.ContainsKey("glyf") || !_tables.ContainsKey("loca"))
-        {
-            throw new FormatException("Font file is missing essential TTF tables (head, cmap, glyf, or loca).");
-        }
-
-        _locaOffset = _tables["loca"].offset;
-        _glyfOffset = _tables["glyf"].offset;
     }
 
     private void ParseHeadTable()
@@ -227,94 +284,6 @@ public class TtfFont
         NumGlyphs = ReadUShort(maxp.offset + 4);
     }
 
-    private void ParseCmapTable()
-    {
-        uint cmapTableOffset = _tables["cmap"].offset;
-        ushort version = ReadUShort(cmapTableOffset);
-        ushort numTables = ReadUShort(cmapTableOffset + 2);
-
-        uint subtable4Offset = 0;
-        uint subtable12Offset = 0;
-
-        for (int i = 0; i < numTables; i++)
-        {
-            uint recordOffset = cmapTableOffset + 4 + (uint)(i * 8);
-            ushort platformId = ReadUShort(recordOffset);
-            ushort encodingId = ReadUShort(recordOffset + 2);
-            uint offset = ReadUInt(recordOffset + 4);
-
-            // Format 12 is Platform 3 Encoding 10 (Unicode Full) or Platform 0 Encoding 4 (Unicode Full)
-            if ((platformId == 3 && encodingId == 10) || (platformId == 0 && encodingId == 4))
-            {
-                subtable12Offset = cmapTableOffset + offset;
-            }
-            // Format 4 is Platform 3 Encoding 1 (Unicode BMP) or Platform 0
-            else if ((platformId == 3 && encodingId == 1) || (platformId == 0))
-            {
-                if (subtable4Offset == 0) subtable4Offset = cmapTableOffset + offset;
-            }
-        }
-
-        // If we found a format 12 subtable, parse it
-        if (subtable12Offset != 0)
-        {
-            ushort format = ReadUShort(subtable12Offset);
-            if (format == 12)
-            {
-                _cmap12Offset = subtable12Offset;
-                _numGroups12 = ReadUInt(_cmap12Offset + 12);
-                _startCharCodes12 = new uint[_numGroups12];
-                _endCharCodes12 = new uint[_numGroups12];
-                _startGlyphIds12 = new uint[_numGroups12];
-
-                uint groupOffset = _cmap12Offset + 16;
-                for (uint i = 0; i < _numGroups12; i++)
-                {
-                    _startCharCodes12[i] = ReadUInt(groupOffset + i * 12);
-                    _endCharCodes12[i] = ReadUInt(groupOffset + i * 12 + 4);
-                    _startGlyphIds12[i] = ReadUInt(groupOffset + i * 12 + 8);
-                }
-            }
-        }
-
-        // We MUST always have a fallback format 4 table for compatibility and core characters
-        uint subtableOffset = subtable4Offset;
-        if (subtableOffset == 0)
-        {
-            if (subtable12Offset != 0) return; // format 12 is active
-            return;
-        }
-
-        ushort format4 = ReadUShort(subtableOffset);
-        if (format4 != 4)
-        {
-            if (subtable12Offset != 0) return; // format 12 is active
-            return;
-        }
-
-        _cmapOffset = subtableOffset;
-        _segCount = (ushort)(ReadUShort(_cmapOffset + 6) / 2);
-
-        _endCodes = new ushort[_segCount];
-        _startCodes = new ushort[_segCount];
-        _idDeltas = new short[_segCount];
-        _idRangeOffsets = new ushort[_segCount];
-
-        uint endCodeOffset = _cmapOffset + 14;
-        uint startCodeOffset = endCodeOffset + (uint)(_segCount * 2) + 2;
-        uint idDeltaOffset = startCodeOffset + (uint)(_segCount * 2);
-        uint idRangeOffsetOffset = idDeltaOffset + (uint)(_segCount * 2);
-        _idRangeOffsetsTableOffset = idRangeOffsetOffset;
-
-        for (int i = 0; i < _segCount; i++)
-        {
-            _endCodes[i] = ReadUShort(endCodeOffset + (uint)(i * 2));
-            _startCodes[i] = ReadUShort(startCodeOffset + (uint)(i * 2));
-            _idDeltas[i] = ReadShort(idDeltaOffset + (uint)(i * 2));
-            _idRangeOffsets[i] = ReadUShort(idRangeOffsetOffset + (uint)(i * 2));
-        }
-    }
-
     public ushort GetGlyphIndex(char c)
     {
         return GetGlyphIndex((uint)c);
@@ -322,69 +291,194 @@ public class TtfFont
 
     public ushort GetGlyphIndex(uint codePoint)
     {
-        // 1. Try to search Format 12 subtable first
-        if (_numGroups12 > 0)
+        return _face.TryGetGlyphIndex(codePoint, out var glyphIndex) ? glyphIndex : (ushort)0;
+    }
+
+    public bool HasGlyph(uint codePoint)
+    {
+        return GetGlyphIndex(codePoint) != 0;
+    }
+
+    public bool TryGetTable(string tag, out ReadOnlyMemory<byte> table)
+    {
+        return _face.TryGetTable(tag, out table);
+    }
+
+    public static int GetFaceCount(byte[] fontData)
+    {
+        ArgumentNullException.ThrowIfNull(fontData);
+        return SfntFontFace.LoadFaces(fontData).Count;
+    }
+
+    public bool TryGetBitmapGlyph(ushort glyphIndex, float targetPixelsPerEm, out BitmapGlyphData glyph)
+    {
+        glyph = default;
+        if (glyphIndex >= NumGlyphs || !TryGetTable("sbix", out var sbixMemory))
         {
-            int low = 0;
-            int high = (int)_numGroups12 - 1;
-            while (low <= high)
+            return false;
+        }
+
+        var sbix = sbixMemory.Span;
+        if (sbix.Length < 12 || ReadUShort(sbix, 0) != 1)
+        {
+            return false;
+        }
+
+        var strikeCount = ReadUInt(sbix, 4);
+        if (strikeCount == 0 || strikeCount > int.MaxValue ||
+            8L + strikeCount * 4L > sbix.Length)
+        {
+            return false;
+        }
+
+        var bestDistance = float.MaxValue;
+        BitmapGlyphData best = default;
+        var found = false;
+        for (var strikeIndex = 0; strikeIndex < (int)strikeCount; strikeIndex++)
+        {
+            var strikeOffset = ReadUInt(sbix, 8 + strikeIndex * 4);
+            var strikeEnd = strikeIndex + 1 < strikeCount
+                ? ReadUInt(sbix, 8 + (strikeIndex + 1) * 4)
+                : (uint)sbix.Length;
+            if (!TryGetBitmapGlyphFromStrike(
+                    sbixMemory,
+                    strikeOffset,
+                    strikeEnd,
+                    glyphIndex,
+                    out var candidate))
             {
-                int mid = (low + high) / 2;
-                uint start = _startCharCodes12[mid];
-                uint end = _endCharCodes12[mid];
-                if (codePoint >= start && codePoint <= end)
-                {
-                    return (ushort)(_startGlyphIds12[mid] + (codePoint - start));
-                }
-                else if (codePoint < start)
-                {
-                    high = mid - 1;
-                }
-                else
-                {
-                    low = mid + 1;
-                }
+                continue;
+            }
+
+            var distance = MathF.Abs(candidate.PixelsPerEm - targetPixelsPerEm);
+            if (!found || distance < bestDistance ||
+                (distance == bestDistance && candidate.PixelsPerEm > best.PixelsPerEm))
+            {
+                found = true;
+                bestDistance = distance;
+                best = candidate;
             }
         }
 
-        // 2. Fall back to Format 4 subtable
-        if (_segCount > 0 && codePoint <= 0xFFFF)
+        glyph = best;
+        return found;
+    }
+
+    private bool TryGetBitmapGlyphFromStrike(
+        ReadOnlyMemory<byte> sbixMemory,
+        uint strikeOffset,
+        uint strikeEnd,
+        ushort glyphIndex,
+        out BitmapGlyphData glyph)
+    {
+        glyph = default;
+        var sbix = sbixMemory.Span;
+        var offsetTableLength = ((long)NumGlyphs + 1) * 4;
+        if (strikeOffset > int.MaxValue || strikeEnd > sbix.Length || strikeOffset >= strikeEnd ||
+            strikeOffset + 4L + offsetTableLength > strikeEnd)
         {
-            ushort code = (ushort)codePoint;
-            int segment = -1;
-
-            for (int i = 0; i < _segCount; i++)
-            {
-                if (_endCodes[i] >= code)
-                {
-                    segment = i;
-                    break;
-                }
-            }
-
-            if (segment == -1 || _startCodes[segment] > code)
-            {
-                return 0; // Missing glyph (usually rectangle index 0)
-            }
-
-            ushort rangeOffset = _idRangeOffsets[segment];
-            if (rangeOffset == 0)
-            {
-                return (ushort)((code + _idDeltas[segment]) & 0xFFFF);
-            }
-
-            // Complex range offset lookup in TTF format 4
-            uint rangeOffsetAddress = _idRangeOffsetsTableOffset + (uint)(segment * 2);
-            uint glyphIndexAddress = rangeOffsetAddress + rangeOffset + (uint)((code - _startCodes[segment]) * 2);
-            
-            ushort rawIndex = ReadUShort(glyphIndexAddress);
-            if (rawIndex != 0)
-            {
-                return (ushort)((rawIndex + _idDeltas[segment]) & 0xFFFF);
-            }
+            return false;
         }
 
-        return 0;
+        var strike = (int)strikeOffset;
+        var pixelsPerEm = ReadUShort(sbix, strike);
+        var pixelsPerInch = ReadUShort(sbix, strike + 2);
+        return TryResolveBitmapGlyph(
+            sbixMemory,
+            strike,
+            (int)strikeEnd,
+            pixelsPerEm,
+            pixelsPerInch,
+            glyphIndex,
+            glyphIndex,
+            0,
+            out glyph);
+    }
+
+    private bool TryResolveBitmapGlyph(
+        ReadOnlyMemory<byte> sbixMemory,
+        int strikeOffset,
+        int strikeEnd,
+        ushort pixelsPerEm,
+        ushort pixelsPerInch,
+        ushort glyphIndex,
+        ushort originalGlyphIndex,
+        int depth,
+        out BitmapGlyphData glyph)
+    {
+        glyph = default;
+        if (depth > 16 || glyphIndex >= NumGlyphs)
+        {
+            return false;
+        }
+
+        var sbix = sbixMemory.Span;
+        var offsets = strikeOffset + 4;
+        var startRelative = ReadUInt(sbix, offsets + glyphIndex * 4);
+        var endRelative = ReadUInt(sbix, offsets + (glyphIndex + 1) * 4);
+        if (startRelative >= endRelative || startRelative > int.MaxValue || endRelative > int.MaxValue)
+        {
+            return false;
+        }
+
+        var start = strikeOffset + (int)startRelative;
+        var end = strikeOffset + (int)endRelative;
+        if (start < offsets || end > strikeEnd || end - start < 8)
+        {
+            return false;
+        }
+
+        var originOffsetX = ReadShort(sbix, start);
+        var originOffsetY = ReadShort(sbix, start + 2);
+        var graphicType = ReadUInt(sbix, start + 4);
+        if (graphicType == 0x64757065) // "dupe"
+        {
+            if (end - start < 10)
+            {
+                return false;
+            }
+
+            var duplicateGlyphIndex = ReadUShort(sbix, start + 8);
+            if (duplicateGlyphIndex == originalGlyphIndex ||
+                !TryResolveBitmapGlyph(
+                    sbixMemory,
+                    strikeOffset,
+                    strikeEnd,
+                    pixelsPerEm,
+                    pixelsPerInch,
+                    duplicateGlyphIndex,
+                    originalGlyphIndex,
+                    depth + 1,
+                    out var duplicate))
+            {
+                return false;
+            }
+
+            glyph = new BitmapGlyphData(
+                pixelsPerEm,
+                pixelsPerInch,
+                originOffsetX,
+                originOffsetY,
+                duplicate.GraphicType,
+                duplicate.Data);
+            return true;
+        }
+
+        if (graphicType != PngBitmapGraphicType &&
+            graphicType != JpegBitmapGraphicType &&
+            graphicType != TiffBitmapGraphicType)
+        {
+            return false;
+        }
+
+        glyph = new BitmapGlyphData(
+            pixelsPerEm,
+            pixelsPerInch,
+            originOffsetX,
+            originOffsetY,
+            graphicType,
+            sbixMemory.Slice(start + 8, end - start - 8));
+        return true;
     }
 
     public float GetAdvanceWidth(ushort glyphIndex, float emSize)
@@ -468,7 +562,19 @@ public class TtfFont
         return 0;
     }
 
-    private readonly Dictionary<ushort, PathGeometry?> _glyphOutlineCache = new();
+    private sealed class ParsedGlyph
+    {
+        public ParsedGlyph(PathGeometry geometry, Vector2[] points)
+        {
+            Geometry = geometry;
+            Points = points;
+        }
+
+        public PathGeometry Geometry { get; }
+        public Vector2[] Points { get; }
+    }
+
+    private readonly Dictionary<ushort, ParsedGlyph?> _glyphOutlineCache = new();
     private readonly Dictionary<ushort, PathGeometry?> _flippedOutlineCache = new();
 
     public PathGeometry? GetGlyphOutline(ushort glyphIndex)
@@ -477,12 +583,12 @@ public class TtfFont
         {
             if (_glyphOutlineCache.TryGetValue(glyphIndex, out var cached))
             {
-                return cached;
+                return cached?.Geometry;
             }
 
-            var result = GetGlyphOutlineInternal(glyphIndex);
+            var result = GetGlyphOutlineInternal(glyphIndex, new HashSet<ushort>(), 0);
             _glyphOutlineCache[glyphIndex] = result;
-            return result;
+            return result?.Geometry;
         }
     }
 
@@ -537,7 +643,31 @@ public class TtfFont
         }
     }
 
-    private PathGeometry? GetGlyphOutlineInternal(ushort glyphIndex)
+    private ParsedGlyph? GetGlyphOutlineInternal(ushort glyphIndex, HashSet<ushort> ancestors, int depth)
+    {
+        if (!HasTrueTypeOutlines || glyphIndex >= NumGlyphs || depth > 32 || !ancestors.Add(glyphIndex))
+        {
+            return null;
+        }
+
+        try
+        {
+            if (_glyphOutlineCache.TryGetValue(glyphIndex, out var cached))
+            {
+                return cached;
+            }
+
+            var result = ParseGlyphOutline(glyphIndex, ancestors, depth);
+            _glyphOutlineCache[glyphIndex] = result;
+            return result;
+        }
+        finally
+        {
+            ancestors.Remove(glyphIndex);
+        }
+    }
+
+    private ParsedGlyph? ParseGlyphOutline(ushort glyphIndex, HashSet<ushort> ancestors, int depth)
     {
         uint startOffset = 0;
         uint endOffset = 0;
@@ -561,10 +691,14 @@ public class TtfFont
         uint glyphOffset = _glyfOffset + startOffset;
         short numberOfContours = ReadShort(glyphOffset);
 
-        if (numberOfContours <= 0)
+        if (numberOfContours < 0)
         {
-            // Composite glyphs or complex formats are simplified or skipped in simple core
-            return null; 
+            return ParseCompositeGlyphOutline(glyphOffset, ancestors, depth);
+        }
+
+        if (numberOfContours == 0)
+        {
+            return null;
         }
 
         var geometry = new PathGeometry();
@@ -686,7 +820,173 @@ public class TtfFont
             geometry.Figures.Add(figure);
         }
 
-        return geometry;
+        return new ParsedGlyph(geometry, coords);
+    }
+
+    private ParsedGlyph? ParseCompositeGlyphOutline(uint glyphOffset, HashSet<ushort> ancestors, int depth)
+    {
+        const ushort ArgumentsAreWords = 0x0001;
+        const ushort ArgumentsAreXyValues = 0x0002;
+        const ushort RoundXyToGrid = 0x0004;
+        const ushort WeHaveScale = 0x0008;
+        const ushort MoreComponents = 0x0020;
+        const ushort WeHaveXAndYScale = 0x0040;
+        const ushort WeHaveTwoByTwo = 0x0080;
+        const ushort ScaledComponentOffset = 0x0800;
+
+        var geometry = new PathGeometry();
+        var points = new List<Vector2>();
+        var offset = glyphOffset + 10;
+        ushort flags;
+
+        do
+        {
+            if (offset + 4 > _data.Length)
+            {
+                return null;
+            }
+
+            flags = ReadUShort(offset);
+            var componentGlyphIndex = ReadUShort(offset + 2);
+            offset += 4;
+
+            int argument1;
+            int argument2;
+            if ((flags & ArgumentsAreWords) != 0)
+            {
+                if (offset + 4 > _data.Length)
+                {
+                    return null;
+                }
+
+                if ((flags & ArgumentsAreXyValues) != 0)
+                {
+                    argument1 = ReadShort(offset);
+                    argument2 = ReadShort(offset + 2);
+                }
+                else
+                {
+                    argument1 = ReadUShort(offset);
+                    argument2 = ReadUShort(offset + 2);
+                }
+                offset += 4;
+            }
+            else
+            {
+                if (offset + 2 > _data.Length)
+                {
+                    return null;
+                }
+
+                if ((flags & ArgumentsAreXyValues) != 0)
+                {
+                    argument1 = unchecked((sbyte)_data[offset]);
+                    argument2 = unchecked((sbyte)_data[offset + 1]);
+                }
+                else
+                {
+                    argument1 = _data[offset];
+                    argument2 = _data[offset + 1];
+                }
+                offset += 2;
+            }
+
+            var m00 = 1f;
+            var m01 = 0f;
+            var m10 = 0f;
+            var m11 = 1f;
+            if ((flags & WeHaveScale) != 0)
+            {
+                if (offset + 2 > _data.Length)
+                {
+                    return null;
+                }
+
+                m00 = m11 = ReadF2Dot14(offset);
+                offset += 2;
+            }
+            else if ((flags & WeHaveXAndYScale) != 0)
+            {
+                if (offset + 4 > _data.Length)
+                {
+                    return null;
+                }
+
+                m00 = ReadF2Dot14(offset);
+                m11 = ReadF2Dot14(offset + 2);
+                offset += 4;
+            }
+            else if ((flags & WeHaveTwoByTwo) != 0)
+            {
+                if (offset + 8 > _data.Length)
+                {
+                    return null;
+                }
+
+                m00 = ReadF2Dot14(offset);
+                m01 = ReadF2Dot14(offset + 2);
+                m10 = ReadF2Dot14(offset + 4);
+                m11 = ReadF2Dot14(offset + 6);
+                offset += 8;
+            }
+
+            var component = GetGlyphOutlineInternal(componentGlyphIndex, ancestors, depth + 1);
+            if (component == null)
+            {
+                continue;
+            }
+
+            var linearTransform = new Matrix4x4(
+                m00, m10, 0, 0,
+                m01, m11, 0, 0,
+                0, 0, 1, 0,
+                0, 0, 0, 1);
+
+            Vector2 translation;
+            if ((flags & ArgumentsAreXyValues) != 0)
+            {
+                translation = new Vector2(argument1, argument2);
+                if ((flags & ScaledComponentOffset) != 0)
+                {
+                    translation = Vector2.TransformNormal(translation, linearTransform);
+                }
+            }
+            else
+            {
+                if ((uint)argument1 >= (uint)points.Count ||
+                    (uint)argument2 >= (uint)component.Points.Length)
+                {
+                    continue;
+                }
+
+                var componentPoint = Vector2.Transform(component.Points[argument2], linearTransform);
+                translation = points[argument1] - componentPoint;
+            }
+
+            if ((flags & RoundXyToGrid) != 0)
+            {
+                translation = new Vector2(MathF.Round(translation.X), MathF.Round(translation.Y));
+            }
+
+            linearTransform.M41 = translation.X;
+            linearTransform.M42 = translation.Y;
+            var transformed = component.Geometry.CreateTransformed(linearTransform);
+            geometry.Figures.AddRange(transformed.Figures);
+            foreach (var point in component.Points)
+            {
+                points.Add(Vector2.Transform(point, linearTransform));
+            }
+        }
+        while ((flags & MoreComponents) != 0);
+
+        return geometry.Figures.Count == 0
+            ? null
+            : new ParsedGlyph(geometry, points.ToArray());
+    }
+
+    private float ReadF2Dot14(uint offset)
+    {
+        return ReadShort(offset) / 16384f;
     }
 
     private PathFigure DecodeContourToFigure(Vector2[] pts, byte[] flags)
