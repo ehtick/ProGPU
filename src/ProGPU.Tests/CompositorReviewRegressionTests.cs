@@ -1787,6 +1787,158 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     }
 
     [Fact]
+    public void GpuTextureReadPixelsReusesCallerOwnedReadbackBuffer()
+    {
+        using var window = new HeadlessWindow(2, 1);
+        using var texture = new GpuTexture(
+            window.Context,
+            2,
+            1,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.CopySrc | TextureUsage.CopyDst,
+            "Reusable Readback Texture");
+        using var readbackBuffer = new GpuTextureReadbackBuffer(window.Context);
+        var first = new byte[8];
+        var second = new byte[8];
+
+        texture.WritePixels(new byte[] { 255, 0, 0, 255, 0, 255, 0, 255 });
+        texture.ReadPixels(first, readbackBuffer);
+        var allocatedSize = readbackBuffer.BufferSize;
+        texture.WritePixels(new byte[] { 0, 0, 255, 255, 255, 255, 255, 255 });
+        texture.ReadPixels(second, readbackBuffer);
+
+        Assert.Equal(new byte[] { 255, 0, 0, 255, 0, 255, 0, 255 }, first);
+        Assert.Equal(new byte[] { 0, 0, 255, 255, 255, 255, 255, 255 }, second);
+        Assert.Equal(allocatedSize, readbackBuffer.BufferSize);
+    }
+
+    [Fact]
+    public void GpuTextureClearRenderTargetClearsWithoutCpuUpload()
+    {
+        using var window = new HeadlessWindow(2, 2);
+        using var texture = new GpuTexture(
+            window.Context,
+            2,
+            2,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.RenderAttachment | TextureUsage.CopySrc | TextureUsage.CopyDst,
+            "GPU Clear Texture");
+        texture.WritePixels(Enumerable.Repeat((byte)255, 16).ToArray());
+        var generationBeforeClear = texture.Generation;
+
+        texture.ClearRenderTarget();
+
+        Assert.Equal(new byte[16], texture.ReadPixels());
+        Assert.Equal(generationBeforeClear + 1, texture.Generation);
+    }
+
+    [Fact]
+    public void GpuTextureClearRenderTargetRequiresRenderAttachmentUsage()
+    {
+        using var window = new HeadlessWindow(1, 1);
+        using var texture = new GpuTexture(
+            window.Context,
+            1,
+            1,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.CopyDst,
+            "GPU Clear Missing RenderAttachment Texture");
+
+        var exception = Assert.Throws<InvalidOperationException>(() => texture.ClearRenderTarget());
+
+        Assert.Equal("GPU texture clear requires RenderAttachment usage.", exception.Message);
+    }
+
+    [Fact]
+    public unsafe void GpuTextureBlitterPreservesPixelOrientationAndChannels()
+    {
+        using var window = new HeadlessWindow(2, 2);
+        using var source = new GpuTexture(
+            window.Context,
+            2,
+            2,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.TextureBinding | TextureUsage.CopyDst,
+            "GPU Blit Source");
+        using var destination = new GpuTexture(
+            window.Context,
+            2,
+            2,
+            TextureFormat.Bgra8Unorm,
+            TextureUsage.RenderAttachment | TextureUsage.CopySrc,
+            "GPU Blit Destination");
+        byte[] sourcePixels =
+        [
+            255, 0, 0, 255, 0, 255, 0, 255,
+            0, 0, 255, 255, 255, 255, 255, 255
+        ];
+        source.WritePixels(sourcePixels);
+
+        GpuTextureBlitter.Blit(source, destination.ViewPtr, destination.Format);
+
+        Assert.Equal(
+            new byte[]
+            {
+                0, 0, 255, 255, 0, 255, 0, 255,
+                255, 0, 0, 255, 255, 255, 255, 255
+            },
+            destination.ReadPixels());
+    }
+
+    [Fact]
+    public void CompositorOptionsControlEagerGpuReservations()
+    {
+        using var window = new HeadlessWindow(1, 1);
+        var options = new CompositorOptions
+        {
+            GlyphAtlasSize = 256,
+            PathAtlasSize = 512,
+            InitialVertexCount = 1024,
+            InitialIndexCount = 1536
+        };
+        using var compositor = new Compositor(window.Context, TextureFormat.Rgba8Unorm, options);
+
+        Assert.Same(options, compositor.Options);
+        Assert.Equal(256u, compositor.Atlas.AtlasSize);
+        Assert.Equal(512u, compositor.PathAtlas.AtlasSize);
+        Assert.Equal(
+            options.InitialVertexCount * (uint)Marshal.SizeOf<VectorVertex>(),
+            GetCompositorField<GpuBuffer>(compositor, "_vectorVertexBuffer").Size);
+        Assert.Equal(
+            options.InitialIndexCount * sizeof(uint),
+            GetCompositorField<GpuBuffer>(compositor, "_vectorIndexBuffer").Size);
+    }
+
+    [Fact]
+    public void CompatibilityShimsReuseIsolatedCompositorScopes()
+    {
+        var previous = WgpuContext.Current;
+        using var context = new WgpuContext();
+        context.Initialize(null);
+        try
+        {
+            WgpuContext.Current = context;
+            using var surface = SKSurface.Create(
+                new SKImageInfo(2, 2, SKColorType.Rgba8888, SKAlphaType.Premul));
+            using var bitmap = new GdiBitmap(2, 2);
+
+            var surfaceCompositor = GetSkiaSurfaceCompositor(context);
+            var gdiCompositor = GetGdiBitmapCompositor(bitmap);
+            var wpfCompositor = GetWpfCompositor();
+
+            Assert.Same(gdiCompositor, GetGdiBitmapCompositor(bitmap));
+            Assert.Same(wpfCompositor, GetWpfCompositor());
+            Assert.NotSame(surfaceCompositor, gdiCompositor);
+            Assert.NotSame(surfaceCompositor, wpfCompositor);
+            Assert.NotSame(gdiCompositor, wpfCompositor);
+        }
+        finally
+        {
+            WgpuContext.Current = previous;
+        }
+    }
+
+    [Fact]
     public void GpuTextureWritePixelsSubRectRejectsOutOfBoundsRectBeforeUpload()
     {
         using var window = new HeadlessWindow(2, 2);
@@ -2886,6 +3038,26 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
             BindingFlags.Static | BindingFlags.Public)
             ?? throw new MissingMethodException(providerType.FullName, "GetCompositor");
         return (Compositor)method.Invoke(null, [bitmap.GpuTexture.Context])!;
+    }
+
+    private static Compositor GetSkiaSurfaceCompositor(WgpuContext context)
+    {
+        var method = typeof(SKSurface).GetMethod(
+            "GetCompositorForContext",
+            BindingFlags.Static | BindingFlags.NonPublic)!;
+        return (Compositor)method.Invoke(null, [context, TextureFormat.Rgba8Unorm])!;
+    }
+
+    private static Compositor GetWpfCompositor()
+    {
+        var providerType = typeof(WpfDrawingContext).Assembly.GetType(
+            "System.Windows.Media.GpuProvider",
+            throwOnError: true)!;
+        var property = providerType.GetProperty(
+            "Compositor",
+            BindingFlags.Static | BindingFlags.Public)
+            ?? throw new MissingMemberException(providerType.FullName, "Compositor");
+        return (Compositor)property.GetValue(null)!;
     }
 
     private static void InvokeGdiBitmapDispose(GdiBitmap bitmap, bool disposing)

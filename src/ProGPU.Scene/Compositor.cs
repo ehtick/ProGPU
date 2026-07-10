@@ -894,7 +894,9 @@ public unsafe class Compositor : IDisposable
     }
 
     public GlyphAtlas Atlas => _atlas;
+    public PathAtlas PathAtlas => _pathAtlas;
     public TextureFormat RenderFormat { get; private set; }
+    public CompositorOptions Options { get; }
 
     private Vector4 ResolveDrawCallBrushColor(Brush? brush)
     {
@@ -908,15 +910,25 @@ public unsafe class Compositor : IDisposable
     public StaticCompilationContext? ActiveCompilationContext { get; private set; }
 
     public Compositor(WgpuContext context, TextureFormat? renderFormat = null)
+        : this(context, renderFormat, CompositorOptions.Default)
     {
+    }
+
+    public Compositor(WgpuContext context, TextureFormat? renderFormat, CompositorOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
+
         _context = context;
+        Options = options;
         RenderFormat = renderFormat ?? _context.SwapChainFormat;
         _pipelineCache = new RenderPipelineCache(_context);
         _compute = new ComputeAccelerator(_context);
 
-        // 1. Initialize Glyph Atlas (4096x4096)
-        _atlas = new GlyphAtlas(_context, 4096);
-        _pathAtlas = new PathAtlas(_context, 4096);
+        // 1. Initialize GPU atlases.
+        _atlas = new GlyphAtlas(_context, options.GlyphAtlasSize);
+        _pathAtlas = new PathAtlas(_context, options.PathAtlasSize);
         _hitTestCacheBuilder = new GpuRenderCommandHitTestCacheBuilder(_pathAtlas);
 
         // 2. Uniform Buffer allocation (Projection Matrix + MVP - 128 bytes)
@@ -942,8 +954,8 @@ public unsafe class Compositor : IDisposable
         );
 
         // 3. Dynamic mesh buffer setup (Vertex format: VectorVertex)
-        uint initialVertexCount = 100000;
-        uint initialIndexCount = 150000;
+        uint initialVertexCount = options.InitialVertexCount;
+        uint initialIndexCount = options.InitialIndexCount;
         uint vertexStride = (uint)Marshal.SizeOf<VectorVertex>();
 
         _vectorVertexBuffer = new GpuBuffer(_context, initialVertexCount * vertexStride, BufferUsage.Vertex | BufferUsage.CopyDst, "Vector Vertex Buffer");

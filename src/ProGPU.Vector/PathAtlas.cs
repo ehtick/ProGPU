@@ -1,5 +1,4 @@
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.Numerics;
 using System.Runtime.InteropServices;
@@ -200,6 +199,7 @@ public unsafe class PathAtlas : IDisposable
     private bool _isDisposed;
 
     public GpuTexture AtlasTexture => _atlasTexture;
+    public uint AtlasSize => _atlasSize;
     public int CachedPathCount => _paths.Count;
     public int CachedHitTestPathCount => _compiledHitTestPaths.Count;
 
@@ -213,7 +213,7 @@ public unsafe class PathAtlas : IDisposable
             _atlasSize,
             _atlasSize,
             TextureFormat.Rgba8Unorm,
-            TextureUsage.TextureBinding | TextureUsage.CopyDst | TextureUsage.StorageBinding,
+            TextureUsage.TextureBinding | TextureUsage.CopyDst | TextureUsage.StorageBinding | TextureUsage.RenderAttachment,
             "Dynamic Path Atlas"
         );
 
@@ -808,17 +808,7 @@ public unsafe class PathAtlas : IDisposable
 
     private void ClearAtlasTexture()
     {
-        int clearByteCount = checked((int)((ulong)_atlasSize * _atlasSize * 4UL));
-        byte[] clearData = ArrayPool<byte>.Shared.Rent(clearByteCount);
-        try
-        {
-            clearData.AsSpan(0, clearByteCount).Clear();
-            _atlasTexture.WritePixels(clearData.AsSpan(0, clearByteCount));
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(clearData);
-        }
+        _atlasTexture.ClearRenderTarget();
     }
 
     public PathInfo GetOrCreatePath(

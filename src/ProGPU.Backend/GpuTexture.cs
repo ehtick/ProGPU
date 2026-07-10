@@ -304,6 +304,86 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         Allocate();
     }
 
+    public void ClearRenderTarget(Color clearColor = default)
+    {
+        if (_isDisposed) throw new ObjectDisposedException(nameof(GpuTexture));
+        if (!Usage.HasFlag(TextureUsage.RenderAttachment))
+        {
+            throw new InvalidOperationException("GPU texture clear requires RenderAttachment usage.");
+        }
+        if (Dimension != GpuTextureDimension.Dimension2D || DepthOrArrayLayers != 1 || MipLevelCount != 1)
+        {
+            throw new NotSupportedException("GPU texture clear currently supports a single 2D texture level and layer.");
+        }
+        if (ViewPtr == null)
+        {
+            throw new InvalidOperationException("GPU texture does not have a render-target view.");
+        }
+
+        var wgpu = _context.Wgpu;
+        CommandEncoder* encoder = null;
+        RenderPassEncoder* pass = null;
+        CommandBuffer* commandBuffer = null;
+        try
+        {
+            var encoderDescriptor = new CommandEncoderDescriptor();
+            encoder = wgpu.DeviceCreateCommandEncoder(_context.Device, &encoderDescriptor);
+            if (encoder == null)
+            {
+                throw new InvalidOperationException("Failed to create command encoder for texture clear.");
+            }
+
+            var colorAttachment = new RenderPassColorAttachment
+            {
+                View = ViewPtr,
+                ResolveTarget = null,
+                LoadOp = LoadOp.Clear,
+                StoreOp = StoreOp.Store,
+                ClearValue = clearColor
+            };
+            var passDescriptor = new RenderPassDescriptor
+            {
+                ColorAttachmentCount = 1,
+                ColorAttachments = &colorAttachment
+            };
+            pass = wgpu.CommandEncoderBeginRenderPass(encoder, &passDescriptor);
+            if (pass == null)
+            {
+                throw new InvalidOperationException("Failed to begin render pass for texture clear.");
+            }
+
+            wgpu.RenderPassEncoderEnd(pass);
+            wgpu.RenderPassEncoderRelease(pass);
+            pass = null;
+
+            var commandBufferDescriptor = new CommandBufferDescriptor();
+            commandBuffer = wgpu.CommandEncoderFinish(encoder, &commandBufferDescriptor);
+            if (commandBuffer == null)
+            {
+                throw new InvalidOperationException("Failed to finish command buffer for texture clear.");
+            }
+
+            wgpu.QueueSubmit(_context.Queue, 1, &commandBuffer);
+        }
+        finally
+        {
+            if (pass != null)
+            {
+                wgpu.RenderPassEncoderRelease(pass);
+            }
+            if (commandBuffer != null)
+            {
+                wgpu.CommandBufferRelease(commandBuffer);
+            }
+            if (encoder != null)
+            {
+                wgpu.CommandEncoderRelease(encoder);
+            }
+        }
+
+        Generation++;
+    }
+
     public void WritePixels<T>(ReadOnlySpan<T> pixels, uint mipLevel = 0) where T : unmanaged
     {
         if (_isDisposed) throw new ObjectDisposedException(nameof(GpuTexture));
@@ -1323,6 +1403,31 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         uint originDepthOrArrayLayer = 0,
         uint depthOrArrayLayers = 0)
     {
+        var readbackBuffer = new GpuTextureReadbackBuffer(_context);
+        try
+        {
+            ReadPixels(
+                destination,
+                readbackBuffer,
+                mipLevel,
+                originDepthOrArrayLayer,
+                depthOrArrayLayers);
+        }
+        finally
+        {
+            readbackBuffer.Dispose();
+            _context.CleanupPendingResources();
+        }
+    }
+
+    public void ReadPixels(
+        Span<byte> destination,
+        GpuTextureReadbackBuffer readbackBuffer,
+        uint mipLevel = 0,
+        uint originDepthOrArrayLayer = 0,
+        uint depthOrArrayLayers = 0)
+    {
+        ArgumentNullException.ThrowIfNull(readbackBuffer);
         if (_isDisposed) throw new ObjectDisposedException(nameof(GpuTexture));
         if (!Usage.HasFlag(TextureUsage.CopySrc))
         {
@@ -1361,44 +1466,35 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                 nameof(destination));
         }
 
-        var readbackBuffer = new GpuTextureReadbackBuffer(_context);
-        try
+        fixed (byte* destinationPtr = destination)
         {
-            fixed (byte* destinationPtr = destination)
+            bool read = readbackBuffer.TryReadTextureRows(
+                this,
+                mipWidth,
+                mipHeight,
+                readDepthOrLayers,
+                mipLevel,
+                originDepthOrArrayLayer,
+                GetTextureCopyAspect(Format),
+                destinationPtr,
+                bytesPerRow,
+                bytesPerImage,
+                bytesPerPixel);
+
+            if (!read)
             {
-                bool read = readbackBuffer.TryReadTextureRows(
-                    this,
-                    mipWidth,
-                    mipHeight,
-                    readDepthOrLayers,
-                    mipLevel,
-                    originDepthOrArrayLayer,
-                    GetTextureCopyAspect(Format),
-                    destinationPtr,
-                    bytesPerRow,
-                    bytesPerImage,
-                    bytesPerPixel);
-
-                if (!read)
+                if (readbackBuffer.LastMapTimedOut)
                 {
-                    if (readbackBuffer.LastMapTimedOut)
-                    {
-                        throw new TimeoutException($"WebGPU BufferMapAsync timed out after {GpuTextureReadbackBuffer.DefaultMapTimeoutMilliseconds / 1000} seconds during texture readback.");
-                    }
-
-                    if (readbackBuffer.LastMapStatus != BufferMapAsyncStatus.Success)
-                    {
-                        throw new InvalidOperationException($"Failed to map readback buffer. WebGPU Status: {readbackBuffer.LastMapStatus}");
-                    }
-
-                    throw new InvalidOperationException("Failed to copy texture readback rows into the destination buffer.");
+                    throw new TimeoutException($"WebGPU BufferMapAsync timed out after {GpuTextureReadbackBuffer.DefaultMapTimeoutMilliseconds / 1000} seconds during texture readback.");
                 }
+
+                if (readbackBuffer.LastMapStatus != BufferMapAsyncStatus.Success)
+                {
+                    throw new InvalidOperationException($"Failed to map readback buffer. WebGPU Status: {readbackBuffer.LastMapStatus}");
+                }
+
+                throw new InvalidOperationException("Failed to copy texture readback rows into the destination buffer.");
             }
-        }
-        finally
-        {
-            readbackBuffer.Dispose();
-            _context.CleanupPendingResources();
         }
     }
 

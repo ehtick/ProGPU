@@ -96,6 +96,8 @@ public unsafe class GlyphAtlas : IDisposable
 
     public GpuTexture AtlasTexture => _atlasTexture;
 
+    public uint AtlasSize => _atlasSize;
+
     public bool IsAlmostFull => (_currentY + _currentRowHeight) > (_atlasSize * 0.85f);
 
     public void Clear()
@@ -108,8 +110,7 @@ public unsafe class GlyphAtlas : IDisposable
         _currentY = 2;
         _currentRowHeight = 0;
 
-        byte[] clearData = new byte[_atlasSize * _atlasSize * 4];
-        _atlasTexture.WritePixels(new ReadOnlySpan<byte>(clearData));
+        _atlasTexture.ClearRenderTarget();
     }
 
     public GlyphAtlas(WgpuContext context, uint atlasSize = 2048)
@@ -124,13 +125,11 @@ public unsafe class GlyphAtlas : IDisposable
             _atlasSize, 
             _atlasSize, 
             TextureFormat.Rgba8Unorm, 
-            TextureUsage.TextureBinding | TextureUsage.CopyDst | TextureUsage.StorageBinding, 
+            TextureUsage.TextureBinding | TextureUsage.CopyDst | TextureUsage.StorageBinding | TextureUsage.RenderAttachment,
             "Dynamic Glyph Atlas"
         );
 
-        // Fill with zero initially to clear the atlas texture
-        byte[] clearData = new byte[_atlasSize * _atlasSize * 4];
-        _atlasTexture.WritePixels(new ReadOnlySpan<byte>(clearData));
+        _atlasTexture.ClearRenderTarget();
 
         // Compile and create the compute pipeline
         _pipelineCache = new RenderPipelineCache(_context);
@@ -283,8 +282,7 @@ public unsafe class GlyphAtlas : IDisposable
                                 _currentY = 2;
                                 _currentRowHeight = 0;
 
-                                byte[] clearData = new byte[_atlasSize * _atlasSize * 4];
-                                _atlasTexture.WritePixels(new ReadOnlySpan<byte>(clearData));
+                                _atlasTexture.ClearRenderTarget();
                             }
 
                             uint posX = _currentX;
