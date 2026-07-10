@@ -656,6 +656,17 @@ public class DrawingContext : IRenderDataProvider
 
     public void DrawRectangle(Brush? brush, Pen? pen, Rect rect)
     {
+        if (brush is BackdropMaterialBrush backdropMaterial)
+        {
+            this.DrawBackdropMaterial(backdropMaterial, rect);
+            if (pen == null)
+            {
+                return;
+            }
+
+            brush = null;
+        }
+
         Commands.Add(new RenderCommand
         {
             Type = RenderCommandType.DrawRect,
@@ -667,6 +678,17 @@ public class DrawingContext : IRenderDataProvider
 
     public void DrawRectangle(Brush? brush, Pen? pen, Rect rect, Matrix4x4 transform)
     {
+        if (brush is BackdropMaterialBrush backdropMaterial)
+        {
+            this.DrawBackdropMaterial(backdropMaterial, rect, transform: transform);
+            if (pen == null)
+            {
+                return;
+            }
+
+            brush = null;
+        }
+
         Commands.Add(new RenderCommand
         {
             Type = RenderCommandType.DrawRect,
@@ -1011,6 +1033,21 @@ public class DrawingContext : IRenderDataProvider
 
     public void DrawRoundedRectangle(Brush? brush, Pen? pen, Rect rect, float radiusX, float radiusY)
     {
+        if (brush is BackdropMaterialBrush backdropMaterial)
+        {
+            this.DrawBackdropMaterial(
+                backdropMaterial,
+                rect,
+                new Vector4(radiusX),
+                new Vector4(radiusY));
+            if (pen == null)
+            {
+                return;
+            }
+
+            brush = null;
+        }
+
         Commands.Add(new RenderCommand
         {
             Type = RenderCommandType.DrawRoundedRect,
@@ -1030,6 +1067,22 @@ public class DrawingContext : IRenderDataProvider
         float radiusY,
         Matrix4x4 transform)
     {
+        if (brush is BackdropMaterialBrush backdropMaterial)
+        {
+            this.DrawBackdropMaterial(
+                backdropMaterial,
+                rect,
+                new Vector4(radiusX),
+                new Vector4(radiusY),
+                transform);
+            if (pen == null)
+            {
+                return;
+            }
+
+            brush = null;
+        }
+
         Commands.Add(new RenderCommand
         {
             Type = RenderCommandType.DrawRoundedRect,
@@ -1586,7 +1639,7 @@ public class DrawingContext : IRenderDataProvider
 
     private static bool IsRectBackedExtensionDataParam(object? dataParam)
     {
-        return dataParam is ImageEffectParams or WpfShaderEffectParams or ShaderToyParams;
+        return dataParam is ImageEffectParams or WpfShaderEffectParams or ShaderToyParams or BackdropMaterialParams;
     }
 
     private static object? TranslateExtensionDataParam(object? dataParam, Vector2 translation)
@@ -1639,6 +1692,7 @@ public class DrawingContext : IRenderDataProvider
                 Mouse = shaderToy.Mouse,
                 Date = shaderToy.Date
             },
+            BackdropMaterialParams backdropMaterial => backdropMaterial.Translate(translation),
             _ => dataParam
         };
     }

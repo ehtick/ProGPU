@@ -959,6 +959,7 @@ public unsafe class Compositor : IDisposable
         RegisterExtension(CompositorBuiltInExtensions.ImageEffect, new ImageEffectExtensionPipeline());
         RegisterExtension(CompositorBuiltInExtensions.ShaderToy, new ShaderToyExtensionPipeline());
         RegisterExtension(CompositorBuiltInExtensions.WpfShaderEffect, new WpfShaderEffectExtensionPipeline());
+        RegisterExtension(CompositorBuiltInExtensions.BackdropMaterial, new BackdropMaterialExtensionPipeline());
 
         InitializePipelinesAndBindGroups();
         GpuTexture.OnDisposedWithId += HandleTextureDisposed;

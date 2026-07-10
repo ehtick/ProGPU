@@ -27,5 +27,6 @@ namespace ProGPU.Scene
         public const int ImageEffect = 10;
         public const int ShaderToy = 11;
         public const int WpfShaderEffect = 12;
+        public const int BackdropMaterial = 13;
     }
 }
