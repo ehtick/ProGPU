@@ -112,4 +112,29 @@ public class HeadlessWindowTests : IDisposable
         // Cleanup
         window.Content = null;
     }
+
+    [Fact]
+    public void ResizingDefersMsaaResourcesUntilSubmittedWorkIsIdle()
+    {
+        using var window = new HeadlessWindow(32, 32);
+        window.Content = new Border
+        {
+            Background = new SolidColorBrush(0x336699FF)
+        };
+
+        window.Render();
+        for (uint size = 33; size <= 64; size++)
+        {
+            window.Resize(size, size + 1);
+            window.Render();
+        }
+
+        lock (window.Context.DisposalLock)
+        {
+            Assert.NotEmpty(window.Context.PendingTextureViews);
+            Assert.NotEmpty(window.Context.PendingTextures);
+        }
+
+        window.Context.CleanupPendingResources();
+    }
 }

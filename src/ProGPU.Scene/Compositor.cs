@@ -6537,14 +6537,13 @@ public unsafe class Compositor : IDisposable
 
             if (_msaaTextureView != null)
             {
-                _context.Wgpu.TextureViewRelease(_msaaTextureView);
+                _context.QueueTextureViewDisposal((IntPtr)_msaaTextureView);
                 _msaaTextureView = null;
             }
 
             if (_msaaTexture != null)
             {
-                _context.Wgpu.TextureDestroy(_msaaTexture);
-                _context.Wgpu.TextureRelease(_msaaTexture);
+                _context.QueueTextureDisposal((IntPtr)_msaaTexture);
                 _msaaTexture = null;
             }
         }
