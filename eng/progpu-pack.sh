@@ -15,8 +15,8 @@ package_output="${PROGPU_PACKAGE_OUTPUT:-${repo_root}/artifacts/packages/${confi
 
 mkdir -p "${package_output}"
 rm -f \
-  "${package_output}"/*.${package_version}.nupkg \
-  "${package_output}"/*.${package_version}.snupkg
+  "${package_output}"/*."${package_version}".nupkg \
+  "${package_output}"/*."${package_version}".snupkg
 
 is_expected_package_artifact() {
   local file_name="$1"

@@ -26,13 +26,8 @@ PROGPU_PACKAGE_OUTPUT="${package_output}" \
 
 for package_id in "${progpu_package_ids[@]}"; do
   package="${package_output}/${package_id}.${package_version}.nupkg"
-  symbols="${package_output}/${package_id}.${package_version}.snupkg"
 
   "${dotnet}" nuget push "${package}" \
-    --api-key "${NUGET_API_KEY}" \
-    --source "${nuget_source}" \
-    --skip-duplicate
-  "${dotnet}" nuget push "${symbols}" \
     --api-key "${NUGET_API_KEY}" \
     --source "${nuget_source}" \
     --skip-duplicate

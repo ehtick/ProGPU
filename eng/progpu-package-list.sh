@@ -63,6 +63,7 @@ progpu_package_purposes=(
   "LibreWPF portable interop contracts consumed by the ProGPU/Silk.NET SDK lane."
 )
 
+# shellcheck disable=SC2055 # Either mismatched pair must fail validation.
 if [[ "${#progpu_package_ids[@]}" -ne "${#progpu_package_projects[@]}" ||
       "${#progpu_package_ids[@]}" -ne "${#progpu_package_purposes[@]}" ]]; then
   echo "ProGPU package list arrays must have the same length." >&2

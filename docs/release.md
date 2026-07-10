@@ -35,7 +35,7 @@ Set `PROGPU_PACKAGE_OUTPUT` to use a different folder.
 
 ## Local Package Publishing
 
-`eng/progpu-publish.sh` packs the explicit shipping package set and pushes each package and symbol package with `--skip-duplicate`. It requires the API key in the environment and never writes the key to the repository:
+`eng/progpu-publish.sh` packs the explicit shipping package set and pushes each package with `--skip-duplicate`; `dotnet nuget push` discovers and uploads the matching symbol package automatically. It requires the API key in the environment and never writes the key to the repository:
 
 ```bash
 read -rsp "NuGet API key: " NUGET_API_KEY

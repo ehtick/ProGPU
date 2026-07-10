@@ -51,8 +51,8 @@ public class DiagnosticsLoggingSourceTests
     {
         string source = ReadSource("eng", "progpu-pack.sh");
 
-        Assert.Contains("\"${package_output}\"/*.${package_version}.nupkg", source, StringComparison.Ordinal);
-        Assert.Contains("\"${package_output}\"/*.${package_version}.snupkg", source, StringComparison.Ordinal);
+        Assert.Contains("\"${package_output}\"/*.\"${package_version}\".nupkg", source, StringComparison.Ordinal);
+        Assert.Contains("\"${package_output}\"/*.\"${package_version}\".snupkg", source, StringComparison.Ordinal);
         Assert.Contains("is_expected_package_artifact()", source, StringComparison.Ordinal);
         Assert.Contains("\"${file_name}\" == \"${package_id}.${package_version}.nupkg\"", source, StringComparison.Ordinal);
         Assert.Contains("\"${file_name}\" == \"${package_id}.${package_version}.snupkg\"", source, StringComparison.Ordinal);
@@ -73,6 +73,7 @@ public class DiagnosticsLoggingSourceTests
         Assert.Contains("for package_id in \"${progpu_package_ids[@]}\"", source, StringComparison.Ordinal);
         Assert.Contains("--api-key \"${NUGET_API_KEY}\"", source, StringComparison.Ordinal);
         Assert.Contains("--skip-duplicate", source, StringComparison.Ordinal);
+        Assert.DoesNotContain(".snupkg", source, StringComparison.Ordinal);
         Assert.DoesNotContain("NUGET_API_KEY=", source, StringComparison.Ordinal);
     }
 
@@ -147,6 +148,7 @@ public class DiagnosticsLoggingSourceTests
         Assert.Contains("export LD_LIBRARY_PATH=\"${native_root}:${native_rid_root}:${LD_LIBRARY_PATH:-}\"", workflow, StringComparison.Ordinal);
         Assert.Contains("dotnet test src/ProGPU.Tests/ProGPU.Tests.csproj --configuration Release --runtime linux-x64 --no-build --verbosity normal", workflow, StringComparison.Ordinal);
         Assert.Contains("dotnet nuget push artifacts/packages/Release/*.nupkg", workflow, StringComparison.Ordinal);
+        Assert.DoesNotContain("dotnet nuget push artifacts/packages/Release/*.snupkg", workflow, StringComparison.Ordinal);
         Assert.Contains("Create GitHub Release", workflow, StringComparison.Ordinal);
         Assert.Contains("GH_TOKEN: ${{ github.token }}", workflow, StringComparison.Ordinal);
         Assert.Contains("if [[ \"${PROGPU_PACKAGE_VERSION}\" == *-* ]]", workflow, StringComparison.Ordinal);
