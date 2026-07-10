@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Numerics;
 using ProGPU.Backend;
 using ProGPU.Scene;
@@ -10,6 +9,7 @@ namespace SkiaSharp;
 
 public class SKSurface : IDisposable
 {
+    private static readonly object s_compositorCacheScope = new();
     private readonly WgpuContext _context;
     private readonly DrawingContext _drawingContext;
     private readonly GpuTexture? _gpuTexture;
@@ -21,55 +21,20 @@ public class SKSurface : IDisposable
     private readonly SKColorType _colorType;
     private readonly SKAlphaType _alphaType;
     private readonly GRSurfaceOrigin _origin;
+    private GpuTextureReadbackBuffer? _readbackBuffer;
+    private byte[]? _readbackPixels;
     private bool _hasTextureContents;
-
-    private static readonly Dictionary<WgpuContext, Dictionary<TextureFormat, Compositor>> _compositorCache = new();
-
-    static SKSurface()
-    {
-        WgpuContext.Disposing += RemoveCachedCompositor;
-    }
 
     public SKCanvas Canvas { get; }
 
     private static Compositor GetCompositorForContext(WgpuContext context, TextureFormat renderFormat)
     {
-        lock (_compositorCache)
-        {
-            if (!_compositorCache.TryGetValue(context, out var formatCompositors))
-            {
-                formatCompositors = new Dictionary<TextureFormat, Compositor>();
-                _compositorCache[context] = formatCompositors;
-            }
-
-            if (!formatCompositors.TryGetValue(renderFormat, out var compositor))
-            {
-                compositor = new Compositor(context, renderFormat);
-                formatCompositors[renderFormat] = compositor;
-            }
-
-            return compositor;
-        }
+        return SharedCompositorCache.GetOrCreate(context, renderFormat, s_compositorCacheScope);
     }
 
     private static void RemoveCachedCompositor(WgpuContext context)
     {
-        Dictionary<TextureFormat, Compositor>? formatCompositors = null;
-        lock (_compositorCache)
-        {
-            if (_compositorCache.TryGetValue(context, out formatCompositors))
-            {
-                _compositorCache.Remove(context);
-            }
-        }
-
-        if (formatCompositors != null)
-        {
-            foreach (var compositor in formatCompositors.Values)
-            {
-                compositor.Dispose();
-            }
-        }
+        SharedCompositorCache.Remove(context, s_compositorCacheScope);
     }
 
     private SKSurface(WgpuContext context, int width, int height, GpuTexture? texture, bool ownsTexture, IntPtr pixels, int rowBytes, SKColorType colorType, SKAlphaType alphaType, GRSurfaceOrigin origin = GRSurfaceOrigin.TopLeft)
@@ -272,8 +237,21 @@ public class SKSurface : IDisposable
             // If CPU-backed surface, read pixels back and copy to memory pointer
             if (_pixels != IntPtr.Zero)
             {
-                byte[] readBackBytes = _gpuTexture.ReadPixels();
-                CopyReadbackToCpu(readBackBytes, cpuReadbackRegions);
+                int readbackByteCount = checked(_width * _height * 4);
+                if (_readbackPixels == null || _readbackPixels.Length != readbackByteCount)
+                {
+                    _readbackPixels = GC.AllocateUninitializedArray<byte>(readbackByteCount);
+                }
+                _readbackBuffer ??= new GpuTextureReadbackBuffer(_context);
+                try
+                {
+                    _gpuTexture.ReadPixels(_readbackPixels, _readbackBuffer);
+                }
+                finally
+                {
+                    _context.CleanupPendingResources();
+                }
+                CopyReadbackToCpu(_readbackPixels, cpuReadbackRegions);
             }
         }
         finally
@@ -584,9 +562,22 @@ public class SKSurface : IDisposable
             }
             finally
             {
-                if (_ownsTexture)
+                try
                 {
-                    _gpuTexture?.Dispose();
+                    if (_ownsTexture)
+                    {
+                        _gpuTexture?.Dispose();
+                    }
+                }
+                finally
+                {
+                    _readbackBuffer?.Dispose();
+                    _readbackBuffer = null;
+                    _readbackPixels = null;
+                    if (!_context.IsDisposed)
+                    {
+                        _context.CleanupPendingResources();
+                    }
                 }
             }
         }

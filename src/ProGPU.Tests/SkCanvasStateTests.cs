@@ -15,6 +15,20 @@ namespace ProGPU.Tests;
 public sealed class SkCanvasStateTests
 {
     [Fact]
+    public void SurfaceAndCanvasReuseIsolatedCompositorScopes()
+    {
+        using var surface = SKSurface.Create(
+            new SKImageInfo(4, 4, SKColorType.Rgba8888, SKAlphaType.Premul));
+
+        var surfaceCompositor = GetSurfaceCompositor(surface);
+        var canvasCompositor = GetCanvasCompositor(surface);
+
+        Assert.Same(surfaceCompositor, GetSurfaceCompositor(surface));
+        Assert.Same(canvasCompositor, GetCanvasCompositor(surface));
+        Assert.NotSame(surfaceCompositor, canvasCompositor);
+    }
+
+    [Fact]
     public void ClearUsesSourceBlendMode()
     {
         var context = new DrawingContext();

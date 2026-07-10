@@ -3,6 +3,7 @@ using System.Collections;
 using System.Runtime.InteropServices;
 using System.Reflection;
 using ProGPU.Backend;
+using ProGPU.Scene;
 using Silk.NET.WebGPU;
 using SkiaSharp;
 using Xunit;
@@ -466,6 +467,34 @@ public sealed class SkSurfaceBackendRenderTargetTests
         }
     }
 
+    [Fact]
+    public void CpuBackedSurfaceReusesReadbackResourcesAcrossFlushes()
+    {
+        var pixels = Marshal.AllocHGlobal(16);
+        try
+        {
+            using var surface = SKSurface.Create(
+                new SKImageInfo(2, 2, SKColorType.Rgba8888, SKAlphaType.Premul),
+                pixels,
+                rowBytes: 8);
+            surface.Canvas.Clear(SKColors.Red);
+            surface.Flush();
+
+            var firstBuffer = GetPrivateField<GpuTextureReadbackBuffer>(surface, "_readbackBuffer");
+            var firstPixels = GetPrivateField<byte[]>(surface, "_readbackPixels");
+
+            surface.Canvas.Clear(SKColors.Blue);
+            surface.Flush();
+
+            Assert.Same(firstBuffer, GetPrivateField<GpuTextureReadbackBuffer>(surface, "_readbackBuffer"));
+            Assert.Same(firstPixels, GetPrivateField<byte[]>(surface, "_readbackPixels"));
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(pixels);
+        }
+    }
+
     private static void DetachActiveContextForTest(WgpuContext context)
     {
         WgpuContext.Current = null;
@@ -489,25 +518,27 @@ public sealed class SkSurfaceBackendRenderTargetTests
 
     private static bool SurfaceCompositorCacheContains(WgpuContext context)
     {
-        var field = typeof(SKSurface).GetField(
-            "_compositorCache",
+        var field = typeof(SharedCompositorCache).GetField(
+            "s_compositors",
             BindingFlags.Static | BindingFlags.NonPublic);
         var cache = (IDictionary)field!.GetValue(null)!;
         lock (cache)
         {
-            return cache.Contains(context);
+            var scopedCache = (IDictionary?)cache[context];
+            return scopedCache?.Contains(GetSurfaceCompositorCacheScope()) == true;
         }
     }
 
     private static TextureFormat[] SurfaceCompositorCacheFormats(WgpuContext context)
     {
-        var field = typeof(SKSurface).GetField(
-            "_compositorCache",
+        var field = typeof(SharedCompositorCache).GetField(
+            "s_compositors",
             BindingFlags.Static | BindingFlags.NonPublic);
         var cache = (IDictionary)field!.GetValue(null)!;
         lock (cache)
         {
-            var formatCache = (IDictionary?)cache[context];
+            var scopedCache = (IDictionary?)cache[context];
+            var formatCache = (IDictionary?)scopedCache?[GetSurfaceCompositorCacheScope()];
             if (formatCache == null)
             {
                 return Array.Empty<TextureFormat>();
@@ -517,6 +548,21 @@ public sealed class SkSurfaceBackendRenderTargetTests
             formatCache.Keys.CopyTo(formats, 0);
             return formats;
         }
+    }
+
+    private static object GetSurfaceCompositorCacheScope()
+    {
+        var field = typeof(SKSurface).GetField(
+            "s_compositorCacheScope",
+            BindingFlags.Static | BindingFlags.NonPublic);
+        return field!.GetValue(null)!;
+    }
+
+    private static T GetPrivateField<T>(object instance, string fieldName)
+    {
+        var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        return Assert.IsType<T>(field.GetValue(instance));
     }
 
     private static SKImage CreateRgbaImage(byte red, byte green, byte blue, byte alpha)

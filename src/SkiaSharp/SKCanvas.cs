@@ -10,6 +10,7 @@ namespace SkiaSharp;
 
 public class SKCanvas : IDisposable
 {
+    private static readonly object s_compositorCacheScope = new();
     private DrawingContext _context;
     private readonly float _width;
     private readonly float _height;
@@ -19,13 +20,6 @@ public class SKCanvas : IDisposable
     private float _currentOpacity = 1f;
     private readonly List<GpuTexture> _ownedLayerTextures = new();
     private List<SKRect>? _cpuReadbackRegions;
-    private static readonly Dictionary<WgpuContext, Compositor> s_compositorCache = new();
-
-    static SKCanvas()
-    {
-        WgpuContext.Disposing += RemoveCachedCompositor;
-    }
-
     public enum PushKind
     {
         RectClip,
@@ -508,30 +502,12 @@ public class SKCanvas : IDisposable
 
     private static Compositor GetCompositorForContext(WgpuContext context)
     {
-        lock (s_compositorCache)
-        {
-            if (!s_compositorCache.TryGetValue(context, out var compositor))
-            {
-                compositor = new Compositor(context, TextureFormat.Rgba8Unorm);
-                s_compositorCache[context] = compositor;
-            }
-
-            return compositor;
-        }
+        return SharedCompositorCache.GetOrCreate(context, TextureFormat.Rgba8Unorm, s_compositorCacheScope);
     }
 
     private static void RemoveCachedCompositor(WgpuContext context)
     {
-        Compositor? compositor = null;
-        lock (s_compositorCache)
-        {
-            if (s_compositorCache.TryGetValue(context, out compositor))
-            {
-                s_compositorCache.Remove(context);
-            }
-        }
-
-        compositor?.Dispose();
+        SharedCompositorCache.Remove(context, s_compositorCacheScope);
     }
 
     private static GpuBlendMode MapBlendMode(SKBlendMode blendMode)

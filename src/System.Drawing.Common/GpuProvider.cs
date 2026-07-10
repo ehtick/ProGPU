@@ -1,19 +1,13 @@
 using ProGPU.Backend;
 using ProGPU.Scene;
-using System.Collections.Generic;
 using Silk.NET.WebGPU;
 
 namespace System.Drawing;
 
 internal static class GpuProvider
 {
+    private static readonly object s_compositorCacheScope = new();
     private static WgpuContext? _context;
-    private static readonly Dictionary<WgpuContext, Compositor> _compositors = new();
-
-    static GpuProvider()
-    {
-        WgpuContext.Disposing += OnContextDisposing;
-    }
 
     public static WgpuContext Context
     {
@@ -58,34 +52,6 @@ internal static class GpuProvider
             throw new InvalidOperationException("Cannot create a compositor for a disposed or missing WebGPU context.");
         }
 
-        lock (_compositors)
-        {
-            if (_compositors.TryGetValue(context, out var compositor) && !compositor.IsDisposed)
-            {
-                return compositor;
-            }
-
-            if (compositor != null)
-            {
-                try { compositor.Dispose(); } catch { }
-            }
-
-            compositor = new Compositor(context, TextureFormat.Rgba8Unorm);
-            _compositors[context] = compositor;
-            return compositor;
-        }
-    }
-
-    private static void OnContextDisposing(WgpuContext context)
-    {
-        lock (_compositors)
-        {
-            if (!_compositors.Remove(context, out var compositor))
-            {
-                return;
-            }
-
-            try { compositor.Dispose(); } catch { }
-        }
+        return SharedCompositorCache.GetOrCreate(context, TextureFormat.Rgba8Unorm, s_compositorCacheScope);
     }
 }

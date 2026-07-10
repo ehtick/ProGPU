@@ -6,8 +6,8 @@ namespace System.Windows.Media;
 
 internal static class GpuProvider
 {
+    private static readonly object s_compositorCacheScope = new();
     private static WgpuContext? _context;
-    private static Compositor? _compositor;
 
     public static WgpuContext Context
     {
@@ -42,16 +42,7 @@ internal static class GpuProvider
         get
         {
             var ctx = Context;
-            if (_compositor != null && !_compositor.IsDisposed && _compositor.Context == ctx)
-            {
-                return _compositor;
-            }
-            if (_compositor != null)
-            {
-                try { _compositor.Dispose(); } catch {}
-            }
-            _compositor = new Compositor(ctx, TextureFormat.Rgba8Unorm);
-            return _compositor;
+            return SharedCompositorCache.GetOrCreate(ctx, TextureFormat.Rgba8Unorm, s_compositorCacheScope);
         }
     }
 }
