@@ -149,6 +149,110 @@ public sealed class SkSurfaceBackendRenderTargetTests
     }
 
     [Theory]
+    [InlineData(SKBlendMode.Multiply)]
+    [InlineData(SKBlendMode.Screen)]
+    [InlineData(SKBlendMode.Darken)]
+    [InlineData(SKBlendMode.Lighten)]
+    [InlineData(SKBlendMode.Exclusion)]
+    [InlineData(SKBlendMode.Overlay)]
+    [InlineData(SKBlendMode.ColorDodge)]
+    [InlineData(SKBlendMode.ColorBurn)]
+    [InlineData(SKBlendMode.HardLight)]
+    [InlineData(SKBlendMode.SoftLight)]
+    [InlineData(SKBlendMode.Difference)]
+    [InlineData(SKBlendMode.Hue)]
+    [InlineData(SKBlendMode.Saturation)]
+    [InlineData(SKBlendMode.Color)]
+    [InlineData(SKBlendMode.Luminosity)]
+    public void AdvancedImageBlendPreservesBackdropForTransparentSource(SKBlendMode blendMode)
+    {
+        using var surface = SKSurface.Create(
+            new SKImageInfo(4, 4, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var source = CreateRgbaImage(23, 47, 91, 0);
+        using var paint = new SKPaint
+        {
+            BlendMode = blendMode,
+            IsAntialias = false
+        };
+
+        surface.Canvas.Clear(new SKColor(200, 100, 50, 255));
+        surface.Canvas.DrawImage(
+            source,
+            new SKRect(0f, 0f, 1f, 1f),
+            new SKRect(0f, 0f, 4f, 4f),
+            paint);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        AssertPixel(snapshot.Texture.ReadPixels(), 4, 2, 2, 200, 100, 50, 255);
+    }
+
+    [Fact]
+    public void ChainedAdvancedImageBlendsPreserveDrawOrder()
+    {
+        using var surface = SKSurface.Create(
+            new SKImageInfo(4, 4, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var first = CreateRgbaImage(50, 20, 10, 255);
+        using var second = CreateRgbaImage(10, 30, 50, 255);
+        using var paint = new SKPaint
+        {
+            BlendMode = SKBlendMode.Difference,
+            IsAntialias = false
+        };
+
+        surface.Canvas.Clear(new SKColor(200, 100, 50, 255));
+        var source = new SKRect(0f, 0f, 1f, 1f);
+        var destination = new SKRect(0f, 0f, 4f, 4f);
+        surface.Canvas.DrawImage(first, source, destination, paint);
+        surface.Canvas.DrawImage(second, source, destination, paint);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        AssertPixel(snapshot.Texture.ReadPixels(), 4, 2, 2, 140, 50, 10, 255);
+    }
+
+    [Fact]
+    public void CpuBackedSurfaceReadbackHonorsDisjointRegionClip()
+    {
+        const int width = 8;
+        const int height = 4;
+        var pixels = Marshal.AllocHGlobal(width * height * 4);
+        try
+        {
+            Marshal.Copy(new byte[width * height * 4], 0, pixels, width * height * 4);
+            using var surface = SKSurface.Create(
+                new SKImageInfo(width, height, SKColorType.Rgba8888, SKAlphaType.Premul),
+                pixels,
+                width * 4);
+            using var yellow = new SKPaint { Color = new SKColor(255, 255, 0, 255) };
+            using var red = new SKPaint { Color = SKColors.Red };
+
+            surface.Canvas.DrawRect(0f, 0f, width, height, yellow);
+            surface.Flush();
+            Marshal.Copy(new byte[width * height * 4], 0, pixels, width * height * 4);
+
+            using var region = new SKRegion();
+            region.SetRect(new SKRectI(0, 0, 2, height));
+            region.Op(new SKRectI(6, 0, width, height), SKRegionOperation.Union);
+            surface.Canvas.Save();
+            surface.Canvas.ClipRegion(region);
+            surface.Canvas.DrawRect(0f, 0f, width, height, red);
+            surface.Canvas.Restore();
+            surface.Flush();
+
+            var readback = new byte[width * height * 4];
+            Marshal.Copy(pixels, readback, 0, readback.Length);
+            AssertPixel(readback, width, 1, 1, 255, 0, 0, 255);
+            AssertPixel(readback, width, 4, 1, 0, 0, 0, 0);
+            AssertPixel(readback, width, 7, 1, 255, 0, 0, 255);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(pixels);
+        }
+    }
+
+    [Theory]
     [InlineData(0, 1)]
     [InlineData(-1, 1)]
     [InlineData(1, 0)]
@@ -413,6 +517,14 @@ public sealed class SkSurfaceBackendRenderTargetTests
             formatCache.Keys.CopyTo(formats, 0);
             return formats;
         }
+    }
+
+    private static SKImage CreateRgbaImage(byte red, byte green, byte blue, byte alpha)
+    {
+        using var bitmap = new SKBitmap(
+            new SKImageInfo(1, 1, SKColorType.Rgba8888, SKAlphaType.Unpremul));
+        Marshal.Copy(new[] { red, green, blue, alpha }, 0, bitmap.GetPixels(), 4);
+        return SKImage.FromBitmap(bitmap);
     }
 
     private static void AssertPixel(byte[] pixels, int width, int x, int y, byte r, byte g, byte b, byte a)

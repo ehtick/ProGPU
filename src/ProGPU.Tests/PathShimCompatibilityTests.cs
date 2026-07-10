@@ -32,6 +32,60 @@ public sealed class PathShimCompatibilityTests
     }
 
     [Fact]
+    public void SkPathTightBoundsUseBezierExtremaInsteadOfControlPoints()
+    {
+        using var path = new SKPath();
+        path.MoveTo(0f, 0f);
+        path.QuadTo(50f, 100f, 100f, 0f);
+        path.CubicTo(100f, -100f, 200f, -100f, 200f, 0f);
+
+        AssertNear(-100f, path.Bounds.Top);
+        AssertNear(100f, path.Bounds.Bottom);
+
+        var tight = path.TightBounds;
+        AssertNear(-75f, tight.Top);
+        AssertNear(50f, tight.Bottom);
+        AssertNear(0f, tight.Left);
+        AssertNear(200f, tight.Right);
+    }
+
+    [Fact]
+    public void SkPathCopyPreservesOpenContourForContinuedSegments()
+    {
+        using var source = new SKPath();
+        source.MoveTo(10f, 100f);
+
+        using var copy = new SKPath(source);
+        copy.CubicTo(0f, 0f, 200f, 0f, 300f, 100f);
+
+        var figure = Assert.Single(copy.Geometry.Figures);
+        Assert.Equal(new System.Numerics.Vector2(10f, 100f), figure.StartPoint);
+        Assert.IsType<ProGPU.Vector.CubicBezierSegment>(Assert.Single(figure.Segments));
+    }
+
+    [Fact]
+    public void SkPaintWidensFullOvalAnalytically()
+    {
+        using var source = new SKPath();
+        source.AddOval(new SKRect(0f, 0f, 200f, 200f));
+        using var widened = new SKPath();
+        using var paint = new SKPaint
+        {
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 10f
+        };
+
+        Assert.True(paint.GetFillPath(source, widened));
+
+        AssertNear(-5f, widened.TightBounds.Left);
+        AssertNear(-5f, widened.TightBounds.Top);
+        AssertNear(205f, widened.TightBounds.Right);
+        AssertNear(205f, widened.TightBounds.Bottom);
+        Assert.False(widened.Contains(100f, 100f));
+        Assert.True(widened.Contains(100f, 2f));
+    }
+
+    [Fact]
     public void SkPathTransformUpdatesNativeArcParameters()
     {
         using var path = new SKPath();

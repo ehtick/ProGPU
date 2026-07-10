@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Numerics;
 using System.Reflection;
 using ProGPU.Backend;
@@ -483,7 +484,7 @@ public sealed class SkCanvasStateTests
             null!);
 
         var layerContext = GetCurrentDrawingContext(surface.Canvas);
-        var retainedTexture = Assert.Single(layerContext.Commands).Texture!;
+        var retainedTexture = GetDrawTextureCommand(layerContext.Commands).Texture!;
         Assert.Equal(1, layerContext.RetainedResourceCount);
 
         var retainedTextureDisposed = false;
@@ -528,7 +529,7 @@ public sealed class SkCanvasStateTests
             null!);
 
         var layerContext = GetCurrentDrawingContext(surface.Canvas);
-        var retainedTexture = Assert.Single(layerContext.Commands).Texture!;
+        var retainedTexture = GetDrawTextureCommand(layerContext.Commands).Texture!;
         Assert.Equal(1, layerContext.RetainedResourceCount);
 
         var retainedTextureDisposed = false;
@@ -595,6 +596,39 @@ public sealed class SkCanvasStateTests
     }
 
     [Fact]
+    public void ComposedConicalGradientUsesSingleBrushWithOutsideColor()
+    {
+        var context = new DrawingContext();
+        using var canvas = new SKCanvas(context, 100f, 100f);
+        using var destination = SKShader.CreateColor(SKColors.Blue);
+        using var source = SKShader.CreateTwoPointConicalGradient(
+            new SKPoint(10f, 10f),
+            0f,
+            new SKPoint(50f, 50f),
+            40f,
+            new[] { new SKColor(255, 0, 0, 128), new SKColor(0, 255, 0, 128) },
+            new[] { 0f, 1f },
+            SKShaderTileMode.Clamp);
+        using var composed = SKShader.CreateCompose(destination, source);
+        using var paint = new SKPaint
+        {
+            Shader = composed,
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 10f
+        };
+
+        canvas.DrawLine(10f, 50f, 90f, 50f, paint);
+
+        var command = Assert.Single(context.Commands);
+        var brush = Assert.IsType<TwoPointConicalGradientBrush>(command.Brush);
+        Assert.Null(command.Pen);
+        Assert.Equal(new Vector4(0f, 0f, 1f, 1f), brush.OutsideColor);
+        AssertNear(128f / 255f, brush.Stops[0].Color.X);
+        AssertNear(1f - 128f / 255f, brush.Stops[0].Color.Z);
+        AssertNear(1f, brush.Stops[0].Color.W);
+    }
+
+    [Fact]
     public void DrawRectAppliesPaintBlendMode()
     {
         var context = new DrawingContext();
@@ -619,7 +653,7 @@ public sealed class SkCanvasStateTests
     }
 
     [Fact]
-    public void DrawRectScalesStrokeWidthWithCanvasMatrix()
+    public void DrawRectKeepsStrokeWidthInLocalCoordinatesWithCanvasMatrix()
     {
         var context = new DrawingContext();
         using var canvas = new SKCanvas(context, 100f, 100f);
@@ -635,7 +669,8 @@ public sealed class SkCanvasStateTests
         var command = Assert.Single(context.Commands);
         Assert.Equal(RenderCommandType.DrawRect, command.Type);
         Assert.NotNull(command.Pen);
-        AssertNear(6f, command.Pen!.Thickness);
+        AssertNear(2f, command.Pen!.Thickness);
+        Assert.True(command.IsPenThicknessLocal);
         AssertMatrixNear(Matrix4x4.CreateScale(3f, 3f, 1f), command.Transform);
     }
 
@@ -686,7 +721,8 @@ public sealed class SkCanvasStateTests
         var command = Assert.Single(context.Commands);
         Assert.Equal(RenderCommandType.DrawRect, command.Type);
         Assert.NotNull(command.Pen);
-        AssertNear(1f, command.Pen!.Thickness);
+        AssertNear(0.25f, command.Pen!.Thickness);
+        Assert.True(command.IsPenThicknessLocal);
         AssertMatrixNear(Matrix4x4.CreateScale(4f, 4f, 1f), command.Transform);
     }
 
@@ -904,13 +940,21 @@ public sealed class SkCanvasStateTests
                 Assert.Equal(RenderCommandType.PushOpacity, push.Type);
                 AssertNear(128f / 255f, push.FontSize);
             },
+            pushClip => Assert.Equal(RenderCommandType.PushGeometryClip, pushClip.Type),
             draw =>
             {
                 Assert.Equal(RenderCommandType.DrawTexture, draw.Type);
                 Assert.NotSame(image.Texture, draw.Texture);
-                Assert.Equal(new Rect(10f, 20f, 20f, 20f), draw.Rect);
-                Assert.Equal(new Rect(1f, 2f, 2f, 2f), draw.SrcRect);
+                AssertNear(10f, draw.Rect.X);
+                AssertNear(20f, draw.Rect.Y);
+                AssertNear(20.5f, draw.Rect.Width);
+                AssertNear(20.5f, draw.Rect.Height);
+                AssertNear(1f, draw.SrcRect.X);
+                AssertNear(2f, draw.SrcRect.Y);
+                AssertNear(2.05f, draw.SrcRect.Width);
+                AssertNear(2.05f, draw.SrcRect.Height);
             },
+            popClip => Assert.Equal(RenderCommandType.PopGeometryClip, popClip.Type),
             pop => Assert.Equal(RenderCommandType.PopOpacity, pop.Type));
         Assert.Equal(1, context.RetainedResourceCount);
     }
@@ -929,7 +973,7 @@ public sealed class SkCanvasStateTests
             new SKRect(0f, 0f, 1f, 1f),
             null!);
 
-        var command = Assert.Single(context.Commands);
+        var command = GetDrawTextureCommand(context.Commands);
         var retainedTexture = command.Texture!;
         Assert.NotSame(image.Texture, retainedTexture);
         Assert.Equal(1, context.RetainedResourceCount);
@@ -977,7 +1021,7 @@ public sealed class SkCanvasStateTests
             null!);
 
         using var picture = recorder.EndRecording();
-        var command = Assert.Single(picture.Commands);
+        var command = GetDrawTextureCommand(picture.Commands);
         var retainedTexture = command.Texture!;
         Assert.Equal(0, context.RetainedResourceCount);
         Assert.Equal(1, picture.RetainedResourceCount);
@@ -1023,7 +1067,7 @@ public sealed class SkCanvasStateTests
             null!);
         target.Append(source);
 
-        var command = Assert.Single(target.Commands);
+        var command = GetDrawTextureCommand(target.Commands);
         var retainedTexture = command.Texture!;
         Assert.Equal(1, source.RetainedResourceCount);
         Assert.Equal(1, target.RetainedResourceCount);
@@ -1246,6 +1290,24 @@ public sealed class SkCanvasStateTests
     }
 
     [Fact]
+    public void SkPaintGetFillPathAppliesDashPathEffect()
+    {
+        using var source = new SKPath();
+        source.MoveTo(0f, 0f);
+        source.LineTo(100f, 0f);
+        using var destination = new SKPath();
+        using var paint = new SKPaint
+        {
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 10f,
+            PathEffect = SKPathEffect.CreateDash(new[] { 10f, 10f }, 0f)
+        };
+
+        Assert.True(paint.GetFillPath(source, destination));
+        Assert.Equal(5, destination.Geometry.Figures.Count);
+    }
+
+    [Fact]
     public void SkPaintToBrushAppliesBlendModeColorFilter()
     {
         using var paint = new SKPaint
@@ -1350,6 +1412,23 @@ public sealed class SkCanvasStateTests
     private static void AssertNear(float expected, float actual)
     {
         Assert.InRange(MathF.Abs(expected - actual), 0f, 0.0001f);
+    }
+
+    private static RenderCommand GetDrawTextureCommand(IReadOnlyList<RenderCommand> commands)
+    {
+        RenderCommand? result = null;
+        for (int i = 0; i < commands.Count; i++)
+        {
+            if (commands[i].Type != RenderCommandType.DrawTexture)
+            {
+                continue;
+            }
+
+            Assert.Null(result);
+            result = commands[i];
+        }
+
+        return Assert.IsType<RenderCommand>(result);
     }
 
     private static IList GetOwnedLayerTextures(SKCanvas canvas)
