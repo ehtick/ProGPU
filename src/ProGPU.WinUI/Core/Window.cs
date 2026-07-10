@@ -25,6 +25,7 @@ public class Window
     private int _width = 1280;
     private int _height = 800;
     private WindowInputState? _inputState;
+    private bool _isRendering;
 
     public IWindow? SilkWindow => _silkWindow;
     public WgpuContext? WgpuContext => _wgpuContext;
@@ -154,9 +155,38 @@ public class Window
         _inputState = InputSystem.Initialize(inputContext, _content, NormalizePointerPosition);
     }
 
-    private unsafe void OnRender(double delta)
+    private void OnRender(double delta)
     {
-        if (_silkWindow == null || _wgpuContext == null || _compositor == null || _content == null) return;
+        RenderFrame(delta);
+    }
+
+    private unsafe void RenderFrame(double delta)
+    {
+        if (_isRendering ||
+            _silkWindow == null ||
+            _wgpuContext == null ||
+            _compositor == null ||
+            _content == null)
+        {
+            return;
+        }
+
+        _isRendering = true;
+        try
+        {
+            RenderFrameCore(delta);
+        }
+        finally
+        {
+            _isRendering = false;
+        }
+    }
+
+    private unsafe void RenderFrameCore(double delta)
+    {
+        var wgpuContext = _wgpuContext!;
+        var compositor = _compositor!;
+        var content = _content!;
 
         UIThread.RunPending();
 
@@ -169,27 +199,27 @@ public class Window
         Rendering?.Invoke(this, delta);
 
         var framebufferSize = GetCurrentFramebufferSize();
-        _wgpuContext.ReconfigureIfNeeded((uint)framebufferSize.X, (uint)framebufferSize.Y);
+        wgpuContext.ReconfigureIfNeeded((uint)framebufferSize.X, (uint)framebufferSize.Y);
         float dpiScale = ResolveWindowDpiScale(framebufferSize);
         Vector2 logicalSize = ResolveLogicalClientSize(framebufferSize, dpiScale);
 
         // Core animation updates
-        _content.UpdateAnimations((float)delta);
+        content.UpdateAnimations((float)delta);
 
-        _content.Measure(logicalSize);
-        _content.Arrange(new Rect(0, 0, logicalSize.X, logicalSize.Y));
+        content.Measure(logicalSize);
+        content.Arrange(new Rect(0, 0, logicalSize.X, logicalSize.Y));
 
         TextureView* targetView = null;
-        if (_wgpuContext.Surface != null)
+        if (wgpuContext.Surface != null)
         {
             var surfaceTexture = new SurfaceTexture();
-            _wgpuContext.Wgpu.SurfaceGetCurrentTexture(_wgpuContext.Surface, &surfaceTexture);
+            wgpuContext.Wgpu.SurfaceGetCurrentTexture(wgpuContext.Surface, &surfaceTexture);
             
             if (surfaceTexture.Status == SurfaceGetCurrentTextureStatus.Success)
             {
                 var viewDesc = new TextureViewDescriptor
                 {
-                    Format = _wgpuContext.SwapChainFormat,
+                    Format = wgpuContext.SwapChainFormat,
                     Dimension = TextureViewDimension.Dimension2D,
                     BaseMipLevel = 0,
                     MipLevelCount = 1,
@@ -197,14 +227,14 @@ public class Window
                     ArrayLayerCount = 1,
                     Aspect = TextureAspect.All
                 };
-                targetView = _wgpuContext.Wgpu.TextureCreateView(surfaceTexture.Texture, &viewDesc);
+                targetView = wgpuContext.Wgpu.TextureCreateView(surfaceTexture.Texture, &viewDesc);
             }
         }
 
         if (targetView != null)
         {
-            _compositor.RenderScene(
-                _content,
+            compositor.RenderScene(
+                content,
                 (uint)MathF.Ceiling(logicalSize.X),
                 (uint)MathF.Ceiling(logicalSize.Y),
                 (uint)framebufferSize.X,
@@ -212,16 +242,13 @@ public class Window
                 dpiScale,
                 targetView);
             
-            _wgpuContext.Wgpu.SurfacePresent(_wgpuContext.Surface);
-            _wgpuContext.Wgpu.TextureViewRelease(targetView);
+            wgpuContext.Wgpu.SurfacePresent(wgpuContext.Surface);
+            wgpuContext.Wgpu.TextureViewRelease(targetView);
         }
     }
 
-    private void OnResize(Vector2D<int> newSize)
+    private void OnResize(Vector2D<int> _)
     {
-        if (_wgpuContext == null || _silkWindow == null) return;
-        var framebufferSize = GetCurrentFramebufferSize();
-        _wgpuContext.ConfigureSwapChain((uint)framebufferSize.X, (uint)framebufferSize.Y);
         _content?.Invalidate();
     }
 
@@ -231,6 +258,7 @@ public class Window
         var framebufferSize = NormalizeFramebufferSize(newSize);
         _wgpuContext.ConfigureSwapChain((uint)framebufferSize.X, (uint)framebufferSize.Y);
         _content?.Invalidate();
+        RenderFrame(0d);
     }
 
     private Vector2D<int> GetCurrentFramebufferSize()
