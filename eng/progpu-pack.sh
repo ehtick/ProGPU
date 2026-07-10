@@ -10,7 +10,7 @@ if [[ ! -x "${dotnet}" ]]; then
 fi
 
 configuration="${PROGPU_CONFIGURATION:-Release}"
-package_version="${PROGPU_PACKAGE_VERSION:-0.1.0-preview.5}"
+package_version="${PROGPU_PACKAGE_VERSION:-0.1.0-preview.6}"
 package_output="${PROGPU_PACKAGE_OUTPUT:-${repo_root}/artifacts/packages/${configuration}}"
 
 mkdir -p "${package_output}"
