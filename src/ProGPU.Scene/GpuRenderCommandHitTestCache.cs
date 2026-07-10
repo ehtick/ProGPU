@@ -354,7 +354,7 @@ public sealed class GpuRenderCommandHitTestCacheBuilder : IDisposable
 
             if (command.Brush != null)
             {
-                AddPathFillPrimitive(path, commandPath.FillRule, transform, id, zIndex);
+                AddPathFillPrimitive(path, transform, id, zIndex);
                 zIndex += 0.25f;
             }
 
@@ -369,7 +369,7 @@ public sealed class GpuRenderCommandHitTestCacheBuilder : IDisposable
         if (command.Brush != null &&
             TryCompileHitTestPath(command.GeometryCache?.FillPath ?? commandPath, out var fillPath))
         {
-            AddPathFillPrimitive(fillPath, commandPath.FillRule, transform, id, zIndex);
+            AddPathFillPrimitive(fillPath, transform, id, zIndex);
             zIndex += 0.25f;
         }
 
@@ -462,7 +462,12 @@ public sealed class GpuRenderCommandHitTestCacheBuilder : IDisposable
         var max = new Vector2(maxX, maxY);
         uint segmentCount = checked((uint)segments.Length);
         uint startSegment = AppendPathSegments(segments);
-        compiledPath = new CompiledHitTestPath(min, max, startSegment, segmentCount);
+        compiledPath = new CompiledHitTestPath(
+            min,
+            max,
+            startSegment,
+            segmentCount,
+            (FillRule)records[0].FillRule);
         return true;
     }
 
@@ -480,7 +485,6 @@ public sealed class GpuRenderCommandHitTestCacheBuilder : IDisposable
 
     private void AddPathFillPrimitive(
         CompiledHitTestPath path,
-        FillRule fillRule,
         Matrix4x4 transform,
         int id,
         float zIndex)
@@ -491,7 +495,7 @@ public sealed class GpuRenderCommandHitTestCacheBuilder : IDisposable
             path.Max,
             path.StartSegment,
             path.SegmentCount,
-            fillRule,
+            path.FillRule,
             transform,
             zIndex));
     }
@@ -535,7 +539,8 @@ public sealed class GpuRenderCommandHitTestCacheBuilder : IDisposable
         Vector2 Min,
         Vector2 Max,
         uint StartSegment,
-        uint SegmentCount);
+        uint SegmentCount,
+        FillRule FillRule);
 
     private void AddBounds(Rect rect, Matrix4x4 transform, int id, float zIndex)
     {
@@ -604,7 +609,7 @@ public sealed class GpuRenderCommandHitTestCacheBuilder : IDisposable
         var path = cachedPath ?? RenderCommandGeometryCache.CreateTrianglePath(p1, p2, p3);
         if (TryCompileHitTestPath(path, out var compiledPath))
         {
-            AddPathFillPrimitive(compiledPath, path.FillRule, transform, id, zIndex);
+            AddPathFillPrimitive(compiledPath, transform, id, zIndex);
         }
     }
 
@@ -1013,7 +1018,7 @@ public sealed class GpuRenderCommandHitTestCacheBuilder : IDisposable
                 clipMax,
                 compiledClip.StartSegment,
                 compiledClip.SegmentCount,
-                clipPath.FillRule,
+                compiledClip.FillRule,
                 clipPath,
                 HasPath: true));
             return;

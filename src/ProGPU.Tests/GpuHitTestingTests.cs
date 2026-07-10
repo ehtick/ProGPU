@@ -1089,6 +1089,7 @@ public sealed class GpuHitTestingTests
         var primitive = Assert.Single(index.Primitives);
         Assert.Equal(GpuHitTestPrimitiveKind.PathFill, primitive.Kind);
         Assert.True(index.PathSegments.Count > 0);
+        Assert.Equal((float)(uint)FillRule.EvenOdd, primitive.Data1.Z);
 
         bool outerHit = GpuHitTestEngine.TryHitTestPoint(context, index, new Vector2(2f, 2f), out GpuHitTestResult outerResult);
         bool holeHit = GpuHitTestEngine.TryHitTestPoint(context, index, new Vector2(10f, 10f), out GpuHitTestResult holeResult);
@@ -1098,6 +1099,39 @@ public sealed class GpuHitTestingTests
         Assert.False(holeHit);
         Assert.False(holeResult.HasHit);
         Assert.True(holeResult.CandidateCount > 0);
+    }
+
+    [Fact]
+    public void RenderCommandCacheUsesCompiledFillRuleForCombinedGeometryClip()
+    {
+        var combined = new PathGeometry
+        {
+            IsCombined = true,
+            PathA = PrimitivePathGeometry.CreateRectangle(0f, 0f, 20f, 20f),
+            PathB = PrimitivePathGeometry.CreateRectangle(5f, 5f, 10f, 10f),
+            Op = 0
+        };
+        var builder = new GpuRenderCommandHitTestCacheBuilder();
+        builder.AddCommand(new RenderCommand
+        {
+            Type = RenderCommandType.PushGeometryClip,
+            Path = combined
+        }, Matrix4x4.Identity);
+        builder.AddCommand(new RenderCommand
+        {
+            Type = RenderCommandType.DrawRect,
+            Rect = new Rect(0f, 0f, 20f, 20f),
+            Brush = new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f))
+        }, Matrix4x4.Identity, id: 93);
+        builder.AddCommand(new RenderCommand
+        {
+            Type = RenderCommandType.PopGeometryClip
+        }, Matrix4x4.Identity);
+
+        var index = builder.BuildIndex(maxDepth: 2, maxPrimitivesPerNode: 1);
+
+        var primitive = Assert.Single(index.Primitives);
+        Assert.Equal((uint)FillRule.EvenOdd, primitive.ClipFillRule);
     }
 
     [Fact]
