@@ -177,7 +177,7 @@ public sealed class PathArcShimTests
     }
 
     [Fact]
-    public void PresentationCorePathGeometryRenderUsesGpuArcShader()
+    public void PresentationCoreAffinePathGeometryRenderUsesLocalOutlineStrips()
     {
         var window = HeadlessWindow.Shared;
         window.Resize(260, 180);
@@ -187,7 +187,8 @@ public sealed class PathArcShimTests
         {
             window.Render();
 
-            Assert.Equal(4, window.Compositor.VectorVertices.Count(vertex => DecodeShapeType(vertex.ShapeType) == 12));
+            Assert.DoesNotContain(window.Compositor.VectorVertices, vertex => DecodeShapeType(vertex.ShapeType) == 12);
+            Assert.True(window.Compositor.VectorVertices.Count(vertex => DecodeShapeType(vertex.ShapeType) is >= 14 and <= 17) >= 4);
             Assert.DoesNotContain(window.Compositor.VectorVertices, vertex => DecodeShapeType(vertex.ShapeType) == 11);
             Assert.DoesNotContain(window.Compositor.VectorVertices, vertex => DecodeShapeType(vertex.ShapeType) == 3);
         }

@@ -181,6 +181,7 @@ public unsafe class Compositor : IDisposable
     private const float QuadrilateralStripSdfShapeType = 15f;
     private const float QuadrilateralStripStartSdfShapeType = 16f;
     private const float QuadrilateralStripEndSdfShapeType = 17f;
+    private const float AffineStrokeArcMaxAngleRadians = MathF.PI / 24f;
     private const float TextPathCoverageGamma = 0.65f;
 
     public struct StaticTextRecord
@@ -4102,14 +4103,17 @@ public unsafe class Compositor : IDisposable
                     }
                     else if (segment is ArcSegment arc)
                     {
-                        if (CanUseArcSdfStroke(segmentStart, arc, transform))
+                        if (!useAffineStrokeGeometry && CanUseArcSdfStroke(segmentStart, arc, transform))
                         {
                             maxVertices += 4;
                             maxIndices += 6;
                         }
                         else
                         {
-                            var segmentCount = ArcSegmentGeometry.CountFlattenedSegments(segmentStart, arc);
+                            var maxAngle = useAffineStrokeGeometry
+                                ? AffineStrokeArcMaxAngleRadians
+                                : ArcSegmentGeometry.DefaultFlattenAngleRadians;
+                            var segmentCount = ArcSegmentGeometry.CountFlattenedSegments(segmentStart, arc, maxAngle);
                             maxVertices += 4 * segmentCount;
                             maxIndices += 6 * segmentCount;
                         }
@@ -4439,7 +4443,19 @@ public unsafe class Compositor : IDisposable
                     }
                     else if (segment is ArcSegment arc)
                     {
-                        if (!AppendStrokeArcVertices(
+                        var appendedArc = useAffineStrokeGeometry
+                            ? AppendAffineStrokeArcVertices(
+                                verticesSpan,
+                                indicesSpan,
+                                ref currentVertexCount,
+                                ref currentIndexCount,
+                                penBrushIdx,
+                                localAffineThickness,
+                                segmentStart,
+                                arc,
+                                transform,
+                                cmd.IsEdgeAliased)
+                            : AppendStrokeArcVertices(
                                 verticesSpan,
                                 indicesSpan,
                                 ref currentVertexCount,
@@ -4449,7 +4465,8 @@ public unsafe class Compositor : IDisposable
                                 segmentStart,
                                 arc,
                                 transform,
-                                cmd.IsEdgeAliased))
+                                cmd.IsEdgeAliased);
+                        if (!appendedArc)
                         {
                             var points = ArcSegmentGeometry.FlattenArc(segmentStart, arc);
                             for (int i = 0; i < points.Length - 1; i++)
@@ -4461,17 +4478,35 @@ public unsafe class Compositor : IDisposable
                                     continue;
                                 }
 
-                                AppendStrokeLineVertices(
-                                    verticesSpan,
-                                    indicesSpan,
-                                    ref currentVertexCount,
-                                    ref currentIndexCount,
-                                    penSolidColor,
-                                    penBrushIdx,
-                                    thickness,
-                                    Vector2.Transform(arcLineStart, transform),
-                                    Vector2.Transform(arcLineEnd, transform),
-                                    cmd.IsEdgeAliased);
+                                if (useAffineStrokeGeometry)
+                                {
+                                    AppendAffineStrokeLineVertices(
+                                        verticesSpan,
+                                        indicesSpan,
+                                        ref currentVertexCount,
+                                        ref currentIndexCount,
+                                        penSolidColor,
+                                        penBrushIdx,
+                                        localAffineThickness,
+                                        arcLineStart,
+                                        arcLineEnd,
+                                        transform,
+                                        cmd.IsEdgeAliased);
+                                }
+                                else
+                                {
+                                    AppendStrokeLineVertices(
+                                        verticesSpan,
+                                        indicesSpan,
+                                        ref currentVertexCount,
+                                        ref currentIndexCount,
+                                        penSolidColor,
+                                        penBrushIdx,
+                                        thickness,
+                                        Vector2.Transform(arcLineStart, transform),
+                                        Vector2.Transform(arcLineEnd, transform),
+                                        cmd.IsEdgeAliased);
+                                }
                             }
                         }
 
@@ -5402,6 +5437,74 @@ public unsafe class Compositor : IDisposable
         return MathF.Abs(lengthX - lengthY) > lengthTolerance ||
             MathF.Abs(Vector2.Dot(axisX, axisY)) > dotTolerance;
     }
+
+    private static bool AppendAffineStrokeArcVertices(
+        Span<VectorVertex> verticesSpan,
+        Span<uint> indicesSpan,
+        ref int currentVertexCount,
+        ref int currentIndexCount,
+        float penBrushIdx,
+        float localThickness,
+        Vector2 segmentStart,
+        ArcSegment arc,
+        Matrix4x4 transform,
+        bool isEdgeAliased)
+    {
+        if (!ArcSegmentGeometry.TryCreateShaderParameters(
+                segmentStart,
+                arc,
+                Matrix4x4.Identity,
+                out var parameters))
+        {
+            return false;
+        }
+
+        var segmentCount = ArcSegmentGeometry.CountFlattenedSegments(
+            segmentStart,
+            arc,
+            AffineStrokeArcMaxAngleRadians);
+        if (segmentCount <= 0)
+        {
+            return false;
+        }
+
+        var traversalDirection = MathF.CopySign(1f, parameters.DeltaTheta);
+        var previousPoint = segmentStart;
+        var previousTangent = EvaluateArcTangent(parameters, parameters.Theta1) * traversalDirection;
+
+        for (var i = 1; i <= segmentCount; i++)
+        {
+            var t = (float)i / segmentCount;
+            var theta = parameters.Theta1 + t * parameters.DeltaTheta;
+            var point = i == segmentCount ? arc.Point : EvaluateArcPoint(parameters, theta);
+            var tangent = EvaluateArcTangent(parameters, theta) * traversalDirection;
+            AppendAffineStrokeCurveSection(
+                verticesSpan,
+                indicesSpan,
+                ref currentVertexCount,
+                ref currentIndexCount,
+                penBrushIdx,
+                localThickness,
+                previousPoint,
+                point,
+                previousTangent,
+                tangent,
+                transform,
+                isEdgeAliased,
+                isFirstSection: i == 1,
+                isLastSection: i == segmentCount);
+            previousPoint = point;
+            previousTangent = tangent;
+        }
+
+        return true;
+    }
+
+    private static Vector2 EvaluateArcPoint(ArcShaderParameters parameters, float theta) =>
+        parameters.Center + parameters.AxisX * MathF.Cos(theta) + parameters.AxisY * MathF.Sin(theta);
+
+    private static Vector2 EvaluateArcTangent(ArcShaderParameters parameters, float theta) =>
+        -parameters.AxisX * MathF.Sin(theta) + parameters.AxisY * MathF.Cos(theta);
 
     private static bool AppendStrokeArcVertices(
         Span<VectorVertex> verticesSpan,
