@@ -122,6 +122,29 @@ public sealed class StrokeJoinRenderTests
     }
 
     [Fact]
+    public void RoundCapTrianglesOnlyAntialiasCurvedBoundary()
+    {
+        var window = HeadlessWindow.Shared;
+        window.Resize(64, 64);
+        window.Content = new RoundCapStrokeVisual();
+
+        try
+        {
+            window.Render();
+
+            var capVertices = window.Compositor.VectorVertices
+                .Where(vertex => DecodeShapeType(vertex.ShapeType) == 13)
+                .ToArray();
+            Assert.Equal(64, capVertices.Length);
+            Assert.All(capVertices, vertex => Assert.Equal(2f, vertex.CornerRadius));
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
+    [Fact]
     public void ConcaveClosedGradientStrokeLeavesGlyphInteriorTransparent()
     {
         using var recorder = new SKPictureRecorder();
@@ -378,6 +401,26 @@ public sealed class StrokeJoinRenderTests
             context.DrawPath(
                 null,
                 new Pen(new SolidColorBrush(new Vector4(1f, 0f, 0f, 1f)), 8f),
+                path);
+        }
+    }
+
+    private sealed class RoundCapStrokeVisual : FrameworkElement
+    {
+        public override void OnRender(DrawingContext context)
+        {
+            var path = new PathGeometry();
+            var figure = new PathFigure(new Vector2(16f, 32f));
+            figure.Segments.Add(new LineSegment(new Vector2(48f, 32f)));
+            path.Figures.Add(figure);
+
+            context.DrawPath(
+                null,
+                new Pen(
+                    new SolidColorBrush(new Vector4(1f, 0f, 0f, 1f)),
+                    thickness: 16f,
+                    startLineCap: PenLineCap.Round,
+                    endLineCap: PenLineCap.Round),
                 path);
         }
     }

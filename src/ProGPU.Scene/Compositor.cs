@@ -4607,6 +4607,8 @@ public unsafe class Compositor : IDisposable
             var figure = sourceFigures[figureIndex];
             var patternIndex = pattern.InitialIndex;
             var distanceInPattern = pattern.InitialDistance;
+            PathFigure? activeDashFigure = null;
+            var activeDashEnd = default(Vector2);
             var currentPoint = figure.StartPoint;
             var figureSegments = figure.Segments;
 
@@ -4623,6 +4625,8 @@ public unsafe class Compositor : IDisposable
 
                     patternIndex = pattern.InitialIndex;
                     distanceInPattern = pattern.InitialDistance;
+                    activeDashFigure = null;
+                    activeDashEnd = default;
                     continue;
                 }
 
@@ -4635,7 +4639,9 @@ public unsafe class Compositor : IDisposable
                             segmentStart,
                             line.Point,
                             ref patternIndex,
-                            ref distanceInPattern);
+                            ref distanceInPattern,
+                            ref activeDashFigure,
+                            ref activeDashEnd);
                         currentPoint = line.Point;
                         break;
 
@@ -4653,7 +4659,12 @@ public unsafe class Compositor : IDisposable
                             for (int dashIndex = 0; dashIndex < quadraticSegments.Length; dashIndex++)
                             {
                                 var dashSegment = quadraticSegments[dashIndex];
-                                AddDashedSegmentFigure(dashedPath, dashSegment.Start, dashSegment.Segment);
+                                AppendDashedSegment(
+                                    dashedPath,
+                                    ref activeDashFigure,
+                                    ref activeDashEnd,
+                                    dashSegment.Start,
+                                    dashSegment.Segment);
                             }
                         }
 
@@ -4674,7 +4685,12 @@ public unsafe class Compositor : IDisposable
                             for (int dashIndex = 0; dashIndex < cubicSegments.Length; dashIndex++)
                             {
                                 var dashSegment = cubicSegments[dashIndex];
-                                AddDashedSegmentFigure(dashedPath, dashSegment.Start, dashSegment.Segment);
+                                AppendDashedSegment(
+                                    dashedPath,
+                                    ref activeDashFigure,
+                                    ref activeDashEnd,
+                                    dashSegment.Start,
+                                    dashSegment.Segment);
                             }
                         }
 
@@ -4695,7 +4711,12 @@ public unsafe class Compositor : IDisposable
                             for (int dashIndex = 0; dashIndex < arcSegments.Length; dashIndex++)
                             {
                                 var dashSegment = arcSegments[dashIndex];
-                                AddDashedSegmentFigure(dashedPath, dashSegment.Start, dashSegment.Arc);
+                                AppendDashedSegment(
+                                    dashedPath,
+                                    ref activeDashFigure,
+                                    ref activeDashEnd,
+                                    dashSegment.Start,
+                                    dashSegment.Arc);
                             }
                         }
 
@@ -4715,7 +4736,9 @@ public unsafe class Compositor : IDisposable
                     currentPoint,
                     figure.StartPoint,
                     ref patternIndex,
-                    ref distanceInPattern);
+                    ref distanceInPattern,
+                    ref activeDashFigure,
+                    ref activeDashEnd);
             }
         }
 
@@ -4728,7 +4751,9 @@ public unsafe class Compositor : IDisposable
         Vector2 start,
         Vector2 end,
         ref int patternIndex,
-        ref float distanceInPattern)
+        ref float distanceInPattern,
+        ref PathFigure? activeDashFigure,
+        ref Vector2 activeDashEnd)
     {
         var intervals = pattern.Intervals;
         if (!DashPattern.TryValidateState(intervals, patternIndex, distanceInPattern))
@@ -4755,8 +4780,10 @@ public unsafe class Compositor : IDisposable
             var step = MathF.Min(remainingInElement, length - distance);
             if ((localPatternIndex % 2) == 0 && step > StrokeEpsilon)
             {
-                AddDashedSegmentFigure(
+                AppendDashedSegment(
                     dashedPath,
+                    ref activeDashFigure,
+                    ref activeDashEnd,
                     start + direction * distance,
                     new LineSegment(start + direction * (distance + step)));
             }
@@ -4774,7 +4801,12 @@ public unsafe class Compositor : IDisposable
         distanceInPattern = localDistanceInPattern;
     }
 
-    private static void AddDashedSegmentFigure(PathGeometry dashedPath, Vector2 start, PathSegment segment)
+    private static void AppendDashedSegment(
+        PathGeometry dashedPath,
+        ref PathFigure? activeDashFigure,
+        ref Vector2 activeDashEnd,
+        Vector2 start,
+        PathSegment segment)
     {
         if (TryGetPathSegmentEndPoint(segment, out var endPoint) &&
             Vector2.DistanceSquared(start, endPoint) <= StrokeEpsilon * StrokeEpsilon)
@@ -4782,8 +4814,16 @@ public unsafe class Compositor : IDisposable
             return;
         }
 
-        segment.IsSmoothJoin = false;
         segment.IsStroked = true;
+        if (activeDashFigure != null &&
+            Vector2.DistanceSquared(activeDashEnd, start) <= StrokeEpsilon * StrokeEpsilon)
+        {
+            activeDashFigure.Segments.Add(segment);
+            activeDashEnd = endPoint;
+            return;
+        }
+
+        segment.IsSmoothJoin = false;
         var figure = new PathFigure(start)
         {
             IsClosed = false,
@@ -4791,6 +4831,8 @@ public unsafe class Compositor : IDisposable
         };
         figure.Segments.Add(segment);
         dashedPath.Figures.Add(figure);
+        activeDashFigure = figure;
+        activeDashEnd = endPoint;
     }
 
     internal static Pen CreateUndashedPen(Pen pen)
@@ -5344,10 +5386,15 @@ public unsafe class Compositor : IDisposable
             center,
             directionAlongPath,
             isStart);
+        var normalizedDirection = Vector2.Normalize(directionAlongPath);
 
         for (var triangleIndex = 0; triangleIndex < triangles.Length; triangleIndex++)
         {
-            var edgeMasks = GetStrokeTriangleEdgeMasks(triangles, triangleIndex);
+            var edgeMasks = GetStrokeCapTriangleEdgeMasks(
+                triangles,
+                triangleIndex,
+                center,
+                normalizedDirection);
             AppendStrokeTriangleVertices(
                 verticesSpan,
                 indicesSpan,
@@ -5361,9 +5408,36 @@ public unsafe class Compositor : IDisposable
         }
     }
 
+    private static (uint Exterior, uint OwnedInternal) GetStrokeCapTriangleEdgeMasks(
+        StrokeJoinTriangle[] triangles,
+        int triangleIndex,
+        Vector2 capCenter,
+        Vector2 directionAlongPath)
+    {
+        return GetStrokeTriangleEdgeMasks(
+            triangles,
+            triangleIndex,
+            hasCapBodyInterface: true,
+            capCenter: capCenter,
+            capDirection: directionAlongPath);
+    }
+
+    private static bool IsPointOnStrokeCapBodyInterface(
+        Vector2 point,
+        Vector2 capCenter,
+        Vector2 directionAlongPath)
+    {
+        var offset = point - capCenter;
+        var tolerance = StrokeEpsilon * MathF.Max(1f, offset.Length());
+        return MathF.Abs(Vector2.Dot(offset, directionAlongPath)) <= tolerance;
+    }
+
     private static (uint Exterior, uint OwnedInternal) GetStrokeTriangleEdgeMasks(
         StrokeJoinTriangle[] triangles,
-        int triangleIndex)
+        int triangleIndex,
+        bool hasCapBodyInterface = false,
+        Vector2 capCenter = default,
+        Vector2 capDirection = default)
     {
         var triangle = triangles[triangleIndex];
         uint exteriorMask = 0;
@@ -5375,6 +5449,13 @@ public unsafe class Compositor : IDisposable
 
         void ClassifyStrokeTriangleEdge(Vector2 edgeStart, Vector2 edgeEnd, uint bit)
         {
+            if (hasCapBodyInterface &&
+                IsPointOnStrokeCapBodyInterface(edgeStart, capCenter, capDirection) &&
+                IsPointOnStrokeCapBodyInterface(edgeEnd, capCenter, capDirection))
+            {
+                return;
+            }
+
             var sharedTriangleIndex = FindSharedStrokeTriangleEdge(
                 triangles,
                 triangleIndex,

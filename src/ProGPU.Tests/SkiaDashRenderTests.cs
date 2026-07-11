@@ -1,3 +1,4 @@
+using System.Numerics;
 using Microsoft.UI.Xaml;
 using ProGPU.Scene;
 using ProGPU.Tests.Headless;
@@ -10,6 +11,34 @@ namespace ProGPU.Tests;
 
 public sealed class SkiaDashRenderTests
 {
+    [Fact]
+    public void DashedPolylineKeepsSingleDashAcrossSegmentJoin()
+    {
+        var path = new PathGeometry();
+        var figure = new PathFigure(new Vector2(0f, 0f));
+        figure.Segments.Add(new LineSegment(new Vector2(5f, 0f)));
+        figure.Segments.Add(new LineSegment(new Vector2(5f, 5f)));
+        path.Figures.Add(figure);
+        var cache = RenderCommandGeometryCache.ForStrokePath(path);
+        var pen = new Pen(
+            new SolidColorBrush(new Vector4(1f, 0f, 0f, 1f)),
+            thickness: 1f,
+            dashArray: [8.0, 4.0]);
+
+        Assert.True(cache.TryGetDashedStrokePath(pen, out var dashedPath, out _));
+
+        var dashedFigure = Assert.Single(dashedPath.Figures);
+        Assert.Equal(new Vector2(0f, 0f), dashedFigure.StartPoint);
+        Assert.Collection(
+            dashedFigure.Segments,
+            segment => Assert.Equal(
+                new Vector2(5f, 0f),
+                Assert.IsType<LineSegment>(segment).Point),
+            segment => Assert.Equal(
+                new Vector2(5f, 3f),
+                Assert.IsType<LineSegment>(segment).Point));
+    }
+
     [Fact]
     public void DashedPathEffectRendersStrokeGaps()
     {
