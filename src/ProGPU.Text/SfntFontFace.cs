@@ -271,7 +271,7 @@ sealed class SfntFontFace
             string value = DecodeName(table.Slice(valueOffset, length), platformId, encodingId);
             if (!string.IsNullOrWhiteSpace(value))
             {
-                candidates.Add(new NameCandidate(value, GetNameScore(platformId, languageId)));
+                candidates.Add(new NameCandidate(value, GetNameScore(platformId, languageId, value)));
             }
         }
 
@@ -814,6 +814,21 @@ sealed class SfntFontFace
         }
 
         return 1;
+    }
+
+    internal static int GetNameScore(ushort platformId, ushort languageId, string value)
+    {
+        int score = GetNameScore(platformId, languageId);
+        for (int i = 0; i < value.Length; i++)
+        {
+            char ch = value[i];
+            if (char.IsLetter(ch) && ch > '\u024F')
+            {
+                return score;
+            }
+        }
+
+        return score + 10;
     }
 
     private static string ReadTag(byte[] data, int offset)

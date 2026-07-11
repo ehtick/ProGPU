@@ -608,6 +608,21 @@ public class SKFontManager : IDisposable
         void AddLanguage(string language)
         {
             string normalized = language.Trim().Replace('_', '-').ToLowerInvariant();
+            if (normalized == "ar" || normalized.StartsWith("ar-", StringComparison.Ordinal))
+            {
+                Add(
+                    "Geeza Pro",
+                    "Noto Naskh Arabic",
+                    "Noto Sans Arabic",
+                    "Segoe UI",
+                    "Traditional Arabic",
+                    "Arabic Typesetting",
+                    "Tahoma",
+                    "Arial",
+                    "DejaVu Sans");
+                return;
+            }
+
             if (normalized == "ja" || normalized.StartsWith("ja-", StringComparison.Ordinal))
             {
                 Add(
@@ -674,7 +689,21 @@ public class SKFontManager : IDisposable
             }
         }
 
-        if (codepoint is >= 0x3040 and <= 0x30FF)
+        if (IsArabicCodepoint(codepoint))
+        {
+            AddLanguage("ar");
+        }
+        else if (IsHebrewCodepoint(codepoint))
+        {
+            Add(
+                "Arial Hebrew",
+                "Lucida Grande",
+                "Noto Sans Hebrew",
+                "Segoe UI",
+                "Arial",
+                "DejaVu Sans");
+        }
+        else if (codepoint is >= 0x3040 and <= 0x30FF)
         {
             AddLanguage("ja");
         }
@@ -689,9 +718,39 @@ public class SKFontManager : IDisposable
         {
             AddLanguage("zh-Hans");
         }
+        else if (IsLatinGreekOrCyrillicCodepoint(codepoint))
+        {
+            Add(
+                "Helvetica",
+                "Arial",
+                "Segoe UI",
+                "Noto Sans",
+                "DejaVu Sans",
+                "Liberation Sans");
+        }
 
         return result;
     }
+
+    private static bool IsArabicCodepoint(int codepoint) =>
+        codepoint is >= 0x0600 and <= 0x06FF or
+                     >= 0x0750 and <= 0x077F or
+                     >= 0x0870 and <= 0x089F or
+                     >= 0x08A0 and <= 0x08FF or
+                     >= 0xFB50 and <= 0xFDFF or
+                     >= 0xFE70 and <= 0xFEFF or
+                     >= 0x1EE00 and <= 0x1EEFF;
+
+    private static bool IsHebrewCodepoint(int codepoint) =>
+        codepoint is >= 0x0590 and <= 0x05FF or
+                     >= 0xFB1D and <= 0xFB4F;
+
+    private static bool IsLatinGreekOrCyrillicCodepoint(int codepoint) =>
+        codepoint is >= 0x0020 and <= 0x024F or
+                     >= 0x0370 and <= 0x052F or
+                     >= 0x1E00 and <= 0x1FFF or
+                     >= 0x2DE0 and <= 0x2DFF or
+                     >= 0xA640 and <= 0xA69F;
 
     private static bool TryMatchFamily(
         IReadOnlyList<FontInfo> fonts,

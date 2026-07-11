@@ -229,19 +229,14 @@ internal static class SfntFontMetadataReader
                 continue;
             }
 
-            var score = SfntFontFace.GetNameScore(platformId, languageId);
-            if (!selection.ShouldRead(nameId, score))
-            {
-                continue;
-            }
-
             byte[] buffer = ArrayPool<byte>.Shared.Rent(valueLength);
             try
             {
                 var bytes = buffer.AsSpan(0, valueLength);
                 ReadExactly(stream, absoluteValueOffset, bytes);
                 var value = SfntFontFace.DecodeName(bytes, platformId, encodingId);
-                if (!string.IsNullOrWhiteSpace(value))
+                var score = SfntFontFace.GetNameScore(platformId, languageId, value);
+                if (!string.IsNullOrWhiteSpace(value) && selection.ShouldRead(nameId, score))
                 {
                     selection.Set(nameId, value, score);
                 }

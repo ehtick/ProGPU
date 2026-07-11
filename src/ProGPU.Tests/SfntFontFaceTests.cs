@@ -43,6 +43,33 @@ public class SfntFontFaceTests
     }
 
     [Fact]
+    public void PrefersLatinCanonicalNamesOverLocalizedWindowsNames()
+    {
+        byte[] fontData = BuildSfnt(BuildLocalizedNameTable());
+        SfntFontFace face = SfntFontFace.Load(fontData);
+
+        Assert.True(face.TryGetName(SfntNameIds.FamilyName, out string familyName));
+        Assert.True(face.TryGetName(SfntNameIds.FullName, out string fullName));
+        Assert.Equal("Geeza Pro", familyName);
+        Assert.Equal("Geeza Pro Regular", fullName);
+
+        string file = Path.Combine(Path.GetTempPath(), $"progpu-localized-font-{Guid.NewGuid():N}.ttf");
+        File.WriteAllBytes(file, fontData);
+        try
+        {
+            FontInfo? info = FontApi.ParseFontInfo(file);
+
+            Assert.NotNull(info);
+            Assert.Equal("Geeza Pro", info.FamilyName);
+            Assert.Equal("Geeza Pro Regular", info.Name);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Fact]
     public void FontApiParsesFontInfoWithFaceIndex()
     {
         string file = Path.Combine(Path.GetTempPath(), $"progpu-font-{Guid.NewGuid():N}.ttf");
@@ -473,10 +500,54 @@ public class SfntFontFaceTests
 
     private static byte[] BuildSfnt(string familyName, string fullName)
     {
-        byte[] nameTable = BuildNameTable(familyName, fullName);
+        return BuildSfnt(BuildNameTable(familyName, fullName));
+    }
+
+    private static byte[] BuildSfnt(byte[] nameTable)
+    {
         using var stream = new MemoryStream();
         using var writer = new BinaryWriter(stream);
         WriteSfntFace(writer, 0, nameTable);
+        return stream.ToArray();
+    }
+
+    private static byte[] BuildLocalizedNameTable()
+    {
+        var values = new[]
+        {
+            (Platform: (ushort)3, Encoding: (ushort)1, Language: (ushort)0x0420, NameId: SfntNameIds.FamilyName, Value: "\u06AF\u06CC\u0632\u0627 \u067E\u0631\u0648"),
+            (Platform: (ushort)3, Encoding: (ushort)1, Language: (ushort)0x0420, NameId: SfntNameIds.FullName, Value: "\u06AF\u06CC\u0632\u0627 \u067E\u0631\u0648 \u0631\u06CC\u06AF\u0648\u0644\u0631"),
+            (Platform: (ushort)0, Encoding: (ushort)4, Language: (ushort)0, NameId: SfntNameIds.FamilyName, Value: "Geeza Pro"),
+            (Platform: (ushort)0, Encoding: (ushort)4, Language: (ushort)0, NameId: SfntNameIds.FullName, Value: "Geeza Pro Regular")
+        };
+        byte[][] encodedValues = values
+            .Select(static value => Encoding.BigEndianUnicode.GetBytes(value.Value))
+            .ToArray();
+        int stringOffset = 6 + values.Length * 12;
+
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+        WriteUShort(writer, 0);
+        WriteUShort(writer, (ushort)values.Length);
+        WriteUShort(writer, (ushort)stringOffset);
+
+        int valueOffset = 0;
+        for (int i = 0; i < values.Length; i++)
+        {
+            WriteUShort(writer, values[i].Platform);
+            WriteUShort(writer, values[i].Encoding);
+            WriteUShort(writer, values[i].Language);
+            WriteUShort(writer, values[i].NameId);
+            WriteUShort(writer, (ushort)encodedValues[i].Length);
+            WriteUShort(writer, (ushort)valueOffset);
+            valueOffset += encodedValues[i].Length;
+        }
+
+        for (int i = 0; i < encodedValues.Length; i++)
+        {
+            writer.Write(encodedValues[i]);
+        }
+
         return stream.ToArray();
     }
 
