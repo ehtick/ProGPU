@@ -1090,11 +1090,13 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let boldOffset = input.scaleBoldItalicUseMvp.y;
     let italicSkew = input.scaleBoldItalicUseMvp.z;
     let encodedTextFlags = input.scaleBoldItalicUseMvp.w;
-    let aliasedText = encodedTextFlags < -0.5;
-    let clearTypeText = encodedTextFlags > 1.5;
+    let colorGlyph = encodedTextFlags > 5.5;
+    let textFlags = select(encodedTextFlags, encodedTextFlags - 8.0, colorGlyph);
+    let aliasedText = textFlags < -0.5;
+    let clearTypeText = textFlags > 1.5;
     let useMvp = select(
-        select(encodedTextFlags, encodedTextFlags - 2.0, clearTypeText),
-        -encodedTextFlags - 1.0,
+        select(textFlags, textFlags - 2.0, clearTypeText),
+        -textFlags - 1.0,
         aliasedText);
 
     let lx0 = bear.x * scaleRatio + boldOffset;
@@ -1130,7 +1132,10 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     output.texCoord = mix(texCoordMin, texCoordMax, local_uv);
     output.cornerRadius = select(1.43, -1.43, aliasedText); // DefaultTextGamma, sign encodes aliased text
     output.strokeThickness = 1.15; // DefaultTextContrast
-    output.textMode = select(select(0.0, 2.0, clearTypeText), 1.0, aliasedText);
+    output.textMode = select(
+        select(select(0.0, 2.0, clearTypeText), 1.0, aliasedText),
+        3.0,
+        colorGlyph);
     return output;
 }
 
@@ -1145,12 +1150,16 @@ fn text_coverage_to_alpha(alpha: f32, contrast: f32, gamma: f32, aliasedText: bo
 }
 
 fn text_fs_main(input: VertexOutput) -> vec4<f32> {
-    let alpha = textureSample(atlasTexture, atlasSampler, input.texCoord).r;
+    let atlasColor = textureSample(atlasTexture, atlasSampler, input.texCoord);
+    let alpha = atlasColor.r;
     let aliasedText = input.cornerRadius < 0.0;
     let screen_uv = input.position.xy / uniforms.canvasSize;
     let maskAlpha = textureSample(maskTexture, maskSampler, screen_uv).r;
     if (maskAlpha <= 0.0) {
         discard;
+    }
+    if (input.textMode > 2.5) {
+        return vec4<f32>(atlasColor.rgb, atlasColor.a * input.color.a * maskAlpha);
     }
     let gamma = abs(input.cornerRadius);
     let grayscaleAlpha = text_coverage_to_alpha(alpha, input.strokeThickness, gamma, aliasedText);

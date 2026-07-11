@@ -67,6 +67,27 @@ public readonly struct BitmapGlyphData
         OriginOffsetY = originOffsetY;
         GraphicType = graphicType;
         Data = data;
+        UsesHorizontalMetrics = false;
+        BearingX = 0;
+        BearingY = 0;
+    }
+
+    private BitmapGlyphData(
+        ushort pixelsPerEm,
+        short bearingX,
+        short bearingY,
+        uint graphicType,
+        ReadOnlyMemory<byte> data)
+    {
+        PixelsPerEm = pixelsPerEm;
+        PixelsPerInch = 72;
+        OriginOffsetX = 0;
+        OriginOffsetY = 0;
+        GraphicType = graphicType;
+        Data = data;
+        UsesHorizontalMetrics = true;
+        BearingX = bearingX;
+        BearingY = bearingY;
     }
 
     public ushort PixelsPerEm { get; }
@@ -75,6 +96,17 @@ public readonly struct BitmapGlyphData
     public short OriginOffsetY { get; }
     public uint GraphicType { get; }
     public ReadOnlyMemory<byte> Data { get; }
+    public bool UsesHorizontalMetrics { get; }
+    public short BearingX { get; }
+    public short BearingY { get; }
+
+    internal static BitmapGlyphData FromHorizontalMetrics(
+        ushort pixelsPerEm,
+        short bearingX,
+        short bearingY,
+        uint graphicType,
+        ReadOnlyMemory<byte> data) =>
+        new(pixelsPerEm, bearingX, bearingY, graphicType, data);
 }
 
 public class TtfFont
@@ -99,6 +131,7 @@ public class TtfFont
     public bool HasCffOutlines => _cffTypeface is not null;
     public bool HasBitmapGlyphs =>
         _tables.ContainsKey("sbix") ||
+        (_tables.ContainsKey("CBLC") && _tables.ContainsKey("CBDT")) ||
         (_tables.ContainsKey("bloc") && _tables.ContainsKey("bdat"));
     public bool UsesSymbolCharacterMap => _face.UsesSymbolCharacterMap;
 
@@ -383,7 +416,22 @@ public class TtfFont
     public bool TryGetBitmapGlyph(ushort glyphIndex, float targetPixelsPerEm, out BitmapGlyphData glyph)
     {
         glyph = default;
-        if (glyphIndex >= NumGlyphs || !TryGetTable("sbix", out var sbixMemory))
+        if (glyphIndex >= NumGlyphs)
+        {
+            return false;
+        }
+
+        return TryGetSbixBitmapGlyph(glyphIndex, targetPixelsPerEm, out glyph) ||
+               TryGetCbdtBitmapGlyph(glyphIndex, targetPixelsPerEm, out glyph);
+    }
+
+    private bool TryGetSbixBitmapGlyph(
+        ushort glyphIndex,
+        float targetPixelsPerEm,
+        out BitmapGlyphData glyph)
+    {
+        glyph = default;
+        if (!TryGetTable("sbix", out var sbixMemory))
         {
             return false;
         }
@@ -549,6 +597,410 @@ public class TtfFont
             graphicType,
             sbixMemory.Slice(start + 8, end - start - 8));
         return true;
+    }
+
+    private bool TryGetCbdtBitmapGlyph(
+        ushort glyphIndex,
+        float targetPixelsPerEm,
+        out BitmapGlyphData glyph)
+    {
+        glyph = default;
+        if (!TryGetTable("CBLC", out var cblcMemory) ||
+            !TryGetTable("CBDT", out var cbdtMemory))
+        {
+            return false;
+        }
+
+        var cblc = cblcMemory.Span;
+        var cbdt = cbdtMemory.Span;
+        if (cblc.Length < 8 || cbdt.Length < 4 ||
+            ReadUShort(cblc, 0) != 3 || ReadUShort(cbdt, 0) != 3)
+        {
+            return false;
+        }
+
+        var strikeCount = ReadUInt(cblc, 4);
+        if (strikeCount == 0 || strikeCount > int.MaxValue ||
+            8L + strikeCount * 48L > cblc.Length)
+        {
+            return false;
+        }
+
+        var bestDistance = float.MaxValue;
+        BitmapGlyphData best = default;
+        var found = false;
+        for (var strikeIndex = 0; strikeIndex < (int)strikeCount; strikeIndex++)
+        {
+            var strikeOffset = 8 + strikeIndex * 48;
+            var firstGlyph = ReadUShort(cblc, strikeOffset + 40);
+            var lastGlyph = ReadUShort(cblc, strikeOffset + 42);
+            if (glyphIndex < firstGlyph || glyphIndex > lastGlyph)
+            {
+                continue;
+            }
+
+            var pixelsPerEm = cblc[strikeOffset + 45] != 0
+                ? cblc[strikeOffset + 45]
+                : cblc[strikeOffset + 44];
+            if (pixelsPerEm == 0 ||
+                !TryGetCbdtBitmapGlyphFromStrike(
+                    cblcMemory,
+                    cbdtMemory,
+                    strikeOffset,
+                    glyphIndex,
+                    pixelsPerEm,
+                    out var candidate))
+            {
+                continue;
+            }
+
+            var distance = MathF.Abs(candidate.PixelsPerEm - targetPixelsPerEm);
+            if (!found || distance < bestDistance ||
+                (distance == bestDistance && candidate.PixelsPerEm > best.PixelsPerEm))
+            {
+                found = true;
+                bestDistance = distance;
+                best = candidate;
+            }
+        }
+
+        glyph = best;
+        return found;
+    }
+
+    private static bool TryGetCbdtBitmapGlyphFromStrike(
+        ReadOnlyMemory<byte> cblcMemory,
+        ReadOnlyMemory<byte> cbdtMemory,
+        int strikeOffset,
+        ushort glyphIndex,
+        ushort pixelsPerEm,
+        out BitmapGlyphData glyph)
+    {
+        glyph = default;
+        var cblc = cblcMemory.Span;
+        var indexListOffsetValue = ReadUInt(cblc, strikeOffset);
+        var indexListSizeValue = ReadUInt(cblc, strikeOffset + 4);
+        var subtableCount = ReadUInt(cblc, strikeOffset + 8);
+        if (indexListOffsetValue > int.MaxValue || indexListSizeValue > int.MaxValue ||
+            subtableCount == 0 || subtableCount > int.MaxValue)
+        {
+            return false;
+        }
+
+        var indexListOffset = (int)indexListOffsetValue;
+        var indexListSize = (int)indexListSizeValue;
+        var indexListEnd = (long)indexListOffset + indexListSize;
+        if (indexListOffset < 0 || indexListSize < 8 || indexListEnd > cblc.Length ||
+            (long)subtableCount * 8L > indexListSize)
+        {
+            return false;
+        }
+
+        for (var recordIndex = 0; recordIndex < (int)subtableCount; recordIndex++)
+        {
+            var recordOffset = indexListOffset + recordIndex * 8;
+            var firstGlyph = ReadUShort(cblc, recordOffset);
+            var lastGlyph = ReadUShort(cblc, recordOffset + 2);
+            if (glyphIndex < firstGlyph || glyphIndex > lastGlyph)
+            {
+                continue;
+            }
+
+            var subtableRelativeOffset = ReadUInt(cblc, recordOffset + 4);
+            var subtableOffsetValue = (long)indexListOffset + subtableRelativeOffset;
+            if (subtableOffsetValue < indexListOffset || subtableOffsetValue + 8 > indexListEnd)
+            {
+                return false;
+            }
+
+            var subtableOffset = (int)subtableOffsetValue;
+            var imageFormat = ReadUShort(cblc, subtableOffset + 2);
+            if (!TryResolveCbdtImageRange(
+                    cblc,
+                    subtableOffset,
+                    (int)indexListEnd,
+                    firstGlyph,
+                    lastGlyph,
+                    glyphIndex,
+                    out var imageStart,
+                    out var imageEnd,
+                    out var indexMetrics) ||
+                !TryReadCbdtImage(
+                    cbdtMemory,
+                    imageStart,
+                    imageEnd,
+                    imageFormat,
+                    pixelsPerEm,
+                    cblc[strikeOffset + 47],
+                    indexMetrics,
+                    out glyph))
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryResolveCbdtImageRange(
+        ReadOnlySpan<byte> cblc,
+        int subtableOffset,
+        int subtableLimit,
+        ushort firstGlyph,
+        ushort lastGlyph,
+        ushort glyphIndex,
+        out long imageStart,
+        out long imageEnd,
+        out CbdtGlyphMetrics indexMetrics)
+    {
+        imageStart = 0;
+        imageEnd = 0;
+        indexMetrics = default;
+        var indexFormat = ReadUShort(cblc, subtableOffset);
+        var imageDataOffset = ReadUInt(cblc, subtableOffset + 4);
+        var glyphOffset = glyphIndex - firstGlyph;
+        var glyphCount = (long)lastGlyph - firstGlyph + 1L;
+        long relativeStart;
+        long relativeEnd;
+
+        switch (indexFormat)
+        {
+            case 1:
+                {
+                    var offsetsLength = (glyphCount + 1L) * 4L;
+                    if (subtableOffset + 8L + offsetsLength > subtableLimit)
+                    {
+                        return false;
+                    }
+
+                    relativeStart = ReadUInt(cblc, subtableOffset + 8 + glyphOffset * 4);
+                    relativeEnd = ReadUInt(cblc, subtableOffset + 12 + glyphOffset * 4);
+                    break;
+                }
+            case 2:
+                {
+                    if (subtableOffset + 20 > subtableLimit)
+                    {
+                        return false;
+                    }
+
+                    var imageSize = ReadUInt(cblc, subtableOffset + 8);
+                    if (imageSize == 0)
+                    {
+                        return false;
+                    }
+
+                    indexMetrics = ReadBigCbdtGlyphMetrics(cblc, subtableOffset + 12);
+                    relativeStart = (long)glyphOffset * imageSize;
+                    relativeEnd = relativeStart + imageSize;
+                    break;
+                }
+            case 3:
+                {
+                    var offsetsLength = (glyphCount + 1L) * 2L;
+                    if (subtableOffset + 8L + offsetsLength > subtableLimit)
+                    {
+                        return false;
+                    }
+
+                    relativeStart = ReadUShort(cblc, subtableOffset + 8 + glyphOffset * 2);
+                    relativeEnd = ReadUShort(cblc, subtableOffset + 10 + glyphOffset * 2);
+                    break;
+                }
+            case 4:
+                {
+                    if (subtableOffset + 12 > subtableLimit)
+                    {
+                        return false;
+                    }
+
+                    var sparseGlyphCount = ReadUInt(cblc, subtableOffset + 8);
+                    if (sparseGlyphCount == 0 || sparseGlyphCount > int.MaxValue ||
+                        subtableOffset + 12L + ((long)sparseGlyphCount + 1L) * 4L > subtableLimit)
+                    {
+                        return false;
+                    }
+
+                    var pairOffset = subtableOffset + 12;
+                    var found = false;
+                    relativeStart = 0;
+                    relativeEnd = 0;
+                    for (var pairIndex = 0; pairIndex < (int)sparseGlyphCount; pairIndex++)
+                    {
+                        var currentPair = pairOffset + pairIndex * 4;
+                        if (ReadUShort(cblc, currentPair) != glyphIndex)
+                        {
+                            continue;
+                        }
+
+                        relativeStart = ReadUShort(cblc, currentPair + 2);
+                        relativeEnd = ReadUShort(cblc, currentPair + 6);
+                        found = true;
+                        break;
+                    }
+
+                    if (!found)
+                    {
+                        return false;
+                    }
+
+                    break;
+                }
+            case 5:
+                {
+                    if (subtableOffset + 24 > subtableLimit)
+                    {
+                        return false;
+                    }
+
+                    var imageSize = ReadUInt(cblc, subtableOffset + 8);
+                    var sparseGlyphCount = ReadUInt(cblc, subtableOffset + 20);
+                    if (imageSize == 0 || sparseGlyphCount == 0 || sparseGlyphCount > int.MaxValue ||
+                        subtableOffset + 24L + (long)sparseGlyphCount * 2L > subtableLimit)
+                    {
+                        return false;
+                    }
+
+                    var glyphArrayOffset = subtableOffset + 24;
+                    var sparseIndex = -1;
+                    for (var pairIndex = 0; pairIndex < (int)sparseGlyphCount; pairIndex++)
+                    {
+                        if (ReadUShort(cblc, glyphArrayOffset + pairIndex * 2) == glyphIndex)
+                        {
+                            sparseIndex = pairIndex;
+                            break;
+                        }
+                    }
+
+                    if (sparseIndex < 0)
+                    {
+                        return false;
+                    }
+
+                    indexMetrics = ReadBigCbdtGlyphMetrics(cblc, subtableOffset + 12);
+                    relativeStart = (long)sparseIndex * imageSize;
+                    relativeEnd = relativeStart + imageSize;
+                    break;
+                }
+            default:
+                return false;
+        }
+
+        if (relativeStart < 0 || relativeStart >= relativeEnd)
+        {
+            return false;
+        }
+
+        imageStart = imageDataOffset + relativeStart;
+        imageEnd = imageDataOffset + relativeEnd;
+        return imageStart >= 0 && imageStart < imageEnd;
+    }
+
+    private static bool TryReadCbdtImage(
+        ReadOnlyMemory<byte> cbdtMemory,
+        long imageStartValue,
+        long imageEndValue,
+        ushort imageFormat,
+        ushort pixelsPerEm,
+        byte strikeFlags,
+        CbdtGlyphMetrics indexMetrics,
+        out BitmapGlyphData glyph)
+    {
+        glyph = default;
+        if (imageStartValue > int.MaxValue || imageEndValue > cbdtMemory.Length ||
+            imageStartValue < 4 || imageStartValue >= imageEndValue)
+        {
+            return false;
+        }
+
+        var cbdt = cbdtMemory.Span;
+        var imageStart = (int)imageStartValue;
+        var imageEnd = (int)imageEndValue;
+        CbdtGlyphMetrics metrics;
+        int dataOffset;
+        uint dataLength;
+        switch (imageFormat)
+        {
+            case 17:
+                if ((strikeFlags & 0x01) == 0 || imageEnd - imageStart < 9)
+                {
+                    return false;
+                }
+
+                metrics = ReadSmallCbdtGlyphMetrics(cbdt, imageStart);
+                dataLength = ReadUInt(cbdt, imageStart + 5);
+                dataOffset = imageStart + 9;
+                break;
+            case 18:
+                if (imageEnd - imageStart < 12)
+                {
+                    return false;
+                }
+
+                metrics = ReadBigCbdtGlyphMetrics(cbdt, imageStart);
+                dataLength = ReadUInt(cbdt, imageStart + 8);
+                dataOffset = imageStart + 12;
+                break;
+            case 19:
+                if (!indexMetrics.IsValid || imageEnd - imageStart < 4)
+                {
+                    return false;
+                }
+
+                metrics = indexMetrics;
+                dataLength = ReadUInt(cbdt, imageStart);
+                dataOffset = imageStart + 4;
+                break;
+            default:
+                return false;
+        }
+
+        if (!metrics.IsValid || dataLength == 0 ||
+            (long)dataOffset + dataLength > imageEnd)
+        {
+            return false;
+        }
+
+        glyph = BitmapGlyphData.FromHorizontalMetrics(
+            pixelsPerEm,
+            metrics.BearingX,
+            metrics.BearingY,
+            PngBitmapGraphicType,
+            cbdtMemory.Slice(dataOffset, (int)dataLength));
+        return true;
+    }
+
+    private static CbdtGlyphMetrics ReadSmallCbdtGlyphMetrics(ReadOnlySpan<byte> data, int offset) =>
+        new(
+            data[offset + 1],
+            data[offset],
+            unchecked((sbyte)data[offset + 2]),
+            unchecked((sbyte)data[offset + 3]));
+
+    private static CbdtGlyphMetrics ReadBigCbdtGlyphMetrics(ReadOnlySpan<byte> data, int offset) =>
+        new(
+            data[offset + 1],
+            data[offset],
+            unchecked((sbyte)data[offset + 2]),
+            unchecked((sbyte)data[offset + 3]));
+
+    private readonly struct CbdtGlyphMetrics
+    {
+        public CbdtGlyphMetrics(byte width, byte height, sbyte bearingX, sbyte bearingY)
+        {
+            Width = width;
+            Height = height;
+            BearingX = bearingX;
+            BearingY = bearingY;
+        }
+
+        public byte Width { get; }
+        public byte Height { get; }
+        public short BearingX { get; }
+        public short BearingY { get; }
+        public bool IsValid => Width != 0 && Height != 0;
     }
 
     public float GetAdvanceWidth(ushort glyphIndex, float emSize)

@@ -6,6 +6,7 @@ using Silk.NET.Core.Native;
 using Silk.NET.WebGPU;
 using ProGPU.Backend;
 using ProGPU.Vector;
+using StbImageSharp;
 
 namespace ProGPU.Text;
 
@@ -17,7 +18,11 @@ public struct GlyphInfo
     public uint Height;
     public float BearX;
     public float BearY;
+    public float RenderWidth;
+    public float RenderHeight;
     public float Advance;
+    public float RasterScale;
+    public bool IsColorBitmap;
     
     // UV coordinates inside the atlas texture
     public Vector2 TexCoordMin;
@@ -161,8 +166,12 @@ public unsafe class GlyphAtlas : IDisposable
         var key = (font, glyphIdx, size, subpixelX);
         if (!_glyphs.TryGetValue(key, out var info))
         {
-            // If it is a dynamic color emoji inside the font, we don't need to rasterize it into the monochrome atlas!
-            // Instead, we just provide proper layout bounds, and the compositor will render it using color vector paths.
+            if (TryCreateColorBitmapGlyph(font, glyphIdx, size, out info))
+            {
+                _glyphs[key] = info;
+                return info;
+            }
+            // Color vector glyphs are emitted as paths by the compositor.
             if (font.HasColorLayers(glyphIdx))
             {
                 info = new GlyphInfo
@@ -466,6 +475,122 @@ public unsafe class GlyphAtlas : IDisposable
         }
 
         return info;
+    }
+
+    private bool TryCreateColorBitmapGlyph(
+        TtfFont font,
+        ushort glyphIndex,
+        float size,
+        out GlyphInfo info)
+    {
+        info = default;
+        if (!font.TryGetBitmapGlyph(glyphIndex, size, out var bitmap))
+        {
+            return false;
+        }
+
+        ImageResult decoded;
+        try
+        {
+            decoded = ImageResult.FromMemory(
+                bitmap.Data.ToArray(),
+                ColorComponents.RedGreenBlueAlpha);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            return false;
+        }
+
+        if (decoded.Width <= 0 ||
+            decoded.Height <= 0 ||
+            (long)decoded.Width * decoded.Height * 4L > decoded.Data.LongLength)
+        {
+            return false;
+        }
+
+        var width = checked((uint)decoded.Width);
+        var height = checked((uint)decoded.Height);
+        if (!TryAllocateAtlasRegion(width, height, out var x, out var y))
+        {
+            return false;
+        }
+
+        _atlasTexture.WritePixelsSubRect(decoded.Data, x, y, width, height);
+        var texelSize = 1f / _atlasSize;
+        var bitmapScale = bitmap.PixelsPerEm > 0 ? size / bitmap.PixelsPerEm : 1f;
+        var bearX = bitmap.UsesHorizontalMetrics
+            ? bitmap.BearingX
+            : -(float)bitmap.OriginOffsetX;
+        var bearY = bitmap.UsesHorizontalMetrics
+            ? -bitmap.BearingY
+            : bitmap.OriginOffsetY - (float)decoded.Height;
+        var renderWidth = 0f;
+        var renderHeight = 0f;
+        var rasterScale = bitmapScale;
+        if (!bitmap.UsesHorizontalMetrics &&
+            font.UnitsPerEm > 0 &&
+            font.TryGetGlyphBounds(glyphIndex, out var xMin, out var yMin, out var xMax, out var yMax) &&
+            xMax > xMin &&
+            yMax > yMin)
+        {
+            var outlineScale = size / font.UnitsPerEm;
+            bearX = xMin * outlineScale - bitmap.OriginOffsetX * bitmapScale;
+            bearY = -yMax * outlineScale + bitmap.OriginOffsetY * bitmapScale;
+            renderWidth = (xMax - xMin) * outlineScale;
+            renderHeight = (yMax - yMin) * outlineScale;
+            rasterScale = 1f;
+        }
+
+        info = new GlyphInfo
+        {
+            X = x,
+            Y = y,
+            Width = width,
+            Height = height,
+            BearX = bearX,
+            BearY = bearY,
+            RenderWidth = renderWidth,
+            RenderHeight = renderHeight,
+            Advance = font.GetAdvanceWidth(glyphIndex, size),
+            RasterScale = rasterScale,
+            IsColorBitmap = true,
+            TexCoordMin = new Vector2(x * texelSize, y * texelSize),
+            TexCoordMax = new Vector2((x + width) * texelSize, (y + height) * texelSize)
+        };
+        return true;
+    }
+
+    private bool TryAllocateAtlasRegion(uint width, uint height, out uint x, out uint y)
+    {
+        x = 0;
+        y = 0;
+        if (_atlasSize <= 4 ||
+            width == 0 ||
+            height == 0 ||
+            width > _atlasSize - 4 ||
+            height > _atlasSize - 4)
+        {
+            return false;
+        }
+
+        if (_currentX + width + 2 > _atlasSize)
+        {
+            _currentX = 2;
+            _currentY += _currentRowHeight + 2;
+            _currentRowHeight = 0;
+        }
+
+        if (_currentY + height + 2 > _atlasSize)
+        {
+            ProGpuTextDiagnostics.WriteLine("[GlyphAtlas] Warning: Texture Atlas is full! Clearing cache.");
+            Clear();
+        }
+
+        x = _currentX;
+        y = _currentY;
+        _currentX += width + 2;
+        _currentRowHeight = Math.Max(_currentRowHeight, height);
+        return true;
     }
 
     private static bool IsWhitespaceCodePoint(uint codePoint)

@@ -193,23 +193,31 @@ public unsafe class Compositor : IDisposable
         return isEdgeAliased ? shapeType + AliasedShapeTypeOffset : shapeType;
     }
 
-    private static float EncodeTextFlags(bool useMvp, TextRenderingMode textRenderingMode)
+    private static float EncodeTextFlags(
+        bool useMvp,
+        TextRenderingMode textRenderingMode,
+        bool isColorGlyph = false)
     {
-        return textRenderingMode switch
+        var flags = textRenderingMode switch
         {
             TextRenderingMode.Aliased => useMvp ? -2f : -1f,
             TextRenderingMode.ClearType => useMvp ? 3f : 2f,
             _ => useMvp ? 1f : 0f
         };
+        return isColorGlyph ? flags + 8f : flags;
     }
 
     private static float ForceTextUseMvp(float encodedFlags)
     {
-        return EncodeTextFlags(useMvp: true, DecodeTextRenderingMode(encodedFlags));
+        return EncodeTextFlags(
+            useMvp: true,
+            DecodeTextRenderingMode(encodedFlags),
+            IsColorTextFlags(encodedFlags));
     }
 
     private static TextRenderingMode DecodeTextRenderingMode(float encodedFlags)
     {
+        encodedFlags = DecodeBaseTextFlags(encodedFlags);
         if (encodedFlags < -0.5f)
         {
             return TextRenderingMode.Aliased;
@@ -222,6 +230,11 @@ public unsafe class Compositor : IDisposable
 
         return TextRenderingMode.Grayscale;
     }
+
+    private static bool IsColorTextFlags(float encodedFlags) => encodedFlags > 5.5f;
+
+    private static float DecodeBaseTextFlags(float encodedFlags) =>
+        IsColorTextFlags(encodedFlags) ? encodedFlags - 8f : encodedFlags;
 
     private static (byte SubpixelX, Vector2 SnappedLogicalPos) ResolveTextPlacement(
         Vector2 transformedPosition,
@@ -6383,8 +6396,10 @@ public unsafe class Compositor : IDisposable
                 _currentDpiScale,
                 staticZoom);
             var atlasUpscale = atlasToLogicalScale * TransformMetrics.GetStrokeScale(activeTransform) * staticZoom;
+            var hasBitmapGlyph = glyphFont.TryGetBitmapGlyph(glyphIdx, rasterFontSize, out _);
 
-            if (cmd.UseVectorGlyphRendering || glyphFont.HasCffOutlines || atlasUpscale > 1.0001f)
+            if (!hasBitmapGlyph &&
+                (cmd.UseVectorGlyphRendering || glyphFont.HasCffOutlines || atlasUpscale > 1.0001f))
             {
                 var outline = glyphFont.GetGlyphOutline(glyphIdx);
                 if (outline is not null)
@@ -6428,6 +6443,9 @@ public unsafe class Compositor : IDisposable
 
             var info = _atlas.GetOrCreateGlyph(glyphFont, runGlyph.CodePoint, rasterFontSize, subpixelX);
             if (info.Width == 0 || info.Height == 0) continue;
+            var glyphAtlasScale = atlasToLogicalScale * (info.RasterScale > 0f ? info.RasterScale : 1f);
+            var glyphRenderWidth = info.RenderWidth > 0f ? info.RenderWidth : info.Width;
+            var glyphRenderHeight = info.RenderHeight > 0f ? info.RenderHeight : info.Height;
 
             int passCount = cmd.IsBold ? 2 : 1;
             float boldOffset = cmd.FontSize * 0.035f;
@@ -6463,10 +6481,17 @@ public unsafe class Compositor : IDisposable
                     SnappedLogicalPos = snappedLogicalPos,
                     BasisX = basisX,
                     BasisY = basisY,
-                    BearSize = new Vector4(info.BearX, info.BearY, info.Width, info.Height),
+                    BearSize = new Vector4(info.BearX, info.BearY, glyphRenderWidth, glyphRenderHeight),
                     TexCoords = new Vector4(info.TexCoordMin.X, info.TexCoordMin.Y, info.TexCoordMax.X, info.TexCoordMax.Y),
                     Color = color,
-                    ScaleBoldItalicUseMvp = new Vector4(atlasToLogicalScale, xOffset, cmd.IsItalic ? 0.22f : 0f, EncodeTextFlags(ActiveCompilationContext != null, cmd.TextRenderingMode)),
+                    ScaleBoldItalicUseMvp = new Vector4(
+                        glyphAtlasScale,
+                        xOffset,
+                        cmd.IsItalic ? 0.22f : 0f,
+                        EncodeTextFlags(
+                            ActiveCompilationContext != null,
+                            cmd.TextRenderingMode,
+                            info.IsColorBitmap)),
                     BrushIndex = bIdx,
                     Padding = 0f
                 });
@@ -6548,7 +6573,9 @@ public unsafe class Compositor : IDisposable
                 continue;
             }
 
-            if (cmd.UseVectorGlyphRendering || font.HasCffOutlines || atlasUpscale > 1.0001f)
+            var hasBitmapGlyph = font.TryGetBitmapGlyph(glyphIdx, rasterFontSize, out _);
+            if (!hasBitmapGlyph &&
+                (cmd.UseVectorGlyphRendering || font.HasCffOutlines || atlasUpscale > 1.0001f))
             {
                 var outline = font.GetGlyphOutline(glyphIdx);
                 if (outline is not null)
@@ -6590,6 +6617,9 @@ public unsafe class Compositor : IDisposable
 
             var info = _atlas.GetOrCreateGlyphByIndex(font, glyphIdx, rasterFontSize, subpixelX);
             if (info.Width == 0 || info.Height == 0) continue;
+            var glyphAtlasScale = atlasToLogicalScale * (info.RasterScale > 0f ? info.RasterScale : 1f);
+            var glyphRenderWidth = info.RenderWidth > 0f ? info.RenderWidth : info.Width;
+            var glyphRenderHeight = info.RenderHeight > 0f ? info.RenderHeight : info.Height;
 
             int passCount = cmd.IsBold ? 2 : 1;
             float boldOffset = cmd.FontSize * 0.035f;
@@ -6625,10 +6655,17 @@ public unsafe class Compositor : IDisposable
                     SnappedLogicalPos = snappedLogicalPos,
                     BasisX = basisX,
                     BasisY = basisY,
-                    BearSize = new Vector4(info.BearX, info.BearY, info.Width, info.Height),
+                    BearSize = new Vector4(info.BearX, info.BearY, glyphRenderWidth, glyphRenderHeight),
                     TexCoords = new Vector4(info.TexCoordMin.X, info.TexCoordMin.Y, info.TexCoordMax.X, info.TexCoordMax.Y),
                     Color = color,
-                    ScaleBoldItalicUseMvp = new Vector4(atlasToLogicalScale, xOffset, cmd.IsItalic ? 0.22f : 0f, EncodeTextFlags(ActiveCompilationContext != null, cmd.TextRenderingMode)),
+                    ScaleBoldItalicUseMvp = new Vector4(
+                        glyphAtlasScale,
+                        xOffset,
+                        cmd.IsItalic ? 0.22f : 0f,
+                        EncodeTextFlags(
+                            ActiveCompilationContext != null,
+                            cmd.TextRenderingMode,
+                            info.IsColorBitmap)),
                     BrushIndex = bIdx,
                     Padding = 0f
                 });

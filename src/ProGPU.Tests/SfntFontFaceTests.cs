@@ -1,5 +1,6 @@
 using System.Numerics;
 using System.Text;
+using ProGPU.Tests.Headless;
 using ProGPU.Text;
 using ProGPU.Vector;
 using Xunit;
@@ -8,6 +9,9 @@ namespace ProGPU.Tests;
 
 public class SfntFontFaceTests
 {
+    private const string OnePixelPngBase64 =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z3GQAAAAASUVORK5CYII=";
+
     private const string CffWoffFontBase64 = """
         d09GRk9UVE8AAAL0AAkAAAAAA9AAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAABDRkYgAAACbAAAAH4AAACSuCV3zE9TLzIAAAFA
         AAAALgAAAGBFIUPRY21hcAAAAjQAAAApAAAANAAMAJRoZWFkAAAA4AAAADYAAAA2LfovUmhoZWEAAAEYAAAAIAAAACQEsgGS
@@ -202,6 +206,82 @@ public class SfntFontFaceTests
         Assert.Equal(7, duplicate.OriginOffsetX);
         Assert.Equal(8, duplicate.OriginOffsetY);
         Assert.Equal(new byte[] { 20, 21, 22 }, duplicate.Data.ToArray());
+    }
+
+    [Fact]
+    public void GlyphAtlasUploadsSbixAsIntrinsicColorBitmap()
+    {
+        byte[] fontData = BuildSfntWithTables(
+            ("head", BuildHeadTable()),
+            ("maxp", BuildMaxpTable(3)),
+            ("cmap", BuildCmapFormat4Table()),
+            ("sbix", BuildSingleSbixTable(Convert.FromBase64String(OnePixelPngBase64))));
+        var font = new TtfFont(fontData);
+        using var atlas = new GlyphAtlas(HeadlessWindow.Shared.Context, 64);
+
+        GlyphInfo info = atlas.GetOrCreateGlyphByIndex(font, 1, 40f);
+
+        Assert.True(info.IsColorBitmap);
+        Assert.Equal(1u, info.Width);
+        Assert.Equal(1u, info.Height);
+        Assert.Equal(2f, info.BearX);
+        Assert.Equal(5f, info.BearY);
+        Assert.Equal(2f, info.RasterScale);
+        Assert.True(info.TexCoordMax.X > info.TexCoordMin.X);
+        Assert.True(info.TexCoordMax.Y > info.TexCoordMin.Y);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
+    public void TtfFontReadsEveryCblcIndexFormat(ushort indexFormat)
+    {
+        byte[] imageData = Convert.FromBase64String(OnePixelPngBase64);
+        (byte[] cblc, byte[] cbdt) = BuildSingleCbdtTables(imageData, indexFormat);
+        byte[] fontData = BuildSfntWithTables(
+            ("head", BuildHeadTable()),
+            ("maxp", BuildMaxpTable(3)),
+            ("cmap", BuildCmapFormat4Table()),
+            ("CBLC", cblc),
+            ("CBDT", cbdt));
+
+        var font = new TtfFont(fontData);
+
+        Assert.True(font.HasBitmapGlyphs);
+        Assert.True(font.TryGetBitmapGlyph(1, 30f, out BitmapGlyphData glyph));
+        Assert.Equal(20, glyph.PixelsPerEm);
+        Assert.True(glyph.UsesHorizontalMetrics);
+        Assert.Equal(3, glyph.BearingX);
+        Assert.Equal(4, glyph.BearingY);
+        Assert.Equal(TtfFont.PngBitmapGraphicType, glyph.GraphicType);
+        Assert.Equal(imageData, glyph.Data.ToArray());
+    }
+
+    [Fact]
+    public void GlyphAtlasUploadsCbdtUsingBitmapBearings()
+    {
+        (byte[] cblc, byte[] cbdt) = BuildSingleCbdtTables(
+            Convert.FromBase64String(OnePixelPngBase64));
+        byte[] fontData = BuildSfntWithTables(
+            ("head", BuildHeadTable()),
+            ("maxp", BuildMaxpTable(3)),
+            ("cmap", BuildCmapFormat4Table()),
+            ("CBLC", cblc),
+            ("CBDT", cbdt));
+        var font = new TtfFont(fontData);
+        using var atlas = new GlyphAtlas(HeadlessWindow.Shared.Context, 64);
+
+        GlyphInfo info = atlas.GetOrCreateGlyphByIndex(font, 1, 40f);
+
+        Assert.True(info.IsColorBitmap);
+        Assert.Equal(1u, info.Width);
+        Assert.Equal(1u, info.Height);
+        Assert.Equal(3f, info.BearX);
+        Assert.Equal(-4f, info.BearY);
+        Assert.Equal(2f, info.RasterScale);
     }
 
     [Fact]
@@ -571,6 +651,116 @@ public class SfntFontFaceTests
         writer.Write(strike20);
         writer.Write(strike40);
         return stream.ToArray();
+    }
+
+    private static byte[] BuildSingleSbixTable(byte[] imageData)
+    {
+        byte[] strike = BuildSbixStrike(20, -2, 6, imageData);
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+
+        WriteUShort(writer, 1);
+        WriteUShort(writer, 1);
+        WriteUInt(writer, 1);
+        WriteUInt(writer, 12);
+        writer.Write(strike);
+        return stream.ToArray();
+    }
+
+    private static (byte[] Cblc, byte[] Cbdt) BuildSingleCbdtTables(
+        byte[] imageData,
+        ushort indexFormat = 1)
+    {
+        bool metricsInImage = indexFormat is 1 or 3 or 4;
+        using var cbdtStream = new MemoryStream();
+        using var cbdtWriter = new BinaryWriter(cbdtStream);
+        WriteUShort(cbdtWriter, 3);
+        WriteUShort(cbdtWriter, 0);
+        if (metricsInImage)
+        {
+            WriteSmallCbdtMetrics(cbdtWriter);
+        }
+        WriteUInt(cbdtWriter, (uint)imageData.Length);
+        cbdtWriter.Write(imageData);
+        byte[] cbdt = cbdtStream.ToArray();
+
+        using var subtableStream = new MemoryStream();
+        using var subtableWriter = new BinaryWriter(subtableStream);
+        WriteUShort(subtableWriter, indexFormat);
+        WriteUShort(subtableWriter, metricsInImage ? (ushort)17 : (ushort)19);
+        WriteUInt(subtableWriter, 4); // image data starts after CBDT header
+        uint bitmapDataLength = (uint)cbdt.Length - 4;
+        switch (indexFormat)
+        {
+            case 1:
+                WriteUInt(subtableWriter, 0);
+                WriteUInt(subtableWriter, bitmapDataLength);
+                break;
+            case 2:
+                WriteUInt(subtableWriter, bitmapDataLength);
+                WriteBigCbdtMetrics(subtableWriter);
+                break;
+            case 3:
+                WriteUShort(subtableWriter, 0);
+                WriteUShort(subtableWriter, checked((ushort)bitmapDataLength));
+                break;
+            case 4:
+                WriteUInt(subtableWriter, 1);
+                WriteUShort(subtableWriter, 1);
+                WriteUShort(subtableWriter, 0);
+                WriteUShort(subtableWriter, ushort.MaxValue);
+                WriteUShort(subtableWriter, checked((ushort)bitmapDataLength));
+                break;
+            case 5:
+                WriteUInt(subtableWriter, bitmapDataLength);
+                WriteBigCbdtMetrics(subtableWriter);
+                WriteUInt(subtableWriter, 1);
+                WriteUShort(subtableWriter, 1);
+                WriteUShort(subtableWriter, 0); // 32-bit subtable alignment
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(indexFormat));
+        }
+        byte[] subtable = subtableStream.ToArray();
+
+        using var cblcStream = new MemoryStream();
+        using var cblcWriter = new BinaryWriter(cblcStream);
+        WriteUShort(cblcWriter, 3);
+        WriteUShort(cblcWriter, 0);
+        WriteUInt(cblcWriter, 1);
+        WriteUInt(cblcWriter, 56); // indexSubtableListOffset
+        WriteUInt(cblcWriter, checked((uint)(8 + subtable.Length)));
+        WriteUInt(cblcWriter, 1);
+        WriteUInt(cblcWriter, 0);
+        cblcWriter.Write(new byte[24]); // horizontal and vertical line metrics
+        WriteUShort(cblcWriter, 1);
+        WriteUShort(cblcWriter, 1);
+        cblcWriter.Write((byte)20);
+        cblcWriter.Write((byte)20);
+        cblcWriter.Write((byte)32);
+        cblcWriter.Write((byte)1); // horizontal metrics
+        WriteUShort(cblcWriter, 1);
+        WriteUShort(cblcWriter, 1);
+        WriteUInt(cblcWriter, 8);
+        cblcWriter.Write(subtable);
+        return (cblcStream.ToArray(), cbdt);
+    }
+
+    private static void WriteSmallCbdtMetrics(BinaryWriter writer)
+    {
+        writer.Write((byte)1); // height
+        writer.Write((byte)1); // width
+        writer.Write(unchecked((byte)(sbyte)3)); // horizontal bearing X
+        writer.Write(unchecked((byte)(sbyte)4)); // horizontal bearing Y
+        writer.Write((byte)5); // advance
+    }
+
+    private static void WriteBigCbdtMetrics(BinaryWriter writer)
+    {
+        WriteSmallCbdtMetrics(writer);
+        writer.Write((byte)0); // vertical bearing X
+        writer.Write((byte)0); // vertical bearing Y
+        writer.Write((byte)5); // vertical advance
     }
 
     private static byte[] BuildSbixStrike(
