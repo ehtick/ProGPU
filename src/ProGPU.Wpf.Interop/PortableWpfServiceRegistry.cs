@@ -42,6 +42,12 @@ public interface IPortableFileDialogServiceRegistrar
 
     IDisposable Register(Func<PortableFileDialogRequest, string?> showDialog);
 
+    IDisposable RegisterResult(Func<PortableFileDialogRequest, PortableFileDialogResult?> showDialog)
+    {
+        ArgumentNullException.ThrowIfNull(showDialog);
+        return Register(request => showDialog(request)?.SelectedPath);
+    }
+
     void Clear();
 }
 
@@ -162,6 +168,29 @@ public sealed class PortableFileDialogRequest
         string? defaultExtension,
         string? filter,
         int filterIndex)
+        : this(
+            kind,
+            title,
+            initialDirectory,
+            defaultDirectory,
+            suggestedItemName,
+            defaultExtension,
+            filter,
+            filterIndex,
+            allowMultipleSelection: false)
+    {
+    }
+
+    public PortableFileDialogRequest(
+        string? kind,
+        string? title,
+        string? initialDirectory,
+        string? defaultDirectory,
+        string? suggestedItemName,
+        string? defaultExtension,
+        string? filter,
+        int filterIndex,
+        bool allowMultipleSelection)
     {
         Kind = kind ?? "OpenFile";
         Title = title ?? string.Empty;
@@ -171,6 +200,7 @@ public sealed class PortableFileDialogRequest
         DefaultExtension = defaultExtension ?? string.Empty;
         Filter = filter ?? string.Empty;
         FilterIndex = filterIndex;
+        AllowMultipleSelection = allowMultipleSelection;
     }
 
     public string Kind { get; }
@@ -188,6 +218,40 @@ public sealed class PortableFileDialogRequest
     public string Filter { get; }
 
     public int FilterIndex { get; }
+
+    public bool AllowMultipleSelection { get; }
+}
+
+public sealed class PortableFileDialogResult
+{
+    private readonly string[] _selectedPaths;
+
+    public PortableFileDialogResult(string selectedPath)
+    {
+        ArgumentNullException.ThrowIfNull(selectedPath);
+        _selectedPaths = [selectedPath];
+    }
+
+    public PortableFileDialogResult(ReadOnlySpan<string> selectedPaths)
+    {
+        _selectedPaths = selectedPaths.ToArray();
+    }
+
+    public int SelectedPathCount => _selectedPaths.Length;
+
+    public string? SelectedPath => _selectedPaths.Length == 0 ? null : _selectedPaths[0];
+
+    public ReadOnlySpan<string> SelectedPaths => _selectedPaths;
+
+    public string GetSelectedPath(int index)
+    {
+        return _selectedPaths[index];
+    }
+
+    public string[] ToArray()
+    {
+        return (string[])_selectedPaths.Clone();
+    }
 }
 
 public sealed class PortableColorDialogRequest
@@ -524,6 +588,8 @@ public static class PortableWpfServiceRegistry
 
     public static event Action<IPortableClipboardServiceRegistrar>? ClipboardServiceRegistered;
 
+    public static event Action<IPortableMessageBoxServiceRegistrar>? MessageBoxServiceRegistered;
+
     public static event Action<IPortableFileDialogServiceRegistrar>? FileDialogServiceRegistered;
 
     public static event Action<IPortableColorDialogServiceRegistrar>? ColorDialogServiceRegistered;
@@ -616,6 +682,7 @@ public static class PortableWpfServiceRegistry
             MessageBoxServices[service.ServiceKey] = service;
         }
 
+        MessageBoxServiceRegistered?.Invoke(service);
         return new Registration<IPortableMessageBoxServiceRegistrar>(service, MessageBoxServices);
     }
 
