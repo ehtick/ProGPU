@@ -15,6 +15,28 @@ namespace ProGPU.Tests;
 public sealed class SkCanvasStateTests
 {
     [Fact]
+    public void PaintDefaultsAndResetMatchNativeSkia()
+    {
+        using var paint = new SKPaint();
+
+        Assert.False(paint.IsAntialias);
+        Assert.Equal(0f, paint.StrokeWidth);
+        Assert.Equal(SKPaintStyle.Fill, paint.Style);
+        Assert.Equal(SKColors.Black, paint.Color);
+
+        paint.IsAntialias = true;
+        paint.StrokeWidth = 7f;
+        paint.Style = SKPaintStyle.Stroke;
+        paint.Color = SKColors.Red;
+        paint.Reset();
+
+        Assert.False(paint.IsAntialias);
+        Assert.Equal(0f, paint.StrokeWidth);
+        Assert.Equal(SKPaintStyle.Fill, paint.Style);
+        Assert.Equal(SKColors.Black, paint.Color);
+    }
+
+    [Fact]
     public void SurfaceAndCanvasReuseIsolatedCompositorScopes()
     {
         using var surface = SKSurface.Create(
@@ -1872,7 +1894,11 @@ public sealed class SkCanvasStateTests
         using var canvas = new SKCanvas(context, 100f, 100f);
         using var bitmap = new SKBitmap(4, 4);
         using var image = SKImage.FromBitmap(bitmap);
-        using var paint = new SKPaint { Color = new SKColor(255, 255, 255, 128) };
+        using var paint = new SKPaint
+        {
+            Color = new SKColor(255, 255, 255, 128),
+            IsAntialias = true
+        };
 
         canvas.DrawImage(
             image,

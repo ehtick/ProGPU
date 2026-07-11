@@ -35,7 +35,7 @@ public class SKPaint : IDisposable
         get => Style == SKPaintStyle.Stroke;
         set => Style = value ? SKPaintStyle.Stroke : SKPaintStyle.Fill;
     }
-    public float StrokeWidth { get; set; } = 1f;
+    public float StrokeWidth { get; set; }
     public float StrokeMiter { get; set; } = 4f;
     public SKStrokeCap StrokeCap { get; set; } = SKStrokeCap.Butt;
     public SKStrokeJoin StrokeJoin { get; set; } = SKStrokeJoin.Miter;
@@ -58,7 +58,7 @@ public class SKPaint : IDisposable
     public SKImageFilter? ImageFilter { get; set; }
     public SKPathEffect? PathEffect { get; set; }
     public SKBlendMode BlendMode { get; set; } = SKBlendMode.SrcOver;
-    public bool IsAntialias { get; set; } = true;
+    public bool IsAntialias { get; set; }
     public SKTypeface? Typeface { get; set; }
     public float TextSize { get; set; } = 12f;
 
@@ -198,7 +198,7 @@ public class SKPaint : IDisposable
     {
         Style = SKPaintStyle.Fill;
         Color = SKColors.Black;
-        StrokeWidth = 1f;
+        StrokeWidth = 0f;
         StrokeMiter = 4f;
         StrokeCap = SKStrokeCap.Butt;
         StrokeJoin = SKStrokeJoin.Miter;
@@ -207,7 +207,7 @@ public class SKPaint : IDisposable
         ImageFilter = null;
         PathEffect = null;
         BlendMode = SKBlendMode.SrcOver;
-        IsAntialias = true;
+        IsAntialias = false;
         Typeface = null;
         TextSize = 12f;
     }

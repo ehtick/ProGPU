@@ -117,7 +117,8 @@ public sealed class StrokeJoinRenderTests
             Style = SKPaintStyle.Stroke,
             StrokeWidth = 3f,
             StrokeJoin = SKStrokeJoin.Miter,
-            StrokeMiter = 4f
+            StrokeMiter = 4f,
+            IsAntialias = true
         };
 
         recordingCanvas.Scale(1f, 1.25f);
