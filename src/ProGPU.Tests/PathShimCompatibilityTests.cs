@@ -94,16 +94,16 @@ public sealed class PathShimCompatibilityTests
         path.Transform(new SKMatrix { ScaleX = 2f, ScaleY = 3f, Persp2 = 1f });
 
         var figure = Assert.Single(path.Geometry.Figures);
-        Assert.Equal(new Vector2(10f, 60f), figure.StartPoint);
+        Assert.Equal(new Vector2(30f, 60f), figure.StartPoint);
 
         var firstArc = Assert.IsType<ArcSegment>(figure.Segments[0]);
-        Assert.Equal(new Vector2(30f, 60f), firstArc.Point);
+        Assert.Equal(new Vector2(10f, 60f), firstArc.Point);
         AssertNear(10f, firstArc.Size.X);
         AssertNear(15f, firstArc.Size.Y);
         Assert.Equal(SweepDirection.Clockwise, firstArc.SweepDirection);
 
         var secondArc = Assert.IsType<ArcSegment>(figure.Segments[1]);
-        Assert.Equal(new Vector2(10f, 60f), secondArc.Point);
+        Assert.Equal(new Vector2(30f, 60f), secondArc.Point);
         AssertNear(10f, secondArc.Size.X);
         AssertNear(15f, secondArc.Size.Y);
         Assert.Equal(SweepDirection.Clockwise, secondArc.SweepDirection);
@@ -121,13 +121,13 @@ public sealed class PathShimCompatibilityTests
 
         var sourceFigure = Assert.Single(source.Geometry.Figures);
         var sourceArc = Assert.IsType<ArcSegment>(sourceFigure.Segments[0]);
-        Assert.Equal(new Vector2(15f, 20f), sourceArc.Point);
+        Assert.Equal(new Vector2(5f, 20f), sourceArc.Point);
         AssertNear(5f, sourceArc.Size.X);
         AssertNear(5f, sourceArc.Size.Y);
 
         var copyFigure = Assert.Single(copy.Geometry.Figures);
         var copyArc = Assert.IsType<ArcSegment>(copyFigure.Segments[0]);
-        Assert.Equal(new Vector2(30f, 60f), copyArc.Point);
+        Assert.Equal(new Vector2(10f, 60f), copyArc.Point);
         AssertNear(10f, copyArc.Size.X);
         AssertNear(15f, copyArc.Size.Y);
     }

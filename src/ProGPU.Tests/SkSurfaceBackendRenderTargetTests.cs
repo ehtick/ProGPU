@@ -13,6 +13,33 @@ namespace ProGPU.Tests;
 public sealed class SkSurfaceBackendRenderTargetTests
 {
     [Fact]
+    public void CreateFromProGpuBackendTextureFlushesWithoutTakingOwnership()
+    {
+        using var grContext = GRContext.CreateGl() ?? throw new InvalidOperationException("Failed to create GRContext.");
+        using var texture = new GpuTexture(
+            grContext.Context,
+            4,
+            4,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.RenderAttachment | TextureUsage.CopySrc | TextureUsage.CopyDst | TextureUsage.TextureBinding,
+            "SKSurface wrapped backend texture test");
+        using var backendTexture = new GRBackendTexture(texture);
+
+        using (var surface = SKSurface.Create(
+            grContext,
+            backendTexture,
+            GRSurfaceOrigin.TopLeft,
+            SKColorType.Rgba8888) ?? throw new InvalidOperationException("Failed to wrap backend texture."))
+        {
+            surface.Canvas.Clear(SKColors.Green);
+            surface.Flush();
+        }
+
+        Assert.False(texture.IsDisposed);
+        AssertPixel(texture.ReadPixels(), 4, 0, 0, 0, 255, 0, 255);
+    }
+
+    [Fact]
     public void CreateFromProGpuBackendRenderTargetFlushesIntoWrappedTexture()
     {
         using var grContext = GRContext.CreateGl() ?? throw new InvalidOperationException("Failed to create GRContext.");
@@ -186,6 +213,37 @@ public sealed class SkSurfaceBackendRenderTargetTests
 
         using var snapshot = surface.Snapshot();
         AssertPixel(snapshot.Texture.ReadPixels(), 4, 2, 2, 200, 100, 50, 255);
+    }
+
+    [Fact]
+    public void DrawImageAppliesPaintColorMatrixOnGpu()
+    {
+        using var surface = SKSurface.Create(
+            new SKImageInfo(4, 4, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var source = CreateRgbaImage(255, 0, 0, 255);
+        using var colorFilter = SKColorFilter.CreateColorMatrix(new[]
+        {
+            0f, 0f, 1f, 0f, 0f,
+            0f, 1f, 0f, 0f, 0f,
+            1f, 0f, 0f, 0f, 0f,
+            0f, 0f, 0f, 1f, 0f
+        });
+        using var paint = new SKPaint
+        {
+            ColorFilter = colorFilter,
+            IsAntialias = false
+        };
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        surface.Canvas.DrawImage(
+            source,
+            new SKRect(0f, 0f, 1f, 1f),
+            new SKRect(0f, 0f, 4f, 4f),
+            paint);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        AssertPixel(snapshot.Texture.ReadPixels(), 4, 2, 2, 0, 0, 255, 255);
     }
 
     [Fact]

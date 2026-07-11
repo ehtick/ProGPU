@@ -20,6 +20,7 @@ public class SKSurface : IDisposable
     private readonly bool _ownsTexture;
     private readonly SKColorType _colorType;
     private readonly SKAlphaType _alphaType;
+    private readonly SKColorSpace? _colorSpace;
     private readonly GRSurfaceOrigin _origin;
     private GpuTextureReadbackBuffer? _readbackBuffer;
     private byte[]? _readbackPixels;
@@ -37,7 +38,7 @@ public class SKSurface : IDisposable
         SharedCompositorCache.Remove(context, s_compositorCacheScope);
     }
 
-    private SKSurface(WgpuContext context, int width, int height, GpuTexture? texture, bool ownsTexture, IntPtr pixels, int rowBytes, SKColorType colorType, SKAlphaType alphaType, GRSurfaceOrigin origin = GRSurfaceOrigin.TopLeft)
+    private SKSurface(WgpuContext context, int width, int height, GpuTexture? texture, bool ownsTexture, IntPtr pixels, int rowBytes, SKColorType colorType, SKAlphaType alphaType, SKColorSpace? colorSpace = null, GRSurfaceOrigin origin = GRSurfaceOrigin.TopLeft)
     {
         _context = context;
         _width = width;
@@ -50,6 +51,7 @@ public class SKSurface : IDisposable
             : rowBytes;
         _colorType = colorType;
         _alphaType = alphaType;
+        _colorSpace = colorSpace;
         _origin = origin;
 
         _drawingContext = new DrawingContext();
@@ -100,7 +102,7 @@ public class SKSurface : IDisposable
             "SKSurface Backing Texture",
             alphaMode: GpuTextureAlphaMode.Premultiplied
         );
-        return new SKSurface(ctx, info.Width, info.Height, texture, true, IntPtr.Zero, 0, info.ColorType, info.AlphaType);
+        return new SKSurface(ctx, info.Width, info.Height, texture, true, IntPtr.Zero, 0, info.ColorType, info.AlphaType, info.ColorSpace);
     }
 
     public static SKSurface Create(SKImageInfo info, IntPtr pixels, int rowBytes)
@@ -125,7 +127,7 @@ public class SKSurface : IDisposable
             "SKSurface CPU-backed Backing Texture",
             alphaMode: GpuTextureAlphaMode.Premultiplied
         );
-        return new SKSurface(ctx, info.Width, info.Height, texture, true, pixels, actualRowBytes, info.ColorType, info.AlphaType);
+        return new SKSurface(ctx, info.Width, info.Height, texture, true, pixels, actualRowBytes, info.ColorType, info.AlphaType, info.ColorSpace);
     }
 
     public static SKSurface Create(GRContext grContext, GRBackendRenderTarget renderTarget, GRSurfaceOrigin origin, SKColorType colorType)
@@ -141,8 +143,59 @@ public class SKSurface : IDisposable
     {
         ArgumentNullException.ThrowIfNull(grContext);
         ArgumentNullException.ThrowIfNull(texture);
-        return null;
+        var gpuTexture = texture.BackendTexture;
+        if (gpuTexture == null)
+        {
+            return null;
+        }
+
+        if (!ReferenceEquals(gpuTexture.Context, grContext.Context))
+        {
+            throw new InvalidOperationException("The backend texture belongs to a different ProGPU context.");
+        }
+
+        if ((gpuTexture.Usage & TextureUsage.RenderAttachment) == 0)
+        {
+            throw new InvalidOperationException("The backend texture must include TextureUsage.RenderAttachment.");
+        }
+
+        if ((gpuTexture.Usage & TextureUsage.CopySrc) == 0)
+        {
+            throw new InvalidOperationException("The backend texture must include TextureUsage.CopySrc so SKSurface.Snapshot can copy from it.");
+        }
+
+        if (gpuTexture.SampleCount != 1)
+        {
+            throw new NotSupportedException("This WebGPU-backed Skia shim can only wrap single-sampled backend textures.");
+        }
+
+        return new SKSurface(
+            grContext.Context,
+            texture.Width,
+            texture.Height,
+            gpuTexture,
+            false,
+            IntPtr.Zero,
+            0,
+            colorType,
+            SKAlphaType.Premul,
+            null,
+            origin);
     }
+
+    public static SKSurface? Create(
+        GRContext grContext,
+        GRBackendTexture texture,
+        SKColorType colorType) =>
+        Create(grContext, texture, GRSurfaceOrigin.TopLeft, colorType);
+
+    public static SKSurface? Create(
+        GRContext grContext,
+        GRBackendTexture texture,
+        GRSurfaceOrigin origin,
+        SKColorType colorType,
+        SKSurfaceProperties properties) =>
+        Create(grContext, texture, origin, colorType);
 
     public static SKSurface Create(GRContext grContext, GRBackendRenderTarget renderTarget, GRSurfaceOrigin origin, SKColorType colorType, SKSurfaceProperties properties)
     {
@@ -172,7 +225,7 @@ public class SKSurface : IDisposable
             throw new NotSupportedException("This WebGPU-backed Skia shim can only wrap single-sampled backend render targets.");
         }
 
-        return new SKSurface(grContext.Context, renderTarget.Width, renderTarget.Height, texture, false, IntPtr.Zero, 0, colorType, SKAlphaType.Premul, origin);
+        return new SKSurface(grContext.Context, renderTarget.Width, renderTarget.Height, texture, false, IntPtr.Zero, 0, colorType, SKAlphaType.Premul, null, origin);
     }
 
     public static SKSurface Create(GRContext grContext, GRBackendRenderTarget renderTarget, GRSurfaceOrigin origin, SKColorType colorType, SKColorSpace colorSpace)
@@ -199,7 +252,7 @@ public class SKSurface : IDisposable
             "SKSurface Offscreen Texture",
             alphaMode: GpuTextureAlphaMode.Premultiplied
         );
-        return new SKSurface(grContext.Context, imageInfo.Width, imageInfo.Height, texture, true, IntPtr.Zero, 0, imageInfo.ColorType, imageInfo.AlphaType);
+        return new SKSurface(grContext.Context, imageInfo.Width, imageInfo.Height, texture, true, IntPtr.Zero, 0, imageInfo.ColorType, imageInfo.AlphaType, imageInfo.ColorSpace);
     }
 
     public void Flush()
@@ -410,7 +463,9 @@ public class SKSurface : IDisposable
         wgpu.CommandBufferRelease(cmdBuffer);
         wgpu.CommandEncoderRelease(encoder);
 
-        return SKImage.FromOwnedTexture(snapshotTexture);
+        return SKImage.FromOwnedTexture(
+            snapshotTexture,
+            new SKImageInfo(_width, _height, _colorType, _alphaType, _colorSpace));
     }
 
     public void Draw(SKCanvas canvas, float x, float y, SKPaint? paint)

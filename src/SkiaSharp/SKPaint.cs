@@ -15,6 +15,7 @@ public enum SKPaintStyle
 
 public class SKPaint : IDisposable
 {
+    public IntPtr Handle { get; } = SKObjectHandle.Create();
     private const float HairlineStrokeWidth = 1f;
     private SKShader? _shader;
 
@@ -88,8 +89,9 @@ public class SKPaint : IDisposable
 
         if (Shader != null)
         {
-            ThrowIfShaderColorFilter();
-            return ApplyPaintAlphaToShaderBrush(Shader.ToBrush(), Color);
+            return ApplyPaintAlphaToShaderBrush(
+                SKShader.ApplyColorFilter(Shader.ToBrush(), ColorFilter),
+                Color);
         }
 
         var color = GetFilteredColor();
@@ -110,8 +112,9 @@ public class SKPaint : IDisposable
         Brush penBrush;
         if (Shader != null)
         {
-            ThrowIfShaderColorFilter();
-            penBrush = ApplyPaintAlphaToShaderBrush(Shader.ToBrush(), Color);
+            penBrush = ApplyPaintAlphaToShaderBrush(
+                SKShader.ApplyColorFilter(Shader.ToBrush(), ColorFilter),
+                Color);
         }
         else
         {
@@ -148,8 +151,9 @@ public class SKPaint : IDisposable
         Brush penBrush;
         if (Shader != null)
         {
-            ThrowIfShaderColorFilter();
-            penBrush = ApplyPaintAlphaToShaderBrush(Shader.ToBrush(), Color);
+            penBrush = ApplyPaintAlphaToShaderBrush(
+                SKShader.ApplyColorFilter(Shader.ToBrush(), ColorFilter),
+                Color);
         }
         else
         {
@@ -494,14 +498,6 @@ public class SKPaint : IDisposable
         return (byte)Math.Clamp(MathF.Round(value * 255f), 0f, 255f);
     }
 
-    public void ThrowIfImageColorFilter()
-    {
-        if (ColorFilter != null)
-        {
-            throw new NotSupportedException("SKPaint.ColorFilter on image draws requires a native texture color-filter pipeline.");
-        }
-    }
-
     private SKColor GetFilteredColor()
     {
         return ColorFilter?.Apply(Color) ?? Color;
@@ -526,14 +522,6 @@ public class SKPaint : IDisposable
         }
 
         return strokeWidth * strokeScale;
-    }
-
-    private void ThrowIfShaderColorFilter()
-    {
-        if (ColorFilter != null)
-        {
-            throw new NotSupportedException("SKPaint.ColorFilter combined with SKShader requires a native shader color-filter pipeline.");
-        }
     }
 
     private static PenLineCap MapStrokeCap(SKStrokeCap cap)
@@ -596,10 +584,12 @@ public class SKPaint : IDisposable
 
 public class SKShader : IDisposable
 {
+    public IntPtr Handle { get; } = SKObjectHandle.Create();
     private readonly Func<Brush>? _brushCreator;
     private readonly PictureShaderData? _picture;
     private readonly ImageShaderData? _image;
     private readonly ComposedShaderData? _composed;
+    private readonly PerlinNoiseShaderData? _perlinNoise;
     private SKColorFilter? _colorFilter;
     private int _referenceCount = 1;
     private bool _disposed;
@@ -624,20 +614,43 @@ public class SKShader : IDisposable
         _composed = composed;
     }
 
+    private SKShader(PerlinNoiseShaderData perlinNoise)
+    {
+        _perlinNoise = perlinNoise;
+    }
+
     public Brush ToBrush()
     {
-        if (_brushCreator == null)
+        if (_brushCreator != null)
+        {
+            return ApplyColorFilter(_brushCreator(), _colorFilter);
+        }
+
+        if (_perlinNoise is { } perlinNoise)
+        {
+            return ApplyColorFilter(
+                new PerlinNoiseBrush(
+                    perlinNoise.IsTurbulence,
+                    new Vector2(perlinNoise.BaseFrequencyX, perlinNoise.BaseFrequencyY),
+                    perlinNoise.NumOctaves,
+                    perlinNoise.Seed,
+                    new Vector2(perlinNoise.TileSize.X, perlinNoise.TileSize.Y)),
+                _colorFilter);
+        }
+
+        if (_picture != null || _image != null || _composed != null)
         {
             throw new NotSupportedException("Picture shaders are rendered by SKCanvas and cannot be converted to a vector brush.");
         }
 
-        return ApplyColorFilter(_brushCreator(), _colorFilter);
+        throw new NotSupportedException("The shader cannot be converted to a vector brush.");
     }
 
     internal PictureShaderData? Picture => _picture;
     internal ImageShaderData? Image => _image;
     internal ComposedShaderData? Composed => _composed;
     internal SKColorFilter? ColorFilter => _colorFilter;
+    internal PerlinNoiseShaderData? PerlinNoise => _perlinNoise;
 
     internal static SKShader CreatePicture(
         GpuPicture picture,
@@ -696,6 +709,33 @@ public class SKShader : IDisposable
         });
     }
 
+    public static SKShader CreateColor(SKColorF color, SKColorSpace colorSpace)
+    {
+        ArgumentNullException.ThrowIfNull(colorSpace);
+        return new SKShader(() => new SolidColorBrush(new Vector4(
+            Math.Clamp(color.R, 0f, 1f),
+            Math.Clamp(color.G, 0f, 1f),
+            Math.Clamp(color.B, 0f, 1f),
+            Math.Clamp(color.A, 0f, 1f))));
+    }
+
+    public static SKShader CreateColor(SKColor color, SKColorSpace colorSpace)
+    {
+        ArgumentNullException.ThrowIfNull(colorSpace);
+        return CreateColor(color);
+    }
+
+    public static SKShader CreatePicture(
+        SKPicture source,
+        SKShaderTileMode tileModeX,
+        SKShaderTileMode tileModeY,
+        SKMatrix localMatrix,
+        SKRect tileRect)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        return source.ToShader(tileModeX, tileModeY, localMatrix, tileRect);
+    }
+
     public static SKShader CreateLinearGradient(
         SKPoint start,
         SKPoint end,
@@ -711,6 +751,41 @@ public class SKShader : IDisposable
             {
                 SpreadMethod = spreadMethod
             };
+        });
+    }
+
+    public static SKShader CreateLinearGradient(
+        SKPoint start,
+        SKPoint end,
+        SKColorF[] colors,
+        SKColorSpace colorSpace,
+        float[]? colorPos,
+        SKShaderTileMode mode)
+    {
+        return CreateLinearGradient(start, end, colors, colorSpace, colorPos, mode, SKMatrix.Identity);
+    }
+
+    public static SKShader CreateLinearGradient(
+        SKPoint start,
+        SKPoint end,
+        SKColorF[] colors,
+        SKColorSpace colorSpace,
+        float[]? colorPos,
+        SKShaderTileMode mode,
+        SKMatrix localMatrix)
+    {
+        ArgumentNullException.ThrowIfNull(colorSpace);
+        var spreadMethod = MapTileMode(mode);
+        return new SKShader(() => new LinearGradientBrush(
+            new Vector2(start.X, start.Y),
+            new Vector2(end.X, end.Y),
+            CreateGradientStops(colors, colorPos))
+        {
+            SpreadMethod = spreadMethod,
+            CoordinateTransform = GetShaderCoordinateTransform(localMatrix),
+            ColorInterpolationMode = colorSpace.IsLinear
+                ? GradientColorInterpolationMode.ScRgbLinearInterpolation
+                : GradientColorInterpolationMode.SRgbLinearInterpolation,
         });
     }
 
@@ -748,6 +823,41 @@ public class SKShader : IDisposable
             {
                 SpreadMethod = spreadMethod
             };
+        });
+    }
+
+    public static SKShader CreateRadialGradient(
+        SKPoint center,
+        float radius,
+        SKColorF[] colors,
+        SKColorSpace colorSpace,
+        float[]? colorPos,
+        SKShaderTileMode mode)
+    {
+        return CreateRadialGradient(center, radius, colors, colorSpace, colorPos, mode, SKMatrix.Identity);
+    }
+
+    public static SKShader CreateRadialGradient(
+        SKPoint center,
+        float radius,
+        SKColorF[] colors,
+        SKColorSpace colorSpace,
+        float[]? colorPos,
+        SKShaderTileMode mode,
+        SKMatrix localMatrix)
+    {
+        ArgumentNullException.ThrowIfNull(colorSpace);
+        var spreadMethod = MapTileMode(mode);
+        return new SKShader(() => new RadialGradientBrush(
+            new Vector2(center.X, center.Y),
+            radius,
+            CreateGradientStops(colors, colorPos))
+        {
+            SpreadMethod = spreadMethod,
+            CoordinateTransform = GetShaderCoordinateTransform(localMatrix),
+            ColorInterpolationMode = colorSpace.IsLinear
+                ? GradientColorInterpolationMode.ScRgbLinearInterpolation
+                : GradientColorInterpolationMode.SRgbLinearInterpolation,
         });
     }
 
@@ -795,6 +905,84 @@ public class SKShader : IDisposable
             };
         });
     }
+
+    public static SKShader CreateTwoPointConicalGradient(
+        SKPoint start,
+        float startRadius,
+        SKPoint end,
+        float endRadius,
+        SKColorF[] colors,
+        SKColorSpace colorSpace,
+        float[]? colorPos,
+        SKShaderTileMode mode)
+    {
+        return CreateTwoPointConicalGradient(
+            start,
+            startRadius,
+            end,
+            endRadius,
+            colors,
+            colorSpace,
+            colorPos,
+            mode,
+            SKMatrix.Identity);
+    }
+
+    public static SKShader CreateTwoPointConicalGradient(
+        SKPoint start,
+        float startRadius,
+        SKPoint end,
+        float endRadius,
+        SKColorF[] colors,
+        SKColorSpace colorSpace,
+        float[]? colorPos,
+        SKShaderTileMode mode,
+        SKMatrix localMatrix)
+    {
+        ArgumentNullException.ThrowIfNull(colorSpace);
+        var spreadMethod = MapTileMode(mode);
+        return new SKShader(() => new TwoPointConicalGradientBrush(
+            new Vector2(start.X, start.Y),
+            startRadius,
+            new Vector2(end.X, end.Y),
+            endRadius,
+            CreateGradientStops(colors, colorPos))
+        {
+            SpreadMethod = spreadMethod,
+            CoordinateTransform = GetShaderCoordinateTransform(localMatrix),
+            ColorInterpolationMode = colorSpace.IsLinear
+                ? GradientColorInterpolationMode.ScRgbLinearInterpolation
+                : GradientColorInterpolationMode.SRgbLinearInterpolation,
+        });
+    }
+
+    public static SKShader CreatePerlinNoiseFractalNoise(
+        float baseFrequencyX,
+        float baseFrequencyY,
+        int numOctaves,
+        float seed,
+        SKPointI tileSize) =>
+        new(new PerlinNoiseShaderData(
+            false,
+            baseFrequencyX,
+            baseFrequencyY,
+            numOctaves,
+            seed,
+            tileSize));
+
+    public static SKShader CreatePerlinNoiseTurbulence(
+        float baseFrequencyX,
+        float baseFrequencyY,
+        int numOctaves,
+        float seed,
+        SKPointI tileSize) =>
+        new(new PerlinNoiseShaderData(
+            true,
+            baseFrequencyX,
+            baseFrequencyY,
+            numOctaves,
+            seed,
+            tileSize));
 
     public static SKShader CreateTwoPointConicalGradient(
         SKPoint start,
@@ -949,7 +1137,15 @@ public class SKShader : IDisposable
         }
     }
 
-    private static Brush ApplyColorFilter(Brush brush, SKColorFilter? colorFilter)
+    internal sealed record PerlinNoiseShaderData(
+        bool IsTurbulence,
+        float BaseFrequencyX,
+        float BaseFrequencyY,
+        int NumOctaves,
+        float Seed,
+        SKPointI TileSize);
+
+    internal static Brush ApplyColorFilter(Brush brush, SKColorFilter? colorFilter)
     {
         if (colorFilter == null)
         {
@@ -1030,6 +1226,32 @@ public class SKShader : IDisposable
         return stops;
     }
 
+    private static GradientStop[] CreateGradientStops(SKColorF[] colors, float[]? colorPos)
+    {
+        ArgumentNullException.ThrowIfNull(colors);
+        if (colorPos != null && colorPos.Length < colors.Length)
+        {
+            throw new ArgumentException("Color position array must have at least as many entries as the color array.", nameof(colorPos));
+        }
+
+        var stops = new GradientStop[colors.Length];
+        for (var i = 0; i < colors.Length; i++)
+        {
+            var offset = colorPos != null
+                ? colorPos[i]
+                : colors.Length <= 1
+                    ? 0f
+                    : (float)i / (colors.Length - 1);
+            stops[i] = new GradientStop(new Vector4(
+                Math.Clamp(colors[i].R, 0f, 1f),
+                Math.Clamp(colors[i].G, 0f, 1f),
+                Math.Clamp(colors[i].B, 0f, 1f),
+                Math.Clamp(colors[i].A, 0f, 1f)), offset);
+        }
+
+        return stops;
+    }
+
     private static GradientSpreadMethod MapTileMode(SKShaderTileMode mode)
     {
         return mode switch
@@ -1053,12 +1275,15 @@ public class SKShader : IDisposable
 
 public class SKColorFilter : IDisposable
 {
+    public IntPtr Handle { get; } = SKObjectHandle.Create();
     public SKColor Color { get; }
     public SKBlendMode Mode { get; }
     private readonly byte[]? _alphaTable;
     private readonly byte[]? _redTable;
     private readonly byte[]? _greenTable;
     private readonly byte[]? _blueTable;
+    private readonly float[]? _colorMatrix;
+    private readonly bool _lumaColor;
 
     private SKColorFilter(SKColor color, SKBlendMode mode)
     {
@@ -1072,6 +1297,69 @@ public class SKColorFilter : IDisposable
         _redTable = (byte[])red.Clone();
         _greenTable = (byte[])green.Clone();
         _blueTable = (byte[])blue.Clone();
+    }
+
+    private SKColorFilter(float[] colorMatrix)
+    {
+        _colorMatrix = (float[])colorMatrix.Clone();
+    }
+
+    private SKColorFilter(bool lumaColor)
+    {
+        _lumaColor = lumaColor;
+    }
+
+    internal float[]? ColorMatrix => _colorMatrix;
+    internal bool IsLumaColor => _lumaColor;
+
+    internal bool TryGetColorTables(
+        out ReadOnlyMemory<byte> alpha,
+        out ReadOnlyMemory<byte> red,
+        out ReadOnlyMemory<byte> green,
+        out ReadOnlyMemory<byte> blue)
+    {
+        if (_alphaTable != null && _redTable != null && _greenTable != null && _blueTable != null)
+        {
+            alpha = _alphaTable;
+            red = _redTable;
+            green = _greenTable;
+            blue = _blueTable;
+            return true;
+        }
+
+        alpha = default;
+        red = default;
+        green = default;
+        blue = default;
+        return false;
+    }
+
+    internal bool TryGetImageEffectColorMatrix(out ImageEffectColorMatrix matrix)
+    {
+        if (_colorMatrix != null)
+        {
+            matrix = new ImageEffectColorMatrix(
+                new Vector4(_colorMatrix[0], _colorMatrix[1], _colorMatrix[2], _colorMatrix[3]),
+                new Vector4(_colorMatrix[5], _colorMatrix[6], _colorMatrix[7], _colorMatrix[8]),
+                new Vector4(_colorMatrix[10], _colorMatrix[11], _colorMatrix[12], _colorMatrix[13]),
+                new Vector4(_colorMatrix[15], _colorMatrix[16], _colorMatrix[17], _colorMatrix[18]),
+                new Vector4(_colorMatrix[4], _colorMatrix[9], _colorMatrix[14], _colorMatrix[19]));
+            return true;
+        }
+
+        if (_lumaColor)
+        {
+            matrix = new ImageEffectColorMatrix(
+                Vector4.Zero,
+                Vector4.Zero,
+                Vector4.Zero,
+                new Vector4(0.2126f, 0.7152f, 0.0722f, 0f),
+                new Vector4(1f, 1f, 1f, 0f));
+            return true;
+        }
+
+        matrix = default;
+        return false;
     }
 
     public static SKColorFilter CreateBlendMode(SKColor color, SKBlendMode mode)
@@ -1093,8 +1381,43 @@ public class SKColorFilter : IDisposable
         return new SKColorFilter(alpha, red, green, blue);
     }
 
+    public static SKColorFilter CreateColorMatrix(float[] matrix)
+    {
+        ArgumentNullException.ThrowIfNull(matrix);
+        if (matrix.Length != 20)
+        {
+            throw new ArgumentException("Color matrices must contain 20 values.", nameof(matrix));
+        }
+
+        return new SKColorFilter(matrix);
+    }
+
+    public static SKColorFilter CreateLumaColor() => new(lumaColor: true);
+
     public SKColor Apply(SKColor destination)
     {
+        if (_colorMatrix != null)
+        {
+            var red = destination.R / 255f;
+            var green = destination.G / 255f;
+            var blue = destination.B / 255f;
+            var alpha = destination.A / 255f;
+            return new SKColor(
+                ToByte(red * _colorMatrix[0] + green * _colorMatrix[1] + blue * _colorMatrix[2] + alpha * _colorMatrix[3] + _colorMatrix[4]),
+                ToByte(red * _colorMatrix[5] + green * _colorMatrix[6] + blue * _colorMatrix[7] + alpha * _colorMatrix[8] + _colorMatrix[9]),
+                ToByte(red * _colorMatrix[10] + green * _colorMatrix[11] + blue * _colorMatrix[12] + alpha * _colorMatrix[13] + _colorMatrix[14]),
+                ToByte(red * _colorMatrix[15] + green * _colorMatrix[16] + blue * _colorMatrix[17] + alpha * _colorMatrix[18] + _colorMatrix[19]));
+        }
+
+        if (_lumaColor)
+        {
+            var luma = ToByte(
+                destination.R / 255f * 0.2126f +
+                destination.G / 255f * 0.7152f +
+                destination.B / 255f * 0.0722f);
+            return new SKColor(255, 255, 255, luma);
+        }
+
         if (_alphaTable != null && _redTable != null && _greenTable != null && _blueTable != null)
         {
             return new SKColor(
@@ -1196,47 +1519,260 @@ public class SKColorFilter : IDisposable
 
 public class SKImageFilter : IDisposable
 {
-    public bool IsBlur { get; }
-    public float SigmaX { get; }
-    public float SigmaY { get; }
-    
-    public bool IsDropShadow { get; }
-    public float Dx { get; }
-    public float Dy { get; }
-    public SKColor ShadowColor { get; }
-
-    private SKImageFilter(float sigmaX, float sigmaY)
+    internal enum FilterKind
     {
-        IsBlur = true;
-        SigmaX = sigmaX;
-        SigmaY = sigmaY;
+        Blur,
+        DropShadow,
+        Arithmetic,
+        BlendMode,
+        ColorFilter,
+        Dilate,
+        DisplacementMap,
+        DistantLitDiffuse,
+        DistantLitSpecular,
+        Erode,
+        Image,
+        MatrixConvolution,
+        Merge,
+        Offset,
+        Shader,
+        Picture,
+        PointLitDiffuse,
+        PointLitSpecular,
+        SpotLitDiffuse,
+        SpotLitSpecular,
+        Tile,
     }
 
-    private SKImageFilter(float dx, float dy, float sigmaX, float sigmaY, SKColor color)
+    private SKImageFilter(FilterKind kind, object? parameters, SKImageFilter? input, SKRect? cropRect)
     {
-        IsDropShadow = true;
-        Dx = dx;
-        Dy = dy;
-        SigmaX = sigmaX;
-        SigmaY = sigmaY;
-        ShadowColor = color;
+        Kind = kind;
+        Parameters = parameters;
+        Input = input;
+        CropRect = cropRect;
     }
 
-    public static SKImageFilter CreateBlur(float sigmaX, float sigmaY, SKImageFilter? input = null)
-    {
-        return new SKImageFilter(sigmaX, sigmaY);
-    }
+    public IntPtr Handle { get; } = SKObjectHandle.Create();
+    internal FilterKind Kind { get; }
+    internal object? Parameters { get; }
+    internal SKImageFilter? Input { get; }
+    internal SKRect? CropRect { get; }
 
-    public static SKImageFilter CreateDropShadow(float dx, float dy, float sigmaX, float sigmaY, SKColor color, SKImageFilter? input = null)
+    public bool IsBlur => Kind == FilterKind.Blur;
+    public bool IsDropShadow => Kind == FilterKind.DropShadow;
+    public float SigmaX => Parameters switch
     {
-        return new SKImageFilter(dx, dy, sigmaX, sigmaY, color);
-    }
+        BlurData blur => blur.SigmaX,
+        DropShadowData shadow => shadow.SigmaX,
+        _ => 0f,
+    };
+    public float SigmaY => Parameters switch
+    {
+        BlurData blur => blur.SigmaY,
+        DropShadowData shadow => shadow.SigmaY,
+        _ => 0f,
+    };
+    public float Dx => Parameters is DropShadowData shadow ? shadow.Dx : 0f;
+    public float Dy => Parameters is DropShadowData shadow ? shadow.Dy : 0f;
+    public SKColor ShadowColor => Parameters is DropShadowData shadow ? shadow.Color : SKColor.Empty;
+
+    public static SKImageFilter CreateBlur(float sigmaX, float sigmaY, SKImageFilter? input = null) =>
+        new(FilterKind.Blur, new BlurData(sigmaX, sigmaY, SKShaderTileMode.Clamp), input, null);
+
+    public static SKImageFilter CreateBlur(
+        float sigmaX,
+        float sigmaY,
+        SKShaderTileMode tileMode,
+        SKImageFilter? input = null,
+        SKRect? cropRect = null) =>
+        new(FilterKind.Blur, new BlurData(sigmaX, sigmaY, tileMode), input, cropRect);
+
+    public static SKImageFilter CreateDropShadow(
+        float dx,
+        float dy,
+        float sigmaX,
+        float sigmaY,
+        SKColor color,
+        SKImageFilter? input = null) =>
+        new(FilterKind.DropShadow, new DropShadowData(dx, dy, sigmaX, sigmaY, color), input, null);
+
+    public static SKImageFilter CreateArithmetic(
+        float k1,
+        float k2,
+        float k3,
+        float k4,
+        bool enforcePremultipliedColor,
+        SKImageFilter background,
+        SKImageFilter? foreground = null,
+        SKRect? cropRect = null) =>
+        new(FilterKind.Arithmetic, new ArithmeticData(k1, k2, k3, k4, enforcePremultipliedColor, background, foreground), null, cropRect);
+
+    public static SKImageFilter CreateBlendMode(
+        SKBlendMode mode,
+        SKImageFilter background,
+        SKImageFilter? foreground = null,
+        SKRect? cropRect = null) =>
+        new(FilterKind.BlendMode, new BlendModeData(mode, background, foreground), null, cropRect);
+
+    public static SKImageFilter CreateColorFilter(
+        SKColorFilter colorFilter,
+        SKImageFilter? input = null,
+        SKRect? cropRect = null) =>
+        new(FilterKind.ColorFilter, colorFilter ?? throw new ArgumentNullException(nameof(colorFilter)), input, cropRect);
+
+    public static SKImageFilter CreateDilate(
+        float radiusX,
+        float radiusY,
+        SKImageFilter? input = null,
+        SKRect? cropRect = null) =>
+        new(FilterKind.Dilate, new MorphologyData(radiusX, radiusY), input, cropRect);
+
+    public static SKImageFilter CreateDisplacementMapEffect(
+        SKColorChannel xChannelSelector,
+        SKColorChannel yChannelSelector,
+        float scale,
+        SKImageFilter displacement,
+        SKImageFilter? input = null,
+        SKRect? cropRect = null) =>
+        new(FilterKind.DisplacementMap, new DisplacementData(xChannelSelector, yChannelSelector, scale, displacement), input, cropRect);
+
+    public static SKImageFilter CreateDistantLitDiffuse(
+        SKPoint3 direction,
+        SKColor lightColor,
+        float surfaceScale,
+        float kd,
+        SKImageFilter? input = null,
+        SKRect? cropRect = null) =>
+        new(FilterKind.DistantLitDiffuse, new DistantLightData(direction, lightColor, surfaceScale, kd, 0f), input, cropRect);
+
+    public static SKImageFilter CreateDistantLitSpecular(
+        SKPoint3 direction,
+        SKColor lightColor,
+        float surfaceScale,
+        float ks,
+        float shininess,
+        SKImageFilter? input = null,
+        SKRect? cropRect = null) =>
+        new(FilterKind.DistantLitSpecular, new DistantLightData(direction, lightColor, surfaceScale, ks, shininess), input, cropRect);
+
+    public static SKImageFilter CreateErode(
+        float radiusX,
+        float radiusY,
+        SKImageFilter? input = null,
+        SKRect? cropRect = null) =>
+        new(FilterKind.Erode, new MorphologyData(radiusX, radiusY), input, cropRect);
+
+    public static SKImageFilter CreateImage(
+        SKImage image,
+        SKRect source,
+        SKRect destination,
+        SKSamplingOptions sampling) =>
+        new(FilterKind.Image, new ImageData(image, source, destination, sampling), null, null);
+
+    public static SKImageFilter CreateMatrixConvolution(
+        SKSizeI kernelSize,
+        float[] kernel,
+        float gain,
+        float bias,
+        SKPointI kernelOffset,
+        SKShaderTileMode tileMode,
+        bool convolveAlpha,
+        SKImageFilter? input = null,
+        SKRect? cropRect = null) =>
+        new(FilterKind.MatrixConvolution, new MatrixConvolutionData(
+            kernelSize,
+            (float[])(kernel ?? throw new ArgumentNullException(nameof(kernel))).Clone(),
+            gain,
+            bias,
+            kernelOffset,
+            tileMode,
+            convolveAlpha), input, cropRect);
+
+    public static SKImageFilter CreateMerge(SKImageFilter[] filters, SKRect? cropRect = null) =>
+        new(FilterKind.Merge, (SKImageFilter[])(filters ?? throw new ArgumentNullException(nameof(filters))).Clone(), null, cropRect);
+
+    public static SKImageFilter CreateOffset(
+        float dx,
+        float dy,
+        SKImageFilter? input = null,
+        SKRect? cropRect = null) =>
+        new(FilterKind.Offset, new OffsetData(dx, dy), input, cropRect);
+
+    public static SKImageFilter CreateShader(SKShader shader, bool dither, SKRect? cropRect = null) =>
+        new(FilterKind.Shader, new ShaderData(shader ?? throw new ArgumentNullException(nameof(shader)), dither), null, cropRect);
+
+    public static SKImageFilter CreatePicture(SKPicture picture, SKRect targetRect) =>
+        new(FilterKind.Picture, new PictureData(picture ?? throw new ArgumentNullException(nameof(picture)), targetRect), null, null);
+
+    public static SKImageFilter CreatePointLitDiffuse(
+        SKPoint3 location,
+        SKColor lightColor,
+        float surfaceScale,
+        float kd,
+        SKImageFilter? input = null,
+        SKRect? cropRect = null) =>
+        new(FilterKind.PointLitDiffuse, new PointLightData(location, lightColor, surfaceScale, kd, 0f), input, cropRect);
+
+    public static SKImageFilter CreatePointLitSpecular(
+        SKPoint3 location,
+        SKColor lightColor,
+        float surfaceScale,
+        float ks,
+        float shininess,
+        SKImageFilter? input = null,
+        SKRect? cropRect = null) =>
+        new(FilterKind.PointLitSpecular, new PointLightData(location, lightColor, surfaceScale, ks, shininess), input, cropRect);
+
+    public static SKImageFilter CreateSpotLitDiffuse(
+        SKPoint3 location,
+        SKPoint3 target,
+        float specularExponent,
+        float cutoffAngle,
+        SKColor lightColor,
+        float surfaceScale,
+        float kd,
+        SKImageFilter? input = null,
+        SKRect? cropRect = null) =>
+        new(FilterKind.SpotLitDiffuse, new SpotLightData(location, target, specularExponent, cutoffAngle, lightColor, surfaceScale, kd, 0f), input, cropRect);
+
+    public static SKImageFilter CreateSpotLitSpecular(
+        SKPoint3 location,
+        SKPoint3 target,
+        float specularExponent,
+        float cutoffAngle,
+        SKColor lightColor,
+        float surfaceScale,
+        float ks,
+        float shininess,
+        SKImageFilter? input = null,
+        SKRect? cropRect = null) =>
+        new(FilterKind.SpotLitSpecular, new SpotLightData(location, target, specularExponent, cutoffAngle, lightColor, surfaceScale, ks, shininess), input, cropRect);
+
+    public static SKImageFilter CreateTile(SKRect source, SKRect destination, SKImageFilter? input = null) =>
+        new(FilterKind.Tile, new TileData(source, destination), input, null);
 
     public void Dispose() { }
+
+    internal sealed record BlurData(float SigmaX, float SigmaY, SKShaderTileMode TileMode);
+    internal sealed record DropShadowData(float Dx, float Dy, float SigmaX, float SigmaY, SKColor Color);
+    internal sealed record ArithmeticData(float K1, float K2, float K3, float K4, bool EnforcePremultipliedColor, SKImageFilter Background, SKImageFilter? Foreground);
+    internal sealed record BlendModeData(SKBlendMode Mode, SKImageFilter Background, SKImageFilter? Foreground);
+    internal sealed record MorphologyData(float RadiusX, float RadiusY);
+    internal sealed record DisplacementData(SKColorChannel XChannel, SKColorChannel YChannel, float Scale, SKImageFilter Displacement);
+    internal sealed record DistantLightData(SKPoint3 Direction, SKColor Color, float SurfaceScale, float Constant, float Shininess);
+    internal sealed record ImageData(SKImage Image, SKRect Source, SKRect Destination, SKSamplingOptions Sampling);
+    internal sealed record MatrixConvolutionData(SKSizeI KernelSize, float[] Kernel, float Gain, float Bias, SKPointI KernelOffset, SKShaderTileMode TileMode, bool ConvolveAlpha);
+    internal sealed record OffsetData(float Dx, float Dy);
+    internal sealed record ShaderData(SKShader Shader, bool Dither);
+    internal sealed record PictureData(SKPicture Picture, SKRect TargetRect);
+    internal sealed record PointLightData(SKPoint3 Location, SKColor Color, float SurfaceScale, float Constant, float Shininess);
+    internal sealed record SpotLightData(SKPoint3 Location, SKPoint3 Target, float SpecularExponent, float CutoffAngle, SKColor Color, float SurfaceScale, float Constant, float Shininess);
+    internal sealed record TileData(SKRect Source, SKRect Destination);
 }
 
 public class SKPathEffect : IDisposable
 {
+    public IntPtr Handle { get; } = SKObjectHandle.Create();
     public float[] Intervals { get; }
     public float Phase { get; }
 

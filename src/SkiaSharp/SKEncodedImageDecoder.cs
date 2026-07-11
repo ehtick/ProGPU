@@ -16,7 +16,7 @@ internal static class SKEncodedImageDecoder
         var result = StbImageSharp.ImageResult.FromMemory(
             data,
             StbImageSharp.ColorComponents.RedGreenBlueAlpha);
-        return new DecodedImage(result.Width, result.Height, result.Data);
+        return new DecodedImage(result.Width, result.Height, result.Data, ReadPngColorSpace(data));
     }
 
     private static bool IsIcon(ReadOnlySpan<byte> data)
@@ -78,7 +78,11 @@ internal static class SKEncodedImageDecoder
             var result = StbImageSharp.ImageResult.FromMemory(
                 payload.ToArray(),
                 StbImageSharp.ColorComponents.RedGreenBlueAlpha);
-            return new DecodedImage(result.Width, result.Height, result.Data);
+            return new DecodedImage(
+                result.Width,
+                result.Height,
+                result.Data,
+                ReadPngColorSpace(payload));
         }
 
         return DecodeIconBitmap(payload, icon);
@@ -140,7 +144,74 @@ internal static class SKEncodedImageDecoder
             ApplyIconMask(payload, headerSize + xorByteCount, rgba, width, height, bottomUp);
         }
 
-        return new DecodedImage(width, height, rgba);
+        return new DecodedImage(width, height, rgba, null);
+    }
+
+    private static SKColorSpace? ReadPngColorSpace(ReadOnlySpan<byte> data)
+    {
+        ReadOnlySpan<byte> signature = stackalloc byte[]
+        {
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a
+        };
+        if (data.Length < signature.Length || !data[..signature.Length].SequenceEqual(signature))
+        {
+            return null;
+        }
+
+        float? fileGamma = null;
+        var offset = signature.Length;
+        while (offset <= data.Length - 12)
+        {
+            var chunkLength = BinaryPrimitives.ReadUInt32BigEndian(data.Slice(offset, 4));
+            var chunkEnd = (ulong)offset + 12UL + chunkLength;
+            if (chunkEnd > (ulong)data.Length)
+            {
+                break;
+            }
+
+            var type = data.Slice(offset + 4, 4);
+            var payload = data.Slice(offset + 8, (int)chunkLength);
+            if (type.SequenceEqual("sRGB"u8))
+            {
+                return SKColorSpace.CreateSrgb();
+            }
+
+            if (type.SequenceEqual("gAMA"u8) && payload.Length == 4)
+            {
+                var encodedGamma = BinaryPrimitives.ReadUInt32BigEndian(payload);
+                if (encodedGamma != 0)
+                {
+                    fileGamma = encodedGamma / 100000f;
+                }
+            }
+
+            if (type.SequenceEqual("IEND"u8))
+            {
+                break;
+            }
+
+            offset = checked((int)chunkEnd);
+        }
+
+        if (fileGamma is not { } gamma || !float.IsFinite(gamma) || gamma <= 0f)
+        {
+            return null;
+        }
+
+        if (MathF.Abs(gamma - 1f / 2.2f) <= 0.01f)
+        {
+            return SKColorSpace.CreateSrgb();
+        }
+
+        var transferFunction = new SKColorSpaceTransferFn(
+            1f / gamma,
+            1f,
+            0f,
+            0f,
+            0f,
+            0f,
+            0f);
+        return SKColorSpace.CreateRgb(transferFunction, SKColorSpaceXyz.Srgb);
     }
 
     private static void ApplyIconMask(
@@ -174,7 +245,11 @@ internal static class SKEncodedImageDecoder
         }
     }
 
-    internal readonly record struct DecodedImage(int Width, int Height, byte[] Pixels);
+    internal readonly record struct DecodedImage(
+        int Width,
+        int Height,
+        byte[] Pixels,
+        SKColorSpace? ColorSpace);
 
     private readonly record struct IconEntry(int Width, int Height, ushort BitCount, int Offset, int ByteCount);
 }

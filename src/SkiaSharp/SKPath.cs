@@ -7,6 +7,7 @@ namespace SkiaSharp;
 
 public class SKPath : IDisposable
 {
+    public IntPtr Handle { get; } = SKObjectHandle.Create();
     private PathFigure? _currentFigure;
     private SKPathFillType _fillType = SKPathFillType.Winding;
 
@@ -323,9 +324,9 @@ public class SKPath : IDisposable
 
     public void AddCircle(float x, float y, float radius, SKPathDirection direction = SKPathDirection.Clockwise)
     {
-        MoveTo(x - radius, y);
-        ArcTo(radius, radius, 0, SKPathArcSize.Large, direction, x + radius, y);
+        MoveTo(x + radius, y);
         ArcTo(radius, radius, 0, SKPathArcSize.Large, direction, x - radius, y);
+        ArcTo(radius, radius, 0, SKPathArcSize.Large, direction, x + radius, y);
         Close();
     }
 
@@ -335,9 +336,9 @@ public class SKPath : IDisposable
         var radiusY = rect.Height / 2f;
         var centerX = rect.MidX;
         var centerY = rect.MidY;
-        MoveTo(centerX - radiusX, centerY);
-        ArcTo(radiusX, radiusY, 0f, SKPathArcSize.Large, direction, centerX + radiusX, centerY);
+        MoveTo(centerX + radiusX, centerY);
         ArcTo(radiusX, radiusY, 0f, SKPathArcSize.Large, direction, centerX - radiusX, centerY);
+        ArcTo(radiusX, radiusY, 0f, SKPathArcSize.Large, direction, centerX + radiusX, centerY);
         Close();
     }
 
@@ -446,6 +447,57 @@ public class SKPath : IDisposable
         }
         _currentFigure = null;
     }
+
+    public void AddPath(SKPath other, float x, float y, SKPathAddMode mode)
+    {
+        ArgumentNullException.ThrowIfNull(other);
+        if (mode == SKPathAddMode.Extend &&
+            _currentFigure != null &&
+            other.Geometry.Figures.Count > 0)
+        {
+            var start = other.Geometry.Figures[0].StartPoint + new Vector2(x, y);
+            _currentFigure.Segments.Add(new LineSegment(start));
+        }
+
+        AddPath(other, x, y);
+    }
+
+    public void AddPath(SKPath other, SKPathAddMode mode = SKPathAddMode.Append) =>
+        AddPath(other, 0f, 0f, mode);
+
+    public void AddPath(SKPath other, in SKMatrix matrix, SKPathAddMode mode = SKPathAddMode.Append)
+    {
+        using var copy = new SKPath(other);
+        copy.Transform(matrix);
+        AddPath(copy, mode);
+    }
+
+    public void AddPoly(ReadOnlySpan<SKPoint> points, bool close = true)
+    {
+        if (points.IsEmpty)
+        {
+            return;
+        }
+
+        MoveTo(points[0]);
+        for (var i = 1; i < points.Length; i++)
+        {
+            LineTo(points[i]);
+        }
+
+        if (close)
+        {
+            Close();
+        }
+    }
+
+    public void AddPoly(SKPoint[] points, bool close = true)
+    {
+        ArgumentNullException.ThrowIfNull(points);
+        AddPoly(points.AsSpan(), close);
+    }
+
+    public SKPathRawIterator CreateRawIterator() => new(this, forceClose: false);
 
     private static PathFigure CloneFigure(PathFigure figure, Vector2 offset)
     {

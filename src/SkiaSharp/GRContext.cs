@@ -181,6 +181,15 @@ public class GRBackendRenderTarget : IDisposable
 
 public sealed class GRBackendTexture : IDisposable
 {
+    public GRBackendTexture(GpuTexture texture, bool mipmapped = false)
+    {
+        ArgumentNullException.ThrowIfNull(texture);
+        Width = checked((int)texture.Width);
+        Height = checked((int)texture.Height);
+        Mipmapped = mipmapped || texture.MipLevelCount > 1;
+        BackendTexture = texture;
+    }
+
     public GRBackendTexture(int width, int height, bool mipmapped, GRGlTextureInfo glTextureInfo)
     {
         Width = width;
@@ -193,6 +202,7 @@ public sealed class GRBackendTexture : IDisposable
     public int Height { get; }
     public bool Mipmapped { get; }
     public GRGlTextureInfo GlTextureInfo { get; }
+    public GpuTexture? BackendTexture { get; }
 
     public void Dispose()
     {

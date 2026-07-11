@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using ProGPU.Backend;
 using ProGPU.Scene;
 using ProGPU.Vector;
@@ -11,11 +12,25 @@ namespace SkiaSharp;
 public class SKCanvas : IDisposable
 {
     private static readonly object s_compositorCacheScope = new();
+    private static readonly ConditionalWeakTable<SKColorSpace, byte[]> s_toSrgbTables = new();
+    private static readonly ConditionalWeakTable<GpuTexture, TextureColorSpace> s_textureColorSpaces = new();
+    private static readonly byte[] s_identityColorTable = CreateIdentityColorTable();
+
+    private sealed class TextureColorSpace
+    {
+        public TextureColorSpace(SKColorSpace value)
+        {
+            Value = value;
+        }
+
+        public SKColorSpace Value { get; }
+    }
     private DrawingContext _context;
     private readonly float _width;
     private readonly float _height;
     private readonly WgpuContext? _gpuContext;
     private readonly Action? _flush;
+    private readonly SKBitmap? _bitmap;
     private SKMatrix _currentMatrix = SKMatrix.Identity;
     private float _currentOpacity = 1f;
     private readonly List<GpuTexture> _ownedLayerTextures = new();
@@ -83,6 +98,19 @@ public class SKCanvas : IDisposable
         _flush = flush;
     }
 
+    public SKCanvas(SKBitmap bitmap)
+        : this(
+            new DrawingContext(),
+            (bitmap ?? throw new ArgumentNullException(nameof(bitmap))).Width,
+            bitmap.Height,
+            SKContextHelper.GetContext())
+    {
+        _bitmap = bitmap;
+        bitmap.AttachCanvas(this);
+    }
+
+    internal DrawingContext Context => _context;
+
     public void Clear()
     {
         Clear(SKColors.Transparent);
@@ -110,7 +138,7 @@ public class SKCanvas : IDisposable
         return restoreCount;
     }
 
-    public int SaveLayer(SKRect bounds, SKPaint paint)
+    public int SaveLayer(SKRect bounds, SKPaint? paint)
     {
         var restoreCount = _stateStack.Count;
         Save();
@@ -130,10 +158,12 @@ public class SKCanvas : IDisposable
         return restoreCount;
     }
 
-    public int SaveLayer(SKPaint paint)
+    public int SaveLayer(SKPaint? paint)
     {
         return SaveLayer(new SKRect(0, 0, _width, _height), paint);
     }
+
+    public int SaveLayer() => SaveLayer(new SKRect(0, 0, _width, _height), null);
 
     public void Restore()
     {
@@ -186,7 +216,10 @@ public class SKCanvas : IDisposable
     private void RestoreLayer(LayerFrame layerFrame)
     {
         _context = layerFrame.ParentContext;
-        if (layerFrame.LayerContext.Commands.Count == 0 || !IsValidLayerBounds(layerFrame.Bounds))
+        var hasSourceGeneratingFilter = layerFrame.Paint?.ImageFilter != null ||
+            layerFrame.Paint?.ColorFilter != null;
+        if ((!hasSourceGeneratingFilter && layerFrame.LayerContext.Commands.Count == 0) ||
+            !IsValidLayerBounds(layerFrame.Bounds))
         {
             layerFrame.LayerContext.Clear();
             return;
@@ -235,29 +268,25 @@ public class SKCanvas : IDisposable
 
     private void DrawRestoredLayerTexture(LayerFrame layerFrame, GpuTexture texture)
     {
-        var rect = new Rect(0f, 0f, _width, _height);
-        var imageFilter = layerFrame.Paint?.ImageFilter;
-        if (imageFilter is { IsBlur: true })
+        if (layerFrame.Paint?.ImageFilter is { } imageFilter)
         {
-            RetainLayerTextureForDeferredCommand(texture);
-            _context.DrawImageWithEffect(
-                texture,
-                rect,
-                blurSigma: MathF.Max(imageFilter.SigmaX, imageFilter.SigmaY));
-            return;
+            texture = RenderImageFilterGraph(texture, imageFilter, layerFrame.BoundsMatrix.ToMatrix4x4());
+            texture = ConvertRootImageFilterOutputToSrgb(texture, imageFilter);
         }
 
-        if (imageFilter is { IsDropShadow: true })
+        if (layerFrame.Paint?.ColorFilter is { } colorFilter)
         {
-            texture = RenderFilteredLayerToTexture(
-                texture,
-                new DropShadowEffect(
-                    MathF.Max(imageFilter.SigmaX, imageFilter.SigmaY),
-                    new Vector2(imageFilter.Dx, imageFilter.Dy),
-                    ToVector4(imageFilter.ShadowColor)));
+            var filteredTexture = RenderColorFilter(texture, colorFilter, cropRect: null);
+            if (!ReferenceEquals(filteredTexture, texture))
+            {
+                ReleaseOwnedLayerTexture(texture);
+                texture = filteredTexture;
+            }
         }
 
-        DrawRestoredLayerTexture(texture, rect);
+        DrawRestoredLayerTexture(
+            texture,
+            new Rect(0f, 0f, texture.Width, texture.Height));
     }
 
     private void DrawRestoredLayerTexture(GpuTexture texture, Rect rect)
@@ -279,57 +308,893 @@ public class SKCanvas : IDisposable
         _ownedLayerTextures.Remove(texture);
     }
 
-    private GpuTexture RenderFilteredLayerToTexture(GpuTexture sourceTexture, EffectBase effect)
+    private GpuTexture RenderImageFilterGraph(
+        GpuTexture sourceTexture,
+        SKImageFilter root,
+        Matrix4x4 filterTransform)
     {
-        var context = _gpuContext != null && !_gpuContext.IsDisposed
-            ? _gpuContext
-            : SKContextHelper.GetContext();
-        var texture = new GpuTexture(
-            context,
-            (uint)_width,
-            (uint)_height,
-            TextureFormat.Rgba8Unorm,
-            TextureUsage.RenderAttachment | TextureUsage.CopySrc | TextureUsage.CopyDst | TextureUsage.TextureBinding,
-            "SKCanvas SaveLayer Filtered Texture",
-            alphaMode: GpuTextureAlphaMode.Premultiplied);
-
-        var visual = new DrawingVisual
-        {
-            Size = new Vector2(_width, _height),
-            Effect = effect
-        };
-        visual.Context.DrawTexture(sourceTexture, new Rect(0f, 0f, _width, _height));
-
-        var textureRetained = false;
+        var firstGraphTexture = _ownedLayerTextures.Count;
+        var cache = new Dictionary<SKImageFilter, GpuTexture>();
+        GpuTexture? result = null;
         try
         {
-            try
+            result = EvaluateImageFilter(sourceTexture, root, cache, filterTransform);
+            ReleaseGraphIntermediateTextures(firstGraphTexture, result);
+            if (!ReferenceEquals(result, sourceTexture))
             {
-                GetCompositorForContext(context).RenderOffscreen(
-                    visual,
-                    (uint)_width,
-                    (uint)_height,
-                    texture,
-                    padding: 0f,
-                    dpiScale: 1f);
-            }
-            finally
-            {
-                visual.Context.Clear();
+                ReleaseOwnedLayerTexture(sourceTexture);
             }
 
-            _ownedLayerTextures.Add(texture);
-            textureRetained = true;
+            return result;
+        }
+        catch
+        {
+            ReleaseGraphIntermediateTextures(firstGraphTexture, keep: null);
+            throw;
+        }
+    }
+
+    private GpuTexture ConvertRootImageFilterOutputToSrgb(
+        GpuTexture texture,
+        SKImageFilter root)
+    {
+        var sourceColorSpace = GetRootImageFilterColorSpace(root);
+        if (sourceColorSpace == null ||
+            sourceColorSpace.TransferFunction == SKColorSpaceTransferFn.Srgb)
+        {
             return texture;
+        }
+
+        var table = s_toSrgbTables.GetValue(sourceColorSpace, CreateToSrgbColorTable);
+        using var colorFilter = SKColorFilter.CreateTable(
+            s_identityColorTable,
+            table,
+            table,
+            table);
+        var converted = RenderColorFilter(texture, colorFilter, cropRect: null);
+        if (!ReferenceEquals(converted, texture))
+        {
+            ReleaseOwnedLayerTexture(texture);
+        }
+
+        return converted;
+    }
+
+    private static SKColorSpace? GetRootImageFilterColorSpace(SKImageFilter root)
+    {
+        if (root.Kind == SKImageFilter.FilterKind.Image &&
+            root.Parameters is SKImageFilter.ImageData imageData)
+        {
+            return imageData.Image.ColorSpace;
+        }
+
+        if (root.Kind == SKImageFilter.FilterKind.Picture &&
+            root.Parameters is SKImageFilter.PictureData pictureData &&
+            TryGetPictureImageColorSpace(pictureData.Picture.Picture, out var pictureColorSpace))
+        {
+            return pictureColorSpace;
+        }
+
+        return null;
+    }
+
+    private static bool TryGetPictureImageColorSpace(
+        GpuPicture picture,
+        out SKColorSpace colorSpace)
+    {
+        SKColorSpace? candidate = null;
+        foreach (var command in picture.Commands)
+        {
+            switch (command.Type)
+            {
+                case RenderCommandType.DrawTexture:
+                    if (command.Texture == null ||
+                        !s_textureColorSpaces.TryGetValue(command.Texture, out var textureColorSpace) ||
+                        candidate != null && candidate.TransferFunction != textureColorSpace.Value.TransferFunction)
+                    {
+                        colorSpace = null!;
+                        return false;
+                    }
+
+                    candidate = textureColorSpace.Value;
+                    break;
+                case RenderCommandType.DrawPicture:
+                    if (command.Picture == null ||
+                        !TryGetPictureImageColorSpace(command.Picture, out var nestedColorSpace) ||
+                        candidate != null && candidate.TransferFunction != nestedColorSpace.TransferFunction)
+                    {
+                        colorSpace = null!;
+                        return false;
+                    }
+
+                    candidate = nestedColorSpace;
+                    break;
+                case RenderCommandType.PushClip:
+                case RenderCommandType.PopClip:
+                case RenderCommandType.PushGeometryClip:
+                case RenderCommandType.PopGeometryClip:
+                case RenderCommandType.PushOpacity:
+                case RenderCommandType.PopOpacity:
+                case RenderCommandType.PushBlendMode:
+                case RenderCommandType.PopBlendMode:
+                    break;
+                default:
+                    colorSpace = null!;
+                    return false;
+            }
+        }
+
+        colorSpace = candidate!;
+        return candidate != null;
+    }
+
+    private static byte[] CreateIdentityColorTable()
+    {
+        var table = new byte[256];
+        for (var index = 0; index < table.Length; index++)
+        {
+            table[index] = (byte)index;
+        }
+
+        return table;
+    }
+
+    private static byte[] CreateToSrgbColorTable(SKColorSpace sourceColorSpace)
+    {
+        var table = new byte[256];
+        for (var index = 0; index < table.Length; index++)
+        {
+            var encoded = index / 255f;
+            var linear = Math.Clamp(sourceColorSpace.TransferFunction.Transform(encoded), 0f, 1f);
+            var srgb = linear <= 0.0031308f
+                ? linear * 12.92f
+                : 1.055f * MathF.Pow(linear, 1f / 2.4f) - 0.055f;
+            table[index] = (byte)Math.Clamp((int)MathF.Round(srgb * 255f), 0, 255);
+        }
+
+        return table;
+    }
+
+    private void ReleaseGraphIntermediateTextures(int firstGraphTexture, GpuTexture? keep)
+    {
+        for (var i = _ownedLayerTextures.Count - 1; i >= firstGraphTexture; i--)
+        {
+            var texture = _ownedLayerTextures[i];
+            if (ReferenceEquals(texture, keep))
+            {
+                continue;
+            }
+
+            _ownedLayerTextures.RemoveAt(i);
+            texture.Dispose();
+        }
+    }
+
+    private void ReleaseOwnedLayerTexture(GpuTexture texture)
+    {
+        if (_ownedLayerTextures.Remove(texture))
+        {
+            texture.Dispose();
+        }
+    }
+
+    private GpuTexture EvaluateImageFilter(
+        GpuTexture sourceTexture,
+        SKImageFilter filter,
+        Dictionary<SKImageFilter, GpuTexture> cache,
+        Matrix4x4 filterTransform)
+    {
+        if (cache.TryGetValue(filter, out var cached))
+        {
+            return cached;
+        }
+
+        GpuTexture result;
+        switch (filter.Kind)
+        {
+            case SKImageFilter.FilterKind.Blur:
+            {
+                var input = EvaluateOptionalInput(sourceTexture, filter.Input, cache, filterTransform);
+                var blur = (SKImageFilter.BlurData)filter.Parameters!;
+                result = RenderBlur(input, blur.SigmaX, blur.SigmaY);
+                break;
+            }
+            case SKImageFilter.FilterKind.DropShadow:
+            {
+                var input = EvaluateOptionalInput(sourceTexture, filter.Input, cache, filterTransform);
+                result = RenderDropShadow(input, (SKImageFilter.DropShadowData)filter.Parameters!);
+                break;
+            }
+            case SKImageFilter.FilterKind.ColorFilter:
+            {
+                var input = EvaluateOptionalInput(sourceTexture, filter.Input, cache, filterTransform);
+                result = RenderColorFilter(input, (SKColorFilter)filter.Parameters!, cropRect: null);
+                break;
+            }
+            case SKImageFilter.FilterKind.Offset:
+            {
+                var input = EvaluateOptionalInput(sourceTexture, filter.Input, cache, filterTransform);
+                var offset = (SKImageFilter.OffsetData)filter.Parameters!;
+                result = RenderFilterPass(
+                    "SKImageFilter Offset",
+                    input.Width,
+                    input.Height,
+                    context => context.DrawTexture(
+                        input,
+                        new Rect(offset.Dx, offset.Dy, input.Width, input.Height)));
+                break;
+            }
+            case SKImageFilter.FilterKind.Dilate:
+            case SKImageFilter.FilterKind.Erode:
+            {
+                var input = EvaluateOptionalInput(sourceTexture, filter.Input, cache, filterTransform);
+                var morphology = (SKImageFilter.MorphologyData)filter.Parameters!;
+                result = RenderMorphology(
+                    input,
+                    morphology,
+                    dilate: filter.Kind == SKImageFilter.FilterKind.Dilate);
+                break;
+            }
+            case SKImageFilter.FilterKind.Merge:
+            {
+                var filters = (SKImageFilter[])filter.Parameters!;
+                var inputs = new GpuTexture[filters.Length];
+                var width = sourceTexture.Width;
+                var height = sourceTexture.Height;
+                for (var i = 0; i < filters.Length; i++)
+                {
+                    inputs[i] = EvaluateImageFilter(sourceTexture, filters[i], cache, filterTransform);
+                    width = Math.Max(width, inputs[i].Width);
+                    height = Math.Max(height, inputs[i].Height);
+                }
+                result = RenderFilterPass(
+                    "SKImageFilter Merge",
+                    width,
+                    height,
+                    context =>
+                    {
+                        for (var i = 0; i < inputs.Length; i++)
+                        {
+                            context.DrawTexture(
+                                inputs[i],
+                                new Rect(0f, 0f, inputs[i].Width, inputs[i].Height));
+                        }
+                    });
+                break;
+            }
+            case SKImageFilter.FilterKind.Arithmetic:
+            {
+                var arithmetic = (SKImageFilter.ArithmeticData)filter.Parameters!;
+                var background = EvaluateImageFilter(sourceTexture, arithmetic.Background, cache, filterTransform);
+                var foreground = EvaluateOptionalInput(sourceTexture, arithmetic.Foreground, cache, filterTransform);
+                result = RenderArithmeticComposite(background, foreground, arithmetic);
+                break;
+            }
+            case SKImageFilter.FilterKind.DisplacementMap:
+            {
+                var displacement = (SKImageFilter.DisplacementData)filter.Parameters!;
+                var input = EvaluateOptionalInput(sourceTexture, filter.Input, cache, filterTransform);
+                var displacementInput = EvaluateImageFilter(
+                    sourceTexture,
+                    displacement.Displacement,
+                    cache,
+                    filterTransform);
+                result = RenderDisplacementMap(input, displacementInput, displacement);
+                break;
+            }
+            case SKImageFilter.FilterKind.MatrixConvolution:
+            {
+                var input = EvaluateOptionalInput(sourceTexture, filter.Input, cache, filterTransform);
+                result = RenderMatrixConvolution(
+                    input,
+                    (SKImageFilter.MatrixConvolutionData)filter.Parameters!);
+                break;
+            }
+            case SKImageFilter.FilterKind.DistantLitDiffuse:
+            case SKImageFilter.FilterKind.DistantLitSpecular:
+            case SKImageFilter.FilterKind.PointLitDiffuse:
+            case SKImageFilter.FilterKind.PointLitSpecular:
+            case SKImageFilter.FilterKind.SpotLitDiffuse:
+            case SKImageFilter.FilterKind.SpotLitSpecular:
+            {
+                var input = EvaluateOptionalInput(sourceTexture, filter.Input, cache, filterTransform);
+                result = RenderImageLighting(input, filter.Kind, filter.Parameters!, filterTransform);
+                break;
+            }
+            case SKImageFilter.FilterKind.BlendMode:
+            {
+                var blend = (SKImageFilter.BlendModeData)filter.Parameters!;
+                var background = EvaluateImageFilter(sourceTexture, blend.Background, cache, filterTransform);
+                var foreground = EvaluateOptionalInput(sourceTexture, blend.Foreground, cache, filterTransform);
+                result = RenderImageBlend(background, foreground, blend.Mode);
+                break;
+            }
+            case SKImageFilter.FilterKind.Image:
+            {
+                var image = (SKImageFilter.ImageData)filter.Parameters!;
+                result = RenderFilterPass(
+                    "SKImageFilter Image",
+                    sourceTexture.Width,
+                    sourceTexture.Height,
+                    context => context.DrawTexture(
+                        image.Image.Texture,
+                        ToRect(image.Destination),
+                        ToRect(image.Source),
+                        Matrix4x4.Identity,
+                        MapSampling(image.Sampling)));
+                break;
+            }
+            case SKImageFilter.FilterKind.Picture:
+            {
+                var picture = (SKImageFilter.PictureData)filter.Parameters!;
+                var pictureTransform = filterTransform == default
+                    ? Matrix4x4.Identity
+                    : filterTransform;
+                result = RenderFilterPass(
+                    "SKImageFilter Picture",
+                    sourceTexture.Width,
+                    sourceTexture.Height,
+                    context =>
+                    {
+                        context.Commands.Add(new RenderCommand
+                        {
+                            Type = RenderCommandType.PushClip,
+                            Rect = ToRect(picture.TargetRect),
+                            Transform = pictureTransform
+                        });
+                        context.DrawPictureTransformed(picture.Picture.Picture, pictureTransform);
+                        context.PopClip();
+                    });
+                break;
+            }
+            case SKImageFilter.FilterKind.Shader:
+            {
+                var shader = (SKImageFilter.ShaderData)filter.Parameters!;
+                result = RenderShaderFilter(
+                    shader.Shader,
+                    filterTransform,
+                    sourceTexture.Width,
+                    sourceTexture.Height);
+                break;
+            }
+            case SKImageFilter.FilterKind.Tile:
+            {
+                var input = EvaluateOptionalInput(sourceTexture, filter.Input, cache, filterTransform);
+                result = RenderTile(input, (SKImageFilter.TileData)filter.Parameters!);
+                break;
+            }
+            default:
+                result = EvaluateOptionalInput(sourceTexture, filter.Input, cache, filterTransform);
+                break;
+        }
+
+        result = ApplyFilterCrop(result, filter.CropRect, filterTransform);
+        cache[filter] = result;
+        return result;
+    }
+
+    private GpuTexture EvaluateOptionalInput(
+        GpuTexture sourceTexture,
+        SKImageFilter? input,
+        Dictionary<SKImageFilter, GpuTexture> cache,
+        Matrix4x4 filterTransform) =>
+        input == null ? sourceTexture : EvaluateImageFilter(sourceTexture, input, cache, filterTransform);
+
+    private GpuTexture RenderColorFilter(GpuTexture input, SKColorFilter colorFilter, SKRect? cropRect)
+    {
+        if (colorFilter.TryGetColorTables(out var alpha, out var red, out var green, out var blue))
+        {
+            var context = GetGpuContext();
+            var destination = CreateOwnedFilterTexture(context, "SKImageFilter Color Table", storage: true);
+            GetCompositorForContext(context).ApplyColorTable(
+                input,
+                destination,
+                alpha.Span,
+                red.Span,
+                green.Span,
+                blue.Span);
+            return destination;
+        }
+
+        if (colorFilter.IsLumaColor)
+        {
+            return RenderFilterPass(
+                "SKImageFilter Luminance To Alpha",
+                input.Width,
+                input.Height,
+                context => context.DrawImageWithEffect(
+                    input,
+                    new Rect(0f, 0f, input.Width, input.Height),
+                    luminanceToAlpha: true));
+        }
+
+        if (!colorFilter.TryGetImageEffectColorMatrix(out var matrix))
+        {
+            return ApplyFilterCrop(input, cropRect);
+        }
+
+        return RenderFilterPass(
+            "SKImageFilter Color Matrix",
+            input.Width,
+            input.Height,
+            context => context.DrawImageWithEffect(
+                input,
+                new Rect(0f, 0f, input.Width, input.Height),
+                colorMatrix: matrix));
+    }
+
+    private GpuTexture RenderBlur(GpuTexture input, float sigmaX, float sigmaY)
+    {
+        if ((!float.IsFinite(sigmaX) || sigmaX <= 0.01f) &&
+            (!float.IsFinite(sigmaY) || sigmaY <= 0.01f))
+        {
+            return input;
+        }
+
+        var context = GetGpuContext();
+        var temporary = CreateOwnedFilterTexture(context, "SKImageFilter Blur Temporary", storage: true);
+        var destination = CreateOwnedFilterTexture(context, "SKImageFilter Blur Destination", storage: true);
+        GetCompositorForContext(context).ApplyGaussianBlur(
+            input,
+            temporary,
+            destination,
+            sigmaX,
+            sigmaY);
+        return destination;
+    }
+
+    private GpuTexture RenderDropShadow(GpuTexture input, SKImageFilter.DropShadowData shadow)
+    {
+        var context = GetGpuContext();
+        var temporary = CreateOwnedFilterTexture(context, "SKImageFilter Shadow Temporary", storage: true);
+        var shadowTexture = CreateOwnedFilterTexture(context, "SKImageFilter Shadow", storage: true);
+        GetCompositorForContext(context).ApplyDropShadow(
+            input,
+            temporary,
+            shadowTexture,
+            Vector2.Zero,
+            ToVector4(shadow.Color),
+            MathF.Max(shadow.SigmaX, shadow.SigmaY));
+
+        return RenderFilterPass(
+            "SKImageFilter Shadow Composite",
+            input.Width,
+            input.Height,
+            drawing =>
+            {
+                drawing.DrawTexture(
+                    shadowTexture,
+                    new Rect(shadow.Dx, shadow.Dy, shadowTexture.Width, shadowTexture.Height));
+                drawing.DrawTexture(input, new Rect(0f, 0f, input.Width, input.Height));
+            });
+    }
+
+    private GpuTexture RenderMorphology(
+        GpuTexture input,
+        SKImageFilter.MorphologyData morphology,
+        bool dilate)
+    {
+        var context = GetGpuContext();
+        var temporary = CreateOwnedFilterTexture(context, "SKImageFilter Morphology Temporary", storage: true);
+        var destination = CreateOwnedFilterTexture(context, "SKImageFilter Morphology Destination", storage: true);
+        GetCompositorForContext(context).ApplyMorphology(
+            input,
+            temporary,
+            destination,
+            morphology.RadiusX,
+            morphology.RadiusY,
+            dilate);
+        return destination;
+    }
+
+    private GpuTexture RenderImageBlend(
+        GpuTexture background,
+        GpuTexture foreground,
+        SKBlendMode blendMode)
+    {
+        var context = GetGpuContext();
+        var destination = CreateOwnedFilterTexture(
+            context,
+            "SKImageFilter Blend Destination",
+            storage: true);
+        GetCompositorForContext(context).ApplyImageBlend(
+            background,
+            foreground,
+            destination,
+            MapBlendMode(blendMode),
+            linearRgb: true);
+        return destination;
+    }
+
+    private GpuTexture RenderArithmeticComposite(
+        GpuTexture background,
+        GpuTexture foreground,
+        SKImageFilter.ArithmeticData arithmetic)
+    {
+        var context = GetGpuContext();
+        var destination = CreateOwnedFilterTexture(
+            context,
+            "SKImageFilter Arithmetic Destination",
+            storage: true);
+        GetCompositorForContext(context).ApplyArithmeticComposite(
+            background,
+            foreground,
+            destination,
+            arithmetic.K1,
+            arithmetic.K2,
+            arithmetic.K3,
+            arithmetic.K4,
+            arithmetic.EnforcePremultipliedColor);
+        return destination;
+    }
+
+    private GpuTexture RenderDisplacementMap(
+        GpuTexture input,
+        GpuTexture displacementInput,
+        SKImageFilter.DisplacementData displacement)
+    {
+        var context = GetGpuContext();
+        var destination = CreateOwnedFilterTexture(
+            context,
+            "SKImageFilter Displacement Map Destination",
+            storage: true);
+        GetCompositorForContext(context).ApplyDisplacementMap(
+            input,
+            displacementInput,
+            destination,
+            displacement.Scale,
+            (uint)displacement.XChannel,
+            (uint)displacement.YChannel);
+        return destination;
+    }
+
+    private GpuTexture RenderMatrixConvolution(
+        GpuTexture input,
+        SKImageFilter.MatrixConvolutionData convolution)
+    {
+        var kernelWidth = convolution.KernelSize.Width;
+        var kernelHeight = convolution.KernelSize.Height;
+        if (kernelWidth is <= 0 or > 64 ||
+            kernelHeight is <= 0 or > 64 ||
+            convolution.Kernel.Length < kernelWidth * kernelHeight)
+        {
+            return input;
+        }
+
+        var context = GetGpuContext();
+        var destination = CreateOwnedFilterTexture(
+            context,
+            "SKImageFilter Matrix Convolution Destination",
+            storage: true);
+        GetCompositorForContext(context).ApplyMatrixConvolution(
+            input,
+            destination,
+            kernelWidth,
+            kernelHeight,
+            convolution.Kernel,
+            convolution.Gain,
+            convolution.Bias,
+            convolution.KernelOffset.X,
+            convolution.KernelOffset.Y,
+            (uint)convolution.TileMode,
+            convolution.ConvolveAlpha);
+        return destination;
+    }
+
+    private GpuTexture RenderImageLighting(
+        GpuTexture input,
+        SKImageFilter.FilterKind kind,
+        object parameters,
+        Matrix4x4 filterTransform)
+    {
+        Vector3 lightPosition;
+        Vector3 lightTarget;
+        Vector4 lightColor;
+        float spotExponent;
+        float surfaceScale;
+        float lightingConstant;
+        float shininess;
+        float cutoffAngle;
+        uint lightType;
+
+        switch (parameters)
+        {
+            case SKImageFilter.DistantLightData distant:
+                lightPosition = ToVector3(distant.Direction);
+                lightTarget = Vector3.Zero;
+                lightColor = ToVector4(distant.Color);
+                spotExponent = 0f;
+                surfaceScale = distant.SurfaceScale;
+                lightingConstant = distant.Constant;
+                shininess = distant.Shininess;
+                cutoffAngle = 90f;
+                lightType = 0u;
+                break;
+            case SKImageFilter.PointLightData point:
+                lightPosition = ToVector3(point.Location);
+                lightTarget = Vector3.Zero;
+                lightColor = ToVector4(point.Color);
+                spotExponent = 0f;
+                surfaceScale = point.SurfaceScale;
+                lightingConstant = point.Constant;
+                shininess = point.Shininess;
+                cutoffAngle = 90f;
+                lightType = 1u;
+                break;
+            case SKImageFilter.SpotLightData spot:
+                lightPosition = ToVector3(spot.Location);
+                lightTarget = ToVector3(spot.Target);
+                lightColor = ToVector4(spot.Color);
+                spotExponent = spot.SpecularExponent;
+                surfaceScale = spot.SurfaceScale;
+                lightingConstant = spot.Constant;
+                shininess = spot.Shininess;
+                cutoffAngle = spot.CutoffAngle;
+                lightType = 2u;
+                break;
+            default:
+                return input;
+        }
+
+        TransformImageLight(
+            ref lightPosition,
+            ref lightTarget,
+            ref surfaceScale,
+            lightType,
+            filterTransform);
+
+        var specular = kind is
+            SKImageFilter.FilterKind.DistantLitSpecular or
+            SKImageFilter.FilterKind.PointLitSpecular or
+            SKImageFilter.FilterKind.SpotLitSpecular;
+        var context = GetGpuContext();
+        var destination = CreateOwnedFilterTexture(
+            context,
+            "SKImageFilter Lighting Destination",
+            storage: true);
+        GetCompositorForContext(context).ApplyImageLighting(
+            input,
+            destination,
+            lightPosition,
+            lightType,
+            lightTarget,
+            spotExponent,
+            lightColor,
+            surfaceScale,
+            lightingConstant,
+            shininess,
+            cutoffAngle,
+            specular);
+        return destination;
+    }
+
+    private static void TransformImageLight(
+        ref Vector3 lightPosition,
+        ref Vector3 lightTarget,
+        ref float surfaceScale,
+        uint lightType,
+        Matrix4x4 transform)
+    {
+        if (transform == default)
+        {
+            transform = Matrix4x4.Identity;
+        }
+
+        var xScale = new Vector2(transform.M11, transform.M12).Length();
+        var yScale = new Vector2(transform.M21, transform.M22).Length();
+        var zScale = MathF.Sqrt(MathF.Max(xScale * yScale, 0f));
+        if (!float.IsFinite(zScale) || zScale <= float.Epsilon)
+        {
+            zScale = 1f;
+        }
+
+        if (lightType == 0u)
+        {
+            lightPosition = Vector3.TransformNormal(
+                new Vector3(lightPosition.X, lightPosition.Y, lightPosition.Z * zScale),
+                transform);
+        }
+        else
+        {
+            lightPosition = TransformImageLightPoint(lightPosition, transform, zScale);
+            if (lightType == 2u)
+            {
+                lightTarget = TransformImageLightPoint(lightTarget, transform, zScale);
+            }
+        }
+
+        surfaceScale *= zScale;
+    }
+
+    private static Vector3 TransformImageLightPoint(
+        Vector3 point,
+        Matrix4x4 transform,
+        float zScale)
+    {
+        var transformed = Vector2.Transform(new Vector2(point.X, point.Y), transform);
+        return new Vector3(transformed, point.Z * zScale);
+    }
+
+    private GpuTexture RenderShaderFilter(
+        SKShader shader,
+        Matrix4x4 filterTransform,
+        uint width,
+        uint height)
+    {
+        return RenderFilterPass(
+            "SKImageFilter Shader",
+            width,
+            height,
+            context =>
+            {
+                if (shader.PerlinNoise != null && shader.ToBrush() is PerlinNoiseBrush perlinNoise)
+                {
+                    var transform = filterTransform == default
+                        ? Matrix4x4.Identity
+                        : filterTransform;
+                    if (Matrix4x4.Invert(transform, out var inverse))
+                    {
+                        perlinNoise.CoordinateTransform = inverse * perlinNoise.CoordinateTransform;
+                    }
+                    context.DrawRectangle(
+                        perlinNoise,
+                        null,
+                        new Rect(0f, 0f, width, height));
+                    return;
+                }
+
+                using var canvas = new SKCanvas(context, width, height, GetGpuContext());
+                using var paint = new SKPaint { Shader = shader };
+                canvas.DrawPaint(paint);
+            });
+    }
+
+    private GpuTexture RenderTile(GpuTexture input, SKImageFilter.TileData tile)
+    {
+        if (tile.Source.Width <= 0f || tile.Source.Height <= 0f ||
+            tile.Destination.Width <= 0f || tile.Destination.Height <= 0f)
+        {
+            return input;
+        }
+
+        return RenderFilterPass(
+            "SKImageFilter Tile",
+            input.Width,
+            input.Height,
+            context =>
+            {
+                context.PushClip(ToRect(tile.Destination));
+                var startX = (int)MathF.Floor(
+                    (tile.Destination.Left - tile.Source.Left) / tile.Source.Width);
+                var endX = (int)MathF.Ceiling(
+                    (tile.Destination.Right - tile.Source.Left) / tile.Source.Width);
+                var startY = (int)MathF.Floor(
+                    (tile.Destination.Top - tile.Source.Top) / tile.Source.Height);
+                var endY = (int)MathF.Ceiling(
+                    (tile.Destination.Bottom - tile.Source.Top) / tile.Source.Height);
+                for (var y = startY; y < endY; y++)
+                {
+                    for (var x = startX; x < endX; x++)
+                    {
+                        context.DrawTexture(
+                            input,
+                            new Rect(
+                                tile.Source.Left + x * tile.Source.Width,
+                                tile.Source.Top + y * tile.Source.Height,
+                                tile.Source.Width,
+                                tile.Source.Height),
+                            ToRect(tile.Source),
+                            Matrix4x4.Identity,
+                            TextureSamplingMode.Linear);
+                    }
+                }
+                context.PopClip();
+            });
+    }
+
+    private GpuTexture ApplyFilterCrop(
+        GpuTexture input,
+        SKRect? cropRect,
+        Matrix4x4 filterTransform = default)
+    {
+        if (cropRect is not { } crop || !IsValidLayerBounds(crop) || IsFullCanvasLayerBounds(crop))
+        {
+            return input;
+        }
+
+        return RenderFilterPass(
+            "SKImageFilter Crop",
+            input.Width,
+            input.Height,
+            context =>
+            {
+                context.Commands.Add(new RenderCommand
+                {
+                    Type = RenderCommandType.PushClip,
+                    Rect = ToRect(crop),
+                    Transform = filterTransform == default ? Matrix4x4.Identity : filterTransform
+                });
+                context.DrawTexture(input, new Rect(0f, 0f, input.Width, input.Height));
+                context.PopClip();
+            });
+    }
+
+    private GpuTexture RenderFilterPass(
+        string label,
+        uint width,
+        uint height,
+        Action<DrawingContext> record)
+    {
+        var context = GetGpuContext();
+        var texture = CreateOwnedFilterTexture(context, label, storage: false, width, height);
+        var visual = new DrawingVisual { Size = new Vector2(width, height) };
+        record(visual.Context);
+
+        try
+        {
+            GetCompositorForContext(context).RenderOffscreen(
+                visual,
+                width,
+                height,
+                texture,
+                padding: 0f,
+                dpiScale: 1f,
+                clearColor: Vector4.Zero);
+            return texture;
+        }
+        catch
+        {
+            _ownedLayerTextures.Remove(texture);
+            texture.Dispose();
+            throw;
         }
         finally
         {
-            if (!textureRetained)
-            {
-                texture.Dispose();
-            }
+            visual.Context.Clear();
         }
     }
+
+    private GpuTexture CreateOwnedFilterTexture(
+        WgpuContext context,
+        string label,
+        bool storage,
+        uint? width = null,
+        uint? height = null)
+    {
+        var usage = TextureUsage.TextureBinding | TextureUsage.CopySrc | TextureUsage.CopyDst;
+        usage |= storage ? TextureUsage.StorageBinding : TextureUsage.RenderAttachment;
+        var texture = new GpuTexture(
+            context,
+            width ?? GetTextureWidth(),
+            height ?? GetTextureHeight(),
+            TextureFormat.Rgba8Unorm,
+            usage,
+            label,
+            alphaMode: GpuTextureAlphaMode.Premultiplied);
+        _ownedLayerTextures.Add(texture);
+        return texture;
+    }
+
+    private WgpuContext GetGpuContext() =>
+        _gpuContext != null && !_gpuContext.IsDisposed
+            ? _gpuContext
+            : SKContextHelper.GetContext();
+
+    private uint GetTextureWidth() => (uint)Math.Max(1d, Math.Ceiling(_width));
+
+    private uint GetTextureHeight() => (uint)Math.Max(1d, Math.Ceiling(_height));
+
+    private static Rect ToRect(SKRect rect) =>
+        new(rect.Left, rect.Top, rect.Width, rect.Height);
+
+    private static TextureSamplingMode MapSampling(SKSamplingOptions sampling) =>
+        sampling.UseCubic
+            ? TextureSamplingMode.Cubic
+            : sampling.MipmapMode != SKMipmapMode.None
+                ? TextureSamplingMode.LinearMipmap
+                : sampling.FilterMode == SKFilterMode.Nearest
+                    ? TextureSamplingMode.Nearest
+                    : TextureSamplingMode.Linear;
 
     private static Vector4 ToVector4(SKColor color)
     {
@@ -340,21 +1205,28 @@ public class SKCanvas : IDisposable
             color.A / 255f);
     }
 
+    private static Vector3 ToVector3(SKPoint3 point) => new(point.X, point.Y, point.Z);
+
     private GpuTexture RenderLayerToTexture(LayerFrame layerFrame)
     {
         var context = _gpuContext != null && !_gpuContext.IsDisposed
             ? _gpuContext
             : SKContextHelper.GetContext();
+        var transformedBounds = MapRectToBounds(
+            layerFrame.Bounds,
+            layerFrame.BoundsMatrix.ToMatrix4x4());
+        var textureWidth = GetRequiredTextureExtent(_width, transformedBounds.Right);
+        var textureHeight = GetRequiredTextureExtent(_height, transformedBounds.Bottom);
         var texture = new GpuTexture(
             context,
-            (uint)_width,
-            (uint)_height,
+            textureWidth,
+            textureHeight,
             TextureFormat.Rgba8Unorm,
             TextureUsage.RenderAttachment | TextureUsage.CopySrc | TextureUsage.CopyDst | TextureUsage.TextureBinding,
             "SKCanvas SaveLayer Texture",
             alphaMode: GpuTextureAlphaMode.Premultiplied);
 
-        var visual = new DrawingVisual { Size = new Vector2(_width, _height) };
+        var visual = new DrawingVisual { Size = new Vector2(textureWidth, textureHeight) };
         ReplayActiveClipPushes(visual.Context, layerFrame.ActiveClipPushes);
         var pushedLayerBoundsClip = PushLayerBoundsClip(visual.Context, layerFrame);
         visual.Context.Append(layerFrame.LayerContext);
@@ -371,8 +1243,8 @@ public class SKCanvas : IDisposable
             {
                 GetCompositorForContext(context).RenderOffscreen(
                     visual,
-                    (uint)_width,
-                    (uint)_height,
+                    textureWidth,
+                    textureHeight,
                     texture,
                     padding: 0f,
                     dpiScale: 1f);
@@ -395,6 +1267,17 @@ public class SKCanvas : IDisposable
                 texture.Dispose();
             }
         }
+    }
+
+    private static uint GetRequiredTextureExtent(float canvasExtent, float transformedExtent)
+    {
+        var extent = MathF.Max(canvasExtent, transformedExtent);
+        if (!float.IsFinite(extent) || extent <= 0f)
+        {
+            return 1u;
+        }
+
+        return (uint)Math.Min(Math.Ceiling(extent), uint.MaxValue);
     }
 
     private bool PushLayerBoundsClip(DrawingContext context, LayerFrame layerFrame)
@@ -593,6 +1476,34 @@ public class SKCanvas : IDisposable
     public void ResetMatrix()
     {
         _currentMatrix = SKMatrix.Identity;
+    }
+
+    public void Concat(in SKMatrix matrix)
+    {
+        _currentMatrix = SKMatrix.Concat(_currentMatrix, matrix);
+    }
+
+    public bool QuickReject(SKRect rect)
+    {
+        if (rect.IsEmpty)
+        {
+            return true;
+        }
+
+        var matrix = _currentMatrix.ToMatrix4x4();
+        var p0 = Vector2.Transform(new Vector2(rect.Left, rect.Top), matrix);
+        var p1 = Vector2.Transform(new Vector2(rect.Right, rect.Top), matrix);
+        var p2 = Vector2.Transform(new Vector2(rect.Right, rect.Bottom), matrix);
+        var p3 = Vector2.Transform(new Vector2(rect.Left, rect.Bottom), matrix);
+        var min = Vector2.Min(Vector2.Min(p0, p1), Vector2.Min(p2, p3));
+        var max = Vector2.Max(Vector2.Max(p0, p1), Vector2.Max(p2, p3));
+        return max.X <= 0f || max.Y <= 0f || min.X >= _width || min.Y >= _height;
+    }
+
+    public bool QuickReject(SKPath path)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        return QuickReject(path.Bounds);
     }
 
     public void ClipRect(SKRect rect, SKClipOperation operation = SKClipOperation.Intersect, bool antialias = true)
@@ -1210,6 +2121,7 @@ public class SKCanvas : IDisposable
         {
             if (TryCreateComposedConicalBrush(composed, out var conicalBrush))
             {
+                SKShader.ApplyColorFilter(conicalBrush, paint.ColorFilter);
                 var style = drawAsFill ? SKPaintStyle.Fill : paint.Style;
                 var conicalFill = style == SKPaintStyle.Stroke ? null : conicalBrush;
                 var conicalPen = style == SKPaintStyle.Fill
@@ -1238,6 +2150,7 @@ public class SKCanvas : IDisposable
                 picture.TileModeY,
                 picture.LocalMatrix,
                 shader.ColorFilter,
+                paint.ColorFilter,
                 clipGeometry,
                 targetBounds);
             return;
@@ -1245,7 +2158,7 @@ public class SKCanvas : IDisposable
 
         if (shader.Image is { } image)
         {
-            DrawTiledImage(image, shader.ColorFilter, clipGeometry, targetBounds);
+            DrawTiledImage(image, shader.ColorFilter, paint.ColorFilter, clipGeometry, targetBounds);
             return;
         }
 
@@ -1327,7 +2240,8 @@ public class SKCanvas : IDisposable
         SKShaderTileMode tileModeX,
         SKShaderTileMode tileModeY,
         SKMatrix shaderMatrix,
-        SKColorFilter? colorFilter,
+        SKColorFilter? shaderColorFilter,
+        SKColorFilter? paintColorFilter,
         PathGeometry clipGeometry,
         SKRect targetBounds)
     {
@@ -1341,13 +2255,14 @@ public class SKCanvas : IDisposable
             picture,
             tileRect,
             localMatrix * _currentMatrix.ToMatrix4x4());
+        texture = ApplyTextureColorFilter(texture, shaderColorFilter);
+        texture = ApplyTextureColorFilter(texture, paintColorFilter);
         GetPictureShaderBounds(targetBounds, localMatrix, out var minX, out var minY, out var maxX, out var maxY);
         GetTileRange(tileModeX, minX, maxX, tileRect.Width, out var startX, out var endX);
         GetTileRange(tileModeY, minY, maxY, tileRect.Height, out var startY, out var endY);
         LimitTileRange(ref startX, ref endX);
         LimitTileRange(ref startY, ref endY);
         _context.PushGeometryClip(clipGeometry, _currentMatrix.ToMatrix4x4());
-        var pushedOpacity = PushShaderColorFilterOpacity(colorFilter);
         try
         {
             for (var y = startY; y <= endY; y++)
@@ -1370,11 +2285,6 @@ public class SKCanvas : IDisposable
         }
         finally
         {
-            if (pushedOpacity)
-            {
-                _context.PopOpacity();
-            }
-
             _context.PopGeometryClip();
         }
     }
@@ -1458,7 +2368,8 @@ public class SKCanvas : IDisposable
 
     private void DrawTiledImage(
         SKShader.ImageShaderData imageShader,
-        SKColorFilter? colorFilter,
+        SKColorFilter? shaderColorFilter,
+        SKColorFilter? paintColorFilter,
         PathGeometry clipGeometry,
         SKRect targetBounds)
     {
@@ -1476,8 +2387,9 @@ public class SKCanvas : IDisposable
         LimitTileRange(ref startY, ref endY);
 
         var texture = RetainImageTexture(imageShader.Image);
+        texture = ApplyTextureColorFilter(texture, shaderColorFilter);
+        texture = ApplyTextureColorFilter(texture, paintColorFilter);
         _context.PushGeometryClip(clipGeometry, _currentMatrix.ToMatrix4x4());
-        var pushedOpacity = PushShaderColorFilterOpacity(colorFilter);
         try
         {
             for (var y = startY; y <= endY; y++)
@@ -1504,30 +2416,25 @@ public class SKCanvas : IDisposable
         }
         finally
         {
-            if (pushedOpacity)
-            {
-                _context.PopOpacity();
-            }
-
             _context.PopGeometryClip();
         }
     }
 
-    private bool PushShaderColorFilterOpacity(SKColorFilter? colorFilter)
+    private GpuTexture ApplyTextureColorFilter(GpuTexture texture, SKColorFilter? colorFilter)
     {
         if (colorFilter == null)
         {
-            return false;
+            return texture;
         }
 
-        var opacity = colorFilter.Apply(SKColors.White).A / 255f;
-        if (opacity >= 1f)
+        var filteredTexture = RenderColorFilter(texture, colorFilter, cropRect: null);
+        if (ReferenceEquals(filteredTexture, texture))
         {
-            return false;
+            return texture;
         }
 
-        _context.PushOpacity(opacity);
-        return true;
+        RetainLayerTextureForDeferredCommand(filteredTexture);
+        return filteredTexture;
     }
 
     private static void GetPictureShaderBounds(
@@ -1629,11 +2536,20 @@ public class SKCanvas : IDisposable
         TextureSamplingMode samplingMode,
         SKPaint? paint)
     {
-        paint?.ThrowIfImageColorFilter();
         var opacity = paint != null ? paint.Color.A / 255f : 1f;
         var retainedTexture = RetainImageTexture(
             image,
             samplingMode == TextureSamplingMode.LinearMipmap);
+        if (paint?.ColorFilter is { } colorFilter)
+        {
+            var filteredTexture = RenderColorFilter(retainedTexture, colorFilter, cropRect: null);
+            if (!ReferenceEquals(filteredTexture, retainedTexture))
+            {
+                RetainLayerTextureForDeferredCommand(filteredTexture);
+                retainedTexture = filteredTexture;
+            }
+        }
+
         var pushedBlendMode = PushPaintBlendMode(paint);
         var pushedOpacity = false;
         var pushedEdgeClip = false;
@@ -1697,7 +2613,7 @@ public class SKCanvas : IDisposable
         SKRect source,
         SKRect dest,
         SKSamplingOptions sampling,
-        SKPaint paint)
+        SKPaint? paint)
     {
         var samplingMode = sampling.UseCubic
             ? TextureSamplingMode.Cubic
@@ -1708,6 +2624,18 @@ public class SKCanvas : IDisposable
                 : TextureSamplingMode.Linear;
         DrawImageCore(image, source, dest, samplingMode, paint);
     }
+
+    public void DrawImage(
+        SKImage image,
+        SKRect destination,
+        SKSamplingOptions sampling,
+        SKPaint? paint) =>
+        DrawImage(
+            image,
+            new SKRect(0f, 0f, image.Width, image.Height),
+            destination,
+            sampling,
+            paint);
 
     public void DrawImage(SKImage image, float x, float y, SKPaint? paint)
     {
@@ -1758,6 +2686,10 @@ public class SKCanvas : IDisposable
             "SKCanvas DrawImage Retained Source Texture",
             alphaMode: source.AlphaMode,
             mipLevelCount: mipLevelCount);
+        if (image.ColorSpace is { } imageColorSpace)
+        {
+            s_textureColorSpaces.Add(retainedTexture, new TextureColorSpace(imageColorSpace));
+        }
         if (retainedTexture.MipLevelCount == source.MipLevelCount)
         {
         retainedTexture.CopyFrom(source);
@@ -1786,6 +2718,13 @@ public class SKCanvas : IDisposable
 
     public void DrawTextBlob(SKTextBlob textBlob, float x, float y, SKPaint paint)
     {
+        if (paint.Shader != null || paint.Style != SKPaintStyle.Fill)
+        {
+            using var textPath = CreateTextBlobPath(textBlob, x, y);
+            DrawPath(textPath, paint);
+            return;
+        }
+
         var brush = paint.ToBrush();
         if (brush == null)
         {
@@ -1797,6 +2736,26 @@ public class SKCanvas : IDisposable
         {
             foreach (var run in textBlob.Runs)
             {
+                if (run.RotationScaleMatrices is { } matrices)
+                {
+                    for (var i = 0; i < run.GlyphIndices.Length; i++)
+                    {
+                        var transform = matrices[i].ToMatrix().ToMatrix4x4()
+                            * Matrix4x4.CreateTranslation(x, y, 0f)
+                            * _currentMatrix.ToMatrix4x4();
+                        _context.DrawGlyphRun(
+                            new[] { run.GlyphIndices[i] },
+                            new[] { Vector2.Zero },
+                            run.Font.Typeface.Font,
+                            run.Font.Size,
+                            brush,
+                            Vector2.Zero,
+                            transform);
+                    }
+
+                    continue;
+                }
+
                 var positions = new Vector2[run.GlyphPositions.Length];
                 for (int i = 0; i < positions.Length; i++)
                 {
@@ -1820,14 +2779,126 @@ public class SKCanvas : IDisposable
         }
     }
 
+    private static SKPath CreateTextBlobPath(SKTextBlob textBlob, float x, float y)
+    {
+        var result = new SKPath();
+        foreach (var run in textBlob.Runs)
+        {
+            for (var i = 0; i < run.GlyphIndices.Length; i++)
+            {
+                using var glyphPath = run.Font.GetGlyphPath(run.GlyphIndices[i]);
+                if (glyphPath == null)
+                {
+                    continue;
+                }
+
+                if (run.RotationScaleMatrices is { } matrices)
+                {
+                    var matrix = matrices[i].ToMatrix();
+                    matrix.TransX += x;
+                    matrix.TransY += y;
+                    result.AddPath(glyphPath, matrix);
+                }
+                else
+                {
+                    var position = run.GlyphPositions[i];
+                    result.AddPath(glyphPath, x + position.X, y + position.Y);
+                }
+            }
+        }
+
+        return result;
+    }
+
     public void DrawText(SKTextBlob textBlob, float x, float y, SKPaint paint)
     {
         DrawTextBlob(textBlob, x, y, paint);
     }
 
+    public void DrawText(
+        string text,
+        float x,
+        float y,
+        SKTextAlign textAlign,
+        SKFont font,
+        SKPaint paint)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        ArgumentNullException.ThrowIfNull(font);
+        ArgumentNullException.ThrowIfNull(paint);
+
+        var glyphs = new List<ushort>(text.Length);
+        var positions = new List<SKPoint>(text.Length);
+        var advance = 0f;
+        foreach (var rune in text.EnumerateRunes())
+        {
+            var glyph = font.Typeface.Font.GetGlyphIndex((uint)rune.Value);
+            glyphs.Add(glyph);
+            positions.Add(new SKPoint(advance, 0f));
+            advance += font.Typeface.Font.GetAdvanceWidth(glyph, font.Size) * font.ScaleX;
+        }
+
+        var alignOffset = textAlign switch
+        {
+            SKTextAlign.Center => -advance * 0.5f,
+            SKTextAlign.Right => -advance,
+            _ => 0f,
+        };
+        for (var i = 0; i < positions.Count; i++)
+        {
+            var position = positions[i];
+            positions[i] = new SKPoint(position.X + alignOffset, position.Y);
+        }
+
+        if (glyphs.Count == 0)
+        {
+            return;
+        }
+
+        using var blob = new SKTextBlob(font, glyphs.ToArray(), positions.ToArray());
+        DrawTextBlob(blob, x, y, paint);
+    }
+
+    public void DrawText(string text, float x, float y, SKFont font, SKPaint paint) =>
+        DrawText(text, x, y, SKTextAlign.Left, font, paint);
+
+    public void DrawTextOnPath(
+        string text,
+        SKPath path,
+        float hOffset,
+        float vOffset,
+        SKTextAlign textAlign,
+        SKFont font,
+        SKPaint paint)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        using var textPath = font.GetTextPathOnPath(text, path, textAlign, new SKPoint(hOffset, vOffset));
+        DrawPath(textPath, paint);
+    }
+
     public void Flush()
     {
-        _flush?.Invoke();
+        if (_bitmap != null)
+        {
+            FlushToBitmap();
+        }
+        else
+        {
+            _flush?.Invoke();
+        }
+    }
+
+    private void FlushToBitmap()
+    {
+        if (_bitmap == null || _context.Commands.Count == 0)
+        {
+            return;
+        }
+
+        using var surface = SKSurface.Create(_bitmap.Info, _bitmap.GetPixels(), _bitmap.RowBytes);
+        surface.Canvas.Context.Append(_context);
+        surface.Flush();
+        _context.Clear();
     }
 
     internal void ReleaseLayerTexturesAfterFlush()
@@ -1844,11 +2915,12 @@ public class SKCanvas : IDisposable
     {
         try
         {
-            _flush?.Invoke();
+            Flush();
         }
         finally
-    {
-        ReleaseLayerTexturesAfterFlush();
+        {
+            _bitmap?.DetachCanvas(this);
+            ReleaseLayerTexturesAfterFlush();
+        }
     }
-}
 }

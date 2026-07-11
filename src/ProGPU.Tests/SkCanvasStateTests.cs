@@ -184,12 +184,9 @@ public sealed class SkCanvasStateTests
         canvas.RestoreToCount(restoreCount);
 
         var command = Assert.Single(context.Commands);
-        Assert.Equal(RenderCommandType.DrawExtension, command.Type);
-        Assert.Equal(CompositorBuiltInExtensions.ImageEffect, command.ExtensionId);
-        var parameters = Assert.IsType<ImageEffectParams>(command.DataParam);
-        Assert.NotNull(parameters.Texture);
-        Assert.Equal(new Rect(0f, 0f, 100f, 100f), parameters.Rect);
-        Assert.Equal(4f, parameters.BlurSigma);
+        Assert.Equal(RenderCommandType.DrawTexture, command.Type);
+        Assert.NotNull(command.Texture);
+        Assert.Equal(new Rect(0f, 0f, 100f, 100f), command.Rect);
         Assert.Equal(1, context.RetainedResourceCount);
         Assert.Empty(GetOwnedLayerTextures(canvas));
     }
@@ -220,6 +217,48 @@ public sealed class SkCanvasStateTests
     }
 
     [Fact]
+    public void SaveLayerBlurImageFilterKeepsHorizontalAndVerticalSigmaIndependent()
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(32, 32, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var layerPaint = new SKPaint { ImageFilter = SKImageFilter.CreateBlur(0f, 2f) };
+        using var fill = new SKPaint { Color = SKColors.Red, IsAntialias = false };
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        var restoreCount = surface.Canvas.SaveLayer(layerPaint);
+        surface.Canvas.DrawRect(new SKRect(14f, 14f, 18f, 18f), fill);
+        surface.Canvas.RestoreToCount(restoreCount);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        var verticalTailAlpha = pixels[(11 * 32 + 16) * 4 + 3];
+        var horizontalTailAlpha = pixels[(16 * 32 + 11) * 4 + 3];
+        var centerAlpha = pixels[(16 * 32 + 16) * 4 + 3];
+
+        Assert.InRange(verticalTailAlpha, 1, 254);
+        Assert.Equal((byte)0, horizontalTailAlpha);
+        Assert.True(centerAlpha > verticalTailAlpha);
+    }
+
+    [Fact]
+    public void FilledIntegerAlignedRectangleKeepsInteriorCornerOpaque()
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(32, 24, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var fill = new SKPaint { Color = SKColors.Red, IsAntialias = true };
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        surface.Canvas.DrawRect(new SKRect(5f, 5f, 25f, 15f), fill);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+
+        Assert.Equal((byte)255, pixels[(14 * 32 + 24) * 4 + 3]);
+        Assert.Equal((byte)0, pixels[(15 * 32 + 24) * 4 + 3]);
+        Assert.Equal((byte)0, pixels[(14 * 32 + 25) * 4 + 3]);
+    }
+
+    [Fact]
     public void SaveLayerAppliesDropShadowImageFilterWithNativeEffectTexture()
     {
         var context = new DrawingContext();
@@ -240,7 +279,690 @@ public sealed class SkCanvasStateTests
         Assert.NotNull(command.Texture);
         Assert.Equal(new Rect(0f, 0f, 100f, 100f), command.Rect);
         Assert.Equal(1, context.RetainedResourceCount);
-        Assert.Single(GetOwnedLayerTextures(canvas));
+        Assert.Empty(GetOwnedLayerTextures(canvas));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void SaveLayerExecutesMorphologyOnGpu(bool dilate)
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(8, 8, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var layerPaint = new SKPaint
+        {
+            ImageFilter = dilate
+                ? SKImageFilter.CreateDilate(1f, 1f)
+                : SKImageFilter.CreateErode(1f, 1f)
+        };
+        using var fill = new SKPaint { Color = SKColors.Red };
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        var restoreCount = surface.Canvas.SaveLayer(layerPaint);
+        surface.Canvas.DrawRect(new SKRect(2f, 2f, 6f, 6f), fill);
+        surface.Canvas.RestoreToCount(restoreCount);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        var edgeAlpha = pixels[(3 * 8 + 1) * 4 + 3];
+        var centerAlpha = pixels[(3 * 8 + 3) * 4 + 3];
+
+        Assert.Equal(dilate ? (byte)255 : (byte)0, edgeAlpha);
+        Assert.Equal((byte)255, centerAlpha);
+    }
+
+    [Fact]
+    public void SaveLayerBlendImageFilterCompositesInLinearRgbOnGpu()
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(4, 4, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var floodShader = SKShader.CreateColor(new SKColor(0, 255, 0, 128));
+        using var flood = SKImageFilter.CreateShader(floodShader, dither: false);
+        using var blend = SKImageFilter.CreateBlendMode(SKBlendMode.Multiply, flood);
+        using var layerPaint = new SKPaint { ImageFilter = blend };
+        using var fill = new SKPaint { Color = new SKColor(0, 0, 255, 128) };
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        var restoreCount = surface.Canvas.SaveLayer(layerPaint);
+        surface.Canvas.DrawRect(new SKRect(0f, 0f, 4f, 4f), fill);
+        surface.Canvas.RestoreToCount(restoreCount);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+
+        Assert.InRange(pixels[0], (byte)0, (byte)1);
+        Assert.InRange(pixels[1], (byte)115, (byte)119);
+        Assert.InRange(pixels[2], (byte)115, (byte)119);
+        Assert.InRange(pixels[3], (byte)190, (byte)193);
+    }
+
+    [Fact]
+    public void SaveLayerArithmeticImageFilterCompositesOnGpu()
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(4, 4, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var backgroundShader = SKShader.CreateColor(SKColors.Blue);
+        using var background = SKImageFilter.CreateShader(backgroundShader, dither: false);
+        using var arithmetic = SKImageFilter.CreateArithmetic(
+            k1: 0f,
+            k2: 0.75f,
+            k3: 0.25f,
+            k4: 0f,
+            enforcePremultipliedColor: true,
+            background);
+        using var layerPaint = new SKPaint { ImageFilter = arithmetic };
+        using var foregroundPaint = new SKPaint { Color = SKColors.Red };
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        var restoreCount = surface.Canvas.SaveLayer(layerPaint);
+        surface.Canvas.DrawRect(new SKRect(0f, 0f, 4f, 4f), foregroundPaint);
+        surface.Canvas.RestoreToCount(restoreCount);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        Assert.InRange(pixels[0], (byte)190, (byte)192);
+        Assert.Equal((byte)0, pixels[1]);
+        Assert.InRange(pixels[2], (byte)63, (byte)65);
+        Assert.Equal((byte)255, pixels[3]);
+    }
+
+    [Fact]
+    public void SaveLayerDisplacementMapSamplesShiftedInputOnGpu()
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(4, 4, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var displacementShader = SKShader.CreateColor(new SKColor(255, 128, 0, 255));
+        using var displacementInput = SKImageFilter.CreateShader(displacementShader, dither: false);
+        using var displacement = SKImageFilter.CreateDisplacementMapEffect(
+            SKColorChannel.R,
+            SKColorChannel.G,
+            scale: 2f,
+            displacementInput);
+        using var layerPaint = new SKPaint { ImageFilter = displacement };
+        using var red = new SKPaint { Color = SKColors.Red };
+        using var blue = new SKPaint { Color = SKColors.Blue };
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        var restoreCount = surface.Canvas.SaveLayer(layerPaint);
+        surface.Canvas.DrawRect(new SKRect(0f, 0f, 2f, 4f), red);
+        surface.Canvas.DrawRect(new SKRect(2f, 0f, 4f, 4f), blue);
+        surface.Canvas.RestoreToCount(restoreCount);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        var shiftedPixel = (1 * 4 + 1) * 4;
+        Assert.InRange(pixels[shiftedPixel], (byte)0, (byte)2);
+        Assert.InRange(pixels[shiftedPixel + 2], (byte)253, (byte)255);
+        Assert.Equal((byte)255, pixels[shiftedPixel + 3]);
+
+        var outsidePixel = (1 * 4 + 3) * 4;
+        Assert.InRange(pixels[outsidePixel + 3], (byte)0, (byte)2);
+    }
+
+    [Fact]
+    public void SaveLayerMatrixConvolutionUsesKernelOriginOnGpu()
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(4, 4, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var convolution = SKImageFilter.CreateMatrixConvolution(
+            new SKSizeI(3, 1),
+            new[] { 0f, 0f, 1f },
+            gain: 1f,
+            bias: 0f,
+            new SKPointI(1, 0),
+            SKShaderTileMode.Decal,
+            convolveAlpha: false);
+        using var layerPaint = new SKPaint { ImageFilter = convolution };
+        using var red = new SKPaint { Color = SKColors.Red };
+        using var blue = new SKPaint { Color = SKColors.Blue };
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        var restoreCount = surface.Canvas.SaveLayer(layerPaint);
+        surface.Canvas.DrawRect(new SKRect(0f, 0f, 2f, 4f), red);
+        surface.Canvas.DrawRect(new SKRect(2f, 0f, 4f, 4f), blue);
+        surface.Canvas.RestoreToCount(restoreCount);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        var shiftedPixel = (1 * 4 + 1) * 4;
+        Assert.Equal((byte)0, pixels[shiftedPixel]);
+        Assert.Equal((byte)0, pixels[shiftedPixel + 1]);
+        Assert.Equal((byte)255, pixels[shiftedPixel + 2]);
+        Assert.Equal((byte)255, pixels[shiftedPixel + 3]);
+    }
+
+    [Fact]
+    public void SaveLayerDistantDiffuseLightingUsesGpuHeightMap()
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(4, 4, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var lighting = SKImageFilter.CreateDistantLitDiffuse(
+            new SKPoint3(0f, 0f, 1f),
+            SKColors.White,
+            surfaceScale: 1f,
+            kd: 0.5f);
+        using var layerPaint = new SKPaint { ImageFilter = lighting };
+        using var heightMap = new SKPaint { Color = SKColors.White };
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        var restoreCount = surface.Canvas.SaveLayer(layerPaint);
+        surface.Canvas.DrawRect(new SKRect(0f, 0f, 4f, 4f), heightMap);
+        surface.Canvas.RestoreToCount(restoreCount);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        Assert.InRange(pixels[0], (byte)127, (byte)128);
+        Assert.InRange(pixels[1], (byte)127, (byte)128);
+        Assert.InRange(pixels[2], (byte)127, (byte)128);
+        Assert.Equal((byte)255, pixels[3]);
+    }
+
+    [Fact]
+    public void SaveLayerDistantSpecularLightingWritesSpecularAlphaOnGpu()
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(4, 4, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var lighting = SKImageFilter.CreateDistantLitSpecular(
+            new SKPoint3(0f, 0f, 1f),
+            SKColors.White,
+            surfaceScale: 1f,
+            ks: 0.25f,
+            shininess: 8f);
+        using var layerPaint = new SKPaint { ImageFilter = lighting };
+        using var heightMap = new SKPaint { Color = SKColors.White };
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        var restoreCount = surface.Canvas.SaveLayer(layerPaint);
+        surface.Canvas.DrawRect(new SKRect(0f, 0f, 4f, 4f), heightMap);
+        surface.Canvas.RestoreToCount(restoreCount);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        Assert.InRange(pixels[0], (byte)63, (byte)64);
+        Assert.InRange(pixels[1], (byte)63, (byte)64);
+        Assert.InRange(pixels[2], (byte)63, (byte)64);
+        Assert.InRange(pixels[3], (byte)63, (byte)64);
+    }
+
+    [Fact]
+    public void SaveLayerPointLightingMapsLocalLightThroughLayerTransform()
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(16, 8, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var lighting = SKImageFilter.CreatePointLitDiffuse(
+            new SKPoint3(2f, 2f, 10f),
+            SKColors.White,
+            surfaceScale: 1f,
+            kd: 1f);
+        using var layerPaint = new SKPaint { ImageFilter = lighting };
+        using var heightMap = new SKPaint { Color = SKColors.White };
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        surface.Canvas.Translate(8f, 2f);
+        var restoreCount = surface.Canvas.SaveLayer(layerPaint);
+        surface.Canvas.DrawRect(new SKRect(0f, 0f, 4f, 4f), heightMap);
+        surface.Canvas.RestoreToCount(restoreCount);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        var centerPixel = (4 * 16 + 10) * 4;
+        Assert.InRange(pixels[centerPixel], (byte)250, (byte)255);
+        Assert.Equal((byte)255, pixels[centerPixel + 3]);
+    }
+
+    [Fact]
+    public void SaveLayerSpotLightingMapsLocalTargetThroughLayerTransform()
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(16, 8, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var lighting = SKImageFilter.CreateSpotLitDiffuse(
+            new SKPoint3(2f, 0f, 35f),
+            new SKPoint3(2f, 4f, 0f),
+            specularExponent: 1f,
+            cutoffAngle: 90f,
+            SKColors.White,
+            surfaceScale: 1f,
+            kd: 1f);
+        using var layerPaint = new SKPaint { ImageFilter = lighting };
+        using var heightMap = new SKPaint { Color = SKColors.White };
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        surface.Canvas.Translate(8f, 2f);
+        var restoreCount = surface.Canvas.SaveLayer(layerPaint);
+        surface.Canvas.DrawRect(new SKRect(0f, 0f, 4f, 4f), heightMap);
+        surface.Canvas.RestoreToCount(restoreCount);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        var centerPixel = (4 * 16 + 10) * 4;
+        Assert.InRange(pixels[centerPixel], (byte)240, (byte)255);
+        Assert.Equal((byte)255, pixels[centerPixel + 3]);
+    }
+
+    [Fact]
+    public void SaveLayerPerlinNoiseUsesSkiaSeedAndLocalTransformSemantics()
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(12, 4, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var sourcePaint = new SKPaint { Color = SKColors.White };
+        var seeds = new[] { -0.8f, 1.5f };
+        var offsets = new[] { 0f, 6f };
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        for (var i = 0; i < offsets.Length; i++)
+        {
+            using var shader = SKShader.CreatePerlinNoiseTurbulence(
+                0.1f,
+                0.1f,
+                2,
+                seeds[i],
+                SKPointI.Empty);
+            using var filter = SKImageFilter.CreateShader(shader, dither: false, new SKRect(0f, 0f, 4f, 4f));
+            using var layerPaint = new SKPaint { ImageFilter = filter };
+            var outerCount = surface.Canvas.Save();
+            surface.Canvas.Translate(offsets[i], 0f);
+            var layerCount = surface.Canvas.SaveLayer(new SKRect(0f, 0f, 4f, 4f), layerPaint);
+            surface.Canvas.DrawRect(new SKRect(0f, 0f, 4f, 4f), sourcePaint);
+            surface.Canvas.RestoreToCount(layerCount);
+            surface.Canvas.RestoreToCount(outerCount);
+        }
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        var hasVariation = false;
+        for (var y = 0; y < 4; y++)
+        {
+            for (var x = 0; x < 4; x++)
+            {
+                var left = (y * 12 + x) * 4;
+                var right = (y * 12 + x + 6) * 4;
+                for (var channel = 0; channel < 4; channel++)
+                {
+                    Assert.Equal(pixels[left + channel], pixels[right + channel]);
+                }
+                hasVariation |= pixels[left] != pixels[1 * 4];
+            }
+        }
+        Assert.True(hasVariation);
+    }
+
+    [Fact]
+    public void SaveLayerLuminanceMaskMultipliesSourceAlphaOnGpu()
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(4, 4, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var layerPaint = new SKPaint { ColorFilter = SKColorFilter.CreateLumaColor() };
+        using var fill = new SKPaint { Color = new SKColor(255, 255, 255, 128) };
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        var restoreCount = surface.Canvas.SaveLayer(layerPaint);
+        surface.Canvas.DrawRect(new SKRect(0f, 0f, 4f, 4f), fill);
+        surface.Canvas.RestoreToCount(restoreCount);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        Assert.InRange(pixels[3], (byte)126, (byte)130);
+    }
+
+    [Fact]
+    public void SaveLayerColorTableTransformsStraightChannelsOnGpu()
+    {
+        var identity = Enumerable.Range(0, 256).Select(static value => (byte)value).ToArray();
+        var inverted = Enumerable.Range(0, 256).Select(static value => (byte)(255 - value)).ToArray();
+        var halved = Enumerable.Range(0, 256).Select(static value => (byte)(value / 2)).ToArray();
+        var opaque = Enumerable.Repeat((byte)255, 256).ToArray();
+        using var surface = SKSurface.Create(new SKImageInfo(4, 4, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var colorFilter = SKColorFilter.CreateTable(opaque, inverted, halved, identity);
+        using var imageFilter = SKImageFilter.CreateColorFilter(colorFilter);
+        using var layerPaint = new SKPaint { ImageFilter = imageFilter };
+        using var fill = new SKPaint { Color = new SKColor(64, 128, 192, 128) };
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        var restoreCount = surface.Canvas.SaveLayer(layerPaint);
+        surface.Canvas.DrawRect(new SKRect(0f, 0f, 4f, 4f), fill);
+        surface.Canvas.RestoreToCount(restoreCount);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        Assert.InRange(pixels[0], (byte)189, (byte)192);
+        Assert.InRange(pixels[1], (byte)62, (byte)65);
+        Assert.InRange(pixels[2], (byte)190, (byte)193);
+        Assert.Equal((byte)255, pixels[3]);
+    }
+
+    [Fact]
+    public void SaveLayerTransformsImageFilterCropIntoCanvasCoordinates()
+    {
+        var identity = Enumerable.Range(0, 256).Select(static value => (byte)value).ToArray();
+        using var surface = SKSurface.Create(new SKImageInfo(64, 64, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var colorFilter = SKColorFilter.CreateTable(identity, identity, identity, identity);
+        using var imageFilter = SKImageFilter.CreateColorFilter(
+            colorFilter,
+            input: null,
+            cropRect: new SKRect(0f, 20f, 128f, 60f));
+        using var layerPaint = new SKPaint { ImageFilter = imageFilter };
+        using var fill = new SKPaint { Color = SKColors.Red };
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        surface.Canvas.Scale(0.5f, 0.5f);
+        var restoreCount = surface.Canvas.SaveLayer(new SKRect(0f, 0f, 128f, 128f), layerPaint);
+        surface.Canvas.DrawRect(new SKRect(0f, 20f, 128f, 60f), fill);
+        surface.Canvas.RestoreToCount(restoreCount);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        Assert.Equal((byte)255, pixels[(12 * 64 + 20) * 4 + 3]);
+        Assert.Equal((byte)0, pixels[(35 * 64 + 20) * 4 + 3]);
+    }
+
+    [Fact]
+    public void SaveLayerTransformsPictureImageFilterInputIntoCanvasCoordinates()
+    {
+        using var recorder = new SKPictureRecorder();
+        var recordingCanvas = recorder.BeginRecording(new SKRect(0f, 0f, 128f, 128f));
+        using var red = new SKPaint { Color = SKColors.Red };
+        recordingCanvas.DrawRect(new SKRect(0f, 20f, 128f, 60f), red);
+        using var picture = recorder.EndRecording();
+        using var pictureFilter = SKImageFilter.CreatePicture(picture, new SKRect(0f, 20f, 128f, 60f));
+        var identity = Enumerable.Range(0, 256).Select(static value => (byte)value).ToArray();
+        using var colorFilter = SKColorFilter.CreateTable(identity, identity, identity, identity);
+        using var imageFilter = SKImageFilter.CreateColorFilter(colorFilter, pictureFilter);
+        using var layerPaint = new SKPaint { ImageFilter = imageFilter };
+        using var transparent = new SKPaint { Color = SKColors.Transparent };
+        using var surface = SKSurface.Create(new SKImageInfo(64, 64, SKColorType.Rgba8888, SKAlphaType.Premul));
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        surface.Canvas.Scale(0.5f, 0.5f);
+        var restoreCount = surface.Canvas.SaveLayer(new SKRect(0f, 0f, 128f, 128f), layerPaint);
+        surface.Canvas.DrawRect(new SKRect(0f, 0f, 1f, 1f), transparent);
+        surface.Canvas.RestoreToCount(restoreCount);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        Assert.Equal((byte)255, pixels[(12 * 64 + 20) * 4]);
+        Assert.Equal((byte)255, pixels[(12 * 64 + 20) * 4 + 3]);
+        Assert.Equal((byte)0, pixels[(35 * 64 + 20) * 4 + 3]);
+    }
+
+    [Fact]
+    public void SaveLayerConvertsLinearPictureImageFilterOutputToSrgb()
+    {
+        using var linearColorSpace = SKColorSpace.CreateSrgbLinear();
+        using var bitmap = new SKBitmap(new SKImageInfo(
+            1,
+            1,
+            SKColorType.Rgba8888,
+            SKAlphaType.Unpremul,
+            linearColorSpace));
+        bitmap.SetPixel(0, 0, new SKColor(64, 0, 0, 255));
+        using var image = SKImage.FromBitmap(bitmap);
+        using var recorder = new SKPictureRecorder();
+        var recordingCanvas = recorder.BeginRecording(new SKRect(0f, 0f, 4f, 4f));
+        using var imagePaint = new SKPaint { IsAntialias = false };
+        recordingCanvas.DrawImage(
+            image,
+            new SKRect(0f, 0f, 1f, 1f),
+            new SKRect(0f, 0f, 4f, 4f),
+            imagePaint);
+        using var picture = recorder.EndRecording();
+        using var pictureFilter = SKImageFilter.CreatePicture(picture, new SKRect(0f, 0f, 4f, 4f));
+        using var layerPaint = new SKPaint { ImageFilter = pictureFilter };
+        using var srgbColorSpace = SKColorSpace.CreateSrgb();
+        using var surface = SKSurface.Create(new SKImageInfo(
+            4,
+            4,
+            SKColorType.Rgba8888,
+            SKAlphaType.Premul,
+            srgbColorSpace));
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        var restoreCount = surface.Canvas.SaveLayer(layerPaint);
+        surface.Canvas.RestoreToCount(restoreCount);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        Assert.InRange(pixels[0], (byte)136, (byte)138);
+        Assert.Equal((byte)0, pixels[1]);
+        Assert.Equal((byte)0, pixels[2]);
+        Assert.Equal((byte)255, pixels[3]);
+    }
+
+    [Fact]
+    public void TransformedPicturePathKeepsGradientInLocalCoordinates()
+    {
+        using var recorder = new SKPictureRecorder();
+        var recordingCanvas = recorder.BeginRecording(new SKRect(0f, 0f, 128f, 32f));
+        using var shader = SKShader.CreateLinearGradient(
+            new SKPoint(0f, 0f),
+            new SKPoint(128f, 0f),
+            new[] { SKColors.Red, SKColors.Blue },
+            colorPos: null,
+            SKShaderTileMode.Clamp);
+        using var gradient = new SKPaint { Shader = shader };
+        using var path = new SKPath();
+        path.AddRect(new SKRect(0f, 0f, 128f, 32f));
+        recordingCanvas.DrawPath(path, gradient);
+        using var picture = recorder.EndRecording();
+        using var surface = SKSurface.Create(new SKImageInfo(64, 16, SKColorType.Rgba8888, SKAlphaType.Premul));
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        surface.Canvas.Scale(0.5f, 0.5f);
+        surface.Canvas.DrawPicture(picture);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        var offset = (8 * 64 + 32) * 4;
+        Assert.InRange(pixels[offset], (byte)122, (byte)132);
+        Assert.InRange(pixels[offset + 2], (byte)123, (byte)133);
+        Assert.Equal((byte)255, pixels[offset + 3]);
+    }
+
+    [Fact]
+    public void TransformedPicturePathStrokeKeepsGradientInLocalCoordinates()
+    {
+        using var recorder = new SKPictureRecorder();
+        var recordingCanvas = recorder.BeginRecording(new SKRect(0f, 0f, 16f, 24f));
+        using var shader = SKShader.CreateLinearGradient(
+            new SKPoint(6.5f, 5f),
+            new SKPoint(6.5f, 17f),
+            new[] { new SKColor(255, 255, 41), SKColors.Black },
+            colorPos: null,
+            SKShaderTileMode.Clamp);
+        using var gradient = new SKPaint
+        {
+            Shader = shader,
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 3f
+        };
+        using var path = new SKPath();
+        path.MoveTo(6.5f, 5f);
+        path.LineTo(6.5f, 17f);
+        recordingCanvas.DrawPath(path, gradient);
+        using var picture = recorder.EndRecording();
+        using var surface = SKSurface.Create(new SKImageInfo(64, 96, SKColorType.Rgba8888, SKAlphaType.Premul));
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        surface.Canvas.Scale(4f, 4f);
+        surface.Canvas.DrawPicture(picture);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        var offset = (22 * 64 + 26) * 4;
+        Assert.True(pixels[offset] > 180);
+        Assert.True(pixels[offset + 1] > 170);
+        Assert.True(pixels[offset + 2] < 100);
+        Assert.True(pixels[offset + 3] > 180);
+    }
+
+    [Fact]
+    public void TransformedPicturePathKeepsDashIntervalsInLocalCoordinates()
+    {
+        using var recorder = new SKPictureRecorder();
+        var recordingCanvas = recorder.BeginRecording(new SKRect(0f, 0f, 100f, 20f));
+        using var dash = SKPathEffect.CreateDash(new[] { 10f, 20f }, 0f);
+        using var paint = new SKPaint
+        {
+            Color = SKColors.Green,
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 4f,
+            PathEffect = dash,
+            IsAntialias = false
+        };
+        using var path = new SKPath();
+        path.MoveTo(0f, 10f);
+        path.LineTo(100f, 10f);
+        recordingCanvas.DrawPath(path, paint);
+        using var picture = recorder.EndRecording();
+        using var surface = SKSurface.Create(new SKImageInfo(200, 40, SKColorType.Rgba8888, SKAlphaType.Premul));
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        surface.Canvas.Scale(2f, 2f);
+        surface.Canvas.DrawPicture(picture);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        Assert.Equal((byte)255, pixels[(20 * 200 + 5) * 4 + 3]);
+        Assert.Equal((byte)0, pixels[(20 * 200 + 30) * 4 + 3]);
+        Assert.Equal((byte)255, pixels[(20 * 200 + 65) * 4 + 3]);
+    }
+
+    [Fact]
+    public void ShearedPathStrokeTransformsItsLocalOutline()
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(200, 200, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var paint = new SKPaint
+        {
+            Color = SKColors.Green,
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 80f,
+            StrokeCap = SKStrokeCap.Butt,
+            IsAntialias = false
+        };
+        using var path = new SKPath();
+        path.MoveTo(60f, 140f);
+        path.LineTo(140f, 60f);
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        surface.Canvas.SetMatrix(new SKMatrix(
+            1f, -1f, 100f,
+            0f, 1f, 0f,
+            0f, 0f, 1f));
+        surface.Canvas.DrawPath(path, paint);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        Assert.Equal((byte)0, pixels[(100 * 200 + 20) * 4 + 3]);
+        Assert.Equal((byte)255, pixels[(120 * 200 + 20) * 4 + 3]);
+        Assert.Equal((byte)255, pixels[(80 * 200 + 179) * 4 + 3]);
+        Assert.Equal((byte)0, pixels[(40 * 200 + 180) * 4 + 3]);
+    }
+
+    [Fact]
+    public void DrawTextWithStrokePaintRendersGlyphOutlines()
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(64, 64, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var font = new SKFont(SKTypeface.Default, 32f);
+        using var paint = new SKPaint
+        {
+            Color = SKColors.Blue,
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 3f
+        };
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        surface.Canvas.DrawText("A", 8f, 40f, font, paint);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        var foundBlueStroke = false;
+        for (var offset = 0; offset < pixels.Length; offset += 4)
+        {
+            if (pixels[offset + 2] > pixels[offset] && pixels[offset + 3] > 0)
+            {
+                foundBlueStroke = true;
+                break;
+            }
+        }
+
+        Assert.True(foundBlueStroke);
+    }
+
+    [Fact]
+    public void ImageShaderAppliesPaintColorFilterOnGpuBeforeTiling()
+    {
+        using var bitmap = new SKBitmap(new SKImageInfo(1, 1, SKColorType.Rgba8888, SKAlphaType.Unpremul));
+        bitmap.SetPixel(0, 0, SKColors.Red);
+        using var shader = SKShader.CreateBitmap(bitmap, SKShaderTileMode.Repeat, SKShaderTileMode.Repeat);
+        using var colorFilter = SKColorFilter.CreateColorMatrix(new[]
+        {
+            0f, 0f, 1f, 0f, 0f,
+            0f, 1f, 0f, 0f, 0f,
+            1f, 0f, 0f, 0f, 0f,
+            0f, 0f, 0f, 1f, 0f
+        });
+        using var paint = new SKPaint
+        {
+            Shader = shader,
+            ColorFilter = colorFilter,
+            IsAntialias = false
+        };
+        using var surface = SKSurface.Create(new SKImageInfo(8, 8, SKColorType.Rgba8888, SKAlphaType.Premul));
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        surface.Canvas.DrawRect(new SKRect(0f, 0f, 8f, 8f), paint);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        var center = (4 * 8 + 4) * 4;
+        Assert.Equal((byte)0, pixels[center]);
+        Assert.Equal((byte)0, pixels[center + 1]);
+        Assert.Equal((byte)255, pixels[center + 2]);
+        Assert.Equal((byte)255, pixels[center + 3]);
+    }
+
+    [Fact]
+    public void SaveLayerDstInHonorsTransformedMaskClip()
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(20, 20, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var targetPaint = new SKPaint();
+        using var maskPaint = new SKPaint
+        {
+            BlendMode = SKBlendMode.DstIn,
+            ColorFilter = SKColorFilter.CreateLumaColor()
+        };
+        using var red = new SKPaint { Color = SKColors.Red };
+        using var white = new SKPaint { Color = SKColors.White };
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        var targetRestoreCount = surface.Canvas.SaveLayer(targetPaint);
+        surface.Canvas.DrawRect(new SKRect(0f, 0f, 20f, 20f), red);
+        var maskRestoreCount = surface.Canvas.SaveLayer(maskPaint);
+        surface.Canvas.Save();
+        surface.Canvas.SetMatrix(SKMatrix.CreateScale(20f, 20f));
+        surface.Canvas.ClipRect(new SKRect(0.24999999f, 0f, 0.74999994f, 0.99999994f));
+        using var maskPath = new SKPath();
+        maskPath.AddRect(new SKRect(0f, 0f, 1f, 1f));
+        surface.Canvas.DrawPath(maskPath, white);
+        surface.Canvas.Restore();
+        surface.Canvas.RestoreToCount(maskRestoreCount);
+        surface.Canvas.RestoreToCount(targetRestoreCount);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        Assert.True(pixels[(10 * 20 + 4) * 4 + 3] < 20);
+        Assert.True(pixels[(10 * 20 + 10) * 4 + 3] > 240);
+        Assert.True(pixels[(10 * 20 + 16) * 4 + 3] < 20);
     }
 
     [Fact]
@@ -1358,7 +2080,7 @@ public sealed class SkCanvasStateTests
     }
 
     [Fact]
-    public void SkPaintRejectsShaderColorFilterCombination()
+    public void SkPaintAppliesShaderColorFilterCombination()
     {
         using var paint = new SKPaint
         {
@@ -1366,7 +2088,11 @@ public sealed class SkCanvasStateTests
             ColorFilter = SKColorFilter.CreateBlendMode(SKColors.Blue, SKBlendMode.Src)
         };
 
-        Assert.Throws<NotSupportedException>(() => paint.ToBrush());
+        var brush = Assert.IsType<SolidColorBrush>(paint.ToBrush());
+        AssertNear(0f, brush.Color.X);
+        AssertNear(0f, brush.Color.Y);
+        AssertNear(1f, brush.Color.Z);
+        AssertNear(1f, brush.Color.W);
     }
 
     [Fact]

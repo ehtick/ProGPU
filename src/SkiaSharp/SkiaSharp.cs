@@ -1,11 +1,19 @@
 using System;
 using System.IO;
 using System.Numerics;
+using System.Threading;
 using ProGPU.Backend;
 
 namespace SkiaSharp;
 
 public delegate void SKBitmapReleaseDelegate(IntPtr address, object context);
+
+internal static class SKObjectHandle
+{
+    private static long s_next;
+
+    public static IntPtr Create() => (nint)Interlocked.Increment(ref s_next);
+}
 
 public enum SKColorType
 {
@@ -95,6 +103,22 @@ public enum SKTextAlign
     Right = 2,
 }
 
+public enum SKTextEncoding
+{
+    Utf8 = 0,
+    Utf16 = 1,
+    Utf32 = 2,
+    GlyphId = 3,
+}
+
+public enum SKColorChannel
+{
+    R = 0,
+    G = 1,
+    B = 2,
+    A = 3,
+}
+
 public enum SKStrokeCap
 {
     Butt = 0,
@@ -160,6 +184,12 @@ public enum SKPathDirection
     CounterClockwise = 1,
 }
 
+public enum SKPathAddMode
+{
+    Append = 0,
+    Extend = 1,
+}
+
 public enum SKPixelGeometry
 {
     Unknown = 0,
@@ -218,6 +248,192 @@ public struct SKPoint
     public override string ToString() => $"({X}, {Y})";
 }
 
+public struct SKPointI : IEquatable<SKPointI>
+{
+    private int _x;
+    private int _y;
+
+    public static readonly SKPointI Empty;
+
+    public readonly bool IsEmpty => this == Empty;
+    public readonly int Length => (int)Math.Sqrt(_x * _x + _y * _y);
+    public readonly int LengthSquared => _x * _x + _y * _y;
+
+    public int X
+    {
+        readonly get => _x;
+        set => _x = value;
+    }
+
+    public int Y
+    {
+        readonly get => _y;
+        set => _y = value;
+    }
+
+    public SKPointI(SKSizeI size)
+    {
+        _x = size.Width;
+        _y = size.Height;
+    }
+
+    public SKPointI(int x, int y)
+    {
+        _x = x;
+        _y = y;
+    }
+
+    public void Offset(SKPointI point)
+    {
+        _x += point.X;
+        _y += point.Y;
+    }
+
+    public void Offset(int dx, int dy)
+    {
+        _x += dx;
+        _y += dy;
+    }
+
+    public override readonly string ToString() => $"{{X={_x},Y={_y}}}";
+
+    public static SKPointI Normalize(SKPointI point)
+    {
+        var lengthSquared = point._x * point._x + point._y * point._y;
+        var inverseLength = 1d / Math.Sqrt(lengthSquared);
+        return new SKPointI((int)(point._x * inverseLength), (int)(point._y * inverseLength));
+    }
+
+    public static float Distance(SKPointI point, SKPointI other)
+    {
+        var dx = point._x - other._x;
+        var dy = point._y - other._y;
+        return (float)Math.Sqrt(dx * dx + dy * dy);
+    }
+
+    public static float DistanceSquared(SKPointI point, SKPointI other)
+    {
+        var dx = point._x - other._x;
+        var dy = point._y - other._y;
+        return dx * dx + dy * dy;
+    }
+
+    public static SKPointI Reflect(SKPointI point, SKPointI normal)
+    {
+        var dot = point._x * normal._x + point._y * normal._y;
+        return new SKPointI(
+            (int)(point._x - 2f * dot * normal._x),
+            (int)(point._y - 2f * dot * normal._y));
+    }
+
+    public static SKPointI Ceiling(SKPoint value)
+    {
+        checked
+        {
+            return new SKPointI((int)Math.Ceiling(value.X), (int)Math.Ceiling(value.Y));
+        }
+    }
+
+    public static SKPointI Round(SKPoint value)
+    {
+        checked
+        {
+            return new SKPointI((int)Math.Round(value.X), (int)Math.Round(value.Y));
+        }
+    }
+
+    public static SKPointI Truncate(SKPoint value)
+    {
+        checked
+        {
+            return new SKPointI((int)value.X, (int)value.Y);
+        }
+    }
+
+    public static SKPointI Add(SKPointI point, SKSizeI size) => point + size;
+    public static SKPointI Add(SKPointI point, SKPointI size) => point + size;
+    public static SKPointI Subtract(SKPointI point, SKSizeI size) => point - size;
+    public static SKPointI Subtract(SKPointI point, SKPointI size) => point - size;
+
+    public static SKPointI operator +(SKPointI point, SKSizeI size) =>
+        new(point.X + size.Width, point.Y + size.Height);
+
+    public static SKPointI operator +(SKPointI point, SKPointI size) =>
+        new(point.X + size.X, point.Y + size.Y);
+
+    public static SKPointI operator -(SKPointI point, SKSizeI size) =>
+        new(point.X - size.Width, point.Y - size.Height);
+
+    public static SKPointI operator -(SKPointI point, SKPointI size) =>
+        new(point.X - size.X, point.Y - size.Y);
+
+    public static explicit operator SKSizeI(SKPointI point) => new(point.X, point.Y);
+    public static implicit operator SKPoint(SKPointI point) => new(point.X, point.Y);
+    public static implicit operator Vector2(SKPointI point) => new(point._x, point._y);
+
+    public readonly bool Equals(SKPointI other) => _x == other._x && _y == other._y;
+    public override readonly bool Equals(object? obj) => obj is SKPointI other && Equals(other);
+    public static bool operator ==(SKPointI left, SKPointI right) => left.Equals(right);
+    public static bool operator !=(SKPointI left, SKPointI right) => !left.Equals(right);
+    public override readonly int GetHashCode() => HashCode.Combine(_x, _y);
+}
+
+public struct SKPoint3 : IEquatable<SKPoint3>
+{
+    private float _x;
+    private float _y;
+    private float _z;
+
+    public static readonly SKPoint3 Empty;
+
+    public readonly bool IsEmpty => this == Empty;
+
+    public float X
+    {
+        readonly get => _x;
+        set => _x = value;
+    }
+
+    public float Y
+    {
+        readonly get => _y;
+        set => _y = value;
+    }
+
+    public float Z
+    {
+        readonly get => _z;
+        set => _z = value;
+    }
+
+    public SKPoint3(float x, float y, float z)
+    {
+        _x = x;
+        _y = y;
+        _z = z;
+    }
+
+    public override readonly string ToString() => $"{{X={_x}, Y={_y}, Z={_z}}}";
+
+    public static SKPoint3 Add(SKPoint3 point, SKPoint3 size) => point + size;
+    public static SKPoint3 Subtract(SKPoint3 point, SKPoint3 size) => point - size;
+
+    public static SKPoint3 operator +(SKPoint3 point, SKPoint3 size) =>
+        new(point.X + size.X, point.Y + size.Y, point.Z + size.Z);
+
+    public static SKPoint3 operator -(SKPoint3 point, SKPoint3 size) =>
+        new(point.X - size.X, point.Y - size.Y, point.Z - size.Z);
+
+    public static implicit operator Vector3(SKPoint3 point) => new(point._x, point._y, point._z);
+    public static implicit operator SKPoint3(Vector3 vector) => new(vector.X, vector.Y, vector.Z);
+
+    public readonly bool Equals(SKPoint3 other) => _x == other._x && _y == other._y && _z == other._z;
+    public override readonly bool Equals(object? obj) => obj is SKPoint3 other && Equals(other);
+    public static bool operator ==(SKPoint3 left, SKPoint3 right) => left.Equals(right);
+    public static bool operator !=(SKPoint3 left, SKPoint3 right) => !left.Equals(right);
+    public override readonly int GetHashCode() => HashCode.Combine(_x, _y, _z);
+}
+
 public struct SKSize
 {
     public float Width;
@@ -268,6 +484,10 @@ public struct SKRect
     }
 
     public static readonly SKRect Empty = new(0, 0, 0, 0);
+
+    public static SKRect Create(float width, float height) => new(0f, 0f, width, height);
+    public static SKRect Create(float x, float y, float width, float height) =>
+        new(x, y, x + width, y + height);
 
     public void Union(SKRect rect)
     {
@@ -329,6 +549,10 @@ public struct SKRectI
     }
 
     public static readonly SKRectI Empty = new(0, 0, 0, 0);
+
+    public static SKRectI Create(int width, int height) => new(0, 0, width, height);
+    public static SKRectI Create(int x, int y, int width, int height) =>
+        new(x, y, x + width, y + height);
 }
 
 public struct SKColor
@@ -383,6 +607,14 @@ public static class SKColors
     public static readonly SKColor Green = new(0, 255, 0, 255);
     public static readonly SKColor Blue = new(0, 0, 255, 255);
     public static readonly SKColor Transparent = new(0, 0, 0, 0);
+    public static readonly SKColor Aqua = new(0, 255, 255, 255);
+    public static readonly SKColor DodgerBlue = new(30, 144, 255, 255);
+    public static readonly SKColor Gray = new(128, 128, 128, 255);
+    public static readonly SKColor LightGray = new(211, 211, 211, 255);
+    public static readonly SKColor Lime = new(0, 255, 0, 255);
+    public static readonly SKColor OrangeRed = new(255, 69, 0, 255);
+    public static readonly SKColor SeaGreen = new(46, 139, 87, 255);
+    public static readonly SKColor SkyBlue = new(135, 206, 235, 255);
 }
 
 public struct SKColorF
@@ -398,6 +630,106 @@ public struct SKColorF
         G = g;
         B = b;
         A = a;
+    }
+}
+
+public struct SKColorSpaceTransferFn : IEquatable<SKColorSpaceTransferFn>
+{
+    public static readonly SKColorSpaceTransferFn Empty;
+    public static SKColorSpaceTransferFn Linear => new(1f, 1f, 0f, 0f, 0f, 0f, 0f);
+    public static SKColorSpaceTransferFn Srgb => new(
+        2.4f,
+        1f / 1.055f,
+        0.055f / 1.055f,
+        1f / 12.92f,
+        0.04045f,
+        0f,
+        0f);
+
+    public float G { readonly get; set; }
+    public float A { readonly get; set; }
+    public float B { readonly get; set; }
+    public float C { readonly get; set; }
+    public float D { readonly get; set; }
+    public float E { readonly get; set; }
+    public float F { readonly get; set; }
+    public readonly float[] Values => new[] { G, A, B, C, D, E, F };
+
+    public SKColorSpaceTransferFn(float g, float a, float b, float c, float d, float e, float f)
+    {
+        G = g;
+        A = a;
+        B = b;
+        C = c;
+        D = d;
+        E = e;
+        F = f;
+    }
+
+    public readonly float Transform(float value) =>
+        value < D ? C * value + F : MathF.Pow(A * value + B, G) + E;
+
+    public readonly bool Equals(SKColorSpaceTransferFn other) =>
+        G == other.G && A == other.A && B == other.B && C == other.C &&
+        D == other.D && E == other.E && F == other.F;
+    public override readonly bool Equals(object? obj) => obj is SKColorSpaceTransferFn other && Equals(other);
+    public static bool operator ==(SKColorSpaceTransferFn left, SKColorSpaceTransferFn right) => left.Equals(right);
+    public static bool operator !=(SKColorSpaceTransferFn left, SKColorSpaceTransferFn right) => !left.Equals(right);
+    public override readonly int GetHashCode() => HashCode.Combine(G, A, B, C, D, E, F);
+}
+
+public struct SKColorSpaceXyz : IEquatable<SKColorSpaceXyz>
+{
+    private float[]? _values;
+
+    public static readonly SKColorSpaceXyz Empty;
+    public static readonly SKColorSpaceXyz Identity = new(new[]
+    {
+        1f, 0f, 0f,
+        0f, 1f, 0f,
+        0f, 0f, 1f,
+    });
+    public static SKColorSpaceXyz Srgb => new(new[]
+    {
+        0.4124564f, 0.3575761f, 0.1804375f,
+        0.2126729f, 0.7151522f, 0.0721750f,
+        0.0193339f, 0.1191920f, 0.9503041f,
+    });
+
+    public float[] Values
+    {
+        readonly get => _values is null ? new float[9] : (float[])_values.Clone();
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            if (value.Length != 9)
+            {
+                throw new ArgumentException("The matrix array must have a length of 9.", nameof(value));
+            }
+
+            _values = (float[])value.Clone();
+        }
+    }
+
+    public SKColorSpaceXyz(float[] values)
+    {
+        _values = null;
+        Values = values;
+    }
+
+    public readonly bool Equals(SKColorSpaceXyz other) => Values.AsSpan().SequenceEqual(other.Values);
+    public override readonly bool Equals(object? obj) => obj is SKColorSpaceXyz other && Equals(other);
+    public static bool operator ==(SKColorSpaceXyz left, SKColorSpaceXyz right) => left.Equals(right);
+    public static bool operator !=(SKColorSpaceXyz left, SKColorSpaceXyz right) => !left.Equals(right);
+    public override readonly int GetHashCode()
+    {
+        var hash = new HashCode();
+        foreach (var value in Values)
+        {
+            hash.Add(value);
+        }
+
+        return hash.ToHashCode();
     }
 }
 
@@ -417,6 +749,33 @@ public struct SKMatrix
     {
         ScaleX = 1f, ScaleY = 1f, Persp2 = 1f
     };
+
+    public readonly bool IsIdentity =>
+        ScaleX == 1f && SkewX == 0f && TransX == 0f &&
+        SkewY == 0f && ScaleY == 1f && TransY == 0f &&
+        Persp0 == 0f && Persp1 == 0f && Persp2 == 1f;
+
+    public SKMatrix(
+        float scaleX,
+        float skewX,
+        float transX,
+        float skewY,
+        float scaleY,
+        float transY,
+        float persp0,
+        float persp1,
+        float persp2)
+    {
+        ScaleX = scaleX;
+        SkewX = skewX;
+        TransX = transX;
+        SkewY = skewY;
+        ScaleY = scaleY;
+        TransY = transY;
+        Persp0 = persp0;
+        Persp1 = persp1;
+        Persp2 = persp2;
+    }
 
     public Matrix4x4 ToMatrix4x4()
     {
@@ -505,6 +864,69 @@ public struct SKMatrix
     }
 }
 
+public struct SKRotationScaleMatrix : IEquatable<SKRotationScaleMatrix>
+{
+    public static readonly SKRotationScaleMatrix Empty;
+    public static readonly SKRotationScaleMatrix Identity = new(1f, 0f, 0f, 0f);
+
+    public float SCos { readonly get; set; }
+    public float SSin { readonly get; set; }
+    public float TX { readonly get; set; }
+    public float TY { readonly get; set; }
+
+    public SKRotationScaleMatrix(float scos, float ssin, float tx, float ty)
+    {
+        SCos = scos;
+        SSin = ssin;
+        TX = tx;
+        TY = ty;
+    }
+
+    public readonly SKMatrix ToMatrix() => new(
+        SCos,
+        -SSin,
+        TX,
+        SSin,
+        SCos,
+        TY,
+        0f,
+        0f,
+        1f);
+
+    public static SKRotationScaleMatrix CreateDegrees(
+        float scale,
+        float degrees,
+        float tx,
+        float ty,
+        float anchorX,
+        float anchorY) =>
+        Create(scale, degrees * MathF.PI / 180f, tx, ty, anchorX, anchorY);
+
+    public static SKRotationScaleMatrix Create(
+        float scale,
+        float radians,
+        float tx,
+        float ty,
+        float anchorX,
+        float anchorY)
+    {
+        var sin = MathF.Sin(radians) * scale;
+        var cos = MathF.Cos(radians) * scale;
+        return new SKRotationScaleMatrix(
+            cos,
+            sin,
+            tx - cos * anchorX + sin * anchorY,
+            ty - sin * anchorX - cos * anchorY);
+    }
+
+    public readonly bool Equals(SKRotationScaleMatrix other) =>
+        SCos == other.SCos && SSin == other.SSin && TX == other.TX && TY == other.TY;
+    public override readonly bool Equals(object? obj) => obj is SKRotationScaleMatrix other && Equals(other);
+    public static bool operator ==(SKRotationScaleMatrix left, SKRotationScaleMatrix right) => left.Equals(right);
+    public static bool operator !=(SKRotationScaleMatrix left, SKRotationScaleMatrix right) => !left.Equals(right);
+    public override readonly int GetHashCode() => HashCode.Combine(SCos, SSin, TX, TY);
+}
+
 public class SKMatrix44
 {
     public float M00 { get; set; } = 1f;
@@ -574,6 +996,7 @@ public struct SKCubicResampler
 
 public struct SKSamplingOptions
 {
+    public static readonly SKSamplingOptions Default;
     public SKFilterMode FilterMode;
     public SKMipmapMode MipmapMode;
     public bool UseCubic;
@@ -598,7 +1021,21 @@ public struct SKSamplingOptions
 
 public class SKColorSpace : IDisposable
 {
-    public static SKColorSpace CreateSrgb() => new();
+    private SKColorSpace(SKColorSpaceTransferFn transferFunction, SKColorSpaceXyz xyz)
+    {
+        TransferFunction = transferFunction;
+        Xyz = xyz;
+    }
+
+    public IntPtr Handle { get; } = SKObjectHandle.Create();
+    public SKColorSpaceTransferFn TransferFunction { get; }
+    public SKColorSpaceXyz Xyz { get; }
+    public bool IsLinear => TransferFunction == SKColorSpaceTransferFn.Linear;
+
+    public static SKColorSpace CreateSrgb() => CreateRgb(SKColorSpaceTransferFn.Srgb, SKColorSpaceXyz.Srgb);
+    public static SKColorSpace CreateSrgbLinear() => CreateRgb(SKColorSpaceTransferFn.Linear, SKColorSpaceXyz.Srgb);
+    public static SKColorSpace CreateRgb(SKColorSpaceTransferFn transferFunction, SKColorSpaceXyz xyz) =>
+        new(transferFunction, xyz);
     public void Dispose() { }
 }
 
@@ -682,6 +1119,8 @@ public class SKData : IDisposable
         stream.Write(Bytes, 0, Bytes.Length);
     }
 
+    public byte[] ToArray() => (byte[])Bytes.Clone();
+
     public void Dispose() { }
 }
 
@@ -694,7 +1133,12 @@ public class SKCodec : IDisposable
     {
         _data = data;
         var decoded = SKEncodedImageDecoder.Decode(data);
-        Info = new SKImageInfo(decoded.Width, decoded.Height, SKColorType.Rgba8888, SKAlphaType.Unpremul);
+        Info = new SKImageInfo(
+            decoded.Width,
+            decoded.Height,
+            SKColorType.Rgba8888,
+            SKAlphaType.Unpremul,
+            decoded.ColorSpace);
     }
 
     public SKImageInfo Info { get; }
@@ -734,11 +1178,6 @@ public class SKCodec : IDisposable
     public void Dispose() { }
 }
 
-public class SKDocument : IDisposable
-{
-    public void Dispose() { }
-}
-
 public class SKSurfaceProperties : IDisposable
 {
     public SKPixelGeometry PixelGeometry { get; }
@@ -755,22 +1194,28 @@ public class SKSurfaceProperties : IDisposable
 
 internal static class SKContextHelper
 {
+    private static readonly object s_fallbackLock = new();
     private static WgpuContext? _fallbackContext;
     public static WgpuContext GetContext()
     {
-        if (WgpuContext.Current != null && !WgpuContext.Current.IsDisposed)
-            return WgpuContext.Current;
+        if (WgpuContext.Current is { IsInitialized: true } current)
+            return current;
 
         if (WgpuContext.TryGetFirstActiveContext(out var ctx))
         {
             return ctx;
         }
 
-        if (_fallbackContext == null || _fallbackContext.IsDisposed)
+        lock (s_fallbackLock)
         {
-            _fallbackContext = new WgpuContext();
-            _fallbackContext.Initialize(null);
+            if (_fallbackContext is not { IsInitialized: true })
+            {
+                var replacement = new WgpuContext();
+                replacement.Initialize(null);
+                _fallbackContext = replacement;
+            }
+
+            return _fallbackContext;
         }
-        return _fallbackContext;
     }
 }

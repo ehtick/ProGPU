@@ -1,4 +1,5 @@
 using System;
+using System.Buffers.Binary;
 using System.Runtime.InteropServices;
 using ProGPU.Backend;
 using Silk.NET.WebGPU;
@@ -9,6 +10,44 @@ namespace ProGPU.Tests;
 
 public sealed class SkImageBitmapTests
 {
+    [Fact]
+    public void FromEncodedDataReturnsNullForInvalidImage()
+    {
+        Assert.Null(SKImage.FromEncodedData(new byte[] { 1, 2, 3, 4 }));
+    }
+
+    [Fact]
+    public void PngGammaColorSpaceFlowsFromCodecThroughBitmapAndImage()
+    {
+        var encoded = AddPngGammaChunk(TwoPixelPngBytes(), gammaTimes100000: 100000);
+        using var codec = SKCodec.Create(new SKData(encoded));
+        using var bitmap = SKBitmap.Decode(new SKData(encoded));
+        using var image = SKImage.FromBitmap(bitmap);
+
+        Assert.NotNull(codec.Info.ColorSpace);
+        Assert.True(codec.Info.ColorSpace.IsLinear);
+        Assert.NotNull(bitmap.Info.ColorSpace);
+        Assert.True(bitmap.Info.ColorSpace.IsLinear);
+        Assert.Same(bitmap.Info.ColorSpace, image.ColorSpace);
+        Assert.Equal(bitmap.ColorType, image.ColorType);
+        Assert.Equal(bitmap.AlphaType, image.AlphaType);
+        Assert.Equal(bitmap.Info.Width, image.Info.Width);
+        Assert.Equal(bitmap.Info.Height, image.Info.Height);
+    }
+
+    [Fact]
+    public void FromBitmapFlushesAttachedCanvasBeforeUploadingPixels()
+    {
+        using var bitmap = new SKBitmap(new SKImageInfo(8, 8, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var canvas = new SKCanvas(bitmap);
+        using var paint = new SKPaint { Color = SKColors.Red };
+
+        canvas.DrawRect(new SKRect(0, 0, 8, 8), paint);
+        using var image = SKImage.FromBitmap(bitmap);
+
+        Assert.Equal(new byte[] { 255, 0, 0, 255 }, image.Texture.ReadPixels()[..4]);
+    }
+
     [Fact]
     public void InstallPixelsPreservesRowBytesAndCopyUsesStride()
     {
@@ -415,6 +454,34 @@ public sealed class SkImageBitmapTests
     }
 
     [Fact]
+    public void FromAdoptedTextureTakesOwnershipOfProGpuBackendTexture()
+    {
+        using var context = new WgpuContext();
+        context.Initialize(null);
+        var texture = new GpuTexture(
+            context,
+            1,
+            1,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.TextureBinding | TextureUsage.CopyDst | TextureUsage.CopySrc,
+            "Adopted SKImage test texture");
+        texture.WritePixels<byte>(new byte[] { 10, 20, 30, 255 });
+        using var grContext = new GRContext(context);
+        using var backendTexture = new GRBackendTexture(texture);
+
+        var image = SKImage.FromAdoptedTexture(
+            grContext,
+            backendTexture,
+            GRSurfaceOrigin.TopLeft,
+            SKColorType.Rgba8888) ?? throw new InvalidOperationException("Failed to adopt backend texture.");
+
+        Assert.Same(texture, image.Texture);
+        Assert.Equal(new byte[] { 10, 20, 30, 255 }, image.Texture.ReadPixels());
+        image.Dispose();
+        Assert.True(texture.IsDisposed);
+    }
+
+    [Fact]
     public void FromTextureRequiresCopySrcForDeferredDrawImageRetention()
     {
         using var context = new WgpuContext();
@@ -453,5 +520,37 @@ public sealed class SkImageBitmapTests
     {
         return Convert.FromBase64String(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGPgEpFzAAAA5QB9CADYIgAAAABJRU5ErkJggg==");
+    }
+
+    private static byte[] AddPngGammaChunk(byte[] png, uint gammaTimes100000)
+    {
+        const int endOfHeaderChunk = 33;
+        const int gammaChunkSize = 16;
+        var result = new byte[png.Length + gammaChunkSize];
+        png.AsSpan(0, endOfHeaderChunk).CopyTo(result);
+
+        var chunk = result.AsSpan(endOfHeaderChunk, gammaChunkSize);
+        BinaryPrimitives.WriteUInt32BigEndian(chunk, 4);
+        "gAMA"u8.CopyTo(chunk[4..]);
+        BinaryPrimitives.WriteUInt32BigEndian(chunk[8..], gammaTimes100000);
+        BinaryPrimitives.WriteUInt32BigEndian(chunk[12..], ComputePngCrc32(chunk.Slice(4, 8)));
+
+        png.AsSpan(endOfHeaderChunk).CopyTo(result.AsSpan(endOfHeaderChunk + gammaChunkSize));
+        return result;
+    }
+
+    private static uint ComputePngCrc32(ReadOnlySpan<byte> data)
+    {
+        var crc = uint.MaxValue;
+        foreach (var value in data)
+        {
+            crc ^= value;
+            for (var bit = 0; bit < 8; bit++)
+            {
+                crc = (crc >> 1) ^ (0xedb88320u & (uint)-(int)(crc & 1));
+            }
+        }
+
+        return ~crc;
     }
 }

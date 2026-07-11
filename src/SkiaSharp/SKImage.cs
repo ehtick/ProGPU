@@ -8,20 +8,35 @@ namespace SkiaSharp;
 
 public class SKImage : IDisposable
 {
+    public IntPtr Handle { get; } = SKObjectHandle.Create();
     public GpuTexture Texture { get; }
     private readonly bool _ownsTexture;
+    private readonly SKImageInfo _info;
     public int Width => (int)Texture.Width;
     public int Height => (int)Texture.Height;
+    public SKImageInfo Info => _info;
+    public SKColorType ColorType => _info.ColorType;
+    public SKAlphaType AlphaType => _info.AlphaType;
+    public SKColorSpace? ColorSpace => _info.ColorSpace;
+    public bool IsAlphaOnly => ColorType == SKColorType.Alpha8;
+    public bool IsLazyGenerated => false;
+    public bool IsTextureBacked => true;
 
     public SKImage(GpuTexture texture)
-        : this(texture, ownsTexture: false)
+        : this(texture, ownsTexture: false, CreateTextureInfo(texture))
     {
     }
 
-    private SKImage(GpuTexture texture, bool ownsTexture)
+    private SKImage(GpuTexture texture, bool ownsTexture, SKImageInfo info)
     {
         Texture = texture;
         _ownsTexture = ownsTexture;
+        _info = new SKImageInfo(
+            (int)texture.Width,
+            (int)texture.Height,
+            info.ColorType,
+            info.AlphaType,
+            info.ColorSpace);
     }
 
     public static SKImage FromBitmap(SKBitmap bitmap)
@@ -48,8 +63,42 @@ public class SKImage : IDisposable
 
         texture.WritePixels(new ReadOnlySpan<byte>(buffer));
 
-        return new SKImage(texture, ownsTexture: true);
+        return new SKImage(texture, ownsTexture: true, bitmap.Info);
     }
+
+    public static SKImage? FromEncodedData(byte[] data)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        try
+        {
+            using var bitmap = SKBitmap.Decode(new SKData(data));
+            return FromBitmap(bitmap);
+        }
+        catch (Exception exception) when (IsInvalidEncodedImageException(exception))
+        {
+            return null;
+        }
+    }
+
+    public static SKImage? FromEncodedData(ReadOnlySpan<byte> data) =>
+        FromEncodedData(data.ToArray());
+
+    public static SKImage? FromEncodedData(SKData data)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        using var bitmap = SKBitmap.Decode(data);
+        return FromBitmap(bitmap);
+    }
+
+    public static SKImage? FromEncodedData(Stream data)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        using var encoded = SKData.Create(data);
+        return FromEncodedData(encoded);
+    }
+
+    private static bool IsInvalidEncodedImageException(Exception exception) =>
+        exception is InvalidOperationException or ArgumentException or FormatException or IndexOutOfRangeException;
 
     public static SKImage FromPixels(SKImageInfo info, IntPtr pixels, int rowBytes)
     {
@@ -88,8 +137,45 @@ public class SKImage : IDisposable
         GRSurfaceOrigin origin,
         SKColorType colorType)
     {
-        return null;
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(texture);
+        var gpuTexture = texture.BackendTexture;
+        if (gpuTexture == null)
+        {
+            return null;
+        }
+
+        if (!ReferenceEquals(gpuTexture.Context, context.Context))
+        {
+            throw new InvalidOperationException("The adopted backend texture belongs to a different ProGPU context.");
+        }
+
+        if ((gpuTexture.Usage & TextureUsage.TextureBinding) == 0 ||
+            (gpuTexture.Usage & TextureUsage.CopySrc) == 0)
+        {
+            throw new InvalidOperationException(
+                "Adopted backend textures must include TextureUsage.TextureBinding and TextureUsage.CopySrc.");
+        }
+
+        if (gpuTexture.SampleCount != 1)
+        {
+            throw new NotSupportedException("This WebGPU-backed Skia shim can only adopt single-sampled textures.");
+        }
+
+        var alphaType = gpuTexture.AlphaMode == GpuTextureAlphaMode.Straight
+            ? SKAlphaType.Unpremul
+            : SKAlphaType.Premul;
+        return new SKImage(
+            gpuTexture,
+            ownsTexture: true,
+            new SKImageInfo(texture.Width, texture.Height, colorType, alphaType));
     }
+
+    public static SKImage? FromAdoptedTexture(
+        GRContext context,
+        GRBackendTexture texture,
+        SKColorType colorType) =>
+        FromAdoptedTexture(context, texture, GRSurfaceOrigin.TopLeft, colorType);
 
     public static SKImage FromTexture(GpuTexture texture)
     {
@@ -100,7 +186,7 @@ public class SKImage : IDisposable
                 "Textures wrapped by SKImage.FromTexture must include TextureUsage.CopySrc so SKCanvas.DrawImage can retain a copy for deferred rendering.");
         }
 
-        return new SKImage(texture);
+        return new SKImage(texture, ownsTexture: false, CreateTextureInfo(texture));
     }
 
     private static void ForceOpaqueAlpha(byte[] rgbaPixels)
@@ -111,9 +197,9 @@ public class SKImage : IDisposable
         }
     }
 
-    internal static SKImage FromOwnedTexture(GpuTexture texture)
+    internal static SKImage FromOwnedTexture(GpuTexture texture, SKImageInfo? info = null)
     {
-        return new SKImage(texture, ownsTexture: true);
+        return new SKImage(texture, ownsTexture: true, info ?? CreateTextureInfo(texture));
     }
 
     internal SKImage CreateOwnedCopy()
@@ -127,7 +213,7 @@ public class SKImage : IDisposable
             "SKImage Shader Retained Texture",
             alphaMode: Texture.AlphaMode);
         texture.CopyFrom(Texture);
-        return FromOwnedTexture(texture);
+        return FromOwnedTexture(texture, _info);
     }
 
     public SKShader ToShader(
@@ -422,6 +508,20 @@ public class SKImage : IDisposable
             Texture.Dispose();
         }
     }
+
+    private static SKImageInfo CreateTextureInfo(GpuTexture texture)
+    {
+        var colorType = texture.Format is TextureFormat.Bgra8Unorm or TextureFormat.Bgra8UnormSrgb
+            ? SKColorType.Bgra8888
+            : SKColorType.Rgba8888;
+        var alphaType = texture.AlphaMode == GpuTextureAlphaMode.Straight
+            ? SKAlphaType.Unpremul
+            : SKAlphaType.Premul;
+        var colorSpace = texture.Format is TextureFormat.Rgba8UnormSrgb or TextureFormat.Bgra8UnormSrgb
+            ? SKColorSpace.CreateSrgb()
+            : null;
+        return new SKImageInfo((int)texture.Width, (int)texture.Height, colorType, alphaType, colorSpace);
+    }
 }
 
 public class SKPixmap
@@ -440,6 +540,8 @@ public class SKPixmap
 
 public class SKBitmap : IDisposable
 {
+    private readonly object _canvasSync = new();
+    private WeakReference<SKCanvas>? _attachedCanvas;
     private IntPtr _pixels;
     private bool _ownsPixels;
     private int _width;
@@ -495,6 +597,44 @@ public class SKBitmap : IDisposable
     {
     }
 
+    internal void AttachCanvas(SKCanvas canvas)
+    {
+        SKCanvas? previous = null;
+        lock (_canvasSync)
+        {
+            if (_attachedCanvas?.TryGetTarget(out var attached) == true && !ReferenceEquals(attached, canvas))
+            {
+                previous = attached;
+            }
+
+            _attachedCanvas = new WeakReference<SKCanvas>(canvas);
+        }
+
+        previous?.Flush();
+    }
+
+    internal void DetachCanvas(SKCanvas canvas)
+    {
+        lock (_canvasSync)
+        {
+            if (_attachedCanvas?.TryGetTarget(out var attached) == true && ReferenceEquals(attached, canvas))
+            {
+                _attachedCanvas = null;
+            }
+        }
+    }
+
+    private void FlushAttachedCanvas()
+    {
+        SKCanvas? canvas = null;
+        lock (_canvasSync)
+        {
+            _attachedCanvas?.TryGetTarget(out canvas);
+        }
+
+        canvas?.Flush();
+    }
+
     public IntPtr GetPixels() => _pixels;
 
     public IntPtr GetAddress(int x, int y)
@@ -535,6 +675,41 @@ public class SKBitmap : IDisposable
             }
 
             return new SKColor(red, green, blue, alpha);
+        }
+    }
+
+    public void SetPixel(int x, int y, SKColor color)
+    {
+        var address = GetAddress(x, y);
+        unsafe
+        {
+            var pixel = (byte*)address;
+            var alpha = AlphaType == SKAlphaType.Opaque ? (byte)255 : color.A;
+            var red = AlphaType == SKAlphaType.Premul ? Premultiply(color.R, alpha) : color.R;
+            var green = AlphaType == SKAlphaType.Premul ? Premultiply(color.G, alpha) : color.G;
+            var blue = AlphaType == SKAlphaType.Premul ? Premultiply(color.B, alpha) : color.B;
+            if (ColorType == SKColorType.Rgb565)
+            {
+                var value = PackRgb565(red, green, blue);
+                pixel[0] = (byte)value;
+                pixel[1] = (byte)(value >> 8);
+                return;
+            }
+
+            if (ColorType == SKColorType.Bgra8888)
+            {
+                pixel[0] = blue;
+                pixel[1] = green;
+                pixel[2] = red;
+            }
+            else
+            {
+                pixel[0] = red;
+                pixel[1] = green;
+                pixel[2] = blue;
+            }
+
+            pixel[3] = alpha;
         }
     }
 
@@ -635,9 +810,34 @@ public class SKBitmap : IDisposable
     public static SKBitmap Decode(SKData data)
     {
         var result = SKEncodedImageDecoder.Decode(data.Bytes);
-        var bmp = new SKBitmap(new SKImageInfo(result.Width, result.Height, SKColorType.Rgba8888, SKAlphaType.Unpremul));
+        var bmp = new SKBitmap(new SKImageInfo(
+            result.Width,
+            result.Height,
+            SKColorType.Rgba8888,
+            SKAlphaType.Unpremul,
+            result.ColorSpace));
         Marshal.Copy(result.Pixels, 0, bmp.GetPixels(), result.Pixels.Length);
         return bmp;
+    }
+
+    public static SKBitmap FromImage(SKImage image)
+    {
+        ArgumentNullException.ThrowIfNull(image);
+        var info = new SKImageInfo(
+            image.Width,
+            image.Height,
+            SKColorType.Rgba8888,
+            SKAlphaType.Premul,
+            image.ColorSpace);
+        var bitmap = new SKBitmap(info);
+        image.ReadPixels(
+            info,
+            bitmap.GetPixels(),
+            bitmap.RowBytes,
+            0,
+            0,
+            SKImageCachingHint.Allow);
+        return bitmap;
     }
 
     public static SKBitmap Decode(Stream? stream)
@@ -752,6 +952,8 @@ public class SKBitmap : IDisposable
 
     internal byte[] CopyRgba8888Rows()
     {
+        FlushAttachedCanvas();
+
         byte[] buffer = new byte[_width * _height * 4];
         if (_pixels == IntPtr.Zero || _width <= 0 || _height <= 0)
         {

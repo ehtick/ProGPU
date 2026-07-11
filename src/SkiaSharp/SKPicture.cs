@@ -6,6 +6,7 @@ namespace SkiaSharp;
 
 public sealed class SKPicture : IDisposable
 {
+    public IntPtr Handle { get; } = SKObjectHandle.Create();
     private GpuPicture? _picture;
 
     internal SKPicture(GpuPicture picture, SKRect cullRect)
