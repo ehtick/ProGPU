@@ -2,12 +2,12 @@
   <PropertyGroup>
     <ProGPUStrongNameKeyFile>$(MSBuildThisFileDirectory)eng/ProGPU.snk</ProGPUStrongNameKeyFile>
     <VersionPrefix Condition="'$(VersionPrefix)' == ''">0.1.0</VersionPrefix>
-    <VersionSuffix Condition="'$(VersionSuffix)' == ''">preview.6</VersionSuffix>
+    <VersionSuffix Condition="'$(VersionSuffix)' == ''">preview.7</VersionSuffix>
     <Version Condition="'$(Version)' == ''">$(VersionPrefix)-$(VersionSuffix)</Version>
     <PackageVersion Condition="'$(PackageVersion)' == ''">$(Version)</PackageVersion>
     <Description Condition="'$(Description)' == ''">ProGPU runtime package for GPU-accelerated .NET composition, rendering, vector graphics, text, and WebGPU platform integration.</Description>
     <PackageDescription Condition="'$(PackageDescription)' == ''">$(Description)</PackageDescription>
-    <PackageReleaseNotes Condition="'$(PackageReleaseNotes)' == ''">Streams system font metadata to eliminate large startup allocations and defers resized MSAA resources until submitted GPU work is idle.</PackageReleaseNotes>
+    <PackageReleaseNotes Condition="'$(PackageReleaseNotes)' == ''">Completes GPU-backed SkiaSharp APIs, expands compositor effects and font streaming, and adds context-aware System.Drawing and LibreWinForms bitmap, drawing, dialog, and toolbox interoperability.</PackageReleaseNotes>
     <Authors Condition="'$(Authors)' == ''">Wieslaw Soltes</Authors>
     <Company Condition="'$(Company)' == ''">ProGPU</Company>
     <PackageProjectUrl Condition="'$(PackageProjectUrl)' == ''">https://github.com/wieslawsoltes/ProGPU</PackageProjectUrl>
