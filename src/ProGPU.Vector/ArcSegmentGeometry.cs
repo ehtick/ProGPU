@@ -111,7 +111,9 @@ static class ArcSegmentGeometry
         }
 
         float denominator = prx * py1p + pry * px1p;
-        if (denominator <= Epsilon || !float.IsFinite(denominator))
+        // This value scales with both the radii and chord length. A fixed epsilon
+        // rejects valid near-full arcs whose endpoints are distinct but very close.
+        if (denominator <= 0.0f || !float.IsFinite(denominator))
         {
             return false;
         }

@@ -33,6 +33,48 @@ public class ArcPathCompilerTests
     }
 
     [Fact]
+    public void NearCoincidentLargeArcEndpointsPreserveNearFullCircle()
+    {
+        var start = new Vector2(50f, 0f);
+        var arc = new ArcSegment(
+            new Vector2(49.9999f, 0f),
+            new Vector2(50f, 50f),
+            rotationAngle: 0f,
+            isLargeArc: true,
+            SweepDirection.Clockwise);
+
+        Assert.True(ArcSegmentGeometry.TryGetArcCenter(
+            start,
+            arc.Point,
+            arc.Size,
+            arc.RotationAngle,
+            arc.IsLargeArc,
+            arc.SweepDirection,
+            out _,
+            out _,
+            out float deltaTheta,
+            out float radiusX,
+            out float radiusY));
+
+        Assert.InRange(deltaTheta, 2f * MathF.PI - 0.001f, 2f * MathF.PI);
+        AssertClose(50f, radiusX);
+        AssertClose(50f, radiusY);
+
+        var path = new PathGeometry();
+        var figure = new PathFigure(start);
+        figure.Segments.Add(arc);
+        path.Figures.Add(figure);
+
+        var (records, segments) = PathAtlas.CompileFillPath(path, out _, out _, out _, out _);
+
+        var record = Assert.Single(records);
+        Assert.Equal(2u, record.SegmentCount);
+        Assert.Equal(2, segments.Length);
+        Assert.Equal(3u, segments[0].SegmentType);
+        Assert.Equal(0u, segments[1].SegmentType);
+    }
+
+    [Fact]
     public void SubArcSegmentPreservesOriginalEllipseAndSweep()
     {
         var start = new Vector2(10f, 0f);
