@@ -923,17 +923,18 @@ fn vector_fs_main(input: VertexOutput) -> vec4<f32> {
         let allDistance = max(distance0, max(distance1, distance2));
         let edgeMask = u32(round(input.cornerRadius));
         let ownedInternalEdgeMask = u32(round(input.strokeThickness));
+        let internalEdgeTolerance = 0.001;
         let internalInside =
             select(
-                select(distance0 < 0.0, distance0 <= 0.0, (ownedInternalEdgeMask & 1u) != 0u),
+                select(distance0 < -internalEdgeTolerance, distance0 <= internalEdgeTolerance, (ownedInternalEdgeMask & 1u) != 0u),
                 true,
                 (edgeMask & 1u) != 0u) &&
             select(
-                select(distance1 < 0.0, distance1 <= 0.0, (ownedInternalEdgeMask & 2u) != 0u),
+                select(distance1 < -internalEdgeTolerance, distance1 <= internalEdgeTolerance, (ownedInternalEdgeMask & 2u) != 0u),
                 true,
                 (edgeMask & 2u) != 0u) &&
             select(
-                select(distance2 < 0.0, distance2 <= 0.0, (ownedInternalEdgeMask & 4u) != 0u),
+                select(distance2 < -internalEdgeTolerance, distance2 <= internalEdgeTolerance, (ownedInternalEdgeMask & 4u) != 0u),
                 true,
                 (edgeMask & 4u) != 0u);
         let exteriorDistance = max(

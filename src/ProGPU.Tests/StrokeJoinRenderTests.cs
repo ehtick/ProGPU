@@ -122,6 +122,34 @@ public sealed class StrokeJoinRenderTests
     }
 
     [Fact]
+    public void RoundJoinSharedEdgesDoNotLeaveTransparentSeams()
+    {
+        using var surface = SKSurface.Create(
+            new SKImageInfo(128, 96, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var path = new SKPath();
+        path.AddRect(new SKRect(20f, 20f, 108f, 60f));
+        using var paint = new SKPaint
+        {
+            Color = SKColors.Blue,
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 20f,
+            StrokeJoin = SKStrokeJoin.Round,
+            IsAntialias = true
+        };
+
+        surface.Canvas.Clear(SKColors.White);
+        surface.Canvas.DrawPath(path, paint);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        for (var offset = 0; offset < 7; offset++)
+        {
+            AssertOpaqueBlue(pixels, 128, 19 - offset, 60 + offset);
+        }
+    }
+
+    [Fact]
     public void RoundCapTrianglesOnlyAntialiasCurvedBoundary()
     {
         var window = HeadlessWindow.Shared;
@@ -350,6 +378,15 @@ public sealed class StrokeJoinRenderTests
         Assert.InRange(pixels[offset], 245, 255);
         Assert.InRange(pixels[offset + 1], 0, 5);
         Assert.InRange(pixels[offset + 2], 0, 5);
+        Assert.InRange(pixels[offset + 3], 245, 255);
+    }
+
+    private static void AssertOpaqueBlue(byte[] pixels, int width, int x, int y)
+    {
+        var offset = (y * width + x) * 4;
+        Assert.InRange(pixels[offset], 0, 5);
+        Assert.InRange(pixels[offset + 1], 0, 5);
+        Assert.InRange(pixels[offset + 2], 245, 255);
         Assert.InRange(pixels[offset + 3], 245, 255);
     }
 
