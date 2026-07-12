@@ -1048,26 +1048,6 @@ public struct SKSamplingOptions
     }
 }
 
-public class SKColorSpace : IDisposable
-{
-    private SKColorSpace(SKColorSpaceTransferFn transferFunction, SKColorSpaceXyz xyz)
-    {
-        TransferFunction = transferFunction;
-        Xyz = xyz;
-    }
-
-    public IntPtr Handle { get; } = SKObjectHandle.Create();
-    public SKColorSpaceTransferFn TransferFunction { get; }
-    public SKColorSpaceXyz Xyz { get; }
-    public bool IsLinear => TransferFunction == SKColorSpaceTransferFn.Linear;
-
-    public static SKColorSpace CreateSrgb() => CreateRgb(SKColorSpaceTransferFn.Srgb, SKColorSpaceXyz.Srgb);
-    public static SKColorSpace CreateSrgbLinear() => CreateRgb(SKColorSpaceTransferFn.Linear, SKColorSpaceXyz.Srgb);
-    public static SKColorSpace CreateRgb(SKColorSpaceTransferFn transferFunction, SKColorSpaceXyz xyz) =>
-        new(transferFunction, xyz);
-    public void Dispose() { }
-}
-
 public struct SKImageInfo : IEquatable<SKImageInfo>
 {
     public static readonly SKImageInfo Empty;

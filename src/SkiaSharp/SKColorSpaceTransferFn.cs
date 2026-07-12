@@ -280,6 +280,10 @@ public struct SKColorSpaceTransferFn : IEquatable<SKColorSpaceTransferFn>
         return hash.ToHashCode();
     }
 
+    internal readonly bool IsValid => Classify() != TransferFunctionKind.Invalid;
+
+    internal readonly bool IsNumerical => Classify() == TransferFunctionKind.Srgb;
+
     private readonly TransferFunctionKind Classify()
     {
         if (_g < 0f)
