@@ -1665,15 +1665,27 @@ public abstract class SKStreamSeekable : SKStreamRewindable
 {
 }
 
-public class SKCodec : IDisposable
+public class SKCodec : SKObject
 {
     private readonly byte[] _data;
     private readonly SKEncodedImageDecoder.DecodedImage _decoded;
+    private readonly SKEncodedImageFormat _encodedFormat;
+    private SKImageInfo _incrementalInfo;
+    private IntPtr _incrementalPixels;
+    private int _incrementalRowBytes;
+    private SKCodecOptions _incrementalOptions;
+    private bool _incrementalStarted;
     internal byte[] EncodedBytes => _data;
     internal SKEncodedImageDecoder.DecodedImage DecodedImage => _decoded;
 
     private SKCodec(byte[] data)
+        : base(SKObjectHandle.Create(), owns: true)
     {
+        if (!TryDetectEncodedFormat(data, out _encodedFormat) || !IsCpuDecodableFormat(_encodedFormat))
+        {
+            throw new NotSupportedException("The encoded image format is not supported.");
+        }
+
         _data = data;
         _decoded = SKEncodedImageDecoder.Decode(data);
         Info = new SKImageInfo(
@@ -1684,19 +1696,185 @@ public class SKCodec : IDisposable
             _decoded.ColorSpace);
     }
 
+    public static int MinBufferedBytesNeeded => 32;
     public SKImageInfo Info { get; }
+    public SKEncodedOrigin EncodedOrigin => SKEncodedOrigin.TopLeft;
+    public SKEncodedImageFormat EncodedFormat => _encodedFormat;
+    public byte[] Pixels
+    {
+        get
+        {
+            var result = GetPixels(out var pixels);
+            if (result is not SKCodecResult.Success and not SKCodecResult.IncompleteInput)
+            {
+                throw new Exception(result.ToString());
+            }
+
+            return pixels;
+        }
+    }
+    public int RepetitionCount => 0;
+    public int FrameCount => 0;
+    public SKCodecFrameInfo[] FrameInfo => Array.Empty<SKCodecFrameInfo>();
+    public SKCodecScanlineOrder ScanlineOrder => SKCodecScanlineOrder.TopDown;
+    public int NextScanline => -1;
 
     public SKSizeI GetScaledDimensions(float desiredScale)
     {
-        if (!float.IsFinite(desiredScale) || desiredScale <= 0f)
+        if (desiredScale <= 0f)
         {
-            return new SKSizeI(Info.Width, Info.Height);
+            return SKSizeI.Empty;
         }
 
-        return new SKSizeI(
-            Math.Max(1, (int)MathF.Round(Info.Width * MathF.Min(desiredScale, 1f))),
-            Math.Max(1, (int)MathF.Round(Info.Height * MathF.Min(desiredScale, 1f))));
+        if (_encodedFormat != SKEncodedImageFormat.Jpeg || float.IsNaN(desiredScale) || desiredScale >= 1f)
+        {
+            return Info.Size;
+        }
+
+        var numerator = Math.Clamp((int)MathF.Floor(desiredScale * 8f + 0.5f), 1, 8);
+        return GetJpegScaledDimensions(numerator);
     }
+
+    public bool GetValidSubset(ref SKRectI desiredSubset) => false;
+
+    public bool GetFrameInfo(int index, out SKCodecFrameInfo frameInfo)
+    {
+        frameInfo = default;
+        return false;
+    }
+
+    public SKCodecResult GetPixels(out byte[] pixels) => GetPixels(Info, out pixels);
+
+    public SKCodecResult GetPixels(SKImageInfo info, out byte[] pixels)
+    {
+        pixels = new byte[info.BytesSize];
+        return GetPixels(info, pixels);
+    }
+
+    public unsafe SKCodecResult GetPixels(SKImageInfo info, byte[] pixels)
+    {
+        ArgumentNullException.ThrowIfNull(pixels);
+        if (pixels.Length < info.BytesSize)
+        {
+            return SKCodecResult.InvalidParameters;
+        }
+
+        fixed (byte* pointer = pixels)
+        {
+            return GetPixels(info, (IntPtr)pointer, info.RowBytes, SKCodecOptions.Default);
+        }
+    }
+
+    public SKCodecResult GetPixels(SKImageInfo info, IntPtr pixels) =>
+        GetPixels(info, pixels, info.RowBytes, SKCodecOptions.Default);
+
+    public SKCodecResult GetPixels(SKImageInfo info, IntPtr pixels, SKCodecOptions options) =>
+        GetPixels(info, pixels, info.RowBytes, options);
+
+    public SKCodecResult GetPixels(
+        SKImageInfo info,
+        IntPtr pixels,
+        int rowBytes,
+        SKCodecOptions options)
+    {
+        if (pixels == IntPtr.Zero)
+        {
+            throw new ArgumentNullException(nameof(pixels));
+        }
+
+        var validation = ValidateDecodeTarget(info, rowBytes, options);
+        if (validation != SKCodecResult.Success)
+        {
+            return validation;
+        }
+
+        if (info.ColorType == SKColorType.Rgba8888 &&
+            info.AlphaType == SKAlphaType.Unpremul &&
+            info.Size.Equals(Info.Size) &&
+            ReferenceEquals(info.ColorSpace, Info.ColorSpace))
+        {
+            CopyRows(_decoded.Pixels, Info.RowBytes, pixels, rowBytes, info.RowBytes, info.Height);
+            return SKCodecResult.Success;
+        }
+
+        using var bitmap = SKBitmap.Decode(this, info);
+        if (bitmap is null)
+        {
+            return SKCodecResult.InvalidConversion;
+        }
+
+        CopyBitmapRows(bitmap, pixels, rowBytes, info.RowBytes, info.Height);
+        return SKCodecResult.Success;
+    }
+
+    public SKCodecResult StartIncrementalDecode(SKImageInfo info, IntPtr pixels, int rowBytes) =>
+        pixels == IntPtr.Zero
+            ? SKCodecResult.InvalidParameters
+            : StartIncrementalDecode(info, pixels, rowBytes, SKCodecOptions.Default);
+
+    public SKCodecResult StartIncrementalDecode(
+        SKImageInfo info,
+        IntPtr pixels,
+        int rowBytes,
+        SKCodecOptions options)
+    {
+        if (pixels == IntPtr.Zero)
+        {
+            throw new ArgumentNullException(nameof(pixels));
+        }
+
+        _incrementalStarted = false;
+        var validation = ValidateDecodeTarget(info, rowBytes, options);
+        if (validation != SKCodecResult.Success)
+        {
+            return validation;
+        }
+
+        _incrementalInfo = info;
+        _incrementalPixels = pixels;
+        _incrementalRowBytes = rowBytes;
+        _incrementalOptions = options;
+        _incrementalStarted = true;
+        return SKCodecResult.Success;
+    }
+
+    public SKCodecResult IncrementalDecode() => IncrementalDecode(out _);
+
+    public SKCodecResult IncrementalDecode(out int rowsDecoded)
+    {
+        rowsDecoded = 0;
+        if (!_incrementalStarted)
+        {
+            return SKCodecResult.InvalidParameters;
+        }
+
+        var result = GetPixels(
+            _incrementalInfo,
+            _incrementalPixels,
+            _incrementalRowBytes,
+            _incrementalOptions);
+        _incrementalStarted = false;
+        return result;
+    }
+
+    public SKCodecResult StartScanlineDecode(SKImageInfo info) => SKCodecResult.Unimplemented;
+
+    public SKCodecResult StartScanlineDecode(SKImageInfo info, SKCodecOptions options) =>
+        SKCodecResult.Unimplemented;
+
+    public int GetScanlines(IntPtr dst, int countLines, int rowBytes)
+    {
+        if (dst == IntPtr.Zero)
+        {
+            throw new ArgumentNullException(nameof(dst));
+        }
+
+        return 0;
+    }
+
+    public bool SkipScanlines(int countLines) => false;
+
+    public int GetOutputScanline(int inputScanline) => inputScanline;
 
     public static SKCodec Create(SKData data)
     {
@@ -1704,41 +1882,299 @@ public class SKCodec : IDisposable
         return CreateCore(data.Bytes);
     }
 
-    public static SKCodec Create(SKStream stream)
+    public static SKCodec Create(SKStream stream) => Create(stream, out _);
+
+    public static SKCodec Create(SKStream stream, out SKCodecResult result)
     {
         ArgumentNullException.ThrowIfNull(stream);
-        using var data = SKData.Create(stream);
-        return data is null ? null! : CreateCore(data.Bytes);
+        if (stream is SKFileStream { IsValid: false })
+        {
+            throw new ArgumentException("File stream was not valid.", nameof(stream));
+        }
+
+        return CreateCore(ReadRemainingBytes(stream), out result);
     }
 
-    public static SKCodec Create(Stream stream)
+    public static SKCodec Create(Stream stream) => Create(stream, out _);
+
+    public static SKCodec Create(Stream stream, out SKCodecResult result)
     {
         ArgumentNullException.ThrowIfNull(stream);
         using var ms = new MemoryStream();
         stream.CopyTo(ms);
-        return CreateCore(ms.ToArray());
+        return CreateCore(ms.ToArray(), out result);
     }
 
-    public static SKCodec Create(string filename)
+    public static SKCodec Create(string filename) => Create(filename, out _);
+
+    public static SKCodec Create(string filename, out SKCodecResult result)
     {
-        ArgumentNullException.ThrowIfNull(filename);
-        using var data = SKData.Create(filename);
-        return data is null ? null! : CreateCore(data.Bytes);
+        using var stream = SKFileStream.OpenStream(filename);
+        if (stream is null)
+        {
+            result = SKCodecResult.InternalError;
+            return null!;
+        }
+
+        return Create(stream, out result);
     }
 
-    public void Dispose() { }
+    protected override void Dispose(bool disposing)
+    {
+        _incrementalStarted = false;
+        _incrementalPixels = IntPtr.Zero;
+        base.Dispose(disposing);
+    }
 
-    private static SKCodec CreateCore(byte[] data)
+    private static SKCodec CreateCore(byte[] data) => CreateCore(data, out _);
+
+    private static unsafe byte[] ReadRemainingBytes(SKStream stream)
+    {
+        if (stream.HasLength && stream.HasPosition)
+        {
+            var remaining = Math.Max(0, stream.Length - stream.Position);
+            var data = GC.AllocateUninitializedArray<byte>(remaining);
+            var read = 0;
+            fixed (byte* pointer = data)
+            {
+                while (read < data.Length)
+                {
+                    var count = stream.Read((IntPtr)(pointer + read), data.Length - read);
+                    if (count == 0)
+                    {
+                        break;
+                    }
+
+                    read += count;
+                }
+            }
+
+            return read == data.Length ? data : data.AsSpan(0, read).ToArray();
+        }
+
+        using var copy = new MemoryStream();
+        Span<byte> buffer = stackalloc byte[8192];
+        fixed (byte* pointer = buffer)
+        {
+            while (true)
+            {
+                var count = stream.Read((IntPtr)pointer, buffer.Length);
+                if (count == 0)
+                {
+                    break;
+                }
+
+                copy.Write(buffer[..count]);
+            }
+        }
+
+        return copy.ToArray();
+    }
+
+    private static SKCodec CreateCore(byte[] data, out SKCodecResult result)
     {
         try
         {
-            return new SKCodec(data);
+            var codec = new SKCodec(data);
+            result = SKCodecResult.Success;
+            return codec;
         }
         catch (Exception exception) when (IsInvalidEncodedImageException(exception))
         {
+            result = TryDetectEncodedFormat(data, out var format) && IsCpuDecodableFormat(format)
+                ? SKCodecResult.IncompleteInput
+                : SKCodecResult.Unimplemented;
             return null!;
         }
     }
+
+    private SKCodecResult ValidateDecodeTarget(SKImageInfo info, int rowBytes, SKCodecOptions options)
+    {
+        if (options.HasSubset)
+        {
+            return SKCodecResult.Unimplemented;
+        }
+
+        if (options.FrameIndex != 0 || options.PriorFrame < -1 || info.IsEmpty || rowBytes < info.RowBytes)
+        {
+            return SKCodecResult.InvalidParameters;
+        }
+
+        if (info.BytesPerPixel <= 0)
+        {
+            return SKCodecResult.InvalidConversion;
+        }
+
+        return IsSupportedDecodeSize(info.Size)
+            ? SKCodecResult.Success
+            : SKCodecResult.InvalidScale;
+    }
+
+    private bool IsSupportedDecodeSize(SKSizeI size)
+    {
+        if (size.Equals(Info.Size))
+        {
+            return true;
+        }
+
+        if (_encodedFormat != SKEncodedImageFormat.Jpeg)
+        {
+            return false;
+        }
+
+        for (var numerator = 1; numerator < 8; numerator++)
+        {
+            if (GetJpegScaledDimensions(numerator).Equals(size))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private SKSizeI GetJpegScaledDimensions(int numerator) => new(
+        (int)(((long)Info.Width * numerator + 7) / 8),
+        (int)(((long)Info.Height * numerator + 7) / 8));
+
+    private static unsafe void CopyBitmapRows(
+        SKBitmap bitmap,
+        IntPtr destination,
+        int destinationRowBytes,
+        int copyRowBytes,
+        int height) =>
+        CopyRows(
+            bitmap.GetPixelSpan(),
+            bitmap.RowBytes,
+            destination,
+            destinationRowBytes,
+            copyRowBytes,
+            height);
+
+    private static unsafe void CopyRows(
+        ReadOnlySpan<byte> source,
+        int sourceRowBytes,
+        IntPtr destination,
+        int destinationRowBytes,
+        int copyRowBytes,
+        int height)
+    {
+        fixed (byte* sourcePointer = source)
+        {
+            var destinationPointer = (byte*)destination;
+            for (var row = 0; row < height; row++)
+            {
+                Buffer.MemoryCopy(
+                    sourcePointer + row * sourceRowBytes,
+                    destinationPointer + row * destinationRowBytes,
+                    destinationRowBytes,
+                    copyRowBytes);
+            }
+        }
+    }
+
+    private static bool TryDetectEncodedFormat(ReadOnlySpan<byte> data, out SKEncodedImageFormat format)
+    {
+        if (data.Length >= 4 && data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4e && data[3] == 0x47)
+        {
+            format = SKEncodedImageFormat.Png;
+            return true;
+        }
+
+        if (data.Length >= 2 && data[0] == 0xff && data[1] == 0xd8)
+        {
+            format = SKEncodedImageFormat.Jpeg;
+            return true;
+        }
+
+        if (data.Length >= 3 && data[0] == (byte)'G' && data[1] == (byte)'I' && data[2] == (byte)'F')
+        {
+            format = SKEncodedImageFormat.Gif;
+            return true;
+        }
+
+        if (data.Length >= 2 && data[0] == (byte)'B' && data[1] == (byte)'M')
+        {
+            format = SKEncodedImageFormat.Bmp;
+            return true;
+        }
+
+        if (data.Length >= 4 && data[0] == 0 && data[1] == 0 && data[3] == 0 && data[2] is 1 or 2)
+        {
+            format = SKEncodedImageFormat.Ico;
+            return true;
+        }
+
+        if (data.Length >= 12 &&
+            data[0] == (byte)'R' && data[1] == (byte)'I' && data[2] == (byte)'F' && data[3] == (byte)'F' &&
+            data[8] == (byte)'W' && data[9] == (byte)'E' && data[10] == (byte)'B' && data[11] == (byte)'P')
+        {
+            format = SKEncodedImageFormat.Webp;
+            return true;
+        }
+
+        if (data.Length >= 4 && data[0] == (byte)'P' && data[1] == (byte)'K' && data[2] == (byte)'M' && data[3] == (byte)' ')
+        {
+            format = SKEncodedImageFormat.Pkm;
+            return true;
+        }
+
+        if (data.Length >= 4 && data[0] == 0x13 && data[1] == 0xab && data[2] == 0xa1 && data[3] == 0x5c)
+        {
+            format = SKEncodedImageFormat.Astc;
+            return true;
+        }
+
+        if (data.Length >= 12 && data[0] == 0xab && data[1] == 0x4b && data[2] == 0x54 && data[3] == 0x58)
+        {
+            format = SKEncodedImageFormat.Ktx;
+            return true;
+        }
+
+        if (data.Length >= 12 &&
+            data[4] == (byte)'f' && data[5] == (byte)'t' && data[6] == (byte)'y' && data[7] == (byte)'p')
+        {
+            var brand = BinaryPrimitives.ReadUInt32BigEndian(data.Slice(8, 4));
+            if (brand is 0x61766966 or 0x61766973)
+            {
+                format = SKEncodedImageFormat.Avif;
+                return true;
+            }
+
+            if (brand is 0x68656963 or 0x68656978 or 0x68657663 or 0x68657678 or 0x6d696631 or 0x6d736631)
+            {
+                format = SKEncodedImageFormat.Heif;
+                return true;
+            }
+        }
+
+        if (data.Length >= 2 && data[0] == 0xff && data[1] == 0x0a ||
+            data.Length >= 12 &&
+            data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 0x0c &&
+            data[4] == (byte)'J' && data[5] == (byte)'X' && data[6] == (byte)'L' && data[7] == (byte)' ')
+        {
+            format = SKEncodedImageFormat.Jpegxl;
+            return true;
+        }
+
+        if (data.Length >= 4 &&
+            ((data[0] == (byte)'I' && data[1] == (byte)'I' && data[2] == 0x2a && data[3] == 0) ||
+             (data[0] == (byte)'M' && data[1] == (byte)'M' && data[2] == 0 && data[3] == 0x2a)))
+        {
+            format = SKEncodedImageFormat.Dng;
+            return true;
+        }
+
+        format = default;
+        return false;
+    }
+
+    private static bool IsCpuDecodableFormat(SKEncodedImageFormat format) =>
+        format is SKEncodedImageFormat.Bmp or
+            SKEncodedImageFormat.Gif or
+            SKEncodedImageFormat.Ico or
+            SKEncodedImageFormat.Jpeg or
+            SKEncodedImageFormat.Png;
 
     private static bool IsInvalidEncodedImageException(Exception exception) =>
         exception is InvalidOperationException or
