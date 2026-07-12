@@ -299,6 +299,41 @@ public sealed class SkiaSharpIconDecoderTests
     }
 
     [Fact]
+    public void DecodeCoreHeaderIconSupports24BitPixelsAndAndMask()
+    {
+        var icon = CreateCoreIcon(
+            bitCount: 24,
+            xorPixels: [0, 0, 255, 0, 255, 0, 0, 0],
+            andMask: [0x40, 0, 0, 0]);
+
+        using var bitmap = SKBitmap.Decode(new SKData(icon));
+
+        Assert.Equal(SKColors.Red, bitmap.GetPixel(0, 0));
+        Assert.Equal(new SKColor(0, 255, 0, 0), bitmap.GetPixel(1, 0));
+    }
+
+    [Fact]
+    public void DecodeCoreHeaderIconSupportsThreeByteColorTable()
+    {
+        var icon = CreateCoreIcon(
+            bitCount: 4,
+            xorPixels: [0x12, 0, 0, 0],
+            andMask: [0, 0, 0, 0],
+            palette:
+            [
+                0, 0, 0,
+                0, 0, 255,
+                0, 255, 0
+            ],
+            colorCount: 3);
+
+        using var bitmap = SKBitmap.Decode(new SKData(icon));
+
+        Assert.Equal(SKColors.Red, bitmap.GetPixel(0, 0));
+        Assert.Equal(SKColors.Lime, bitmap.GetPixel(1, 0));
+    }
+
+    [Fact]
     public void Decode24BitIconWithoutAndMaskDefaultsToOpaque()
     {
         var icon = CreateIcon(
@@ -376,6 +411,47 @@ public sealed class SkiaSharpIconDecoderTests
         var offset = bitmapHeaderSize;
         bitFieldMasks.CopyTo(payload.Slice(offset));
         offset += bitFieldMasks.Length;
+        palette.CopyTo(payload.Slice(offset));
+        offset += palette.Length;
+        xorPixels.CopyTo(payload.Slice(offset));
+        offset += xorPixels.Length;
+        andMask.CopyTo(payload.Slice(offset));
+        return icon;
+    }
+
+    private static byte[] CreateCoreIcon(
+        ushort bitCount,
+        byte[] xorPixels,
+        byte[] andMask,
+        byte[]? palette = null,
+        byte colorCount = 0)
+    {
+        const int width = 2;
+        const int height = 1;
+        const int directorySize = 6 + 16;
+        const int bitmapHeaderSize = 12;
+        palette ??= [];
+        var payloadSize = checked(bitmapHeaderSize + palette.Length + xorPixels.Length + andMask.Length);
+        var icon = new byte[checked(directorySize + payloadSize)];
+
+        BinaryPrimitives.WriteUInt16LittleEndian(icon.AsSpan(2), 1);
+        BinaryPrimitives.WriteUInt16LittleEndian(icon.AsSpan(4), 1);
+        icon[6] = width;
+        icon[7] = height;
+        icon[8] = colorCount;
+        BinaryPrimitives.WriteUInt16LittleEndian(icon.AsSpan(10), 1);
+        BinaryPrimitives.WriteUInt16LittleEndian(icon.AsSpan(12), bitCount);
+        BinaryPrimitives.WriteUInt32LittleEndian(icon.AsSpan(14), (uint)payloadSize);
+        BinaryPrimitives.WriteUInt32LittleEndian(icon.AsSpan(18), directorySize);
+
+        var payload = icon.AsSpan(directorySize);
+        BinaryPrimitives.WriteUInt32LittleEndian(payload, bitmapHeaderSize);
+        BinaryPrimitives.WriteUInt16LittleEndian(payload.Slice(4), width);
+        BinaryPrimitives.WriteUInt16LittleEndian(payload.Slice(6), height * 2);
+        BinaryPrimitives.WriteUInt16LittleEndian(payload.Slice(8), 1);
+        BinaryPrimitives.WriteUInt16LittleEndian(payload.Slice(10), bitCount);
+
+        var offset = bitmapHeaderSize;
         palette.CopyTo(payload.Slice(offset));
         offset += palette.Length;
         xorPixels.CopyTo(payload.Slice(offset));

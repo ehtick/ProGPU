@@ -83,7 +83,7 @@ The Silk.NET Avalonia backend supplies cross-platform desktop windowing, input, 
 
 The SkiaSharp compatibility shim implements a portable SkiaSharp-shaped API over ProGPU vector, text, imaging, path operations, and compositing primitives. It lets SkiaSharp-oriented libraries target the ProGPU renderer without loading native Skia binaries.
 
-Encoded images are decoded on the CPU before their pixels enter the GPU texture path. PNG-backed ICO/CUR frames use the common image decoder; bitmap-backed frames support indexed 1/4/8-bit color, RLE4/RLE8 streams, RGB555, RGB565 and other validated 16/32-bit channel masks, 24-bit BGR, 32-bit BGRA, and Windows AND-mask transparency. Keeping decode and upload separate preserves deterministic pixel semantics and avoids initializing a WebGPU device for metadata or bitmap-only workflows.
+Encoded images are decoded on the CPU before their pixels enter the GPU texture path. PNG-backed ICO/CUR frames use the common image decoder; bitmap-backed frames support legacy core and modern information headers, indexed 1/4/8-bit color, RLE4/RLE8 streams, RGB555, RGB565 and other validated 16/32-bit channel masks, 24-bit BGR, 32-bit BGRA, and Windows AND-mask transparency. Keeping decode and upload separate preserves deterministic pixel semantics and avoids initializing a WebGPU device for metadata or bitmap-only workflows.
 
 | Package | Purpose | NuGet |
 | --- | --- | --- |

@@ -56,7 +56,7 @@ internal static class SKEncodedImageDecoder
             var bitCount = isCursor
                 ? ReadCursorFrameBitCount(span.Slice((int)imageOffset, (int)byteCount))
                 : BinaryPrimitives.ReadUInt16LittleEndian(entry.Slice(6, 2));
-            var candidate = new IconEntry(width, height, bitCount, (int)imageOffset, (int)byteCount);
+            var candidate = new IconEntry(width, height, bitCount, entry[2], (int)imageOffset, (int)byteCount);
             if (selected == null
                 || candidate.Width * candidate.Height > selected.Value.Width * selected.Value.Height
                 || candidate.Width * candidate.Height == selected.Value.Width * selected.Value.Height
@@ -94,8 +94,19 @@ internal static class SKEncodedImageDecoder
 
     private static ushort ReadCursorFrameBitCount(ReadOnlySpan<byte> payload)
     {
-        if (payload.Length < 16
-            || payload[0] == 0x89 && payload[1] == 0x50 && payload[2] == 0x4e && payload[3] == 0x47)
+        if (payload.Length < 12
+            || (payload[0] == 0x89 && payload[1] == 0x50 && payload[2] == 0x4e && payload[3] == 0x47))
+        {
+            return 0;
+        }
+
+        var headerSize = BinaryPrimitives.ReadUInt32LittleEndian(payload);
+        if (headerSize == 12)
+        {
+            return BinaryPrimitives.ReadUInt16LittleEndian(payload.Slice(10, 2));
+        }
+
+        if (payload.Length < 16)
         {
             return 0;
         }
@@ -105,25 +116,51 @@ internal static class SKEncodedImageDecoder
 
     private static DecodedImage DecodeIconBitmap(ReadOnlySpan<byte> payload, IconEntry icon)
     {
-        if (payload.Length < 40)
+        if (payload.Length < 12)
         {
             throw new InvalidOperationException("ICO bitmap header is truncated.");
         }
 
         var headerSize = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(payload.Slice(0, 4)));
-        var dibWidth = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(4, 4));
-        var dibHeight = BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(8, 4));
-        var bitCount = BinaryPrimitives.ReadUInt16LittleEndian(payload.Slice(14, 2));
-        var compression = BinaryPrimitives.ReadUInt32LittleEndian(payload.Slice(16, 4));
+        var isCoreHeader = headerSize == 12;
+        if (headerSize > payload.Length)
+        {
+            throw new InvalidOperationException("ICO bitmap header is truncated.");
+        }
+
+        if (!isCoreHeader && headerSize < 40)
+        {
+            throw new NotSupportedException("Only 12-byte core and 40-byte-or-newer ICO bitmap headers are supported.");
+        }
+
+        var dibWidth = isCoreHeader
+            ? BinaryPrimitives.ReadUInt16LittleEndian(payload.Slice(4, 2))
+            : BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(4, 4));
+        var dibHeight = isCoreHeader
+            ? BinaryPrimitives.ReadUInt16LittleEndian(payload.Slice(6, 2))
+            : BinaryPrimitives.ReadInt32LittleEndian(payload.Slice(8, 4));
+        var bitCount = isCoreHeader
+            ? BinaryPrimitives.ReadUInt16LittleEndian(payload.Slice(10, 2))
+            : BinaryPrimitives.ReadUInt16LittleEndian(payload.Slice(14, 2));
+        var compression = isCoreHeader
+            ? 0u
+            : BinaryPrimitives.ReadUInt32LittleEndian(payload.Slice(16, 4));
+        var declaredImageByteCount = isCoreHeader
+            ? 0u
+            : BinaryPrimitives.ReadUInt32LittleEndian(payload.Slice(20, 4));
+        var declaredColorCount = isCoreHeader
+            ? icon.ColorCount
+            : BinaryPrimitives.ReadUInt32LittleEndian(payload.Slice(32, 4));
         var isUncompressed = compression == 0;
         var usesBitFields = compression is 3 or 6;
         var usesRunLengthEncoding = compression is 1 or 2;
-        if (headerSize < 40
-            || headerSize > payload.Length
-            || (!(isUncompressed && bitCount is 1 or 4 or 8 or 16 or 24 or 32)
-                && !(usesBitFields && bitCount is 16 or 32)
-                && !(compression == 1 && bitCount == 8)
-                && !(compression == 2 && bitCount == 4)))
+        var supportsCoreHeader = isCoreHeader && bitCount is 1 or 4 or 8 or 24;
+        var supportsInfoHeader = !isCoreHeader
+            && ((isUncompressed && bitCount is 1 or 4 or 8 or 16 or 24 or 32)
+                || (usesBitFields && bitCount is 16 or 32)
+                || (compression == 1 && bitCount == 8)
+                || (compression == 2 && bitCount == 4));
+        if (!supportsCoreHeader && !supportsInfoHeader)
         {
             throw new NotSupportedException(
                 "Only indexed, RLE4/RLE8, 16-bit, 24-bit, 32-bit, and 16/32-bit bitfield ICO bitmap frames are supported.");
@@ -182,10 +219,10 @@ internal static class SKEncodedImageDecoder
         }
 
         ReadOnlySpan<byte> palette = default;
+        var paletteEntrySize = isCoreHeader ? 3 : 4;
         if (bitCount <= 8)
         {
             var maximumColorCount = 1 << bitCount;
-            var declaredColorCount = BinaryPrimitives.ReadUInt32LittleEndian(payload.Slice(32, 4));
             var colorCount = declaredColorCount == 0
                 ? maximumColorCount
                 : checked((int)declaredColorCount);
@@ -194,7 +231,7 @@ internal static class SKEncodedImageDecoder
                 throw new InvalidOperationException("ICO color table size is invalid.");
             }
 
-            var paletteByteCount = checked(colorCount * 4);
+            var paletteByteCount = checked(colorCount * paletteEntrySize);
             if (pixelOffset > payload.Length - paletteByteCount)
             {
                 throw new InvalidOperationException("ICO color table is truncated.");
@@ -210,11 +247,10 @@ internal static class SKEncodedImageDecoder
         byte[]? decodedIndices = null;
         if (usesRunLengthEncoding)
         {
-            var declaredByteCount = BinaryPrimitives.ReadUInt32LittleEndian(payload.Slice(20, 4));
             var availableByteCount = payload.Length - pixelOffset;
-            var encodedByteCount = declaredByteCount == 0
+            var encodedByteCount = declaredImageByteCount == 0
                 ? availableByteCount
-                : checked((int)declaredByteCount);
+                : checked((int)declaredImageByteCount);
             if (encodedByteCount > availableByteCount)
             {
                 throw new InvalidOperationException("ICO RLE bitmap pixels are truncated.");
@@ -228,7 +264,7 @@ internal static class SKEncodedImageDecoder
                 height,
                 bitCount,
                 bottomUp);
-            xorByteCount = declaredByteCount == 0 ? consumedByteCount : encodedByteCount;
+            xorByteCount = declaredImageByteCount == 0 ? consumedByteCount : encodedByteCount;
         }
         else
         {
@@ -261,8 +297,8 @@ internal static class SKEncodedImageDecoder
                             4 => (sourceRow[x >> 1] >> (x % 2 == 0 ? 4 : 0)) & 0x0f,
                             _ => sourceRow[x]
                         };
-                    var paletteOffset = colorIndex * 4;
-                    if (paletteOffset + 4 > palette.Length)
+                    var paletteOffset = colorIndex * paletteEntrySize;
+                    if (paletteOffset + paletteEntrySize > palette.Length)
                     {
                         throw new InvalidOperationException("ICO bitmap references a missing color table entry.");
                     }
@@ -587,5 +623,11 @@ internal static class SKEncodedImageDecoder
         byte[] Pixels,
         SKColorSpace? ColorSpace);
 
-    private readonly record struct IconEntry(int Width, int Height, ushort BitCount, int Offset, int ByteCount);
+    private readonly record struct IconEntry(
+        int Width,
+        int Height,
+        ushort BitCount,
+        byte ColorCount,
+        int Offset,
+        int ByteCount);
 }
