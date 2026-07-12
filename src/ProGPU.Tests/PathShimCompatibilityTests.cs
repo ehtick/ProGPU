@@ -314,7 +314,7 @@ public sealed class PathShimCompatibilityTests
     }
 
     [Fact]
-    public void SkPathStaticOpPreservesEvenOddFillRuleOnResultPath()
+    public void SkPathResultOpPreservesEvenOddFillRuleOnResultPath()
     {
         using var path = new SKPath { FillType = SKPathFillType.EvenOdd };
         using var empty = new SKPath();
@@ -322,7 +322,7 @@ public sealed class PathShimCompatibilityTests
         path.AddRect(new SKRect(0f, 0f, 10f, 10f));
         path.AddRect(new SKRect(2f, 2f, 8f, 8f));
 
-        Assert.True(SKPath.Op(path, empty, SKPathOp.Union, result));
+        Assert.True(path.Op(empty, SKPathOp.Union, result));
 
         Assert.Equal(SKPathFillType.EvenOdd, result.FillType);
         Assert.Equal(FillRule.EvenOdd, result.Geometry.FillRule);

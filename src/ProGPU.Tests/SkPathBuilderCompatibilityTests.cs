@@ -66,7 +66,7 @@ public sealed class SkPathBuilderCompatibilityTests
         var conicIndex = 0;
         Assert.All(first.Segments.Skip(2).Take(16), segment =>
         {
-            var quadratic = Assert.IsType<QuadraticBezierSegment>(segment);
+            var quadratic = Assert.IsAssignableFrom<QuadraticBezierSegment>(segment);
             Assert.True(float.IsFinite(quadratic.ControlPoint.X));
             Assert.True(float.IsFinite(quadratic.ControlPoint.Y));
             Assert.True(float.IsFinite(quadratic.Point.X));

@@ -130,7 +130,16 @@ public class SKPathBuilder : SKObject
             var spanEnd = EvaluateConic(start, control, end, w, t1);
             var midpoint = EvaluateConic(start, control, end, w, (t0 + t1) * 0.5f);
             var spanControl = 2f * midpoint - 0.5f * (spanStart + spanEnd);
-            _currentFigure!.Segments.Add(new QuadraticBezierSegment(spanControl, spanEnd));
+            _currentFigure!.Segments.Add(index == 0
+                ? new RationalConicQuadraticSegment(
+                    spanControl,
+                    spanEnd,
+                    start,
+                    control,
+                    end,
+                    w,
+                    ConicSubdivisionCount)
+                : new QuadraticBezierSegment(spanControl, spanEnd));
         }
 
         _currentPoint = end;
@@ -658,6 +667,16 @@ public class SKPathBuilder : SKObject
 
     private static PathSegment CloneSegment(PathSegment segment, Vector2 offset) => segment switch
     {
+        RationalConicQuadraticSegment conic => new RationalConicQuadraticSegment(
+            conic.ControlPoint + offset,
+            conic.Point + offset,
+            conic.OriginalStart + offset,
+            conic.OriginalControl + offset,
+            conic.OriginalEnd + offset,
+            conic.Weight,
+            conic.SpanCount,
+            conic.IsSmoothJoin,
+            conic.IsStroked),
         LineSegment line => new LineSegment(line.Point + offset, line.IsSmoothJoin, line.IsStroked),
         QuadraticBezierSegment quad => new QuadraticBezierSegment(
             quad.ControlPoint + offset,
@@ -697,6 +716,18 @@ public class SKPathBuilder : SKObject
         };
         for (var index = source.Segments.Count - 1; index >= 0; index--)
         {
+            if (SKPath.TryFindConicGroup(source.Segments, index, out var conicStart, out var conic))
+            {
+                SKPath.AppendConicSpans(
+                    reversed,
+                    conic.OriginalEnd,
+                    conic.OriginalControl,
+                    conic.OriginalStart,
+                    conic.Weight);
+                index = conicStart;
+                continue;
+            }
+
             var end = starts[index];
             reversed.Segments.Add(source.Segments[index] switch
             {

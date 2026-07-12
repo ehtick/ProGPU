@@ -5,10 +5,17 @@ using ProGPU.Vector;
 
 namespace SkiaSharp;
 
-public class SKPath : IDisposable
+public partial class SKPath : SKObject
 {
-    public IntPtr Handle { get; } = SKObjectHandle.Create();
+    public override IntPtr Handle
+    {
+        get => base.Handle;
+        protected set => base.Handle = value;
+    }
+
     private PathFigure? _currentFigure;
+    private Vector2 _currentPoint;
+    private Vector2 _contourStart;
     private SKPathFillType _fillType = SKPathFillType.Winding;
 
     public PathGeometry Geometry { get; } = new();
@@ -24,9 +31,13 @@ public class SKPath : IDisposable
         }
     }
 
-    public SKPath() { }
+    public SKPath()
+        : base(SKObjectHandle.Create(), owns: true)
+    {
+    }
 
     public SKPath(SKPath source)
+        : base(SKObjectHandle.Create(), owns: true)
     {
         ArgumentNullException.ThrowIfNull(source);
         PathFigure? copiedCurrentFigure = null;
@@ -41,6 +52,8 @@ public class SKPath : IDisposable
         }
 
         _currentFigure = copiedCurrentFigure;
+        _currentPoint = source._currentPoint;
+        _contourStart = source._contourStart;
         FillType = source.FillType;
     }
 
@@ -58,6 +71,8 @@ public class SKPath : IDisposable
         {
             path.Geometry.Figures.Add(figure);
         }
+
+        path.RestoreCurrentState();
 
         return path;
     }
@@ -262,15 +277,19 @@ public class SKPath : IDisposable
     {
         if (_currentFigure == null)
         {
-            _currentFigure = new PathFigure(Vector2.Zero);
+            _currentFigure = new PathFigure(_currentPoint);
             Geometry.Figures.Add(_currentFigure);
+            _contourStart = _currentPoint;
         }
     }
 
     public void MoveTo(float x, float y)
     {
-        _currentFigure = new PathFigure(new Vector2(x, y));
+        var point = new Vector2(x, y);
+        _currentFigure = new PathFigure(point);
         Geometry.Figures.Add(_currentFigure);
+        _currentPoint = point;
+        _contourStart = point;
     }
 
     public void MoveTo(SKPoint p) => MoveTo(p.X, p.Y);
@@ -278,7 +297,9 @@ public class SKPath : IDisposable
     public void LineTo(float x, float y)
     {
         EnsureFigure();
-        _currentFigure!.Segments.Add(new LineSegment(new Vector2(x, y)));
+        var point = new Vector2(x, y);
+        _currentFigure!.Segments.Add(new LineSegment(point));
+        _currentPoint = point;
     }
 
     public void LineTo(SKPoint p) => LineTo(p.X, p.Y);
@@ -286,7 +307,9 @@ public class SKPath : IDisposable
     public void QuadTo(float x0, float y0, float x1, float y1)
     {
         EnsureFigure();
-        _currentFigure!.Segments.Add(new QuadraticBezierSegment(new Vector2(x0, y0), new Vector2(x1, y1)));
+        var point = new Vector2(x1, y1);
+        _currentFigure!.Segments.Add(new QuadraticBezierSegment(new Vector2(x0, y0), point));
+        _currentPoint = point;
     }
 
     public void QuadTo(SKPoint p0, SKPoint p1) => QuadTo(p0.X, p0.Y, p1.X, p1.Y);
@@ -294,7 +317,9 @@ public class SKPath : IDisposable
     public void CubicTo(float x0, float y0, float x1, float y1, float x2, float y2)
     {
         EnsureFigure();
-        _currentFigure!.Segments.Add(new CubicBezierSegment(new Vector2(x0, y0), new Vector2(x1, y1), new Vector2(x2, y2)));
+        var point = new Vector2(x2, y2);
+        _currentFigure!.Segments.Add(new CubicBezierSegment(new Vector2(x0, y0), new Vector2(x1, y1), point));
+        _currentPoint = point;
     }
 
     public void CubicTo(SKPoint p0, SKPoint p1, SKPoint p2) => CubicTo(p0.X, p0.Y, p1.X, p1.Y, p2.X, p2.Y);
@@ -302,8 +327,16 @@ public class SKPath : IDisposable
     public void ArcTo(float rx, float ry, float xAxisRotation, SKPathArcSize largeArc, SKPathDirection sweep, float x, float y)
     {
         EnsureFigure();
+        var point = new Vector2(x, y);
+        if (!float.IsFinite(rx) || !float.IsFinite(ry) || MathF.Abs(rx) <= PathEpsilon || MathF.Abs(ry) <= PathEpsilon)
+        {
+            LineTo(x, y);
+            return;
+        }
+
         var sd = sweep == SKPathDirection.Clockwise ? SweepDirection.Clockwise : SweepDirection.Counterclockwise;
-        _currentFigure!.Segments.Add(new ArcSegment(new Vector2(x, y), new Vector2(rx, ry), xAxisRotation, largeArc == SKPathArcSize.Large, sd));
+        _currentFigure!.Segments.Add(new ArcSegment(point, new Vector2(MathF.Abs(rx), MathF.Abs(ry)), xAxisRotation, largeArc == SKPathArcSize.Large, sd));
+        _currentPoint = point;
     }
 
     public void Close()
@@ -311,6 +344,7 @@ public class SKPath : IDisposable
         if (_currentFigure != null)
         {
             _currentFigure.IsClosed = true;
+            _currentPoint = _contourStart;
             _currentFigure = null;
         }
     }
@@ -318,33 +352,24 @@ public class SKPath : IDisposable
     public void Reset()
     {
         Geometry.Figures.Clear();
-        _currentFigure = null;
+        ResetCurrentState();
         FillType = SKPathFillType.Winding;
     }
 
     public void AddCircle(float x, float y, float radius, SKPathDirection direction = SKPathDirection.Clockwise)
     {
-        MoveTo(x + radius, y);
-        ArcTo(radius, radius, 0, SKPathArcSize.Large, direction, x - radius, y);
-        ArcTo(radius, radius, 0, SKPathArcSize.Large, direction, x + radius, y);
-        Close();
+        AddOval(new SKRect(x - radius, y - radius, x + radius, y + radius), direction);
     }
 
     public void AddOval(SKRect rect, SKPathDirection direction = SKPathDirection.Clockwise)
     {
-        var radiusX = rect.Width / 2f;
-        var radiusY = rect.Height / 2f;
-        var centerX = rect.MidX;
-        var centerY = rect.MidY;
-        MoveTo(centerX + radiusX, centerY);
-        ArcTo(radiusX, radiusY, 0f, SKPathArcSize.Large, direction, centerX - radiusX, centerY);
-        ArcTo(radiusX, radiusY, 0f, SKPathArcSize.Large, direction, centerX + radiusX, centerY);
+        AppendOvalArc(rect, 0f, direction == SKPathDirection.Clockwise ? 360f : -360f, forceMoveTo: true);
         Close();
     }
 
     public void ConicTo(SKPoint control, SKPoint end, float weight)
     {
-        QuadTo(control, end);
+        ConicTo(control.X, control.Y, end.X, end.Y, weight);
     }
 
     public bool Contains(float x, float y)
@@ -368,98 +393,30 @@ public class SKPath : IDisposable
             : contains;
     }
 
-    public SKPathRawIterator CreateIterator(bool forceClose)
-    {
-        return new SKPathRawIterator(this, forceClose);
-    }
+    public Iterator CreateIterator(bool forceClose) => new(this, forceClose);
 
     public void AddRect(SKRect rect, SKPathDirection direction = SKPathDirection.Clockwise)
-    {
-        if (direction == SKPathDirection.Clockwise)
-        {
-            MoveTo(rect.Left, rect.Top);
-            LineTo(rect.Right, rect.Top);
-            LineTo(rect.Right, rect.Bottom);
-            LineTo(rect.Left, rect.Bottom);
-        }
-        else
-        {
-            MoveTo(rect.Left, rect.Top);
-            LineTo(rect.Left, rect.Bottom);
-            LineTo(rect.Right, rect.Bottom);
-            LineTo(rect.Right, rect.Top);
-        }
-        Close();
-    }
+        => AddRect(rect, direction, 0);
 
     public void AddRoundRect(SKRoundRect rect, SKPathDirection direction = SKPathDirection.Clockwise)
-    {
-        var r = rect.Rect;
-        var radii = rect.CornerRadii;
-
-        if (direction == SKPathDirection.Clockwise)
-        {
-            MoveTo(r.Left + radii[0].X, r.Top);
-            LineTo(r.Right - radii[1].X, r.Top);
-            ArcTo(radii[1].X, radii[1].Y, 0f, SKPathArcSize.Small, SKPathDirection.Clockwise, r.Right, r.Top + radii[1].Y);
-            LineTo(r.Right, r.Bottom - radii[2].Y);
-            ArcTo(radii[2].X, radii[2].Y, 0f, SKPathArcSize.Small, SKPathDirection.Clockwise, r.Right - radii[2].X, r.Bottom);
-            LineTo(r.Left + radii[3].X, r.Bottom);
-            ArcTo(radii[3].X, radii[3].Y, 0f, SKPathArcSize.Small, SKPathDirection.Clockwise, r.Left, r.Bottom - radii[3].Y);
-            LineTo(r.Left, r.Top + radii[0].Y);
-            ArcTo(radii[0].X, radii[0].Y, 0f, SKPathArcSize.Small, SKPathDirection.Clockwise, r.Left + radii[0].X, r.Top);
-        }
-        else
-        {
-            MoveTo(r.Left, r.Top + radii[0].Y);
-            LineTo(r.Left, r.Bottom - radii[3].Y);
-            ArcTo(radii[3].X, radii[3].Y, 0f, SKPathArcSize.Small, SKPathDirection.CounterClockwise, r.Left + radii[3].X, r.Bottom);
-            LineTo(r.Right - radii[2].X, r.Bottom);
-            ArcTo(radii[2].X, radii[2].Y, 0f, SKPathArcSize.Small, SKPathDirection.CounterClockwise, r.Right, r.Bottom - radii[2].Y);
-            LineTo(r.Right, r.Top + radii[1].Y);
-            ArcTo(radii[1].X, radii[1].Y, 0f, SKPathArcSize.Small, SKPathDirection.CounterClockwise, r.Right - radii[1].X, r.Top);
-            LineTo(r.Left + radii[0].X, r.Top);
-            ArcTo(radii[0].X, radii[0].Y, 0f, SKPathArcSize.Small, SKPathDirection.CounterClockwise, r.Left, r.Top + radii[0].Y);
-        }
-        Close();
-    }
+        => AddRoundRect(
+            rect,
+            direction,
+            direction == SKPathDirection.Clockwise ? 6u : 7u);
 
     public void AddRoundRect(SKRect rect, float rx, float ry, SKPathDirection direction = SKPathDirection.Clockwise)
     {
         AddRoundRect(new SKRoundRect(rect, rx, ry), direction);
     }
 
-    public void AddPath(SKPath other)
-    {
-        foreach (var fig in other.Geometry.Figures)
-        {
-            Geometry.Figures.Add(CloneFigure(fig, Vector2.Zero));
-        }
-        _currentFigure = null;
-    }
-
-    public void AddPath(SKPath other, float x, float y)
-    {
-        var offset = new Vector2(x, y);
-        foreach (var fig in other.Geometry.Figures)
-        {
-            Geometry.Figures.Add(CloneFigure(fig, offset));
-        }
-        _currentFigure = null;
-    }
-
-    public void AddPath(SKPath other, float x, float y, SKPathAddMode mode)
+    public void AddPath(
+        SKPath other,
+        float x,
+        float y,
+        SKPathAddMode mode = SKPathAddMode.Append)
     {
         ArgumentNullException.ThrowIfNull(other);
-        if (mode == SKPathAddMode.Extend &&
-            _currentFigure != null &&
-            other.Geometry.Figures.Count > 0)
-        {
-            var start = other.Geometry.Figures[0].StartPoint + new Vector2(x, y);
-            _currentFigure.Segments.Add(new LineSegment(start));
-        }
-
-        AddPath(other, x, y);
+        AddPathCore(other, new Vector2(x, y), mode);
     }
 
     public void AddPath(SKPath other, SKPathAddMode mode = SKPathAddMode.Append) =>
@@ -497,7 +454,7 @@ public class SKPath : IDisposable
         AddPoly(points.AsSpan(), close);
     }
 
-    public SKPathRawIterator CreateRawIterator() => new(this, forceClose: false);
+    public RawIterator CreateRawIterator() => new(this);
 
     private static PathFigure CloneFigure(PathFigure figure, Vector2 offset)
     {
@@ -527,6 +484,15 @@ public class SKPath : IDisposable
                 {
                     sourceCurrentPoint = line.Point;
                     line.Point = Vector2.Transform(line.Point, m);
+                }
+                else if (seg is RationalConicQuadraticSegment conic)
+                {
+                    sourceCurrentPoint = conic.Point;
+                    conic.ControlPoint = Vector2.Transform(conic.ControlPoint, m);
+                    conic.Point = Vector2.Transform(conic.Point, m);
+                    conic.OriginalStart = Vector2.Transform(conic.OriginalStart, m);
+                    conic.OriginalControl = Vector2.Transform(conic.OriginalControl, m);
+                    conic.OriginalEnd = Vector2.Transform(conic.OriginalEnd, m);
                 }
                 else if (seg is QuadraticBezierSegment quad)
                 {
@@ -565,13 +531,23 @@ public class SKPath : IDisposable
                 }
             }
         }
-        _currentFigure = null;
+        RestoreCurrentState();
     }
 
     private static PathSegment CloneSegment(PathSegment segment, Vector2 offset)
     {
         return segment switch
         {
+            RationalConicQuadraticSegment conic => new RationalConicQuadraticSegment(
+                conic.ControlPoint + offset,
+                conic.Point + offset,
+                conic.OriginalStart + offset,
+                conic.OriginalControl + offset,
+                conic.OriginalEnd + offset,
+                conic.Weight,
+                conic.SpanCount,
+                conic.IsSmoothJoin,
+                conic.IsStroked),
             LineSegment line => new LineSegment(
                 line.Point + offset,
                 line.IsSmoothJoin,
@@ -607,15 +583,11 @@ public class SKPath : IDisposable
         return result;
     }
 
-    public static SKPath Op(SKPath first, SKPath second, SKPathOp op)
+    public bool Op(SKPath other, SKPathOp op, SKPath result)
     {
-        return first.Op(second, op);
-    }
-
-    public static bool Op(SKPath first, SKPath second, SKPathOp op, SKPath result)
-    {
-        if (result == null) return false;
-        var solvedGeometry = PathOpGeometrySolver.Combine(first.Geometry, second.Geometry, (int)op);
+        ArgumentNullException.ThrowIfNull(other);
+        ArgumentNullException.ThrowIfNull(result);
+        var solvedGeometry = PathOpGeometrySolver.Combine(Geometry, other.Geometry, (int)op);
         ApplySolvedGeometry(result, solvedGeometry);
         return true;
     }
@@ -629,7 +601,7 @@ public class SKPath : IDisposable
             result.Geometry.Figures.Add(fig);
         }
 
-        result._currentFigure = null;
+        result.RestoreCurrentState();
     }
 
     private static SKPathFillType ToSkPathFillType(FillRule fillRule)
@@ -638,9 +610,6 @@ public class SKPath : IDisposable
             ? SKPathFillType.EvenOdd
             : SKPathFillType.Winding;
     }
-
-
-    public void Dispose() { }
 }
 
 public class SKRoundRect : IDisposable
@@ -1089,13 +1058,13 @@ public enum SKPathVerb
     Done = 6
 }
 
-public sealed class SKPathRawIterator : IDisposable
+internal sealed class LegacySKPathRawIterator : IDisposable
 {
     private readonly List<PathOperation> _operations = new();
     private int _index;
     private float _conicWeight = 1f;
 
-    internal SKPathRawIterator(SKPath path, bool forceClose)
+    internal LegacySKPathRawIterator(SKPath path, bool forceClose)
     {
         foreach (var figure in path.Geometry.Figures)
         {
