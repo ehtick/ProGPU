@@ -1927,6 +1927,75 @@ public class SKCanvas : IDisposable
         DrawPath(path, paint);
     }
 
+    public void DrawPoints(SKPointMode mode, SKPoint[] points, SKPaint paint)
+    {
+        ArgumentNullException.ThrowIfNull(paint);
+        ArgumentNullException.ThrowIfNull(points);
+        DrawPointsCore(mode, points, paint);
+    }
+
+    private void DrawPointsCore(SKPointMode mode, ReadOnlySpan<SKPoint> points, SKPaint paint)
+    {
+        if (points.Length == 0)
+        {
+            return;
+        }
+
+        using var path = new SKPath();
+        switch (mode)
+        {
+            case SKPointMode.Points:
+                foreach (var point in points)
+                {
+                    path.MoveTo(point);
+                    path.LineTo(point);
+                }
+                break;
+            case SKPointMode.Lines:
+                for (var index = 0; index + 1 < points.Length; index += 2)
+                {
+                    path.MoveTo(points[index]);
+                    path.LineTo(points[index + 1]);
+                }
+                break;
+            case SKPointMode.Polygon:
+                path.MoveTo(points[0]);
+                for (var index = 1; index < points.Length; index++)
+                {
+                    path.LineTo(points[index]);
+                }
+                break;
+            default:
+                return;
+        }
+
+        using var strokePaint = paint.Clone();
+        strokePaint.Style = SKPaintStyle.Stroke;
+        DrawPath(path, strokePaint);
+    }
+
+    public void DrawPoint(SKPoint point, SKPaint paint) => DrawPoint(point.X, point.Y, paint);
+
+    public void DrawPoint(float x, float y, SKPaint paint)
+    {
+        ArgumentNullException.ThrowIfNull(paint);
+        Span<SKPoint> point = stackalloc SKPoint[1];
+        point[0] = new SKPoint(x, y);
+        DrawPointsCore(SKPointMode.Points, point, paint);
+    }
+
+    public void DrawPoint(SKPoint point, SKColor color) => DrawPoint(point.X, point.Y, color);
+
+    public void DrawPoint(float x, float y, SKColor color)
+    {
+        using var paint = new SKPaint
+        {
+            Color = color,
+            BlendMode = SKBlendMode.Src,
+        };
+        DrawPoint(x, y, paint);
+    }
+
     public void DrawRect(float x, float y, float w, float h, SKPaint paint)
     {
         var rect = new SKRect(x, y, x + w, y + h);

@@ -204,6 +204,13 @@ public enum SKPathOp
     ReverseDifference = 4,
 }
 
+public enum SKPointMode
+{
+    Points,
+    Lines,
+    Polygon,
+}
+
 public enum SKPathFillType
 {
     Winding = 0,
