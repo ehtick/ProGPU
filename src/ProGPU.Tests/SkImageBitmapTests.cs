@@ -65,12 +65,12 @@ public sealed class SkImageBitmapTests
             bitmap.InstallPixels(info, pixels, rowBytes: 12);
 
             Assert.Equal(12, bitmap.RowBytes);
-            Assert.Equal(24, bitmap.BytesSize);
+            Assert.Equal(20, bitmap.ByteCount);
             Assert.Equal(12, bitmap.PeekPixels().RowBytes);
 
             using var copy = bitmap.Copy();
             Assert.Equal(8, copy.RowBytes);
-            Assert.Equal(16, copy.BytesSize);
+            Assert.Equal(16, copy.ByteCount);
             Assert.Equal(new byte[]
             {
                 1, 2, 3, 4, 5, 6, 7, 8,

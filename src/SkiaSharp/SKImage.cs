@@ -233,7 +233,7 @@ public class SKImage : IDisposable
     public void ScalePixels(SKPixmap dst, SKSamplingOptions sampling)
     {
         ArgumentNullException.ThrowIfNull(dst);
-        if (dst.Pixels == IntPtr.Zero)
+        if (dst.GetPixels() == IntPtr.Zero)
         {
             throw new ArgumentException("Destination pixmap must provide a pixel buffer.", nameof(dst));
         }
@@ -259,7 +259,7 @@ public class SKImage : IDisposable
         {
             fixed (byte* srcBase = src)
             {
-                byte* dstBase = (byte*)dst.Pixels;
+                byte* dstBase = (byte*)dst.GetPixels();
                 for (int y = 0; y < dst.Info.Height; y++)
                 {
                     int srcY = Math.Clamp((int)((long)y * Height / dst.Info.Height), 0, Height - 1);
@@ -525,17 +525,136 @@ public class SKImage : IDisposable
     }
 }
 
-public class SKPixmap
+public class SKPixmap : IDisposable
 {
-    public SKImageInfo Info { get; }
-    public IntPtr Pixels { get; }
-    public int RowBytes { get; }
+    private SKImageInfo _info;
+    private IntPtr _pixels;
+    private int _rowBytes;
+    private object? _pixelSource;
+
+    public SKImageInfo Info => _info;
+    public int Width => _info.Width;
+    public int Height => _info.Height;
+    public SKSizeI Size => _info.Size;
+    public SKRectI Rect => _info.Rect;
+    public SKColorType ColorType => _info.ColorType;
+    public SKAlphaType AlphaType => _info.AlphaType;
+    public SKColorSpace? ColorSpace => _info.ColorSpace;
+    public int BytesPerPixel => _info.BytesPerPixel;
+    public int BitShiftPerPixel => _info.BitShiftPerPixel;
+    public int RowBytes => _rowBytes;
+    public int BytesSize => _info.BytesSize;
+    public long BytesSize64 => _info.BytesSize64;
+
+    internal object? PixelSource => _pixelSource;
+
+    public SKPixmap()
+    {
+    }
+
+    public SKPixmap(SKImageInfo info, IntPtr pixels)
+        : this(info, pixels, info.RowBytes)
+    {
+    }
 
     public SKPixmap(SKImageInfo info, IntPtr pixels, int rowBytes)
     {
-        Info = info;
-        Pixels = pixels;
-        RowBytes = rowBytes;
+        Reset(info, pixels, rowBytes);
+    }
+
+    public void Reset()
+    {
+        _info = default;
+        _pixels = IntPtr.Zero;
+        _rowBytes = 0;
+        _pixelSource = null;
+    }
+
+    public void Reset(SKImageInfo info, IntPtr pixels, int rowBytes)
+    {
+        _info = info;
+        _pixels = pixels;
+        _rowBytes = rowBytes;
+        _pixelSource = null;
+    }
+
+    internal void SetPixelSource(object source) => _pixelSource = source;
+
+    public IntPtr GetPixels() => _pixels;
+
+    public IntPtr GetPixels(int x, int y)
+    {
+        if (_info.IsEmpty || _info.BytesPerPixel <= 0)
+        {
+            return _pixels;
+        }
+
+        ValidateCoordinates(x, y);
+        return IntPtr.Add(_pixels, checked(y * _rowBytes + x * _info.BytesPerPixel));
+    }
+
+    public Span<byte> GetPixelSpan() => GetPixelSpan<byte>();
+
+    public Span<byte> GetPixelSpan(int x, int y) => GetPixelSpan<byte>(x, y);
+
+    public Span<T> GetPixelSpan<T>() where T : unmanaged => GetPixelSpan<T>(0, 0);
+
+    public unsafe Span<T> GetPixelSpan<T>(int x, int y) where T : unmanaged
+    {
+        if (_info.IsEmpty || _info.BytesPerPixel <= 0 || _pixels == IntPtr.Zero)
+        {
+            return Span<T>.Empty;
+        }
+
+        ValidateCoordinates(x, y);
+        int length;
+        int offset;
+        if (typeof(T) == typeof(byte))
+        {
+            length = SKBitmap.ComputeByteCount(_info, _rowBytes);
+            offset = checked(y * _rowBytes + x * _info.BytesPerPixel);
+        }
+        else
+        {
+            int elementSize = sizeof(T);
+            if (_info.BytesPerPixel != elementSize)
+            {
+                throw new ArgumentException(
+                    $"Size of T ({elementSize}) is not the same as the size of each pixel ({_info.BytesPerPixel}).",
+                    nameof(T));
+            }
+
+            if (_info.Height > 1 && _rowBytes % elementSize != 0)
+            {
+                throw new ArgumentException(
+                    $"The row stride ({_rowBytes}) is not a multiple of the size of each pixel ({elementSize}).");
+            }
+
+            int elementsPerRow = _rowBytes / elementSize;
+            length = checked((_info.Height - 1) * elementsPerRow + _info.Width);
+            offset = checked(y * elementsPerRow + x);
+        }
+
+        return new Span<T>(_pixels.ToPointer(), length).Slice(offset);
+    }
+
+    public void Dispose()
+    {
+        Reset();
+        GC.SuppressFinalize(this);
+    }
+
+    private void ValidateCoordinates(int x, int y)
+    {
+        if ((uint)x >= (uint)_info.Width)
+        {
+            throw new ArgumentOutOfRangeException(nameof(x));
+        }
+
+        if ((uint)y >= (uint)_info.Height)
+        {
+            throw new ArgumentOutOfRangeException(nameof(y));
+        }
     }
 }
 
@@ -551,14 +670,24 @@ public class SKBitmap : IDisposable
     private SKImageInfo _info;
     private SKBitmapReleaseDelegate? _releaseDelegate;
     private object? _releaseContext;
+    private object? _pixelOwner;
+    private bool _isImmutable;
 
     public int Width => _width;
     public int Height => _height;
     public SKImageInfo Info => _info;
     public SKColorType ColorType => _info.ColorType;
     public SKAlphaType AlphaType => _info.AlphaType;
+    public SKColorSpace? ColorSpace => _info.ColorSpace;
+    public int BytesPerPixel => _info.BytesPerPixel;
     public int RowBytes => _rowBytes;
-    public int BytesSize => RowBytes * _height;
+    public int ByteCount => ComputeByteCount(_info, _rowBytes);
+    public byte[] Bytes => GetPixelSpan().ToArray();
+    public bool ReadyToDraw => !IsEmpty && !IsNull;
+    public bool IsEmpty => _info.IsEmpty;
+    public bool IsNull => _pixels == IntPtr.Zero;
+    public bool DrawsNothing => IsEmpty || IsNull;
+    public bool IsImmutable => _isImmutable;
 
     public SKBitmap()
     {
@@ -568,34 +697,62 @@ public class SKBitmap : IDisposable
     }
 
     public SKBitmap(int width, int height, bool isOpaque = false)
+        : this(new SKImageInfo(
+            width,
+            height,
+            SKImageInfo.PlatformColorType,
+            isOpaque ? SKAlphaType.Opaque : SKAlphaType.Premul))
     {
-        _width = width;
-        _height = height;
-        _info = new SKImageInfo(width, height, SKColorType.Rgba8888, isOpaque ? SKAlphaType.Opaque : SKAlphaType.Premul);
-        _rowBytes = _info.RowBytes;
-        _pixels = Marshal.AllocHGlobal(BytesSize);
-        _ownsPixels = true;
-        // Zero-initialize
-        byte[] zero = new byte[BytesSize];
-        Marshal.Copy(zero, 0, _pixels, BytesSize);
     }
 
     public SKBitmap(SKImageInfo info)
+        : this(info, info.RowBytes)
     {
-        _width = info.Width;
-        _height = info.Height;
-        _info = info;
-        _rowBytes = _info.RowBytes;
-        _pixels = Marshal.AllocHGlobal(BytesSize);
-        _ownsPixels = true;
-        // Zero-initialize
-        byte[] zero = new byte[BytesSize];
-        Marshal.Copy(zero, 0, _pixels, BytesSize);
     }
 
     public SKBitmap(int width, int height, SKColorType colorType, SKAlphaType alphaType)
         : this(new SKImageInfo(width, height, colorType, alphaType))
     {
+    }
+
+    public SKBitmap(
+        int width,
+        int height,
+        SKColorType colorType,
+        SKAlphaType alphaType,
+        SKColorSpace? colorSpace)
+        : this(new SKImageInfo(width, height, colorType, alphaType, colorSpace))
+    {
+    }
+
+    public SKBitmap(SKImageInfo info, int rowBytes)
+        : this()
+    {
+        if (!TryAllocPixels(info, rowBytes))
+        {
+            throw new Exception("Unable to allocate pixels for the bitmap.");
+        }
+    }
+
+    public SKBitmap(SKImageInfo info, SKBitmapAllocFlags flags)
+        : this()
+    {
+        if (!TryAllocPixels(info, flags))
+        {
+            throw new Exception("Unable to allocate pixels for the bitmap.");
+        }
+    }
+
+    ~SKBitmap()
+    {
+        try
+        {
+            ReleasePixels();
+        }
+        catch
+        {
+            // Release callbacks must not terminate the process from the finalizer thread.
+        }
     }
 
     internal void AttachCanvas(SKCanvas canvas)
@@ -636,7 +793,107 @@ public class SKBitmap : IDisposable
         canvas?.Flush();
     }
 
-    public IntPtr GetPixels() => _pixels;
+    public bool TryAllocPixels(SKImageInfo info) => TryAllocPixels(info, info.RowBytes);
+
+    public bool TryAllocPixels(SKImageInfo info, SKBitmapAllocFlags flags)
+    {
+        if (!TryAllocPixels(info, info.RowBytes))
+        {
+            return false;
+        }
+
+        if ((flags & SKBitmapAllocFlags.ZeroPixels) != 0 && _pixels != IntPtr.Zero)
+        {
+            GetPixelSpan().Clear();
+        }
+
+        return true;
+    }
+
+    public bool TryAllocPixels(SKImageInfo info, int rowBytes)
+    {
+        if (!TryValidateStorage(info, rowBytes, out int byteCount))
+        {
+            return false;
+        }
+
+        FlushAttachedCanvas();
+        ReleasePixels();
+        SetMetadata(info, rowBytes);
+        _isImmutable = false;
+        if (byteCount == 0)
+        {
+            return true;
+        }
+
+        try
+        {
+            _pixels = Marshal.AllocHGlobal(byteCount);
+            _ownsPixels = true;
+            GetPixelSpan().Clear();
+            return true;
+        }
+        catch (OutOfMemoryException)
+        {
+            _pixels = IntPtr.Zero;
+            _ownsPixels = false;
+            return false;
+        }
+    }
+
+    public void Reset()
+    {
+        FlushAttachedCanvas();
+        ReleasePixels();
+        _info = default;
+        _width = 0;
+        _height = 0;
+        _rowBytes = 0;
+        _isImmutable = false;
+    }
+
+    public IntPtr GetPixels() => GetPixels(out _);
+
+    public IntPtr GetPixels(out IntPtr length)
+    {
+        length = (IntPtr)ByteCount;
+        return _pixels;
+    }
+
+    public unsafe Span<byte> GetPixelSpan() =>
+        _pixels == IntPtr.Zero || ByteCount == 0
+            ? Span<byte>.Empty
+            : new Span<byte>(_pixels.ToPointer(), ByteCount);
+
+    public Span<byte> GetPixelSpan(int x, int y)
+    {
+        if (_info.IsEmpty || _info.BytesPerPixel <= 0)
+        {
+            return GetPixelSpan();
+        }
+
+        if ((uint)x >= (uint)_width)
+        {
+            throw new ArgumentOutOfRangeException(nameof(x));
+        }
+
+        if ((uint)y >= (uint)_height)
+        {
+            throw new ArgumentOutOfRangeException(nameof(y));
+        }
+
+        int offset = checked(y * RowBytes + x * _info.BytesPerPixel);
+        return GetPixelSpan().Slice(offset);
+    }
+
+    public void SetPixels(IntPtr pixels)
+    {
+        FlushAttachedCanvas();
+        ReleasePixels();
+        _pixels = pixels;
+        _ownsPixels = false;
+        _isImmutable = false;
+    }
 
     public IntPtr GetAddress(int x, int y)
     {
@@ -714,34 +971,52 @@ public class SKBitmap : IDisposable
         }
     }
 
-    public void InstallPixels(SKImageInfo info, IntPtr pixels, int rowBytes)
-    {
-        int actualRowBytes = rowBytes > 0 ? rowBytes : info.RowBytes;
-        int minRowBytes = info.RowBytes;
-        if (info.Height > 0 && actualRowBytes < minRowBytes)
-        {
-            throw new ArgumentException("Row bytes must be large enough for one bitmap row.", nameof(rowBytes));
-        }
+    public bool InstallPixels(SKImageInfo info, IntPtr pixels) =>
+        InstallPixels(info, pixels, info.RowBytes, null!, null!);
 
-        ReleasePixels();
-        _width = info.Width;
-        _height = info.Height;
-        _info = info;
-        _rowBytes = actualRowBytes;
-        _pixels = pixels;
-        _ownsPixels = false;
-    }
+    public bool InstallPixels(SKImageInfo info, IntPtr pixels, int rowBytes) =>
+        InstallPixels(info, pixels, rowBytes, null!, null!);
 
-    public void InstallPixels(
+    public bool InstallPixels(
+        SKImageInfo info,
+        IntPtr pixels,
+        int rowBytes,
+        SKBitmapReleaseDelegate releaseProc) =>
+        InstallPixels(info, pixels, rowBytes, releaseProc, null!);
+
+    public bool InstallPixels(
         SKImageInfo info,
         IntPtr pixels,
         int rowBytes,
         SKBitmapReleaseDelegate releaseProc,
         object context)
     {
-        InstallPixels(info, pixels, rowBytes);
+        if (!TryValidateStorage(info, rowBytes, out _))
+        {
+            return false;
+        }
+
+        FlushAttachedCanvas();
+        ReleasePixels();
+        SetMetadata(info, rowBytes);
+        _pixels = pixels;
+        _ownsPixels = false;
         _releaseDelegate = releaseProc;
         _releaseContext = context;
+        _isImmutable = false;
+        return true;
+    }
+
+    public bool InstallPixels(SKPixmap pixmap)
+    {
+        ArgumentNullException.ThrowIfNull(pixmap);
+        if (!InstallPixels(pixmap.Info, pixmap.GetPixels(), pixmap.RowBytes))
+        {
+            return false;
+        }
+
+        _pixelOwner = pixmap.PixelSource ?? pixmap;
+        return true;
     }
 
     public void Erase(SKColor color)
@@ -792,9 +1067,7 @@ public class SKBitmap : IDisposable
         }
     }
 
-    public void NotifyPixelsChanged()
-    {
-    }
+    public void NotifyPixelsChanged() { }
 
     public SKBitmap Copy()
     {
@@ -803,7 +1076,7 @@ public class SKBitmap : IDisposable
         return copy;
     }
 
-    public void SetImmutable() { }
+    public void SetImmutable() => _isImmutable = true;
 
     public bool CanCopyTo(SKColorType type) =>
         type is SKColorType.Rgba8888 or SKColorType.Bgra8888 or SKColorType.Rgb565;
@@ -910,7 +1183,28 @@ public class SKBitmap : IDisposable
 
     public SKPixmap PeekPixels()
     {
-        return new SKPixmap(_info, _pixels, RowBytes);
+        var pixmap = new SKPixmap();
+        if (PeekPixels(pixmap))
+        {
+            return pixmap;
+        }
+
+        pixmap.Dispose();
+        return null!;
+    }
+
+    public bool PeekPixels(SKPixmap pixmap)
+    {
+        ArgumentNullException.ThrowIfNull(pixmap);
+        if (!ReadyToDraw)
+        {
+            pixmap.Reset();
+            return false;
+        }
+
+        pixmap.Reset(_info, _pixels, _rowBytes);
+        pixmap.SetPixelSource(this);
+        return true;
     }
 
     public SKBitmap Resize(SKImageInfo info, SKSamplingOptions sampling)
@@ -1315,31 +1609,87 @@ public class SKBitmap : IDisposable
             : (byte)Math.Min(255, (color * 255 + alpha / 2) / alpha);
     }
 
+    internal static int ComputeByteCount(SKImageInfo info, int rowBytes)
+    {
+        if (info.Width <= 0 || info.Height <= 0 || info.BytesPerPixel <= 0 || rowBytes <= 0)
+        {
+            return 0;
+        }
+
+        return checked((info.Height - 1) * rowBytes + info.RowBytes);
+    }
+
+    private static bool TryValidateStorage(SKImageInfo info, int rowBytes, out int byteCount)
+    {
+        byteCount = 0;
+        if (info.Width < 0 || info.Height < 0 || rowBytes < 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            int minimumRowBytes = info.RowBytes;
+            if (info.Height > 0 && rowBytes < minimumRowBytes)
+            {
+                return false;
+            }
+
+            byteCount = ComputeByteCount(info, rowBytes);
+            return true;
+        }
+        catch (OverflowException)
+        {
+            return false;
+        }
+    }
+
+    private void SetMetadata(SKImageInfo info, int rowBytes)
+    {
+        _info = info;
+        _width = info.Width;
+        _height = info.Height;
+        _rowBytes = rowBytes;
+    }
+
     public void Dispose()
     {
-        ReleasePixels();
+        try
+        {
+            ReleasePixels();
+        }
+        finally
+        {
+            GC.SuppressFinalize(this);
+        }
     }
 
     private void ReleasePixels()
     {
-        if (_pixels == IntPtr.Zero)
-        {
-            return;
-        }
-
-        if (_ownsPixels)
-        {
-            Marshal.FreeHGlobal(_pixels);
-        }
-        else if (_releaseDelegate != null && _releaseContext != null)
-        {
-            _releaseDelegate(_pixels, _releaseContext);
-        }
+        var pixels = _pixels;
+        var ownsPixels = _ownsPixels;
+        var releaseDelegate = _releaseDelegate;
+        var releaseContext = _releaseContext;
 
         _pixels = IntPtr.Zero;
         _ownsPixels = false;
         _releaseDelegate = null;
         _releaseContext = null;
+        _pixelOwner = null;
+
+        if (pixels == IntPtr.Zero)
+        {
+            return;
+        }
+
+        if (ownsPixels)
+        {
+            Marshal.FreeHGlobal(pixels);
+        }
+        else
+        {
+            releaseDelegate?.Invoke(pixels, releaseContext!);
+        }
     }
 }
 
