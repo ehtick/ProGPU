@@ -91,6 +91,8 @@ CPU bitmap resizing follows Skia's pixel-center mapping and alpha representation
 
 Legacy `SKPath` exposes the complete SkiaSharp 4.148 path, primitive-query, conversion, iterator, and operation-builder surface while retaining ProGPU's public `PathGeometry` bridge. Raw and force-close iterators construct a CPU operation view in `O(N + Q)` time and storage for `N` retained segments and `Q` emitted quarter arcs. Consecutive compatible analytic arcs are coalesced before that view is split at exact 90-degree boundaries, so a retained two-segment oval reports Skia's four rational conics and a 200-degree arc reports 90/90/20-degree conics without increasing render-time geometry. Rational conics keep one internal marker over their 16 midpoint-matched render spans, preserving one conic verb and its weight across clone, transform, offset, extend, and reversal. Point, verb, segment-mask, convexity, and primitive recognition are `O(N)` CPU queries; recursive `ConvertConicToQuads` with subdivision power `p` uses `O(2^p)` time and output storage. Path construction, topology queries, SVG serialization, iterator creation, and fill-rule conversion do not initialize WebGPU.
 
+`SKRoundRect` keeps normalized bounds, four corner radii, and the derived empty/rectangle/oval/simple/nine-patch/complex classification as retained CPU geometry. Construction applies Skia's CSS corner-overlap rule: it finds the minimum side-to-radius ratio in double precision, scales every radius by that common factor, and makes bounded ULP corrections so adjacent float radii never exceed a side. Containment evaluates at most four ellipse equations. Axis-preserving transforms map the eight tangent points and four corner controls, then reconstruct radii from the mapped contour; this preserves corner ordering, mirrors, quarter turns, and native floating-point subtraction while rejecting skew, arbitrary rotation, and perspective. Setters, classification, validation, containment, inset/outset, offset, and transform use fixed `O(1)` work and storage without WebGPU initialization. The public `Radii` ownership boundary returns one four-point copy, while renderer access, `GetRadii`, classification, validation, and transform use the retained array or stack spans and allocate nothing.
+
 `SKPoint`, `SKSize`, `SKSizeI`, `SKRect`, and `SKRectI` implement the complete SkiaSharp 4.148 value surfaces as CPU-only `O(1)` operations with no heap or GPU state. Point normalization, distance, reflection, arithmetic, mutation, equality, and formatting preserve native float behavior, including NaN normalization of the zero vector. Size conversion uses checked truncation, and integer rectangle floor/ceiling modes round each edge inward or outward according to contour direction. Float and integer rectangles retain SkiaSharp's half-open point containment, inclusive versus strict intersection distinction, degenerate edge intersections, standardized coordinates, centered aspect fit/fill, and exact empty/union semantics. Point-based `SKCanvas.DrawLine` and `DrawCircle` overloads add no adaptation allocation or duplicate rendering path; they forward directly to the established scalar implementations.
 
 `SKColor` and `SKColorF` are immutable CPU value types with the complete SkiaSharp 4.148 packed-channel, parsing, mutation-copy, equality, clamp, HSL, and HSV surfaces. Conversion uses the native `0.001` chroma epsilon, the precomputed float `1 / 255` byte scale, and clamped nearest-byte rounding, preserving native one-ULP float results and packed ARGB output. Every operation has fixed `O(1)` time and storage, allocates no render resources, and does not initialize WebGPU. `SKColors.Empty` aliases the packed zero value while the named color table remains static immutable data.
@@ -322,6 +324,20 @@ public interface ILayoutNode
 ```
 Visual tree mutation methods (`ContainerVisual.AddChild`, `RemoveChild`, `ClearChildren`) check if `this` implements `ILayoutNode`. If so, they invoke `InvalidateMeasure()`, ensuring that any changes in visual tree structure automatically mark the layout path dirty without explicit parent layout references.
 
+#### Retained-Scene Invalidation and Text-Page Responsiveness
+
+Layout validity and pixel validity are separate. A layout property can alter clipping, alignment, padding, or descendant placement even when the final `Size` and `Offset` happen to compare equal. The `LayoutNode` setters therefore invalidate measure or arrange **and** call visual `Invalidate()`, which advances `ChangeVersion` to the compiled-scene root. This prevents a retained frame from displaying stale text or geometry after a layout-only mutation.
+
+Text interaction uses the narrowest valid invalidation path. Hyperlink hover in `RichTextBlock` and `MarkdownTextBlock` dirties only the render-command cache and visual pixels; it does not discard shaped text or full document layout. Single-column Markdown measured with infinite height performs one engine layout instead of a measurement layout followed by an identical second pass, while multi-column measurement reuses scratch lists.
+
+Page navigation keeps stable ownership boundaries:
+
+- Replacing `NavigationView.Content` changes only the `SplitView` content child. The pane and all menu-item visuals remain parented, preserving their layout, theme resources, and cached layer.
+- `SplitView` removes and inserts only the child that changed instead of clearing and rebuilding both children.
+- Reparenting a dependency-object subtree recursively reapplies theme state only when the resolved theme or theme family actually changes. Moving a cached page between parents with the same theme therefore performs an O(H) ancestor-context comparison for tree height H instead of O(N) invalidation over the page subtree.
+
+Large indexed pages remain virtual from source to pixels. `ItemsControl` retains an `IList` source rather than eagerly copying and boxing every item. Attaching a 65,535-glyph source is O(1) time and storage; `UniformVirtualizingGridPanel` realizes and binds only V visible/overscan items in O(V), reuses its recycler-index buffer, and does not allocate a binding closure on each viewport update. The glyph browser represents indices through a read-only computed list, so it allocates neither a 65,535-entry source array nor an internal duplicate. `FontIcon` records the cached raw outline with a public `DrawPath` transform, preserving line, quadratic, cubic, and arc segments without allocating a transformed path per cell or render.
+
 ---
 
 ### 2. High-Performance Struct Equality and Comparison
@@ -420,12 +436,12 @@ This ensures that the mesh compiler achieves zero-allocation dynamic buffer cons
 
 ---
 
-### 6. Lightweight Struct-Based Benchmarks & Path Batching
+### 6. Retained MotionMark Geometry and Frame Scheduling
 
 In traditional UI and vector engines, every active visual element in an animation loop is modeled as a heap-allocated class object. During high-count stress tests (such as the MotionMark benchmark rendering thousands of dynamically moving curves), these allocations put immense pressure on the .NET Garbage Collector (GC), leading to periodic micro-stutters and frame drops.
 
-ProGPU eliminates this overhead using lightweight structs and batched pipeline groupings:
-- **Stack-Allocated Elements**: Animated shapes are modeled using compact, stack-allocated `Element` and `GridPoint` value-type structs instead of class objects:
+ProGPU eliminates this overhead using densely stored value types, retained geometry, and explicit pre-render scheduling:
+- **Dense Elements**: Animated shapes are modeled using compact `Element` and `GridPoint` value types, avoiding one managed object allocation per segment:
   ```csharp
   public struct Element
   {
@@ -439,12 +455,13 @@ ProGPU eliminates this overhead using lightweight structs and batched pipeline g
       public bool Split;
       public SolidColorBrush CachedBrush;
       public Pen CachedPen;
+      public PathGeometry CachedPath;
   }
   ```
-- **Zero-Allocation Layout Mapping**: Grid points (e.g. 80x40 logical coordinate system) are converted to physical display boundaries in a single algebraic transform pass during rendering, avoiding intermediate object creations.
-- **Cohesive Path Batching**: Rendering runs in two optimized modes:
-  - **Direct GPU Shader Pipeline**: Iterates through elements, identifying contiguous segments sharing visual style traits (pens/brushes). It batches drawing commands directly to the GPU using direct primitive rendering APIs, reducing draw call state swaps.
-  - **Path Compute-Rasterizer Mode**: Batches continuous curves into a single, combined `PathGeometry` figure until a logical "Split" flag is encountered. This group is drawn in one composite rasterization pass, optimizing path cache locality in the underlying compute pipelines.
+- **Retained Official Paths**: Logical 80x40 grid points are mapped when elements are generated or the viewport changes. Each segment owns one retained `PathGeometry`; steady frames submit the same geometry references through the public `DrawingContext.DrawPath` API instead of allocating paths and segment objects in `OnRender`.
+- **Two Public-API Modes**: Individual mode emits one retained path command per segment. Grouped mode reuses pooled `PathGeometry`/`PathFigure` containers and retained segment references for each split-delimited group, reducing path commands when grouping is favorable without bypassing the renderer.
+- **Pre-Render Animation Scheduling**: `AdvanceAnimation()` mutates split state and invalidates the visual before compositor compilation. `OnRender` is side-effect free with respect to scheduling. This is required because invalidating from inside `OnRender` can be consumed when the compositor marks the just-rendered node clean, which previously made animation advance mostly in response to mouse-driven invalidations.
+- **Bounded Frame Cost**: Updating split state is O(N), individual command recording is O(N), and grouped command recording is O(N + G) for N segments and G groups. Persistent geometry storage is O(N); the retained group pool is O(Gmax), bounded by N, after warmup. Pens, brushes, HUD strings, and path containers are refreshed only when their owning settings, theme, geometry, or viewport change.
 
 ---
 
