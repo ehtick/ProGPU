@@ -585,27 +585,68 @@ internal sealed class SKStreamAssetImplementation : SKStreamAsset
     }
 }
 
-public class SKFontManager : IDisposable
+public class SKFontManager : SKObject
 {
-    public IntPtr Handle { get; } = SKObjectHandle.Create();
-    private static readonly SKFontManager _defaultInstance = new();
-    public static SKFontManager Default => _defaultInstance;
+    private static readonly SKFontManager s_defaultInstance = CreateDisposeProtected();
+    private static readonly string[] s_macSerifFamilies = { "Times", "Times New Roman" };
+    private static readonly string[] s_windowsSerifFamilies = { "Times New Roman", "Georgia" };
+    private static readonly string[] s_linuxSerifFamilies = { "Noto Serif", "DejaVu Serif", "Liberation Serif" };
+    private static readonly string[] s_macMonospaceFamilies = { "Menlo", "Monaco", "Courier" };
+    private static readonly string[] s_windowsMonospaceFamilies = { "Consolas", "Courier New" };
+    private static readonly string[] s_linuxMonospaceFamilies = { "Noto Sans Mono", "DejaVu Sans Mono", "Liberation Mono" };
+    private static readonly string[] s_macSansFamilies = { "Helvetica", "Arial" };
+    private static readonly string[] s_windowsSansFamilies = { "Segoe UI", "Arial" };
+    private static readonly string[] s_linuxSansFamilies = { "Noto Sans", "DejaVu Sans", "Liberation Sans", "Arial" };
+    private readonly Lazy<FontCatalog> _catalog = new(CreateFontCatalog, isThreadSafe: true);
+
+    internal SKFontManager()
+        : base(SKObjectHandle.Create(), owns: true)
+    {
+    }
+
+    public static SKFontManager Default => s_defaultInstance;
+    public int FontFamilyCount => _catalog.Value.Families.Length;
+    public IEnumerable<string> FontFamilies
+    {
+        get
+        {
+            var families = _catalog.Value.Families;
+            for (var index = 0; index < families.Length; index++)
+            {
+                yield return families[index];
+            }
+        }
+    }
 
     public static SKFontManager CreateDefault() => new();
 
-    public string[] GetFontFamilies()
+    public string GetFamilyName(int index) => _catalog.Value.Families[index];
+
+    public string[] GetFontFamilies() => _catalog.Value.Families.ToArray();
+
+    public SKFontStyleSet GetFontStyles(int index) =>
+        (uint)index < (uint)_catalog.Value.Families.Length
+            ? GetFontStyles(_catalog.Value.Families[index])
+            : new SKFontStyleSet();
+
+    public SKFontStyleSet GetFontStyles(string familyName)
     {
-        var list = FontApi.GetSystemFonts();
-        var names = new List<string>();
-        foreach (var f in list)
+        if (familyName is null)
         {
-            if (!names.Contains(f.FamilyName))
-            {
-                names.Add(f.FamilyName);
-            }
+            return new SKFontStyleSet();
         }
-        return names.ToArray();
+
+        var catalog = _catalog.Value;
+        if (catalog.FontsByFamily.TryGetValue(familyName, out var fonts) ||
+            TryGetGenericFamilyFonts(catalog, familyName, out fonts))
+        {
+            return new SKFontStyleSet(fonts);
+        }
+
+        return new SKFontStyleSet();
     }
+
+    public SKTypeface? MatchFamily(string familyName) => MatchFamily(familyName, SKFontStyle.Normal);
 
     public SKTypeface? MatchFamily(string familyName, SKFontStyle style)
     {
@@ -624,9 +665,59 @@ public class SKFontManager : IDisposable
 
     public SKTypeface? CreateTypeface(SKData data, int index = 0) => SKTypeface.FromData(data, index);
 
-    public SKTypeface? MatchCharacter(string? familyName, SKFontStyle style, string[] bcp47, int codepoint)
+    public SKTypeface? MatchCharacter(char character) =>
+        MatchCharacter(null, SKFontStyle.Normal, null, character);
+
+    public SKTypeface? MatchCharacter(int character) =>
+        MatchCharacter(null, SKFontStyle.Normal, null, character);
+
+    public SKTypeface? MatchCharacter(string? familyName, char character) =>
+        MatchCharacter(familyName, SKFontStyle.Normal, null, character);
+
+    public SKTypeface? MatchCharacter(string? familyName, int character) =>
+        MatchCharacter(familyName, SKFontStyle.Normal, null, character);
+
+    public SKTypeface? MatchCharacter(string? familyName, string[]? bcp47, char character) =>
+        MatchCharacter(familyName, SKFontStyle.Normal, bcp47, character);
+
+    public SKTypeface? MatchCharacter(string? familyName, string[]? bcp47, int character) =>
+        MatchCharacter(familyName, SKFontStyle.Normal, bcp47, character);
+
+    public SKTypeface? MatchCharacter(
+        string? familyName,
+        SKFontStyleWeight weight,
+        SKFontStyleWidth width,
+        SKFontStyleSlant slant,
+        string[]? bcp47,
+        char character) =>
+        MatchCharacter(familyName, new SKFontStyle(weight, width, slant), bcp47, character);
+
+    public SKTypeface? MatchCharacter(
+        string? familyName,
+        SKFontStyleWeight weight,
+        SKFontStyleWidth width,
+        SKFontStyleSlant slant,
+        string[]? bcp47,
+        int character) =>
+        MatchCharacter(familyName, new SKFontStyle(weight, width, slant), bcp47, character);
+
+    public SKTypeface? MatchCharacter(
+        string? familyName,
+        int weight,
+        int width,
+        SKFontStyleSlant slant,
+        string[]? bcp47,
+        int character) =>
+        MatchCharacter(familyName, new SKFontStyle(weight, width, slant), bcp47, character);
+
+    public SKTypeface? MatchCharacter(
+        string? familyName,
+        SKFontStyle style,
+        string[]? bcp47,
+        int character)
     {
-        if (codepoint < 0 || codepoint > 0x10FFFF)
+        ArgumentNullException.ThrowIfNull(style);
+        if (character < 0 || character > 0x10FFFF)
         {
             return null;
         }
@@ -634,15 +725,15 @@ public class SKFontManager : IDisposable
         var systemFonts = FontApi.GetSystemFonts();
         var visited = new HashSet<(string Path, int FaceIndex)>();
         if (!string.IsNullOrWhiteSpace(familyName) &&
-            TryMatchFamily(systemFonts, familyName, style, codepoint, visited, out var requestedTypeface))
+            TryMatchFamily(systemFonts, familyName, style, character, visited, out var requestedTypeface))
         {
             return requestedTypeface;
         }
 
-        IReadOnlyList<string> fallbackFamilies = GetFallbackFamilyPreferences(bcp47, codepoint);
+        IReadOnlyList<string> fallbackFamilies = GetFallbackFamilyPreferences(bcp47, character);
         for (int i = 0; i < fallbackFamilies.Count; i++)
         {
-            if (TryMatchFamily(systemFonts, fallbackFamilies[i], style, codepoint, visited, out var localeTypeface))
+            if (TryMatchFamily(systemFonts, fallbackFamilies[i], style, character, visited, out var localeTypeface))
             {
                 return localeTypeface;
             }
@@ -659,7 +750,7 @@ public class SKFontManager : IDisposable
                     continue;
                 }
 
-                if (TryCreateRenderableTypeface(font, style, codepoint, out var typeface))
+                if (TryCreateRenderableTypeface(font, style, character, out var typeface))
                 {
                     return typeface;
                 }
@@ -963,45 +1054,95 @@ public class SKFontManager : IDisposable
                UnicodeCategory.ParagraphSeparator;
     }
 
-    public SKTypeface? MatchCharacter(int codepoint) =>
-        MatchCharacter(null, SKFontStyle.Normal, Array.Empty<string>(), codepoint);
-
-    public SKTypeface? MatchCharacter(
-        string? familyName,
-        SKFontStyleWeight weight,
-        SKFontStyleWidth width,
-        SKFontStyleSlant slant,
-        string[]? bcp47,
-        int codepoint) =>
-        MatchCharacter(familyName, new SKFontStyle(weight, width, slant), bcp47 ?? Array.Empty<string>(), codepoint);
-
-    public List<SKFontStyle> GetFontStyles(string familyName)
+    protected override void Dispose(bool disposing)
     {
-        var styles = new List<SKFontStyle>();
-        var systemFonts = FontApi.GetSystemFonts();
-        foreach (var font in systemFonts)
-        {
-            if (font.FamilyName.Equals(familyName, StringComparison.OrdinalIgnoreCase))
-            {
-                // In this basic outline we fallback to normal style or try to parse bold/italic from name
-                var slant = SKFontStyleSlant.Upright;
-                var weight = SKFontStyleWeight.Normal;
-                
-                if (font.Name.Contains("Italic", StringComparison.OrdinalIgnoreCase) || font.Name.Contains("Oblique", StringComparison.OrdinalIgnoreCase))
-                    slant = SKFontStyleSlant.Italic;
-                if (font.Name.Contains("Bold", StringComparison.OrdinalIgnoreCase))
-                    weight = SKFontStyleWeight.Bold;
-                
-                styles.Add(new SKFontStyle(weight, SKFontStyleWidth.Normal, slant));
-            }
-        }
-        if (styles.Count == 0)
-        {
-            styles.Add(SKFontStyle.Normal);
-        }
-        return styles;
+        base.Dispose(disposing);
     }
 
-    public void Dispose() { }
+    private static SKFontManager CreateDisposeProtected()
+    {
+        var manager = new SKFontManager();
+        manager.PreventPublicDisposal();
+        return manager;
+    }
 
+    private static FontCatalog CreateFontCatalog()
+    {
+        var systemFonts = FontApi.GetSystemFonts();
+        var families = new List<string>();
+        var fontsByFamily = new Dictionary<string, List<FontInfo>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var font in systemFonts)
+        {
+            if (!fontsByFamily.TryGetValue(font.FamilyName, out var familyFonts))
+            {
+                families.Add(font.FamilyName);
+                familyFonts = new List<FontInfo>();
+                fontsByFamily.Add(font.FamilyName, familyFonts);
+            }
+
+            familyFonts.Add(font);
+        }
+
+        return new FontCatalog(
+            families.ToArray(),
+            fontsByFamily.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value.ToArray(),
+                StringComparer.OrdinalIgnoreCase));
+    }
+
+    private static bool TryGetGenericFamilyFonts(
+        FontCatalog catalog,
+        string familyName,
+        out FontInfo[] fonts)
+    {
+        var normalized = familyName.Trim().ToLowerInvariant();
+        string[] preferences;
+        if (normalized is "serif" or "ui-serif")
+        {
+            preferences = OperatingSystem.IsMacOS()
+                ? s_macSerifFamilies
+                : OperatingSystem.IsWindows()
+                    ? s_windowsSerifFamilies
+                    : s_linuxSerifFamilies;
+        }
+        else if (normalized is "monospace" or "ui-monospace")
+        {
+            preferences = OperatingSystem.IsMacOS()
+                ? s_macMonospaceFamilies
+                : OperatingSystem.IsWindows()
+                    ? s_windowsMonospaceFamilies
+                    : s_linuxMonospaceFamilies;
+        }
+        else if (normalized is "sans-serif" or "system-ui" or "ui-sans-serif" or "cursive" or "fantasy")
+        {
+            preferences = OperatingSystem.IsMacOS()
+                ? s_macSansFamilies
+                : OperatingSystem.IsWindows()
+                    ? s_windowsSansFamilies
+                    : s_linuxSansFamilies;
+        }
+        else
+        {
+            fonts = Array.Empty<FontInfo>();
+            return false;
+        }
+
+        for (var index = 0; index < preferences.Length; index++)
+        {
+            if (catalog.FontsByFamily.TryGetValue(preferences[index], out var matchedFonts) &&
+                matchedFonts is not null)
+            {
+                fonts = matchedFonts;
+                return true;
+            }
+        }
+
+        fonts = Array.Empty<FontInfo>();
+        return false;
+    }
+
+    private sealed record FontCatalog(
+        string[] Families,
+        Dictionary<string, FontInfo[]> FontsByFamily);
 }

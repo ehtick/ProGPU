@@ -9,6 +9,69 @@ public class SkiaSharpFontManagerTests
     private const int HanCodepoint = 0x5203;
 
     [Fact]
+    public void FontManagerAndStyleSetMatchNativeCatalogAndLifetimeSurface()
+    {
+        Assert.Equal(typeof(SKObject), typeof(SKFontManager).BaseType);
+        Assert.Empty(typeof(SKFontManager).GetConstructors());
+        Assert.Equal(typeof(SKObject), typeof(SKFontStyleSet).BaseType);
+
+        var manager = SKFontManager.Default;
+        var defaultHandle = manager.Handle;
+        var families = manager.GetFontFamilies();
+        Assert.Equal(families.Length, manager.FontFamilyCount);
+        Assert.Equal(families, manager.FontFamilies);
+        Assert.NotEmpty(families);
+        Assert.Equal(families[0], manager.GetFamilyName(0));
+
+        using (var styles = manager.GetFontStyles(0))
+        {
+            Assert.True(styles.Count > 0);
+            Assert.False(string.IsNullOrWhiteSpace(styles.GetStyleName(0)));
+            using var typeface = styles.CreateTypeface(0);
+            Assert.NotNull(typeface);
+            Assert.Equal(families[0], typeface.FamilyName);
+            using var matched = styles.CreateTypeface(SKFontStyle.Bold);
+            Assert.NotNull(matched);
+        }
+
+        using (var missing = manager.GetFontStyles("ProGPU Missing Font Family"))
+        {
+            Assert.Empty(missing);
+            Assert.Throws<ArgumentOutOfRangeException>(() => missing.CreateTypeface(0));
+        }
+
+        using (var generic = manager.GetFontStyles("sans-serif"))
+        {
+            Assert.True(generic.Count > 0);
+        }
+
+        manager.Dispose();
+        Assert.Equal(defaultHandle, manager.Handle);
+
+        using var created = SKFontManager.CreateDefault();
+        Assert.NotEqual(IntPtr.Zero, created.Handle);
+        created.Dispose();
+        Assert.Equal(IntPtr.Zero, created.Handle);
+    }
+
+    [Fact]
+    public void CharacterOverloadsResolveRenderableTypeface()
+    {
+        using var fromCharacter = SKFontManager.Default.MatchCharacter('A');
+        using var fromFamily = SKFontManager.Default.MatchCharacter(
+            SKTypeface.Default.FamilyName,
+            Array.Empty<string>(),
+            'A');
+
+        Assert.NotNull(fromCharacter);
+        Assert.NotNull(fromFamily);
+        using var characterFont = new SKFont(fromCharacter);
+        using var familyFont = new SKFont(fromFamily);
+        Assert.True(characterFont.ContainsGlyph('A'));
+        Assert.True(familyFont.ContainsGlyph('A'));
+    }
+
+    [Fact]
     public void MatchFamilyReturnsNullForUnknownFamily()
     {
         using var typeface = SKFontManager.Default.MatchFamily(
