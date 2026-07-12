@@ -240,10 +240,55 @@ public class DependencyObject : ProGPU.Layout.LayoutNode
     protected override void OnParentChanged(ProGPU.Scene.ContainerVisual? oldParent, ProGPU.Scene.ContainerVisual? newParent)
     {
         base.OnParentChanged(oldParent, newParent);
-        if (newParent != null)
+        if (ResolveThemeContext(oldParent) != ResolveThemeContext(newParent))
         {
             NotifyThemeChanged();
         }
+    }
+
+    private (ElementTheme Theme, VisualThemeFamily Family) ResolveThemeContext(ProGPU.Scene.ContainerVisual? parent)
+    {
+        var theme = ThemeManager.CurrentTheme;
+        var family = ThemeManager.CurrentThemeFamily;
+        var hasTheme = false;
+        var hasFamily = false;
+
+        if (this is FrameworkElement element)
+        {
+            if (element.RequestedTheme != ElementTheme.Default)
+            {
+                theme = element.RequestedTheme;
+                hasTheme = true;
+            }
+
+            if (element.RequestedThemeFamily != VisualThemeFamily.Default)
+            {
+                family = element.RequestedThemeFamily;
+                hasFamily = true;
+            }
+        }
+
+        for (var current = parent; current != null && (!hasTheme || !hasFamily); current = current.Parent)
+        {
+            if (current is not FrameworkElement ancestor)
+            {
+                continue;
+            }
+
+            if (!hasTheme && ancestor.RequestedTheme != ElementTheme.Default)
+            {
+                theme = ancestor.RequestedTheme;
+                hasTheme = true;
+            }
+
+            if (!hasFamily && ancestor.RequestedThemeFamily != VisualThemeFamily.Default)
+            {
+                family = ancestor.RequestedThemeFamily;
+                hasFamily = true;
+            }
+        }
+
+        return (theme, family);
     }
 
     public void ReevaluateThemeResources()

@@ -1,5 +1,6 @@
 using Thickness = Microsoft.UI.Xaml.Thickness;
 using System;
+using System.Collections;
 using System.IO;
 using System.Collections.Generic;
 using System.Numerics;
@@ -18,6 +19,49 @@ namespace ProGPU.Samples;
 
 public static class FontGlyphBrowserPage
 {
+    private sealed class GlyphIndexList : IList
+    {
+        public GlyphIndexList(int count)
+        {
+            Count = count;
+        }
+
+        public int Count { get; }
+        public bool IsFixedSize => true;
+        public bool IsReadOnly => true;
+        public bool IsSynchronized => false;
+        public object SyncRoot => this;
+        public object? this[int index]
+        {
+            get => index >= 0 && index < Count ? (ushort)index : throw new ArgumentOutOfRangeException(nameof(index));
+            set => throw new NotSupportedException();
+        }
+
+        public bool Contains(object? value) => value is ushort glyph && glyph < Count;
+        public int IndexOf(object? value) => value is ushort glyph && glyph < Count ? glyph : -1;
+        public void CopyTo(Array array, int index)
+        {
+            for (var glyph = 0; glyph < Count; glyph++)
+            {
+                array.SetValue((ushort)glyph, index + glyph);
+            }
+        }
+
+        public IEnumerator GetEnumerator()
+        {
+            for (var glyph = 0; glyph < Count; glyph++)
+            {
+                yield return (ushort)glyph;
+            }
+        }
+
+        public int Add(object? value) => throw new NotSupportedException();
+        public void Clear() => throw new NotSupportedException();
+        public void Insert(int index, object? value) => throw new NotSupportedException();
+        public void Remove(object? value) => throw new NotSupportedException();
+        public void RemoveAt(int index) => throw new NotSupportedException();
+    }
+
     private static TtfFont? _selectedFont;
     private static List<FontInfo> _systemFonts = new();
     private static ushort _selectedGlyphIndex = 0;
@@ -563,15 +607,9 @@ public static class FontGlyphBrowserPage
             UpdateSelectedFontDetails();
             UpdateSelectedGlyph(0);
 
-            if (_itemsControl != null && _virtualGrid != null)
+            if (_virtualGrid != null)
             {
                 _virtualGrid.ScrollOffset = 0f;
-                var indices = new ushort[_selectedFont.NumGlyphs];
-                for (ushort i = 0; i < _selectedFont.NumGlyphs; i++)
-                {
-                    indices[i] = i;
-                }
-                _itemsControl.ItemsSource = indices;
             }
         }
         catch (Exception ex)
@@ -626,12 +664,7 @@ public static class FontGlyphBrowserPage
 
         if (_itemsControl != null)
         {
-            var indices = new ushort[_selectedFont.NumGlyphs];
-            for (ushort i = 0; i < _selectedFont.NumGlyphs; i++)
-            {
-                indices[i] = i;
-            }
-            _itemsControl.ItemsSource = indices;
+            _itemsControl.ItemsSource = new GlyphIndexList(_selectedFont.NumGlyphs);
         }
     }
 

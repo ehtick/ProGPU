@@ -43,7 +43,7 @@ public class SplitView : FrameworkElement
             {
                 if (_pane != null) RemoveChild(_pane);
                 _pane = value;
-                RebuildChildren();
+                if (_pane != null) AddChild(_pane);
                 Invalidate();
             }
         }
@@ -58,7 +58,7 @@ public class SplitView : FrameworkElement
             {
                 if (_content != null) RemoveChild(_content);
                 _content = value;
-                RebuildChildren();
+                if (_content != null) InsertChild(0, _content);
                 Invalidate();
             }
         }
@@ -132,13 +132,6 @@ public class SplitView : FrameworkElement
                 InvalidateMeasure();
             }
         }
-    }
-
-    private void RebuildChildren()
-    {
-        ClearChildren();
-        if (_content != null) AddChild(_content);
-        if (_pane != null) AddChild(_pane);
     }
 
     protected override Vector2 MeasureOverride(Vector2 availableSize)

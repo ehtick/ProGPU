@@ -128,15 +128,15 @@ public class VirtualizingPanel : Panel
 
     public int GetItemsCount()
     {
-        return ItemsControlOwner?.Items.Count ?? 0;
+        return ItemsControlOwner?.ItemCount ?? 0;
     }
 
     public object? GetItemAt(int index)
     {
         var ic = ItemsControlOwner;
-        if (ic != null && index >= 0 && index < ic.Items.Count)
+        if (ic != null)
         {
-            return ic.Items[index];
+            return ic.GetItemAt(index);
         }
         return null;
     }

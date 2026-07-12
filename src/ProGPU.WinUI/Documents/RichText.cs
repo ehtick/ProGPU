@@ -328,7 +328,8 @@ public class RichTextBlock : FrameworkElement
         if (_hoveredHyperlink != foundLink)
         {
             _hoveredHyperlink = foundLink;
-            Invalidate();
+            _isRenderCommandCacheDirty = true;
+            base.Invalidate();
         }
     }
 

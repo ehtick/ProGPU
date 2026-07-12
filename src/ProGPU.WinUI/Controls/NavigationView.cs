@@ -191,7 +191,6 @@ public class NavigationView : FrameworkElement
             {
                 _content = value;
                 _splitView.Content = value;
-                RebuildPaneChildren();
             }
         }
     }

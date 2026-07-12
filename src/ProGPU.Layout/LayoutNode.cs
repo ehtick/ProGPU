@@ -135,6 +135,7 @@ namespace ProGPU.Layout
                 {
                     _margin = value;
                     InvalidateMeasure();
+                    Invalidate();
                 }
             }
         }
@@ -148,6 +149,7 @@ namespace ProGPU.Layout
                 {
                     _padding = value;
                     InvalidateMeasure();
+                    Invalidate();
                 }
             }
         }
@@ -162,6 +164,7 @@ namespace ProGPU.Layout
                     _isCollapsed = value;
                     InvalidateMeasure();
                     InvalidateArrange();
+                    Invalidate();
                 }
             }
         }
@@ -175,6 +178,7 @@ namespace ProGPU.Layout
                 {
                     _horizontalAlignment = value;
                     InvalidateArrange();
+                    Invalidate();
                 }
             }
         }
@@ -188,6 +192,7 @@ namespace ProGPU.Layout
                 {
                     _verticalAlignment = value;
                     InvalidateArrange();
+                    Invalidate();
                 }
             }
         }
@@ -201,6 +206,7 @@ namespace ProGPU.Layout
                 {
                     _widthConstraint = value;
                     InvalidateMeasure();
+                    Invalidate();
                 }
             }
         }
@@ -214,6 +220,7 @@ namespace ProGPU.Layout
                 {
                     _heightConstraint = value;
                     InvalidateMeasure();
+                    Invalidate();
                 }
             }
         }

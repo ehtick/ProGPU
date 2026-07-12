@@ -15,6 +15,7 @@ public class UniformVirtualizingGridPanel : VirtualizingPanel
 
     public UniformVirtualizingGridPanel()
     {
+        _ownerBindVisualCallback = BindOwnerVisual;
         ThemeManager.ThemeChanged += OnThemeManagerChanged;
     }
 
@@ -27,6 +28,7 @@ public class UniformVirtualizingGridPanel : VirtualizingPanel
     // Direct binding fallback backing fields
     private Func<Visual>? _createVisualFactory;
     private Action<Visual, int>? _bindVisualCallback;
+    private readonly Action<Visual, int> _ownerBindVisualCallback;
 
     // Viewport binding properties (automatically hooks into ItemsControl if available)
     public Func<Visual>? CreateVisualFactory
@@ -37,27 +39,24 @@ public class UniformVirtualizingGridPanel : VirtualizingPanel
 
     public Action<Visual, int>? BindVisualCallback
     {
-        get
-        {
-            if (ItemsControlOwner != null)
-            {
-                return (visual, index) =>
-                {
-                    var item = GetItemAt(index);
-                    if (item != null)
-                    {
-                        ItemsControlOwner.BindVisualCallback?.Invoke(visual, item, index);
-                    }
-                };
-            }
-            return _bindVisualCallback;
-        }
+        get => ItemsControlOwner != null ? _ownerBindVisualCallback : _bindVisualCallback;
         set => _bindVisualCallback = value;
+    }
+
+    private void BindOwnerVisual(Visual visual, int index)
+    {
+        var itemsControl = ItemsControlOwner;
+        var item = itemsControl?.GetItemAt(index);
+        if (item != null)
+        {
+            itemsControl!.BindVisualCallback?.Invoke(visual, item, index);
+        }
     }
 
     // Recycler pools (active and inactive)
     private readonly Stack<Visual> _recycledVisuals = new();
     private readonly Dictionary<int, Visual> _activeVisuals = new();
+    private readonly List<int> _indicesToRecycle = new();
 
     public int ItemsCount
     {
@@ -136,12 +135,16 @@ public class UniformVirtualizingGridPanel : VirtualizingPanel
     {
         int itemsCount = ItemsCount;
         var createVisual = CreateVisualFactory;
-        var bindVisual = BindVisualCallback;
+        var itemsControl = ItemsControlOwner;
+        var ownerBindVisual = itemsControl?.BindVisualCallback;
+        var directBindVisual = _bindVisualCallback;
 
         float viewportWidth = ViewportWidth;
         float viewportHeight = ViewportHeight;
 
-        if (itemsCount == 0 || createVisual == null || bindVisual == null || viewportHeight <= 0 || viewportWidth <= 0)
+        if (itemsCount == 0 || createVisual == null ||
+            (ownerBindVisual == null && directBindVisual == null) ||
+            viewportHeight <= 0 || viewportWidth <= 0)
         {
             ClearActiveToRecycler();
             return;
@@ -164,16 +167,16 @@ public class UniformVirtualizingGridPanel : VirtualizingPanel
         endIdx = Math.Clamp(endIdx, 0, itemsCount - 1);
 
         // 2. Recycle items that scrolled out of view
-        var indicesToRecycle = new List<int>();
+        _indicesToRecycle.Clear();
         foreach (var key in _activeVisuals.Keys)
         {
             if (key < startIdx || key > endIdx)
             {
-                indicesToRecycle.Add(key);
+                _indicesToRecycle.Add(key);
             }
         }
 
-        foreach (var idx in indicesToRecycle)
+        foreach (var idx in _indicesToRecycle)
         {
             var vis = _activeVisuals[idx];
             _activeVisuals.Remove(idx);
@@ -195,7 +198,18 @@ public class UniformVirtualizingGridPanel : VirtualizingPanel
                 visual = _recycledVisuals.Count > 0 ? _recycledVisuals.Pop() : createVisual();
                 
                 // Bind dataset properties
-                bindVisual(visual, i);
+                if (itemsControl != null)
+                {
+                    var item = itemsControl.GetItemAt(i);
+                    if (item != null)
+                    {
+                        ownerBindVisual!(visual, item, i);
+                    }
+                }
+                else
+                {
+                    directBindVisual!(visual, i);
+                }
                 
                 _activeVisuals[i] = visual;
                 AddChild(visual);

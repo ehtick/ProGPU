@@ -511,6 +511,11 @@ public static unsafe class MainWindowController
 
         OnWindowUpdate(delta);
 
+        if (AppState._activeCategory == "MotionMark Showcase")
+        {
+            AppState._motionMarkVisual?.AdvanceAnimation();
+        }
+
         if (AppState._needsCloseDevTools)
         {
             AppState._needsCloseDevTools = false;

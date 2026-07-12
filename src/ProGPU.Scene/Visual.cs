@@ -509,6 +509,27 @@ public class ContainerVisual : Visual
         }
     }
 
+    public void InsertChild(int index, Visual child)
+    {
+        ArgumentNullException.ThrowIfNull(child);
+        if (child.Parent != null)
+        {
+            child.Parent.RemoveChild(child);
+        }
+
+        lock (_childrenLock)
+        {
+            child.Parent = this;
+            _children.Insert(Math.Clamp(index, 0, _children.Count), child);
+        }
+
+        Invalidate();
+        if (this is ILayoutNode layoutNode)
+        {
+            layoutNode.InvalidateMeasure();
+        }
+    }
+
     public void RemoveChild(Visual child)
     {
         bool removed;

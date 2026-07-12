@@ -282,7 +282,7 @@ public static class SamplePagePresenter
         stack.AddChild(title);
 
         var description = new RichTextBlock { Font = AppState.GetFont(), FontSize = 12f, Margin = new Thickness(0, 0, 0, 15) };
-        description.Inlines.Add(new Run("This page implements a native high-performance GPU vector graphics benchmark based on the MotionMark suite. Renders thousands of dynamic shapes (lines, circles, and direct GPU Beziers) with zero CPU triangulation or flattening, achieving ultimate frame rates."));
+        description.Inlines.Add(new Run("This MotionMark-inspired benchmark renders thousands of animated line and Bezier segments through the public DrawingContext path API. Retained PathGeometry instances avoid rebuilding segment objects while preserving the normal renderer and cache behavior."));
         stack.AddChild(description);
 
         var grid = new Microsoft.UI.Xaml.Controls.Grid { HeightConstraint = 620f };
@@ -290,6 +290,7 @@ public static class SamplePagePresenter
         grid.ColumnDefinitions.Add(new GridLength(1, GridUnitType.Star));      // Column 1: Visual Canvas Card
 
         var visual = new MotionMarkShowcaseVisual();
+        AppState._motionMarkVisual = visual;
 
         // 1. Settings Card
         var settingsCard = new Border {
@@ -425,14 +426,14 @@ public static class SamplePagePresenter
         };
         settingsStack.AddChild(fillToggle);
 
-        // Direct GPU Mode vs Path Geometry Mode
+        // Individual retained paths vs grouped retained paths
         var gpuToggleLabel = new RichTextBlock { Font = AppState.GetFont(), FontSize = 12f, Margin = new Thickness(0, 0, 0, 2) };
-        gpuToggleLabel.Inlines.Add(new Bold(new Run("Direct GPU Pipeline (Ultra Perf):")));
+        gpuToggleLabel.Inlines.Add(new Bold(new Run("Use individual retained paths:")));
         settingsStack.AddChild(gpuToggleLabel);
         
         var gpuToggle = new ToggleSwitch { IsOn = true, Margin = new Thickness(0, 0, 0, 0) };
         gpuToggle.Toggled += (s, e) => {
-            visual.DirectGpuMode = gpuToggle.IsOn;
+            visual.UseIndividualPaths = gpuToggle.IsOn;
             visual.Invalidate();
         };
         settingsStack.AddChild(gpuToggle);

@@ -10,6 +10,8 @@ namespace Microsoft.UI.Xaml.Controls;
 
 public class ItemsControl : Control
 {
+    private IList? _indexedItemsSource;
+
     public static readonly DependencyProperty ItemsSourceProperty =
         DependencyProperty.Register(
             "ItemsSource",
@@ -42,6 +44,18 @@ public class ItemsControl : Control
 
     public List<object> Items { get; } = new();
 
+    public int ItemCount => _indexedItemsSource?.Count ?? Items.Count;
+
+    public object? GetItemAt(int index)
+    {
+        if (index < 0 || index >= ItemCount)
+        {
+            return null;
+        }
+
+        return _indexedItemsSource != null ? _indexedItemsSource[index] : Items[index];
+    }
+
     public ItemsControl()
     {
         // Default panel is a StackPanel
@@ -69,7 +83,8 @@ public class ItemsControl : Control
     {
         var ic = (ItemsControl)d;
         ic.Items.Clear();
-        if (e.NewValue is IEnumerable enumerable)
+        ic._indexedItemsSource = e.NewValue as IList;
+        if (ic._indexedItemsSource == null && e.NewValue is IEnumerable enumerable)
         {
             foreach (var item in enumerable)
             {
@@ -128,13 +143,11 @@ public class ItemsControl : Control
             ItemsPanel.Children.Clear();
             if (ItemTemplate != null)
             {
-                int index = 0;
-                foreach (var item in Items)
+                for (var index = 0; index < ItemCount; index++)
                 {
                     var container = ItemTemplate();
-                    BindVisualCallback?.Invoke(container, item, index);
+                    BindVisualCallback?.Invoke(container, GetItemAt(index)!, index);
                     ItemsPanel.Children.Add(container);
-                    index++;
                 }
             }
         }

@@ -102,9 +102,9 @@ public class FontIcon : IconElement
                 float advance = activeFont.GetAdvanceWidth(GlyphIndex.Value, FontSize);
                 float offsetX = (Size.X - advance) / 2f;
                 float offsetY = activeFont.Ascender * scaleVal;
-
-                var transformed = TransformGeometry(rawOutline, new Vector2(scaleVal, -scaleVal), new Vector2(offsetX, offsetY));
-                context.DrawPath(brush, null, transformed);
+                var transform = Matrix4x4.CreateScale(scaleVal, -scaleVal, 1f) *
+                    Matrix4x4.CreateTranslation(offsetX, offsetY, 0f);
+                context.DrawPath(brush, null, rawOutline, transform);
             }
         }
         else if (!string.IsNullOrEmpty(Glyph))
@@ -120,33 +120,4 @@ public class FontIcon : IconElement
         }
     }
 
-    private static PathGeometry TransformGeometry(PathGeometry source, Vector2 scale, Vector2 translation)
-    {
-        var dest = new PathGeometry();
-        foreach (var fig in source.Figures)
-        {
-            var newFig = new PathFigure
-            {
-                StartPoint = fig.StartPoint * scale + translation,
-                IsClosed = fig.IsClosed,
-                IsFilled = fig.IsFilled
-            };
-            foreach (var seg in fig.Segments)
-            {
-                if (seg is LineSegment line)
-                {
-                    newFig.Segments.Add(new LineSegment(line.Point * scale + translation));
-                }
-                else if (seg is QuadraticBezierSegment quad)
-                {
-                    newFig.Segments.Add(new QuadraticBezierSegment(
-                        quad.ControlPoint * scale + translation,
-                        quad.Point * scale + translation
-                    ));
-                }
-            }
-            dest.Figures.Add(newFig);
-        }
-        return dest;
-    }
 }

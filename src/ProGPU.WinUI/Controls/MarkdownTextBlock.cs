@@ -24,6 +24,8 @@ namespace Microsoft.UI.Xaml.Controls
         private readonly List<Block> _blocks = new();
         private readonly List<PositionedRichChar> _positionedChars = new();
         private readonly List<TableVisualDecoration> _tableDecorations = new();
+        private readonly List<PositionedRichChar> _measurementChars = new();
+        private readonly List<TableVisualDecoration> _measurementDecorations = new();
         
         private Hyperlink? _hoveredHyperlink = null;
         private bool _isLayoutDirty = true;
@@ -186,7 +188,7 @@ namespace Microsoft.UI.Xaml.Controls
             if (_hoveredHyperlink != foundLink)
             {
                 _hoveredHyperlink = foundLink;
-                Invalidate();
+                base.Invalidate();
             }
         }
 
@@ -213,7 +215,15 @@ namespace Microsoft.UI.Xaml.Controls
 
             if (float.IsInfinity(h))
             {
+                if (ColumnCount == 1)
+                {
+                    PerformEngineLayout(w, h);
+                    return new Vector2(w, _measuredHeight);
+                }
+
                 // Measure total required height in single column first
+                _measurementChars.Clear();
+                _measurementDecorations.Clear();
                 float singleColHeight = TextLayoutEngine.LayoutSingleColumn(
                     _blocks, 
                     w, 
@@ -223,8 +233,8 @@ namespace Microsoft.UI.Xaml.Controls
                     Foreground, 
                     TextAlignment.Left, 
                     this.ActualTheme, 
-                    new List<PositionedRichChar>(), 
-                    new List<TableVisualDecoration>(), 
+                    _measurementChars,
+                    _measurementDecorations,
                     this, 
                     (v) => {}, 
                     (v) => {});
