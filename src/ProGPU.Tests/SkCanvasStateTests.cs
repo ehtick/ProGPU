@@ -650,6 +650,68 @@ public sealed class SkCanvasStateTests
     }
 
     [Fact]
+    public void SaveLayerMatrixConvolutionRepeatsAtTransformedCropBoundary()
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(8, 4, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var convolution = SKImageFilter.CreateMatrixConvolution(
+            new SKSizeI(3, 1),
+            new[] { 1f, 0f, 0f },
+            gain: 1f,
+            bias: 0f,
+            new SKPointI(1, 0),
+            SKShaderTileMode.Repeat,
+            convolveAlpha: true,
+            cropRect: new SKRect(2f, 0f, 4f, 2f));
+        using var layerPaint = new SKPaint { ImageFilter = convolution };
+        using var red = new SKPaint { Color = SKColors.Red, IsAntialias = false };
+        using var blue = new SKPaint { Color = SKColors.Blue, IsAntialias = false };
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        surface.Canvas.Translate(1f, 1f);
+        var restoreCount = surface.Canvas.SaveLayer(layerPaint);
+        surface.Canvas.DrawRect(new SKRect(2f, 0f, 3f, 2f), red);
+        surface.Canvas.DrawRect(new SKRect(3f, 0f, 4f, 2f), blue);
+        surface.Canvas.RestoreToCount(restoreCount);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        AssertPixel(pixels, 8, 3, 1, SKColors.Blue);
+        AssertPixel(pixels, 8, 4, 1, SKColors.Red);
+        Assert.Equal((byte)0, pixels[(1 * 8 + 2) * 4 + 3]);
+        Assert.Equal((byte)0, pixels[(1 * 8 + 5) * 4 + 3]);
+    }
+
+    [Fact]
+    public void SaveLayerMatrixConvolutionIgnoresTileModeWithoutCrop()
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(4, 2, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var convolution = SKImageFilter.CreateMatrixConvolution(
+            new SKSizeI(3, 1),
+            new[] { 1f, 0f, 0f },
+            gain: 1f,
+            bias: 0f,
+            new SKPointI(1, 0),
+            SKShaderTileMode.Repeat,
+            convolveAlpha: true);
+        using var layerPaint = new SKPaint { ImageFilter = convolution };
+        using var red = new SKPaint { Color = SKColors.Red, IsAntialias = false };
+        using var blue = new SKPaint { Color = SKColors.Blue, IsAntialias = false };
+
+        surface.Canvas.Clear(SKColors.Transparent);
+        var restoreCount = surface.Canvas.SaveLayer(layerPaint);
+        surface.Canvas.DrawRect(new SKRect(0f, 0f, 1f, 2f), red);
+        surface.Canvas.DrawRect(new SKRect(3f, 0f, 4f, 2f), blue);
+        surface.Canvas.RestoreToCount(restoreCount);
+        surface.Flush();
+
+        using var snapshot = surface.Snapshot();
+        var pixels = snapshot.Texture.ReadPixels();
+        Assert.Equal((byte)0, pixels[3]);
+        AssertPixel(pixels, 4, 1, 0, SKColors.Red);
+    }
+
+    [Fact]
     public void SaveLayerDistantDiffuseLightingUsesGpuHeightMap()
     {
         using var surface = SKSurface.Create(new SKImageInfo(4, 4, SKColorType.Rgba8888, SKAlphaType.Premul));
@@ -2601,6 +2663,15 @@ public sealed class SkCanvasStateTests
     private static void AssertNear(float expected, float actual)
     {
         Assert.InRange(MathF.Abs(expected - actual), 0f, 0.0001f);
+    }
+
+    private static void AssertPixel(byte[] pixels, int stride, int x, int y, SKColor expected)
+    {
+        var offset = (y * stride + x) * 4;
+        Assert.Equal(expected.Red, pixels[offset]);
+        Assert.Equal(expected.Green, pixels[offset + 1]);
+        Assert.Equal(expected.Blue, pixels[offset + 2]);
+        Assert.Equal(expected.Alpha, pixels[offset + 3]);
     }
 
     private static RenderCommand GetDrawTextureCommand(IReadOnlyList<RenderCommand> commands)

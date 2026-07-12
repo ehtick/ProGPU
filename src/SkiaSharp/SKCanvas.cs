@@ -664,7 +664,9 @@ public class SKCanvas : IDisposable
                 var input = EvaluateOptionalInput(sourceTexture, filter.Input, cache, filterTransform, preserveSourceColorSpace);
                 result = RenderMatrixConvolution(
                     input,
-                    (SKImageFilter.MatrixConvolutionData)filter.Parameters!);
+                    (SKImageFilter.MatrixConvolutionData)filter.Parameters!,
+                    filter.CropRect,
+                    filterTransform);
                 break;
             }
             case SKImageFilter.FilterKind.DistantLitDiffuse:
@@ -960,7 +962,9 @@ public class SKCanvas : IDisposable
 
     private GpuTexture RenderMatrixConvolution(
         GpuTexture input,
-        SKImageFilter.MatrixConvolutionData convolution)
+        SKImageFilter.MatrixConvolutionData convolution,
+        SKRect? cropRect,
+        Matrix4x4 filterTransform)
     {
         var kernelWidth = convolution.KernelSize.Width;
         var kernelHeight = convolution.KernelSize.Height;
@@ -969,6 +973,25 @@ public class SKCanvas : IDisposable
             convolution.Kernel.Length < kernelWidth * kernelHeight)
         {
             return input;
+        }
+
+        var tileMode = convolution.TileMode;
+        var tileOriginX = 0;
+        var tileOriginY = 0;
+        var tileWidth = (int)Math.Min(input.Width, (uint)int.MaxValue);
+        var tileHeight = (int)Math.Min(input.Height, (uint)int.MaxValue);
+        if (tileMode != SKShaderTileMode.Decal &&
+            !TryGetFilterCropPixelBounds(
+                cropRect,
+                filterTransform,
+                input.Width,
+                input.Height,
+                out tileOriginX,
+                out tileOriginY,
+                out tileWidth,
+                out tileHeight))
+        {
+            tileMode = SKShaderTileMode.Decal;
         }
 
         var context = GetGpuContext();
@@ -986,9 +1009,54 @@ public class SKCanvas : IDisposable
             convolution.Bias,
             convolution.KernelOffset.X,
             convolution.KernelOffset.Y,
-            (uint)convolution.TileMode,
-            convolution.ConvolveAlpha);
+            (uint)tileMode,
+            convolution.ConvolveAlpha,
+            tileOriginX,
+            tileOriginY,
+            tileWidth,
+            tileHeight);
         return destination;
+    }
+
+    private static bool TryGetFilterCropPixelBounds(
+        SKRect? cropRect,
+        Matrix4x4 filterTransform,
+        uint textureWidth,
+        uint textureHeight,
+        out int left,
+        out int top,
+        out int width,
+        out int height)
+    {
+        left = 0;
+        top = 0;
+        width = 0;
+        height = 0;
+        if (cropRect is not { } crop || !IsValidLayerBounds(crop))
+        {
+            return false;
+        }
+
+        var transform = filterTransform == default ? Matrix4x4.Identity : filterTransform;
+        var bounds = MapRectToBounds(crop, transform);
+        if (!IsValidLayerBounds(bounds) ||
+            bounds.Right <= 0f ||
+            bounds.Bottom <= 0f ||
+            bounds.Left >= textureWidth ||
+            bounds.Top >= textureHeight)
+        {
+            return false;
+        }
+
+        const double coordinateLimit = 1_000_000_000d;
+        left = (int)Math.Clamp(Math.Floor(bounds.Left), -coordinateLimit, coordinateLimit);
+        top = (int)Math.Clamp(Math.Floor(bounds.Top), -coordinateLimit, coordinateLimit);
+        var right = (int)Math.Clamp(Math.Ceiling(bounds.Right), -coordinateLimit, coordinateLimit);
+        var bottom = (int)Math.Clamp(Math.Ceiling(bounds.Bottom), -coordinateLimit, coordinateLimit);
+        width = right - left;
+        height = bottom - top;
+        return width is > 0 and <= 1_000_000_000 &&
+            height is > 0 and <= 1_000_000_000;
     }
 
     private GpuTexture RenderImageLighting(

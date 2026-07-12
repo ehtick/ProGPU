@@ -83,6 +83,10 @@ struct Params {
     bias: f32,
     tileMode: u32,
     convolveAlpha: u32,
+    tileOriginX: i32,
+    tileOriginY: i32,
+    tileWidth: i32,
+    tileHeight: i32,
 };
 
 struct Kernel {
@@ -99,17 +103,17 @@ fn positive_modulo(value: i32, divisor: i32) -> i32 {
     return select(remainder + divisor, remainder, remainder >= 0);
 }
 
-fn resolve_coordinate(value: i32, size: i32, tileMode: u32) -> i32 {
+fn resolve_coordinate(value: i32, origin: i32, size: i32, tileMode: u32) -> i32 {
     if (tileMode == 0u) {
-        return clamp(value, 0, size - 1);
+        return clamp(value, origin, origin + size - 1);
     }
     if (tileMode == 1u) {
-        return positive_modulo(value, size);
+        return origin + positive_modulo(value - origin, size);
     }
     if (tileMode == 2u) {
         let period = size * 2;
-        let mirrored = positive_modulo(value, period);
-        return select(period - mirrored - 1, mirrored, mirrored < size);
+        let mirrored = positive_modulo(value - origin, period);
+        return origin + select(period - mirrored - 1, mirrored, mirrored < size);
     }
     return value;
 }
@@ -117,13 +121,23 @@ fn resolve_coordinate(value: i32, size: i32, tileMode: u32) -> i32 {
 fn sample_input(position: vec2<i32>, size: vec2<u32>) -> vec4<f32> {
     let width = i32(size.x);
     let height = i32(size.y);
-    if (params.tileMode == 3u &&
-        (position.x < 0 || position.y < 0 || position.x >= width || position.y >= height)) {
-        return vec4<f32>(0.0);
+    var resolved = position;
+    if (params.tileMode == 3u) {
+        if (position.x < 0 || position.y < 0 || position.x >= width || position.y >= height) {
+            return vec4<f32>(0.0);
+        }
+    } else {
+        if (params.tileWidth <= 0 || params.tileHeight <= 0) {
+            return vec4<f32>(0.0);
+        }
+        resolved = vec2<i32>(
+            resolve_coordinate(position.x, params.tileOriginX, params.tileWidth, params.tileMode),
+            resolve_coordinate(position.y, params.tileOriginY, params.tileHeight, params.tileMode));
+        if (resolved.x < 0 || resolved.y < 0 || resolved.x >= width || resolved.y >= height) {
+            return vec4<f32>(0.0);
+        }
     }
-    return textureLoad(inputTex, vec2<i32>(
-        resolve_coordinate(position.x, width, params.tileMode),
-        resolve_coordinate(position.y, height, params.tileMode)), 0);
+    return textureLoad(inputTex, resolved, 0);
 }
 
 @compute @workgroup_size(16, 16)

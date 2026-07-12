@@ -1152,7 +1152,11 @@ public unsafe class Compositor : IDisposable
         int kernelOffsetX,
         int kernelOffsetY,
         uint tileMode,
-        bool convolveAlpha)
+        bool convolveAlpha,
+        int tileOriginX,
+        int tileOriginY,
+        int tileWidth,
+        int tileHeight)
     {
         lock (_context.RenderLock)
         {
@@ -1167,7 +1171,11 @@ public unsafe class Compositor : IDisposable
                 kernelOffsetX,
                 kernelOffsetY,
                 tileMode,
-                convolveAlpha);
+                convolveAlpha,
+                tileOriginX,
+                tileOriginY,
+                tileWidth,
+                tileHeight);
         }
     }
 

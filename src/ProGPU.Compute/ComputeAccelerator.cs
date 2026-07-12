@@ -158,7 +158,7 @@ public unsafe class ComputeAccelerator : IDisposable
             float.IsFinite(value.W);
     }
 
-    [StructLayout(LayoutKind.Explicit, Size = 32)]
+    [StructLayout(LayoutKind.Explicit, Size = 48)]
     public struct MatrixConvolutionParams
     {
         [FieldOffset(0)] public int KernelWidth;
@@ -169,6 +169,10 @@ public unsafe class ComputeAccelerator : IDisposable
         [FieldOffset(20)] public float Bias;
         [FieldOffset(24)] public uint TileMode;
         [FieldOffset(28)] public uint ConvolveAlpha;
+        [FieldOffset(32)] public int TileOriginX;
+        [FieldOffset(36)] public int TileOriginY;
+        [FieldOffset(40)] public int TileWidth;
+        [FieldOffset(44)] public int TileHeight;
 
         public MatrixConvolutionParams(
             int kernelWidth,
@@ -178,7 +182,11 @@ public unsafe class ComputeAccelerator : IDisposable
             float gain,
             float bias,
             uint tileMode,
-            bool convolveAlpha)
+            bool convolveAlpha,
+            int tileOriginX,
+            int tileOriginY,
+            int tileWidth,
+            int tileHeight)
         {
             KernelWidth = kernelWidth;
             KernelHeight = kernelHeight;
@@ -188,6 +196,10 @@ public unsafe class ComputeAccelerator : IDisposable
             Bias = float.IsFinite(bias) ? bias : 0f;
             TileMode = Math.Min(tileMode, 3u);
             ConvolveAlpha = convolveAlpha ? 1u : 0u;
+            TileOriginX = tileOriginX;
+            TileOriginY = tileOriginY;
+            TileWidth = Math.Max(tileWidth, 0);
+            TileHeight = Math.Max(tileHeight, 0);
         }
     }
 
@@ -565,7 +577,11 @@ public unsafe class ComputeAccelerator : IDisposable
         int kernelOffsetX,
         int kernelOffsetY,
         uint tileMode,
-        bool convolveAlpha)
+        bool convolveAlpha,
+        int tileOriginX,
+        int tileOriginY,
+        int tileWidth,
+        int tileHeight)
     {
         if (_isDisposed) throw new ObjectDisposedException(nameof(ComputeAccelerator));
         if (kernelWidth is <= 0 or > 64 || kernelHeight is <= 0 or > 64)
@@ -595,7 +611,11 @@ public unsafe class ComputeAccelerator : IDisposable
             gain,
             bias,
             tileMode,
-            convolveAlpha));
+            convolveAlpha,
+            tileOriginX,
+            tileOriginY,
+            tileWidth,
+            tileHeight));
         using var kernelBuffer = new GpuBuffer(
             _context,
             (uint)(kernelLength * sizeof(float)),
