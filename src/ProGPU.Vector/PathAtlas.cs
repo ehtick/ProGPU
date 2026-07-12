@@ -221,6 +221,7 @@ public unsafe class PathAtlas : IDisposable
     public uint AtlasSize => _atlasSize;
     public int CachedPathCount => _paths.Count;
     public int CachedHitTestPathCount => _compiledHitTestPaths.Count;
+    public ulong Generation { get; private set; }
 
     public PathAtlas(WgpuContext context, uint atlasSize = 2048)
     {
@@ -809,6 +810,7 @@ public unsafe class PathAtlas : IDisposable
 
     private void RepackActivePaths()
     {
+        Generation++;
         PathInfo[]? activePaths = null;
         int activePathCount = 0;
 
@@ -894,6 +896,7 @@ public unsafe class PathAtlas : IDisposable
 
     private void ResetCachedPaths()
     {
+        Generation++;
         _paths.Clear();
         _pendingPaths.Clear();
         _currentX = 2;
@@ -932,6 +935,12 @@ public unsafe class PathAtlas : IDisposable
         uint usableWidth = _atlasSize > 4 ? _atlasSize - 4 : _atlasSize;
         uint entriesPerRow = Math.Max(1u, usableWidth / Math.Max(1u, entryWidth + 2));
         uint rowsNeeded = DivRoundUp(2, entriesPerRow);
+        ulong requiredFromEmpty = 2UL + (ulong)rowsNeeded * (entryHeight + 2UL);
+        if (requiredFromEmpty > _atlasSize)
+        {
+            return;
+        }
+
         uint nextRowY = _currentY + _currentRowHeight + 2;
         ulong requiredEndY = (ulong)nextRowY + (ulong)rowsNeeded * (entryHeight + 2);
 
