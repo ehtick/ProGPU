@@ -571,22 +571,43 @@ public struct SKRect
     }
 }
 
-public struct SKRectI
+public partial struct SKRectI : IEquatable<SKRectI>
 {
-    public int Left;
-    public int Top;
-    public int Right;
-    public int Bottom;
+    private int _left;
+    private int _top;
+    private int _right;
+    private int _bottom;
 
-    public int Width => Right - Left;
-    public int Height => Bottom - Top;
+    public int Left
+    {
+        readonly get => _left;
+        set => _left = value;
+    }
+    public int Top
+    {
+        readonly get => _top;
+        set => _top = value;
+    }
+    public int Right
+    {
+        readonly get => _right;
+        set => _right = value;
+    }
+    public int Bottom
+    {
+        readonly get => _bottom;
+        set => _bottom = value;
+    }
+
+    public readonly int Width => _right - _left;
+    public readonly int Height => _bottom - _top;
 
     public SKRectI(int left, int top, int right, int bottom)
     {
-        Left = left;
-        Top = top;
-        Right = right;
-        Bottom = bottom;
+        _left = left;
+        _top = top;
+        _right = right;
+        _bottom = bottom;
     }
 
     public static readonly SKRectI Empty = new(0, 0, 0, 0);
