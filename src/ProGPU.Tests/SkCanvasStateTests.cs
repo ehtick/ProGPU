@@ -1401,6 +1401,7 @@ public sealed class SkCanvasStateTests
 
         var command = Assert.Single(context.Commands, static command => command.Type == RenderCommandType.DrawGlyphRun);
         Assert.True(command.UseVectorGlyphRendering);
+        Assert.False(command.HasFontTransform);
     }
 
     [Fact]

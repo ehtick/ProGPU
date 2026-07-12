@@ -342,6 +342,8 @@ public struct RenderCommand
     public Vector2 Position;
     public bool IsBold;
     public bool IsItalic;
+    public Vector2 FontTransform;
+    public bool HasFontTransform;
     public float Rotation;
     public TextRenderingMode TextRenderingMode;
     public TextHintingMode TextHintingMode;
@@ -968,7 +970,9 @@ public class DrawingContext : IRenderDataProvider
         bool isItalic = false,
         TextRenderingMode textRenderingMode = TextRenderingMode.Grayscale,
         TextHintingMode textHintingMode = TextHintingMode.Auto,
-        bool useVectorGlyphRendering = false)
+        bool useVectorGlyphRendering = false,
+        float fontScaleX = 1f,
+        float fontSkewX = 0f)
     {
         Commands.Add(new RenderCommand
         {
@@ -982,6 +986,8 @@ public class DrawingContext : IRenderDataProvider
             Transform = transform,
             IsBold = isBold,
             IsItalic = isItalic,
+            FontTransform = new Vector2(fontScaleX, fontSkewX),
+            HasFontTransform = fontScaleX != 1f || fontSkewX != 0f,
             TextRenderingMode = textRenderingMode,
             TextHintingMode = textHintingMode,
             UseVectorGlyphRendering = useVectorGlyphRendering

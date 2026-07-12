@@ -196,6 +196,7 @@ public unsafe class Compositor : IDisposable
         float EmScale,
         Vector2 FractionalPosition,
         float ItalicSkew,
+        float ScaleX,
         bool UsesSvgCoordinates);
 
     public struct StaticTextRecord
@@ -7613,17 +7614,31 @@ SceneStateUploadComplete:
             activeTransform,
             _currentDpiScale,
             staticZoom);
+        var fontScaleX = cmd.HasFontTransform && float.IsFinite(cmd.FontTransform.X)
+            ? cmd.FontTransform.X
+            : 1f;
+        var fontSkewX = cmd.HasFontTransform && float.IsFinite(cmd.FontTransform.Y)
+            ? cmd.FontTransform.Y
+            : 0f;
+        var glyphItalicSkew = (cmd.IsItalic ? 0.22f : 0f) - fontSkewX;
         var transformScale = TransformMetrics.GetStrokeScale(activeTransform);
-        var atlasUpscale = atlasToLogicalScale * transformScale * staticZoom;
-        var textPathCoverageGamma = GetTextPathCoverageGamma(
-            cmd.FontSize,
-            activeTransform,
-            transformScale,
-            dpiScale);
+        var atlasUpscale = atlasToLogicalScale
+            * transformScale
+            * staticZoom
+            * MathF.Max(1f, MathF.Abs(fontScaleX));
+        var textPathCoverageGamma = MathF.Abs(fontSkewX) > 0.0001f || fontScaleX < 0f
+            ? TransformedTextPathCoverageGamma
+            : GetTextPathCoverageGamma(
+                cmd.FontSize,
+                activeTransform,
+                transformScale,
+                dpiScale);
         bool isRotated = MathF.Abs(activeTransform.M12) > 0.0001f ||
                          MathF.Abs(activeTransform.M21) > 0.0001f ||
                          activeTransform.M11 < 0.0f ||
-                         activeTransform.M22 < 0.0f;
+                         activeTransform.M22 < 0.0f ||
+                         MathF.Abs(fontSkewX) > 0.0001f ||
+                         fontScaleX < 0f;
         var basisX = new Vector2(activeTransform.M11, activeTransform.M12);
         var basisY = new Vector2(activeTransform.M21, activeTransform.M22);
         int passCount = cmd.IsBold ? 2 : 1;
@@ -7653,6 +7668,8 @@ SceneStateUploadComplete:
                         layerOutline,
                         layerScale,
                         layerPosition,
+                        italicSkew: glyphItalicSkew,
+                        scaleX: fontScaleX,
                         usesSvgCoordinates: layer.UsesSvgCoordinates);
 
                     var pathCmd = new RenderCommand
@@ -7693,10 +7710,11 @@ SceneStateUploadComplete:
                             cmd,
                             cmd.FontSize / glyphFont.UnitsPerEm,
                             runGlyph.Position + cmd.Position,
-                            cmd.IsItalic ? 0.22f : 0f,
+                            glyphItalicSkew,
                             pass * vectorBoldOffset,
                             textPathCoverageGamma,
-                            activeTransform);
+                            activeTransform,
+                            fontScaleX);
                     }
                 }
 
@@ -7746,13 +7764,17 @@ SceneStateUploadComplete:
                     SnappedLogicalPos = snappedLogicalPos,
                     BasisX = basisX,
                     BasisY = basisY,
-                    BearSize = new Vector4(info.BearX, info.BearY, glyphRenderWidth, glyphRenderHeight),
+                    BearSize = new Vector4(
+                        info.BearX * fontScaleX,
+                        info.BearY,
+                        glyphRenderWidth * fontScaleX,
+                        glyphRenderHeight),
                     TexCoords = new Vector4(info.TexCoordMin.X, info.TexCoordMin.Y, info.TexCoordMax.X, info.TexCoordMax.Y),
                     Color = color,
                     ScaleBoldItalicUseMvp = new Vector4(
                         glyphAtlasScale,
                         xOffset,
-                        cmd.IsItalic ? 0.22f : 0f,
+                        glyphItalicSkew,
                         EncodeTextFlags(
                             ActiveCompilationContext != null,
                             cmd.TextRenderingMode,
@@ -7796,18 +7818,32 @@ SceneStateUploadComplete:
             activeTransform,
             _currentDpiScale,
             staticZoom);
+        var fontScaleX = cmd.HasFontTransform && float.IsFinite(cmd.FontTransform.X)
+            ? cmd.FontTransform.X
+            : 1f;
+        var fontSkewX = cmd.HasFontTransform && float.IsFinite(cmd.FontTransform.Y)
+            ? cmd.FontTransform.Y
+            : 0f;
+        var glyphItalicSkew = (cmd.IsItalic ? 0.22f : 0f) - fontSkewX;
         var transformScale = TransformMetrics.GetStrokeScale(activeTransform);
-        var atlasUpscale = atlasToLogicalScale * transformScale * staticZoom;
-        var textPathCoverageGamma = GetTextPathCoverageGamma(
-            cmd.FontSize,
-            activeTransform,
-            transformScale,
-            dpiScale);
+        var atlasUpscale = atlasToLogicalScale
+            * transformScale
+            * staticZoom
+            * MathF.Max(1f, MathF.Abs(fontScaleX));
+        var textPathCoverageGamma = MathF.Abs(fontSkewX) > 0.0001f || fontScaleX < 0f
+            ? TransformedTextPathCoverageGamma
+            : GetTextPathCoverageGamma(
+                cmd.FontSize,
+                activeTransform,
+                transformScale,
+                dpiScale);
 
         bool isRotated = MathF.Abs(activeTransform.M12) > 0.0001f ||
                          MathF.Abs(activeTransform.M21) > 0.0001f ||
                          activeTransform.M11 < 0.0f ||
-                         activeTransform.M22 < 0.0f;
+                         activeTransform.M22 < 0.0f ||
+                         MathF.Abs(fontSkewX) > 0.0001f ||
+                         fontScaleX < 0f;
         var basisX = new Vector2(activeTransform.M11, activeTransform.M12);
         var basisY = new Vector2(activeTransform.M21, activeTransform.M22);
         int passCount = cmd.IsBold ? 2 : 1;
@@ -7837,6 +7873,8 @@ SceneStateUploadComplete:
                         layerOutline,
                         layerScale,
                         layerPosition,
+                        italicSkew: glyphItalicSkew,
+                        scaleX: fontScaleX,
                         usesSvgCoordinates: layer.UsesSvgCoordinates);
 
                     var pathCmd = new RenderCommand
@@ -7873,10 +7911,11 @@ SceneStateUploadComplete:
                             cmd,
                             cmd.FontSize / font.UnitsPerEm,
                             position + cmd.Position,
-                            cmd.IsItalic ? 0.22f : 0f,
+                            glyphItalicSkew,
                             pass * vectorBoldOffset,
                             textPathCoverageGamma,
-                            activeTransform);
+                            activeTransform,
+                            fontScaleX);
                     }
                 }
 
@@ -7929,13 +7968,17 @@ SceneStateUploadComplete:
                     SnappedLogicalPos = snappedLogicalPos,
                     BasisX = basisX,
                     BasisY = basisY,
-                    BearSize = new Vector4(info.BearX, info.BearY, glyphRenderWidth, glyphRenderHeight),
+                    BearSize = new Vector4(
+                        info.BearX * fontScaleX,
+                        info.BearY,
+                        glyphRenderWidth * fontScaleX,
+                        glyphRenderHeight),
                     TexCoords = new Vector4(info.TexCoordMin.X, info.TexCoordMin.Y, info.TexCoordMax.X, info.TexCoordMax.Y),
                     Color = color,
                     ScaleBoldItalicUseMvp = new Vector4(
                         glyphAtlasScale,
                         xOffset,
-                        cmd.IsItalic ? 0.22f : 0f,
+                        glyphItalicSkew,
                         EncodeTextFlags(
                             ActiveCompilationContext != null,
                             cmd.TextRenderingMode,
@@ -7955,7 +7998,8 @@ SceneStateUploadComplete:
         float italicSkew,
         float xOffset,
         float pathCoverageGamma,
-        Matrix4x4 activeTransform)
+        Matrix4x4 activeTransform,
+        float scaleX = 1f)
     {
         var positioned = position + new Vector2(xOffset, 0f);
         PathGeometry positionedOutline;
@@ -7970,6 +8014,7 @@ SceneStateUploadComplete:
                 emScale,
                 fractionalPosition,
                 italicSkew,
+                scaleX,
                 UsesSvgCoordinates: false);
 
             if (!_vectorGlyphPathCache.TryGetValue(key, out positionedOutline!))
@@ -7983,7 +8028,8 @@ SceneStateUploadComplete:
                     outline,
                     emScale,
                     fractionalPosition,
-                    italicSkew);
+                    italicSkew,
+                    scaleX: scaleX);
                 _vectorGlyphPathCache[key] = positionedOutline;
             }
 
@@ -7998,7 +8044,8 @@ SceneStateUploadComplete:
                 outline,
                 emScale,
                 positioned,
-                italicSkew);
+                italicSkew,
+                scaleX: scaleX);
             placementTransform = activeTransform;
         }
 
@@ -8042,10 +8089,12 @@ SceneStateUploadComplete:
         Vector2 position,
         float italicSkew = 0f,
         float xOffset = 0f,
-        bool usesSvgCoordinates = false)
+        bool usesSvgCoordinates = false,
+        float scaleX = 1f)
     {
+        var orientedItalicSkew = usesSvgCoordinates ? -italicSkew : italicSkew;
         Vector2 TransformPoint(Vector2 point) => new(
-            position.X + (point.X + point.Y * italicSkew) * emScale + xOffset,
+            position.X + (point.X * scaleX + point.Y * orientedItalicSkew) * emScale + xOffset,
             position.Y + point.Y * emScale * (usesSvgCoordinates ? 1f : -1f));
 
         var transformedOutline = new PathGeometry { FillRule = outline.FillRule };
@@ -8086,7 +8135,9 @@ SceneStateUploadComplete:
                     case ArcSegment arc:
                         transformedFigure.Segments.Add(new ArcSegment(
                             TransformPoint(arc.Point),
-                            new Vector2(MathF.Abs(arc.Size.X * emScale), MathF.Abs(arc.Size.Y * emScale)),
+                            new Vector2(
+                                MathF.Abs(arc.Size.X * emScale * scaleX),
+                                MathF.Abs(arc.Size.Y * emScale)),
                             arc.RotationAngle,
                             arc.IsLargeArc,
                             arc.SweepDirection,

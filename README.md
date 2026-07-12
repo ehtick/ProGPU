@@ -87,7 +87,7 @@ Encoded images are decoded on the CPU before their pixels enter the GPU texture 
 
 CPU bitmap resizing follows Skia's pixel-center mapping and alpha representation. Nearest and linear modes use fixed one- and four-sample footprints; cubic mode evaluates the requested Mitchell-Netravali B/C kernel over a fixed 4x4 footprint, preserving the distinction between Mitchell and Catmull-Rom. Source rows are read with their actual stride and color order, and output is converted to RGBA8888, BGRA8888, RGB888x, or RGB565 without forcing a WebGPU upload. Nearest sampling is a direct `O(destination pixels)` pass with no source-sized temporary allocation, and same-format texels stay as raw copies. Linear and cubic sampling normalize source pixels once, then run in `O(source pixels + destination pixels)` and `O(source pixels + 16 * destination pixels)` time with `O(source pixels)` temporary storage.
 
-Font outline APIs preserve Skia's separation between glyph geometry and placement metrics. `ScaleX` stretches glyph paths and advances horizontally, while `SkewX` expands measured bounds without mutating `GetGlyphPath`/`GetTextPath` geometry. This keeps explicit glyph positions stable and lets callers apply skew during drawing without double-transforming cached outlines.
+Font outline APIs preserve Skia's separation between glyph geometry and placement metrics. `ScaleX` stretches glyph paths and advances horizontally, while `SkewX` expands measured bounds without mutating `GetGlyphPath`/`GetTextPath` geometry. Fill-text recording carries `ScaleX`, `SkewX`, and `Embolden` into a glyph run without rescaling its already-shaped positions. The compositor applies stretch and shear only to glyph-local geometry: vector outlines reuse transform-aware path-cache entries, while atlas text reuses the existing constant-cost vertex shear and scaled quad bounds. Stroke and shader fallbacks compose skew into the generated path. This avoids duplicate position arrays, preserves explicit placement, and keeps ordinary fonts on the unchanged fast path.
 
 | Package | Purpose | NuGet |
 | --- | --- | --- |
@@ -573,7 +573,7 @@ Text-heavy pages avoid repeated work without changing raster quality:
 
 * `TextLayout` stores the resolved `GlyphIndex` beside each positioned glyph. The compositor uses that index directly instead of repeating character-map lookup during every compile.
 * `TtfFont` resolves `HasColorGlyphs` and `HasBitmapGlyphs` once after parsing the table directory. Normal outline fonts therefore avoid per-glyph COLR/CPAL/SVG/bitmap probes, while fonts that contain those tables still use the full color or bitmap path.
-* DPI/raster size, transform scale, rotation state, basis vectors, and synthetic-bold parameters are computed once per text command or glyph run rather than once per glyph.
+* DPI/raster size, transform scale, rotation state, basis vectors, synthetic-bold parameters, and Skia font stretch/shear are computed once per text command or glyph run rather than once per glyph. Explicit positions remain in shaped logical coordinates; only glyph-local outlines or atlas quads are transformed, and vector cache keys include the local stretch and shear.
 * `RichTextBlock` retains its generated drawing commands until layout, theme, selection, or hyperlink-hover state changes. Markdown and document pages can replay stable text/table commands instead of reconstructing them on every render.
 
 ---

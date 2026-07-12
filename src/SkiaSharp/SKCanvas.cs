@@ -3041,6 +3041,9 @@ public class SKCanvas : IDisposable
                             brush,
                             Vector2.Zero,
                             transform,
+                            isBold: run.Font.Embolden,
+                            fontScaleX: GetFiniteFontScaleX(run.Font),
+                            fontSkewX: GetFiniteFontSkewX(run.Font),
                             useVectorGlyphRendering: true);
                     }
 
@@ -3061,6 +3064,9 @@ public class SKCanvas : IDisposable
                     brush,
                     new Vector2(x, y),
                     _currentMatrix.ToMatrix4x4(),
+                    isBold: run.Font.Embolden,
+                    fontScaleX: GetFiniteFontScaleX(run.Font),
+                    fontSkewX: GetFiniteFontSkewX(run.Font),
                     useVectorGlyphRendering: true
                 );
             }
@@ -3089,18 +3095,74 @@ public class SKCanvas : IDisposable
                     var matrix = matrices[i].ToMatrix();
                     matrix.TransX += x;
                     matrix.TransY += y;
-                    result.AddPath(glyphPath, matrix);
+                    AddTextBlobGlyphPath(result, glyphPath, run.Font, matrix);
                 }
                 else
                 {
                     var position = run.GlyphPositions[i];
-                    result.AddPath(glyphPath, x + position.X, y + position.Y);
+                    AddTextBlobGlyphPath(
+                        result,
+                        glyphPath,
+                        run.Font,
+                        x + position.X,
+                        y + position.Y);
                 }
             }
         }
 
         return result;
     }
+
+    private static void AddTextBlobGlyphPath(
+        SKPath destination,
+        SKPath glyphPath,
+        SKFont font,
+        float x,
+        float y)
+    {
+        var skewX = GetFiniteFontSkewX(font);
+        if (MathF.Abs(skewX) <= 0.0001f)
+        {
+            destination.AddPath(glyphPath, x, y);
+            return;
+        }
+
+        using var transformed = new SKPath(glyphPath);
+        transformed.Transform(CreateFontSkewMatrix(skewX));
+        destination.AddPath(transformed, x, y);
+    }
+
+    private static void AddTextBlobGlyphPath(
+        SKPath destination,
+        SKPath glyphPath,
+        SKFont font,
+        SKMatrix placement)
+    {
+        var skewX = GetFiniteFontSkewX(font);
+        if (MathF.Abs(skewX) <= 0.0001f)
+        {
+            destination.AddPath(glyphPath, placement);
+            return;
+        }
+
+        using var transformed = new SKPath(glyphPath);
+        transformed.Transform(CreateFontSkewMatrix(skewX));
+        destination.AddPath(transformed, placement);
+    }
+
+    private static SKMatrix CreateFontSkewMatrix(float skewX) => new()
+    {
+        ScaleX = 1f,
+        SkewX = skewX,
+        ScaleY = 1f,
+        Persp2 = 1f
+    };
+
+    private static float GetFiniteFontScaleX(SKFont font) =>
+        float.IsFinite(font.ScaleX) ? font.ScaleX : 1f;
+
+    private static float GetFiniteFontSkewX(SKFont font) =>
+        float.IsFinite(font.SkewX) ? font.SkewX : 0f;
 
     public void DrawText(SKTextBlob textBlob, float x, float y, SKPaint paint)
     {
