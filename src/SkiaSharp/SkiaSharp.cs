@@ -1008,58 +1008,6 @@ public struct SKRotationScaleMatrix : IEquatable<SKRotationScaleMatrix>
     public override readonly int GetHashCode() => HashCode.Combine(SCos, SSin, TX, TY);
 }
 
-public class SKMatrix44
-{
-    public float M00 { get; set; } = 1f;
-    public float M01 { get; set; }
-    public float M02 { get; set; }
-    public float M03 { get; set; }
-    public float M10 { get; set; }
-    public float M11 { get; set; } = 1f;
-    public float M12 { get; set; }
-    public float M13 { get; set; }
-    public float M20 { get; set; }
-    public float M21 { get; set; }
-    public float M22 { get; set; } = 1f;
-    public float M23 { get; set; }
-    public float M30 { get; set; }
-    public float M31 { get; set; }
-    public float M32 { get; set; }
-    public float M33 { get; set; } = 1f;
-
-    public Matrix4x4 ToMatrix4x4()
-    {
-        return new Matrix4x4(
-            M00, M01, M02, M03,
-            M10, M11, M12, M13,
-            M20, M21, M22, M23,
-            M30, M31, M32, M33);
-    }
-
-    internal static SKMatrix44 FromMatrix4x4(Matrix4x4 matrix)
-    {
-        return new SKMatrix44
-        {
-            M00 = matrix.M11,
-            M01 = matrix.M12,
-            M02 = matrix.M13,
-            M03 = matrix.M14,
-            M10 = matrix.M21,
-            M11 = matrix.M22,
-            M12 = matrix.M23,
-            M13 = matrix.M24,
-            M20 = matrix.M31,
-            M21 = matrix.M32,
-            M22 = matrix.M33,
-            M23 = matrix.M34,
-            M30 = matrix.M41,
-            M31 = matrix.M42,
-            M32 = matrix.M43,
-            M33 = matrix.M44
-        };
-    }
-}
-
 public struct SKCubicResampler
 {
     public float B;

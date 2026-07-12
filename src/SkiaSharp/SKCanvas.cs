@@ -1657,7 +1657,6 @@ public class SKCanvas : IDisposable
 
     public void SetMatrix(SKMatrix44 matrix)
     {
-        ArgumentNullException.ThrowIfNull(matrix);
         _currentMatrix = SKMatrix.FromMatrix4x4(matrix.ToMatrix4x4());
     }
 
