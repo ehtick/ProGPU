@@ -241,6 +241,13 @@ public enum SKPixelGeometry
     BgrVertical = 6,
 }
 
+[Flags]
+public enum SKSurfacePropsFlags
+{
+    None = 0,
+    UseDeviceIndependentFonts = 1,
+}
+
 public enum SKEncodedImageFormat
 {
     Bmp = 0,
@@ -2040,16 +2047,31 @@ public class SKCodec : SKObject
             NotSupportedException;
 }
 
-public class SKSurfaceProperties : IDisposable
+public class SKSurfaceProperties : SKObject
 {
+    private readonly SKSurfacePropsFlags _flags;
+
+    public SKSurfacePropsFlags Flags => _flags;
+
     public SKPixelGeometry PixelGeometry { get; }
 
+    public bool IsUseDeviceIndependentFonts =>
+        (_flags & SKSurfacePropsFlags.UseDeviceIndependentFonts) != 0;
+
     public SKSurfaceProperties(SKPixelGeometry pixelGeometry)
+        : this(0u, pixelGeometry)
     {
+    }
+
+    public SKSurfaceProperties(uint flags, SKPixelGeometry pixelGeometry)
+        : base(SKObjectHandle.Create(), owns: true)
+    {
+        _flags = (SKSurfacePropsFlags)flags;
         PixelGeometry = pixelGeometry;
     }
 
-    public void Dispose()
+    public SKSurfaceProperties(SKSurfacePropsFlags flags, SKPixelGeometry pixelGeometry)
+        : this((uint)flags, pixelGeometry)
     {
     }
 }
