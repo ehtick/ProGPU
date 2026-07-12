@@ -913,7 +913,7 @@ public class SKBitmap : IDisposable
         return new SKPixmap(_info, _pixels, RowBytes);
     }
 
-    public SKBitmap? Resize(SKImageInfo info, SKSamplingOptions sampling)
+    public SKBitmap Resize(SKImageInfo info, SKSamplingOptions sampling)
     {
         FlushAttachedCanvas();
         if (_pixels == IntPtr.Zero
@@ -927,7 +927,7 @@ public class SKBitmap : IDisposable
                 && (!float.IsFinite(sampling.CubicResampler.B)
                     || !float.IsFinite(sampling.CubicResampler.C))))
         {
-            return null;
+            return null!;
         }
 
         var resized = new SKBitmap(info);

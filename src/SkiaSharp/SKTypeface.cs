@@ -468,12 +468,12 @@ public partial class SKTypeface : IDisposable
         return false;
     }
 
-    public SKStreamAsset? OpenStream()
+    public SKStreamAsset OpenStream()
     {
-        return _isEmpty ? null : new SKStreamAsset(Font.FontData.ToArray());
+        return _isEmpty ? null! : new SKStreamAsset(Font.FontData.ToArray());
     }
 
-    public SKStreamAsset? OpenStream(out int ttcIndex)
+    public SKStreamAsset OpenStream(out int ttcIndex)
     {
         ttcIndex = _isEmpty ? 0 : Font.FaceIndex;
         return OpenStream();
