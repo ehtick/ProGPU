@@ -997,7 +997,7 @@ public class DiagnosticsLoggingSourceTests
     }
 
     [Fact]
-    public void PathAtlasCleanupUsesPooledRemovalBuffers()
+    public void PathAtlasCleanupAndRasterizationUsePooledBuffers()
     {
         string helper = ReadSource("src", "ProGPU.Vector", "PooledRemovalBuffer.cs");
         string pathGeometry = ReadSource("src", "ProGPU.Vector", "PathGeometry.cs");
@@ -1024,16 +1024,19 @@ public class DiagnosticsLoggingSourceTests
         Assert.DoesNotContain("var activePaths = new List<PathInfo>();", pathAtlas, StringComparison.Ordinal);
         Assert.Contains("private void ClearAtlasTexture()", pathAtlas, StringComparison.Ordinal);
         Assert.Contains("_atlasTexture.ClearRenderTarget();", pathAtlas, StringComparison.Ordinal);
-        Assert.DoesNotContain("ArrayPool<byte>.Shared.Rent", pathAtlas, StringComparison.Ordinal);
         Assert.DoesNotContain("byte[] clearData = new byte[_atlasSize * _atlasSize * 4];", pathAtlas, StringComparison.Ordinal);
+        Assert.Contains("ArrayPool<PendingRasterization>.Shared.Rent", pathAtlas, StringComparison.Ordinal);
+        Assert.Contains("ArrayPool<RasterizationDispatch>.Shared.Rent", pathAtlas, StringComparison.Ordinal);
+        Assert.Contains("ArrayPool<byte>.Shared.Rent(totalUniformBytes)", pathAtlas, StringComparison.Ordinal);
         Assert.Contains("nint[]? bindGroupsToRelease = null;", pathAtlas, StringComparison.Ordinal);
-        Assert.Contains("PooledRemovalBuffer.Add(ref bindGroupsToRelease", pathAtlas, StringComparison.Ordinal);
+        Assert.Contains("PooledRemovalBuffer.Add(", pathAtlas, StringComparison.Ordinal);
+        Assert.Contains("ref bindGroupsToRelease", pathAtlas, StringComparison.Ordinal);
         Assert.Contains("PooledRemovalBuffer.Return(bindGroupsToRelease, bindGroupToReleaseCount)", pathAtlas, StringComparison.Ordinal);
-        Assert.Contains("nint[]? layoutsToRelease = null;", pathAtlas, StringComparison.Ordinal);
-        Assert.Contains("PooledRemovalBuffer.Add(ref layoutsToRelease", pathAtlas, StringComparison.Ordinal);
-        Assert.Contains("PooledRemovalBuffer.Return(layoutsToRelease, layoutToReleaseCount)", pathAtlas, StringComparison.Ordinal);
+        Assert.Contains("private readonly BindGroupLayout* _computeBindGroupLayout;", pathAtlas, StringComparison.Ordinal);
+        Assert.Contains("private readonly PipelineLayout* _computePipelineLayout;", pathAtlas, StringComparison.Ordinal);
+        Assert.DoesNotContain("ComputePipelineGetBindGroupLayout", pathAtlas, StringComparison.Ordinal);
+        Assert.Contains("checked((uint)dispatch.Count)", pathAtlas, StringComparison.Ordinal);
         Assert.DoesNotContain("var bindGroupsToRelease = new List<nint>();", pathAtlas, StringComparison.Ordinal);
-        Assert.DoesNotContain("var layoutsToRelease = new List<nint>();", pathAtlas, StringComparison.Ordinal);
         Assert.Contains("for (int i = 0; i < _pendingPaths.Count; i++)", pathAtlas, StringComparison.Ordinal);
         Assert.Contains("var info = _pendingPaths[i];", pathAtlas, StringComparison.Ordinal);
         Assert.Contains("for (int i = 0; i < _tempBuffers.Count; i++)", pathAtlas, StringComparison.Ordinal);

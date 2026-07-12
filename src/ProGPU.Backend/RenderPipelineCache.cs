@@ -40,11 +40,11 @@ public enum GpuBlendMode
 public unsafe class RenderPipelineCache : IDisposable
 {
     private readonly WgpuContext _context;
-    
+
     private readonly Dictionary<string, nint> _shaders = new();
     private readonly Dictionary<string, nint> _renderPipelines = new();
     private readonly Dictionary<string, nint> _computePipelines = new();
-    
+
     private bool _isDisposed;
 
     public RenderPipelineCache(WgpuContext context)
@@ -77,7 +77,7 @@ public unsafe class RenderPipelineCache : IDisposable
         };
 
         var module = _context.Wgpu.DeviceCreateShaderModule(_context.Device, &desc);
-        
+
         SilkMarshal.Free(codePtr);
         SilkMarshal.Free(labelPtr);
 
@@ -409,7 +409,11 @@ public unsafe class RenderPipelineCache : IDisposable
         return blendState;
     }
 
-    public ComputePipeline* GetOrCreateComputePipeline(string key, ShaderModule* shaderModule, string entryPoint = "main")
+    public ComputePipeline* GetOrCreateComputePipeline(
+        string key,
+        ShaderModule* shaderModule,
+        string entryPoint = "main",
+        PipelineLayout* pipelineLayout = null)
     {
         if (_isDisposed) throw new ObjectDisposedException(nameof(RenderPipelineCache));
         if (_computePipelines.TryGetValue(key, out var cachedPipeline)) return (ComputePipeline*)cachedPipeline;
@@ -420,7 +424,7 @@ public unsafe class RenderPipelineCache : IDisposable
         var desc = new ComputePipelineDescriptor
         {
             Label = (byte*)labelPtr,
-            Layout = null, // Auto layout
+            Layout = pipelineLayout,
             Compute = new ProgrammableStageDescriptor
             {
                 Module = shaderModule,

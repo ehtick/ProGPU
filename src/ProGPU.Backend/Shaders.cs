@@ -1688,15 +1688,39 @@ struct Segment {
     _pad2: u32,
 };
 
-@group(0) @binding(0) var<uniform> uniforms: PathUniforms;
+@group(0) @binding(0) var<storage, read> pathUniforms: array<PathUniforms>;
 @group(0) @binding(1) var<storage, read> pathRecords: array<PathRecord>;
 @group(0) @binding(2) var<storage, read> segments: array<Segment>;
 @group(0) @binding(3) var atlasTexture: texture_storage_2d<rgba8unorm, write>;
 
 " + SharedWgpuMathCode + @"
 
-fn is_point_inside(p: vec2<f32>, record: PathRecord) -> bool {
-    var winding: i32 = 0;
+fn add_crossing(
+    winding: ptr<function, array<i32, 8>>,
+    samplePositionsX: ptr<function, array<f32, 8>>,
+    sampleGrid: u32,
+    intersectX: f32,
+    direction: i32) {
+    for (var sampleX = 0u; sampleX < sampleGrid; sampleX = sampleX + 1u) {
+        if ((*samplePositionsX)[sampleX] < intersectX) {
+            (*winding)[sampleX] = (*winding)[sampleX] + direction;
+        }
+    }
+}
+
+fn count_row_coverage(
+    pixelX: f32,
+    sampleY: f32,
+    sampleGrid: u32,
+    scaleX: f32,
+    record: PathRecord) -> u32 {
+    var winding = array<i32, 8>(0, 0, 0, 0, 0, 0, 0, 0);
+    var samplePositionsX = array<f32, 8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    for (var sampleX = 0u; sampleX < sampleGrid; sampleX = sampleX + 1u) {
+        let sampleOffsetX = (f32(sampleX) + 0.5) / f32(sampleGrid);
+        samplePositionsX[sampleX] = (pixelX + sampleOffsetX) / scaleX;
+    }
+
     let endIdx = record.startSegment + record.segmentCount;
     for (var i: u32 = record.startSegment; i < endIdx; i = i + 1u) {
         let seg = segments[i];
@@ -1706,21 +1730,17 @@ fn is_point_inside(p: vec2<f32>, record: PathRecord) -> bool {
             if (A.y == B.y) {
                 continue;
             }
-            if (A.y <= p.y) {
-                if (B.y > p.y) {
-                    let t = (p.y - A.y) / (B.y - A.y);
+            if (A.y <= sampleY) {
+                if (B.y > sampleY) {
+                    let t = (sampleY - A.y) / (B.y - A.y);
                     let intersectX = A.x + t * (B.x - A.x);
-                    if (p.x < intersectX) {
-                        winding = winding + 1;
-                    }
+                    add_crossing(&winding, &samplePositionsX, sampleGrid, intersectX, 1);
                 }
             } else {
-                if (B.y <= p.y) {
-                    let t = (p.y - A.y) / (B.y - A.y);
+                if (B.y <= sampleY) {
+                    let t = (sampleY - A.y) / (B.y - A.y);
                     let intersectX = A.x + t * (B.x - A.x);
-                    if (p.x < intersectX) {
-                        winding = winding - 1;
-                    }
+                    add_crossing(&winding, &samplePositionsX, sampleGrid, intersectX, -1);
                 }
             }
         } else if (seg.segmentType == 1u) {
@@ -1730,7 +1750,7 @@ fn is_point_inside(p: vec2<f32>, record: PathRecord) -> bool {
             
             let a = A.y - 2.0 * B.y + C.y;
             let b = 2.0 * (B.y - A.y);
-            let c = A.y - p.y;
+            let c = A.y - sampleY;
             
             var roots = array<f32, 2>(0.0, 0.0);
             var root_count: u32 = 0u;
@@ -1746,15 +1766,15 @@ fn is_point_inside(p: vec2<f32>, record: PathRecord) -> bool {
                     var is_valid = false;
                     if (t < 0.005) {
                         if (deriv_y > 0.0) {
-                            is_valid = (p.y >= A.y);
+                            is_valid = (sampleY >= A.y);
                         } else if (deriv_y < 0.0) {
-                            is_valid = (p.y < A.y);
+                            is_valid = (sampleY < A.y);
                         }
                     } else if (t > 0.995) {
                         if (deriv_y > 0.0) {
-                            is_valid = (p.y < C.y);
+                            is_valid = (sampleY < C.y);
                         } else if (deriv_y < 0.0) {
-                            is_valid = (p.y >= C.y);
+                            is_valid = (sampleY >= C.y);
                         }
                     } else {
                         is_valid = true;
@@ -1764,12 +1784,10 @@ fn is_point_inside(p: vec2<f32>, record: PathRecord) -> bool {
                         let tc = clamp(t, 0.0, 1.0);
                         let omt = 1.0 - tc;
                         let x_t = omt * omt * A.x + 2.0 * omt * tc * B.x + tc * tc * C.x;
-                        if (p.x < x_t) {
-                            if (deriv_y > 0.0) {
-                                winding = winding + 1;
-                            } else if (deriv_y < 0.0) {
-                                winding = winding - 1;
-                            }
+                        if (deriv_y > 0.0) {
+                            add_crossing(&winding, &samplePositionsX, sampleGrid, x_t, 1);
+                        } else if (deriv_y < 0.0) {
+                            add_crossing(&winding, &samplePositionsX, sampleGrid, x_t, -1);
                         }
                     }
                 }
@@ -1783,7 +1801,7 @@ fn is_point_inside(p: vec2<f32>, record: PathRecord) -> bool {
             let a = -A.y + 3.0 * B.y - 3.0 * C.y + D_pt.y;
             let b = 3.0 * A.y - 6.0 * B.y + 3.0 * C.y;
             let c = -3.0 * A.y + 3.0 * B.y;
-            let d = A.y - p.y;
+            let d = A.y - sampleY;
             
             var roots = array<f32, 3>(0.0, 0.0, 0.0);
             var root_count: u32 = 0u;
@@ -1798,15 +1816,15 @@ fn is_point_inside(p: vec2<f32>, record: PathRecord) -> bool {
                     var is_valid = false;
                     if (t < 0.005) {
                         if (deriv_y > 0.0) {
-                            is_valid = (p.y >= A.y);
+                            is_valid = (sampleY >= A.y);
                         } else if (deriv_y < 0.0) {
-                            is_valid = (p.y < A.y);
+                            is_valid = (sampleY < A.y);
                         }
                     } else if (t > 0.995) {
                         if (deriv_y > 0.0) {
-                            is_valid = (p.y < D_pt.y);
+                            is_valid = (sampleY < D_pt.y);
                         } else if (deriv_y < 0.0) {
-                            is_valid = (p.y >= D_pt.y);
+                            is_valid = (sampleY >= D_pt.y);
                         }
                     } else {
                         is_valid = true;
@@ -1819,12 +1837,10 @@ fn is_point_inside(p: vec2<f32>, record: PathRecord) -> bool {
                                 + 3.0 * omt * omt * tc * B.x
                                 + 3.0 * omt * tc * tc * C.x
                                 + tc * tc * tc * D_pt.x;
-                        if (p.x < x_t) {
-                            if (deriv_y > 0.0) {
-                                winding = winding + 1;
-                            } else if (deriv_y < 0.0) {
-                                winding = winding - 1;
-                            }
+                        if (deriv_y > 0.0) {
+                            add_crossing(&winding, &samplePositionsX, sampleGrid, x_t, 1);
+                        } else if (deriv_y < 0.0) {
+                            add_crossing(&winding, &samplePositionsX, sampleGrid, x_t, -1);
                         }
                     }
                 }
@@ -1844,7 +1860,7 @@ fn is_point_inside(p: vec2<f32>, record: PathRecord) -> bool {
             let cos_phi = cos(phi);
             let sin_phi = sin(phi);
             
-            let dy = p.y - center.y;
+            let dy = sampleY - center.y;
             
             let rx2 = rx * rx;
             let ry2 = ry * ry;
@@ -1863,50 +1879,46 @@ fn is_point_inside(p: vec2<f32>, record: PathRecord) -> bool {
                 for (var r_idx: u32 = 0u; r_idx < 2u; r_idx = r_idx + 1u) {
                     let dx = roots[r_idx];
                     let intersectX = center.x + dx;
-                    if (p.x < intersectX) {
-                        let localX = dx * cos_phi + dy * sin_phi;
-                        let localY = -dx * sin_phi + dy * cos_phi;
-                        let theta = atan2(localY / ry, localX / rx);
-                        
-                        var t: f32 = 0.0;
-                        let pi2 = 6.283185307179586;
-                        if (delta_theta > 0.0) {
-                            let diff = (theta - theta1) - pi2 * floor((theta - theta1) / pi2);
-                            t = diff / delta_theta;
-                        } else {
-                            let diff = (theta1 - theta) - pi2 * floor((theta1 - theta) / pi2);
-                            t = diff / (-delta_theta);
-                        }
-                        
-                        let deriv_y = delta_theta * (-rx * sin(theta) * sin_phi + ry * cos(theta) * cos_phi);
-                        
-                        var is_valid = false;
-                        if (deriv_y > 0.0) {
-                            is_valid = (t >= 0.0 && t < 1.0);
-                        } else if (deriv_y < 0.0) {
-                            is_valid = (t > 0.0 && t <= 1.0);
-                        }
-                        
-                        if (is_valid) {
-                            if (deriv_y > 0.0) {
-                                winding = winding + 1;
-                            } else if (deriv_y < 0.0) {
-                                winding = winding - 1;
-                            }
-                        }
+                    let localX = dx * cos_phi + dy * sin_phi;
+                    let localY = -dx * sin_phi + dy * cos_phi;
+                    let theta = atan2(localY / ry, localX / rx);
+
+                    var t: f32 = 0.0;
+                    let pi2 = 6.283185307179586;
+                    if (delta_theta > 0.0) {
+                        let diff = (theta - theta1) - pi2 * floor((theta - theta1) / pi2);
+                        t = diff / delta_theta;
+                    } else {
+                        let diff = (theta1 - theta) - pi2 * floor((theta1 - theta) / pi2);
+                        t = diff / (-delta_theta);
+                    }
+
+                    let deriv_y = delta_theta * (-rx * sin(theta) * sin_phi + ry * cos(theta) * cos_phi);
+
+                    if (deriv_y > 0.0 && t >= 0.0 && t < 1.0) {
+                        add_crossing(&winding, &samplePositionsX, sampleGrid, intersectX, 1);
+                    } else if (deriv_y < 0.0 && t > 0.0 && t <= 1.0) {
+                        add_crossing(&winding, &samplePositionsX, sampleGrid, intersectX, -1);
                     }
                 }
             }
         }
     }
-    if (record.fillRule == 0u) {
-        return abs(winding) % 2 == 1;
+
+    var covered = 0u;
+    for (var sampleX = 0u; sampleX < sampleGrid; sampleX = sampleX + 1u) {
+        let isInside = select(
+            winding[sampleX] != 0,
+            abs(winding[sampleX]) % 2 == 1,
+            record.fillRule == 0u);
+        covered = covered + select(0u, 1u, isInside);
     }
-    return winding != 0;
+    return covered;
 }
 
 @compute @workgroup_size(16, 16)
 fn cs_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let uniforms = pathUniforms[global_id.z];
     let x = global_id.x;
     let y = global_id.y;
     
@@ -1920,20 +1932,19 @@ fn cs_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let px = uniforms.xStart + f32(x);
     let py = uniforms.yStart + f32(y);
     
-    var coverage: f32 = 0.0;
-    let sampleGrid = max(uniforms.sampleGrid, 1u);
+    var coveredSamples = 0u;
+    let sampleGrid = clamp(uniforms.sampleGrid, 1u, 8u);
     let sampleWeight = 1.0 / f32(sampleGrid * sampleGrid);
     for (var sampleY = 0u; sampleY < sampleGrid; sampleY = sampleY + 1u) {
-        for (var sampleX = 0u; sampleX < sampleGrid; sampleX = sampleX + 1u) {
-            let offset = (vec2<f32>(f32(sampleX), f32(sampleY)) + 0.5) /
-                f32(sampleGrid);
-            let samplePosition = vec2<f32>(px, py) + offset;
-            let fillPoint = samplePosition / vec2<f32>(uniforms.scaleX, uniforms.scaleY);
-            if (is_point_inside(fillPoint, record)) {
-                coverage = coverage + sampleWeight;
+        let samplePositionY = py + (f32(sampleY) + 0.5) / f32(sampleGrid);
+        coveredSamples = coveredSamples + count_row_coverage(
+            px,
+            samplePositionY / uniforms.scaleY,
+            sampleGrid,
+            uniforms.scaleX,
+            record);
     }
-    }
-    }
+    let coverage = f32(coveredSamples) * sampleWeight;
     
     let writeCoord = vec2<u32>(uniforms.atlasX + x, uniforms.atlasY + y);
     textureStore(atlasTexture, writeCoord, vec4<f32>(coverage, 0.0, 0.0, 0.0));

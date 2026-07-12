@@ -131,6 +131,25 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     }
 
     [Fact]
+    public void PathAtlasBatchesDistinctGeometryRecords()
+    {
+        using var atlas = new PathAtlas(HeadlessWindow.Shared.Context, atlasSize: 256);
+        var narrow = atlas.GetOrCreatePath(
+            PrimitivePathGeometry.CreateRectangle(0f, 0f, 3f, 3f),
+            scale: 1f);
+        var wide = atlas.GetOrCreatePath(
+            PrimitivePathGeometry.CreateRectangle(0f, 0f, 9f, 3f),
+            scale: 1f);
+
+        atlas.RasterizePendingPaths();
+
+        var pixels = atlas.AtlasTexture.ReadPixels();
+        Assert.Equal((byte)255, pixels[GetPathAtlasPixelOffset(narrow, 1, 1, 256)]);
+        Assert.Equal((byte)0, pixels[GetPathAtlasPixelOffset(narrow, 5, 1, 256)]);
+        Assert.Equal((byte)255, pixels[GetPathAtlasPixelOffset(wide, 8, 1, 256)]);
+    }
+
+    [Fact]
     public void RepeatedVectorGlyphsReuseSinglePathAtlasEntry()
     {
         const int glyphCount = 96;
