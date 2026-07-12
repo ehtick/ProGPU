@@ -9,6 +9,57 @@ public class SkiaSharpFontManagerTests
     private const int HanCodepoint = 0x5203;
 
     [Fact]
+    public void MatchFamilyReturnsNullForUnknownFamily()
+    {
+        using var typeface = SKFontManager.Default.MatchFamily(
+            "ProGPU Missing Font Family",
+            SKFontStyle.Normal);
+
+        Assert.Null(typeface);
+    }
+
+    [Fact]
+    public void FromFamilyNameFallsBackToDefaultForUnknownFamily()
+    {
+        using var typeface = SKTypeface.FromFamilyName(
+            "ProGPU Missing Font Family",
+            SKFontStyle.Normal);
+
+        Assert.Equal(SKTypeface.Default.FamilyName, typeface.FamilyName);
+    }
+
+    [Fact]
+    public void MatchFamilyResolvesInstalledFamilyExactly()
+    {
+        var familyName = SKTypeface.Default.FamilyName;
+        using var typeface = SKFontManager.Default.MatchFamily(
+            familyName,
+            SKFontStyle.Normal);
+
+        Assert.NotNull(typeface);
+        Assert.Equal(familyName, typeface.FamilyName);
+    }
+
+    [Fact]
+    public void CoreTextGenericFamilyUsesNativeDefaultFallback()
+    {
+        if (!OperatingSystem.IsMacOS())
+        {
+            return;
+        }
+
+        using var managerTypeface = SKFontManager.Default.MatchFamily(
+            "monospace",
+            SKFontStyle.Normal);
+        using var staticTypeface = SKTypeface.FromFamilyName(
+            "monospace",
+            SKFontStyle.Normal);
+
+        Assert.Null(managerTypeface);
+        Assert.Equal(SKTypeface.Default.FamilyName, staticTypeface.FamilyName);
+    }
+
+    [Fact]
     public void ArabicLanguagePrioritizesNativeCompatibleArabicFamilies()
     {
         IReadOnlyList<string> families = SKFontManager.GetFallbackFamilyPreferences(

@@ -96,15 +96,24 @@ public sealed class SkiaSharpPrimitiveContractTests
     }
 
     [Fact]
-    public void TypefaceFallbackPreservesRequestedStyleMetadata()
+    public void TypefaceFallbackUsesNativePlatformStyleSemantics()
     {
         using var typeface = SKTypeface.FromFamilyName(
             "ProGPU_Missing_Test_Family",
             new SKFontStyle(SKFontStyleWeight.Bold, SKFontStyleWidth.Condensed, SKFontStyleSlant.Italic));
 
-        Assert.Equal((int)SKFontStyleWeight.Bold, typeface.FontWeight);
-        Assert.Equal((int)SKFontStyleWidth.Condensed, typeface.FontWidth);
-        Assert.Equal(SKFontStyleSlant.Italic, typeface.FontSlant);
+        if (OperatingSystem.IsMacOS())
+        {
+            Assert.Equal(SKTypeface.Default.FontWeight, typeface.FontWeight);
+            Assert.Equal(SKTypeface.Default.FontWidth, typeface.FontWidth);
+            Assert.Equal(SKTypeface.Default.FontSlant, typeface.FontSlant);
+        }
+        else
+        {
+            Assert.Equal((int)SKFontStyleWeight.Bold, typeface.FontWeight);
+            Assert.Equal((int)SKFontStyleWidth.Condensed, typeface.FontWidth);
+            Assert.Equal(SKFontStyleSlant.Italic, typeface.FontSlant);
+        }
     }
 
     [Fact]
@@ -122,15 +131,13 @@ public sealed class SkiaSharpPrimitiveContractTests
     }
 
     [Theory]
-    [InlineData(SKFontStyleWeight.Normal, SKFontStyleSlant.Upright, 400, false)]
-    [InlineData(SKFontStyleWeight.Normal, SKFontStyleSlant.Italic, 400, true)]
-    [InlineData(SKFontStyleWeight.Bold, SKFontStyleSlant.Upright, 700, false)]
-    [InlineData(SKFontStyleWeight.Bold, SKFontStyleSlant.Italic, 700, true)]
-    public void GenericSerifSelectsRequestedMacOsFace(
+    [InlineData(SKFontStyleWeight.Normal, SKFontStyleSlant.Upright)]
+    [InlineData(SKFontStyleWeight.Normal, SKFontStyleSlant.Italic)]
+    [InlineData(SKFontStyleWeight.Bold, SKFontStyleSlant.Upright)]
+    [InlineData(SKFontStyleWeight.Bold, SKFontStyleSlant.Italic)]
+    public void GenericSerifUsesMacOsDefaultTypeface(
         SKFontStyleWeight weight,
-        SKFontStyleSlant slant,
-        int expectedIntrinsicWeight,
-        bool expectedIntrinsicItalic)
+        SKFontStyleSlant slant)
     {
         if (!OperatingSystem.IsMacOS())
         {
@@ -141,9 +148,11 @@ public sealed class SkiaSharpPrimitiveContractTests
             "serif",
             new SKFontStyle(weight, SKFontStyleWidth.Normal, slant));
 
-        Assert.Equal("Times", typeface.FamilyName);
-        Assert.Equal(expectedIntrinsicWeight, typeface.Font.WeightClass);
-        Assert.Equal(expectedIntrinsicItalic, typeface.Font.IsItalic);
+        Assert.Equal(SKTypeface.Default.FamilyName, typeface.FamilyName);
+        Assert.Same(SKTypeface.Default.Font, typeface.Font);
+        Assert.Equal(SKTypeface.Default.FontWeight, typeface.FontWeight);
+        Assert.Equal(SKTypeface.Default.FontWidth, typeface.FontWidth);
+        Assert.Equal(SKTypeface.Default.FontSlant, typeface.FontSlant);
     }
 
     [Fact]

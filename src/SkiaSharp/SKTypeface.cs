@@ -176,33 +176,22 @@ public class SKTypeface : IDisposable
 
     public static SKTypeface FromFamilyName(string familyName, SKFontStyle style)
     {
-        var systemFonts = FontApi.GetSystemFonts();
-        if (TryGetGenericFontFamily(familyName, out var genericFamily))
+        var matchedTypeface = MatchFamilyName(familyName, style);
+        if (matchedTypeface != null)
         {
-            var genericFont = FindPreferredFont(
-                systemFonts,
-                GetGenericFamilyPreferences(genericFamily),
-                style);
-            if (genericFont != null)
-            {
-                return CreateSystemTypeface(genericFont, style);
-            }
-        }
-
-        var familyFont = FindBestMatchingFont(systemFonts, familyName, style);
-        if (familyFont != null)
-        {
-            try
-            {
-                return CreateSystemTypeface(familyFont, style);
-            }
-            catch
-            {
-                // Fall through to the default typeface.
-            }
+            return matchedTypeface;
         }
 
         var defaultTypeface = Default;
+        if (OperatingSystem.IsMacOS())
+        {
+            return new SKTypeface(
+                defaultTypeface.Font,
+                defaultTypeface.FamilyName,
+                defaultTypeface.IsBold,
+                defaultTypeface.IsItalic);
+        }
+
         return new SKTypeface(
             defaultTypeface.Font,
             defaultTypeface.FamilyName,
@@ -211,6 +200,50 @@ public class SKTypeface : IDisposable
             style.Weight,
             style.Width,
             style.Slant);
+    }
+
+    internal static SKTypeface? MatchFamilyName(string? familyName, SKFontStyle style)
+    {
+        if (string.IsNullOrWhiteSpace(familyName))
+        {
+            return null;
+        }
+
+        var systemFonts = FontApi.GetSystemFonts();
+        if (OperatingSystem.IsLinux() &&
+            TryGetGenericFontFamily(familyName, out var genericFamily))
+        {
+            var genericFont = FindPreferredFont(
+                systemFonts,
+                GetGenericFamilyPreferences(genericFamily),
+                style);
+            if (genericFont != null)
+            {
+                try
+                {
+                    return CreateSystemTypeface(genericFont, style);
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+        }
+
+        var familyFont = FindBestMatchingFont(systemFonts, familyName, style);
+        if (familyFont == null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return CreateSystemTypeface(familyFont, style);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private enum GenericFontFamily
@@ -544,9 +577,9 @@ public class SKFontManager : IDisposable
         return names.ToArray();
     }
 
-    public SKTypeface MatchFamily(string familyName, SKFontStyle style)
+    public SKTypeface? MatchFamily(string familyName, SKFontStyle style)
     {
-        return SKTypeface.FromFamilyName(familyName, style);
+        return SKTypeface.MatchFamilyName(familyName, style);
     }
 
     public SKTypeface? CreateTypeface(string path, int index = 0) => SKTypeface.FromFile(path, index);
