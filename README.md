@@ -199,9 +199,9 @@ The opt-in sample harness reports wall-clock FPS, per-phase timings, allocation 
 | Workload | VSync | Wall FPS | Workload throughput | Scene cache |
 | --- | ---: | ---: | ---: | ---: |
 | LOL/s Benchmark | On | 120.21 | 11,996 LOL/s | Dynamic, 0/480 hits |
-| LOL/s Benchmark | Off | 212.67 | 42,463 LOL/s | Dynamic, 0/600 hits |
-| Markdown Playground | Off | about 515 | Static after warmup | 299/300 hits |
-| DXF CAD Viewer | Off | about 499 | Static after warmup | 299/300 hits |
+| LOL/s Benchmark | Off | 216.48 | 43,224 LOL/s | Dynamic, 0/600 hits |
+| Markdown Playground | Off | 526.83 | Static after warmup | 299/300 hits |
+| DXF CAD Viewer | Off | 478.22 | Static after warmup | 299/300 hits |
 
 Run the same deterministic workload from the repository root:
 
@@ -218,6 +218,8 @@ dotnet run --project src/ProGPU.Samples/ProGPU.Samples.csproj -c Release --no-bu
 Set `PROGPU_SAMPLE_BENCHMARK_VSYNC=false` for uncapped throughput, or change the page to `Markdown Playground` or `DXF CAD Viewer` to verify static-scene reuse. The first measured static frame may populate the cache; subsequent frames should report hits unless the page intentionally animates or invalidates.
 
 Rendering quality remains part of the performance contract. The optimized text path retains the glyph index chosen during layout, hoists transform/raster invariants out of glyph loops, and skips color/bitmap table probes only when the parsed font has no such tables. It does not change glyph geometry, subpixel placement, physical DPI rasterization, winding rules, or blend behavior.
+
+Texture resampling follows the same contract. SkiaSharp cubic draws retain the requested `SKCubicResampler` B/C coefficients through the recorded command and texture vertices, and the WGSL texture shader evaluates the full Mitchell-Netravali kernel. Mitchell (`1/3, 1/3`), Catmull-Rom (`0, 1/2`), and custom kernels therefore remain distinct. The common Catmull-Rom path keeps its original compact polynomial and pixel output, while coefficient-aware sampling is paid for only by draws that request another cubic kernel.
 
 ---
 
