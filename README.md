@@ -153,6 +153,8 @@ Canvas transform convenience APIs preserve SkiaSharp's post-concatenation order 
 
 Canvas point/size shape overloads normalize directly into the existing line, rounded-rectangle, ellipse, and circle primitives. Conversion is allocation-free `O(1)` work before the normal retained command or path is created, so an overload never adds a second draw, changes tessellation, or introduces a GPU synchronization boundary.
 
+Picture playback overloads normalize scalar and point positions into a local matrix and compose it with the current canvas transform for exactly one nested retained-picture command. Optional paint blend and opacity scopes wrap that command, while local matrix state is restored in `finally`. Playback setup is `O(1)` and allocation-free apart from color-space conversion caches already required by the nested picture; playback itself remains `O(C)` for `C` nested commands without flattening or GPU readback.
+
 `SKTextBlob` intercept queries use the same path-boundary algorithm as Skia for underline and strike-through avoidance. Each positioned glyph independently tests line, quadratic, and cubic crossings at both horizontal band boundaries, expands the interval with path points strictly inside the band, and returns at most one ordered pair without merging overlaps from neighboring glyphs. `ScaleX`, `SkewX`, vertical placement, and synthetic emboldening are included; rotation-scale runs are intentionally ignored like native Skia. Array, span, and count overloads share the CPU-only engine, with short spans receiving the available prefix. For `G` glyphs and `S` path segments, time is `O(G * S)`, root-solving workspace is `O(1)`, and returned storage is at most `O(G)`.
 
 | Package | Purpose | NuGet |

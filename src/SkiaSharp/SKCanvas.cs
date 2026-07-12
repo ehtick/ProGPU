@@ -1901,7 +1901,7 @@ public class SKCanvas : IDisposable
             MathF.Max(MathF.Max(topLeft.Y, topRight.Y), MathF.Max(bottomRight.Y, bottomLeft.Y)));
     }
 
-    public void DrawPicture(SKPicture picture)
+    private void DrawPictureCore(SKPicture picture)
     {
         ArgumentNullException.ThrowIfNull(picture);
         var sourcePicture = picture.Picture;
@@ -1986,7 +1986,7 @@ public class SKCanvas : IDisposable
         return converted;
     }
 
-    public void DrawPicture(SKPicture picture, SKPaint? paint)
+    public void DrawPicture(SKPicture picture, SKPaint? paint = null)
     {
         ArgumentNullException.ThrowIfNull(picture);
         var pushedBlendMode = PushPaintBlendMode(paint);
@@ -2000,7 +2000,7 @@ public class SKCanvas : IDisposable
                 pushedOpacity = true;
             }
 
-            DrawPicture(picture);
+            DrawPictureCore(picture);
         }
         finally
         {
@@ -2010,6 +2010,30 @@ public class SKCanvas : IDisposable
             }
 
             PopPaintBlendMode(pushedBlendMode);
+        }
+    }
+
+    public void DrawPicture(SKPicture picture, float x, float y, SKPaint? paint = null)
+    {
+        var matrix = SKMatrix.CreateTranslation(x, y);
+        DrawPicture(picture, in matrix, paint);
+    }
+
+    public void DrawPicture(SKPicture picture, SKPoint point, SKPaint? paint = null) =>
+        DrawPicture(picture, point.X, point.Y, paint);
+
+    public void DrawPicture(SKPicture picture, in SKMatrix matrix, SKPaint? paint = null)
+    {
+        ArgumentNullException.ThrowIfNull(picture);
+        var previousMatrix = _currentMatrix;
+        try
+        {
+            _currentMatrix = SKMatrix.Concat(previousMatrix, matrix);
+            DrawPicture(picture, paint);
+        }
+        finally
+        {
+            _currentMatrix = previousMatrix;
         }
     }
 
