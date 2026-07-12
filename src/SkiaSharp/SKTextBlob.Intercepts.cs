@@ -72,18 +72,6 @@ public partial class SKTextBlob
                     continue;
                 }
 
-                var skewX = float.IsFinite(run.Font.SkewX) ? run.Font.SkewX : 0f;
-                if (MathF.Abs(skewX) > 0.0001f)
-                {
-                    path.Transform(new SKMatrix
-                    {
-                        ScaleX = 1f,
-                        SkewX = skewX,
-                        ScaleY = 1f,
-                        Persp2 = 1f
-                    });
-                }
-
                 if (!TryFindPathIntercept(
                         path,
                         lowerLimit - position.Y,

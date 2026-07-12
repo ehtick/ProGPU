@@ -8,6 +8,7 @@ using ProGPU.Backend;
 namespace SkiaSharp;
 
 public delegate void SKBitmapReleaseDelegate(IntPtr address, object context);
+public delegate void SKGlyphPathDelegate(SKPath? path, SKMatrix matrix);
 
 internal static class SKObjectHandle
 {

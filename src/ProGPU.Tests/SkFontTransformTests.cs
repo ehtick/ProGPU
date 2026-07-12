@@ -24,23 +24,30 @@ public sealed class SkFontTransformTests
     }
 
     [Fact]
-    public void FontSkewChangesMeasuredBoundsButNotTextPath()
+    public void FontSkewTransformsGlyphLocalPathWithoutChangingAdvance()
     {
         using var normal = new SKFont(SKTypeface.Default, 40f);
         using var skewed = new SKFont(SKTypeface.Default, 40f, scaleX: 1f, skewX: 0.25f);
-        using var normalPath = normal.GetTextPath("A");
-        using var skewedPath = skewed.GetTextPath("A");
+        using var normalPath = normal.GetTextPath("g");
+        using var skewedPath = skewed.GetTextPath("g");
+        using var expectedPath = new SKPath(normalPath);
+        expectedPath.Transform(new SKMatrix
+        {
+            ScaleX = 1f,
+            SkewX = 0.25f,
+            ScaleY = 1f,
+            Persp2 = 1f
+        });
 
-        normal.MeasureText("A", out var normalBounds);
-        skewed.MeasureText("A", out var skewedBounds);
+        normal.MeasureText("g", out var normalBounds);
+        skewed.MeasureText("g", out var skewedBounds);
 
-        Assert.Equal(normalPath.Bounds, skewedPath.Bounds);
+        AssertNear(expectedPath.Bounds.Left, skewedPath.Bounds.Left);
+        AssertNear(expectedPath.Bounds.Top, skewedPath.Bounds.Top);
+        AssertNear(expectedPath.Bounds.Right, skewedPath.Bounds.Right);
+        AssertNear(expectedPath.Bounds.Bottom, skewedPath.Bounds.Bottom);
         Assert.True(skewedBounds.Left < normalBounds.Left);
-        AssertNear(normalBounds.Right, skewedBounds.Right);
-        Assert.Equal(MathF.Floor(normalPath.Bounds.Left) - 1f, normalBounds.Left);
-        Assert.Equal(MathF.Floor(normalPath.Bounds.Top) - 1f, normalBounds.Top);
-        Assert.Equal(MathF.Ceiling(normalPath.Bounds.Right) + 1f, normalBounds.Right);
-        Assert.Equal(MathF.Ceiling(normalPath.Bounds.Bottom) + 1f, normalBounds.Bottom);
+        AssertNear(normal.MeasureText("g"), skewed.MeasureText("g"));
     }
 
     [Fact]
@@ -195,13 +202,6 @@ public sealed class SkFontTransformTests
         Assert.True(command.Path!.TryGetBounds(out var actualMin, out var actualMax));
 
         using var expectedPath = font.GetTextPath("A");
-        expectedPath.Transform(new SKMatrix
-        {
-            ScaleX = 1f,
-            SkewX = font.SkewX,
-            ScaleY = 1f,
-            Persp2 = 1f
-        });
         var expectedBounds = expectedPath.Bounds;
         AssertNear(expectedBounds.Left + 5f, actualMin.X);
         AssertNear(expectedBounds.Top + 48f, actualMin.Y);

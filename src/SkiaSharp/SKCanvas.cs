@@ -3097,7 +3097,7 @@ public class SKCanvas : IDisposable
                     var matrix = matrices[i].ToMatrix();
                     matrix.TransX += x;
                     matrix.TransY += y;
-                    AddTextBlobGlyphPath(result, glyphPath, run.Font, matrix);
+                    AddTextBlobGlyphPath(result, glyphPath, matrix);
                 }
                 else
                 {
@@ -3105,7 +3105,6 @@ public class SKCanvas : IDisposable
                     AddTextBlobGlyphPath(
                         result,
                         glyphPath,
-                        run.Font,
                         x + position.X,
                         y + position.Y);
                 }
@@ -3118,47 +3117,15 @@ public class SKCanvas : IDisposable
     private static void AddTextBlobGlyphPath(
         SKPath destination,
         SKPath glyphPath,
-        SKFont font,
         float x,
-        float y)
-    {
-        var skewX = GetFiniteFontSkewX(font);
-        if (MathF.Abs(skewX) <= 0.0001f)
-        {
-            destination.AddPath(glyphPath, x, y);
-            return;
-        }
-
-        using var transformed = new SKPath(glyphPath);
-        transformed.Transform(CreateFontSkewMatrix(skewX));
-        destination.AddPath(transformed, x, y);
-    }
+        float y) =>
+        destination.AddPath(glyphPath, x, y);
 
     private static void AddTextBlobGlyphPath(
         SKPath destination,
         SKPath glyphPath,
-        SKFont font,
-        SKMatrix placement)
-    {
-        var skewX = GetFiniteFontSkewX(font);
-        if (MathF.Abs(skewX) <= 0.0001f)
-        {
-            destination.AddPath(glyphPath, placement);
-            return;
-        }
-
-        using var transformed = new SKPath(glyphPath);
-        transformed.Transform(CreateFontSkewMatrix(skewX));
-        destination.AddPath(transformed, placement);
-    }
-
-    private static SKMatrix CreateFontSkewMatrix(float skewX) => new()
-    {
-        ScaleX = 1f,
-        SkewX = skewX,
-        ScaleY = 1f,
-        Persp2 = 1f
-    };
+        SKMatrix placement) =>
+        destination.AddPath(glyphPath, placement);
 
     private static float GetFiniteFontScaleX(SKFont font) =>
         float.IsFinite(font.ScaleX) ? font.ScaleX : 1f;

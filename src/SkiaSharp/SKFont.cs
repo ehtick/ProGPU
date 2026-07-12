@@ -5,25 +5,36 @@ using ProGPU.Vector;
 
 namespace SkiaSharp;
 
-public class SKFont : IDisposable
+public partial class SKFont : IDisposable
 {
     private const float FakeBoldScale = 1f / 32f;
+    private SKTypeface _typeface = null!;
 
-    public SKTypeface Typeface { get; set; }
+    public SKTypeface Typeface
+    {
+        get => _typeface;
+        set => _typeface = value ?? SKTypeface.Default;
+    }
     public float Size { get; set; }
     public SKFontHinting Hinting { get; set; } = SKFontHinting.Normal;
     public SKFontEdging Edging { get; set; } = SKFontEdging.Antialias;
-    public bool Subpixel { get; set; } = true;
+    public bool Subpixel { get; set; }
     public bool BaselineSnap { get; set; } = true;
     public bool ForceAutoHinting { get; set; } = false;
     public bool LinearMetrics { get; set; }
     public bool Embolden { get; set; }
+    public bool EmbeddedBitmaps { get; set; }
     public float ScaleX { get; set; } = 1f;
     public float SkewX { get; set; }
 
-    public SKFont(SKTypeface typeface, float size = 12f, float scaleX = 1f, float skewX = 0f)
+    public SKFont()
+        : this(SKTypeface.Default)
     {
-        Typeface = typeface;
+    }
+
+    public SKFont(SKTypeface? typeface, float size = 12f, float scaleX = 1f, float skewX = 0f)
+    {
+        _typeface = typeface ?? SKTypeface.Default;
         Size = size;
         ScaleX = scaleX;
         SkewX = skewX;
@@ -38,7 +49,9 @@ public class SKFont : IDisposable
         var scaleY = Size / Typeface.Font.UnitsPerEm;
         var scaleX = scaleY * ScaleX;
 
-        Vector2 TransformPoint(Vector2 point) => new(point.X * scaleX, point.Y * scaleY);
+        Vector2 TransformPoint(Vector2 point) => new(
+            point.X * scaleX + point.Y * scaleY * SkewX,
+            point.Y * scaleY);
 
         foreach (var figure in outline.Figures)
         {
@@ -148,11 +161,23 @@ public class SKFont : IDisposable
         }
     }
 
+    public float Spacing => Metrics.Descent - Metrics.Ascent + Metrics.Leading;
+
+    public float GetFontMetrics(out SKFontMetrics metrics)
+    {
+        metrics = Metrics;
+        return metrics.Descent - metrics.Ascent + metrics.Leading;
+    }
+
     private static float? ScaleMetric(short? value, float scale) =>
         value is { } metric ? metric * scale : null;
 
-    public bool ContainsGlyph(int codepoint) =>
-        codepoint >= 0 && codepoint <= 0x10ffff && Typeface.Font.GetGlyphIndex((uint)codepoint) != 0;
+    public ushort GetGlyph(int codepoint) =>
+        codepoint >= 0 && codepoint <= 0x10ffff
+            ? Typeface.Font.GetGlyphIndex((uint)codepoint)
+            : (ushort)0;
+
+    public bool ContainsGlyph(int codepoint) => GetGlyph(codepoint) != 0;
 
     public float MeasureText(string text, SKPaint? paint = null)
     {
@@ -170,36 +195,7 @@ public class SKFont : IDisposable
         MeasureText(text, out _, paint);
 
     public float MeasureText(ReadOnlySpan<char> text, out SKRect bounds, SKPaint? paint = null)
-    {
-        var advance = 0f;
-        var hasBounds = false;
-        var resultBounds = SKRect.Empty;
-        var enumerator = text.EnumerateRunes();
-        foreach (var rune in enumerator)
-        {
-            var glyph = Typeface.Font.GetGlyphIndex((uint)rune.Value);
-            var glyphAdvance = Typeface.Font.GetAdvanceWidth(glyph, Size) * ScaleX;
-            if (TryGetScaledGlyphBounds(glyph, out var glyphBounds))
-            {
-                glyphBounds.Offset(advance, 0f);
-                if (!hasBounds)
-                {
-                    resultBounds = glyphBounds;
-                    hasBounds = true;
-                }
-                else
-                {
-                    resultBounds.Union(glyphBounds);
-                }
-            }
-
-            advance += glyphAdvance;
-        }
-
-        bounds = hasBounds ? resultBounds : SKRect.Empty;
-        ExpandBoundsForPaint(ref bounds, paint);
-        return advance;
-    }
+        => MeasureUtf16Text(text, out bounds, paint);
 
     private bool TryGetScaledGlyphBounds(ushort glyph, out SKRect bounds)
     {
@@ -238,42 +234,10 @@ public class SKFont : IDisposable
         return !bounds.IsEmpty;
     }
 
-    private static void ExpandBoundsForPaint(ref SKRect bounds, SKPaint? paint)
-    {
-        if (bounds.IsEmpty || paint == null ||
-            paint.Style == SKPaintStyle.Fill ||
-            !float.IsFinite(paint.StrokeWidth) ||
-            paint.StrokeWidth <= 0f)
-        {
-            return;
-        }
-
-        var outset = paint.StrokeWidth * 0.5f;
-        bounds = new SKRect(
-            bounds.Left - outset,
-            bounds.Top - outset,
-            bounds.Right + outset,
-            bounds.Bottom + outset);
-    }
-
     public SKPath GetTextPath(string text, SKPoint origin = default)
     {
         ArgumentNullException.ThrowIfNull(text);
-        var path = new SKPath();
-        var x = origin.X;
-        foreach (var rune in text.EnumerateRunes())
-        {
-            var glyph = Typeface.Font.GetGlyphIndex((uint)rune.Value);
-            using var glyphPath = GetGlyphPath(glyph);
-            if (glyphPath != null)
-            {
-                path.AddPath(glyphPath, x, origin.Y);
-            }
-
-            x += Typeface.Font.GetAdvanceWidth(glyph, Size) * ScaleX;
-        }
-
-        return path;
+        return GetTextPath(text.AsSpan(), origin);
     }
 
     public SKPath GetTextPathOnPath(
@@ -283,55 +247,22 @@ public class SKFont : IDisposable
         SKPoint origin = default)
     {
         ArgumentNullException.ThrowIfNull(text);
-        ArgumentNullException.ThrowIfNull(path);
-
-        var result = new SKPath();
-        using var measure = new SKPathMeasure(path);
-        var textWidth = MeasureText(text);
-        var distance = origin.X + textAlign switch
-        {
-            SKTextAlign.Center => (measure.Length - textWidth) * 0.5f,
-            SKTextAlign.Right => measure.Length - textWidth,
-            _ => 0f,
-        };
-
-        foreach (var rune in text.EnumerateRunes())
-        {
-            var glyph = Typeface.Font.GetGlyphIndex((uint)rune.Value);
-            var advance = Typeface.Font.GetAdvanceWidth(glyph, Size) * ScaleX;
-            if (measure.GetPositionAndTangent(distance, out var position, out var tangent))
-            {
-                using var glyphPath = GetGlyphPath(glyph);
-                if (glyphPath != null)
-                {
-                    var normalX = -tangent.Y;
-                    var normalY = tangent.X;
-                    var matrix = new SKMatrix(
-                        tangent.X,
-                        -tangent.Y,
-                        position.X + normalX * origin.Y,
-                        tangent.Y,
-                        tangent.X,
-                        position.Y + normalY * origin.Y,
-                        0f,
-                        0f,
-                        1f);
-                    result.AddPath(glyphPath, matrix);
-                }
-            }
-
-            distance += advance;
-        }
-
-        return result;
+        return GetTextPathOnPath(text.AsSpan(), path, textAlign, origin);
     }
 
-    public void GetGlyphWidths(ReadOnlySpan<ushort> glyphs, Span<float> widths, Span<SKRect> bounds)
+    public void GetGlyphWidths(
+        ReadOnlySpan<ushort> glyphs,
+        Span<float> widths,
+        Span<SKRect> bounds,
+        SKPaint? paint = null)
     {
+        ValidateGlyphOutputLength(glyphs.Length, widths.Length, nameof(widths));
+        ValidateGlyphOutputLength(glyphs.Length, bounds.Length, nameof(bounds));
+
         for (int i = 0; i < glyphs.Length; i++)
         {
             ushort glyphId = glyphs[i];
-            
+
             float advance = Typeface.Font.GetAdvanceWidth(glyphId, Size) * ScaleX;
             if (!widths.IsEmpty)
             {
@@ -340,7 +271,7 @@ public class SKFont : IDisposable
 
             if (!bounds.IsEmpty)
             {
-                if (!TryGetScaledGlyphBounds(glyphId, out var glyphBounds))
+                if (!TryGetMeasuredGlyphBounds(glyphId, paint, out var glyphBounds))
                 {
                     bounds[i] = SKRect.Empty;
                 }
