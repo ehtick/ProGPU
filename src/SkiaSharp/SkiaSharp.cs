@@ -1026,27 +1026,78 @@ public struct SKColorSpaceXyz : IEquatable<SKColorSpaceXyz>
     }
 }
 
-public struct SKMatrix
+public partial struct SKMatrix : IEquatable<SKMatrix>
 {
-    public float ScaleX;
-    public float SkewX;
-    public float TransX;
-    public float SkewY;
-    public float ScaleY;
-    public float TransY;
-    public float Persp0;
-    public float Persp1;
-    public float Persp2;
+    private float _scaleX;
+    private float _skewX;
+    private float _transX;
+    private float _skewY;
+    private float _scaleY;
+    private float _transY;
+    private float _persp0;
+    private float _persp1;
+    private float _persp2;
+
+    public float ScaleX
+    {
+        readonly get => _scaleX;
+        set => _scaleX = value;
+    }
+
+    public float SkewX
+    {
+        readonly get => _skewX;
+        set => _skewX = value;
+    }
+
+    public float TransX
+    {
+        readonly get => _transX;
+        set => _transX = value;
+    }
+
+    public float SkewY
+    {
+        readonly get => _skewY;
+        set => _skewY = value;
+    }
+
+    public float ScaleY
+    {
+        readonly get => _scaleY;
+        set => _scaleY = value;
+    }
+
+    public float TransY
+    {
+        readonly get => _transY;
+        set => _transY = value;
+    }
+
+    public float Persp0
+    {
+        readonly get => _persp0;
+        set => _persp0 = value;
+    }
+
+    public float Persp1
+    {
+        readonly get => _persp1;
+        set => _persp1 = value;
+    }
+
+    public float Persp2
+    {
+        readonly get => _persp2;
+        set => _persp2 = value;
+    }
+
+    public static readonly SKMatrix Empty;
 
     public static readonly SKMatrix Identity = new()
     {
         ScaleX = 1f, ScaleY = 1f, Persp2 = 1f
     };
-
-    public readonly bool IsIdentity =>
-        ScaleX == 1f && SkewX == 0f && TransX == 0f &&
-        SkewY == 0f && ScaleY == 1f && TransY == 0f &&
-        Persp0 == 0f && Persp1 == 0f && Persp2 == 1f;
 
     public SKMatrix(
         float scaleX,
@@ -1059,101 +1110,15 @@ public struct SKMatrix
         float persp1,
         float persp2)
     {
-        ScaleX = scaleX;
-        SkewX = skewX;
-        TransX = transX;
-        SkewY = skewY;
-        ScaleY = scaleY;
-        TransY = transY;
-        Persp0 = persp0;
-        Persp1 = persp1;
-        Persp2 = persp2;
-    }
-
-    public Matrix4x4 ToMatrix4x4()
-    {
-        return new Matrix4x4(
-            ScaleX, SkewY, 0f, 0f,
-            SkewX, ScaleY, 0f, 0f,
-            0f, 0f, 1f, 0f,
-            TransX, TransY, 0f, 1f
-        );
-    }
-
-    public static SKMatrix CreateIdentity() => Identity;
-
-    public static SKMatrix CreateTranslation(float x, float y)
-    {
-        var matrix = Identity;
-        matrix.TransX = x;
-        matrix.TransY = y;
-        return matrix;
-    }
-
-    public static SKMatrix CreateScale(float x, float y)
-    {
-        var matrix = Identity;
-        matrix.ScaleX = x;
-        matrix.ScaleY = y;
-        return matrix;
-    }
-
-    public static SKMatrix CreateScale(float x, float y, float pivotX, float pivotY)
-    {
-        return FromMatrix4x4(
-            Matrix4x4.CreateTranslation(-pivotX, -pivotY, 0f)
-            * Matrix4x4.CreateScale(x, y, 1f)
-            * Matrix4x4.CreateTranslation(pivotX, pivotY, 0f));
-    }
-
-    public static SKMatrix CreateRotationDegrees(float degrees)
-    {
-        return CreateRotationDegrees(degrees, 0f, 0f);
-    }
-
-    public static SKMatrix CreateRotationDegrees(float degrees, float pivotX, float pivotY)
-    {
-        var radians = degrees * MathF.PI / 180f;
-        return FromMatrix4x4(
-            Matrix4x4.CreateTranslation(-pivotX, -pivotY, 0f)
-            * Matrix4x4.CreateRotationZ(radians)
-            * Matrix4x4.CreateTranslation(pivotX, pivotY, 0f));
-    }
-
-    public SKMatrix PreConcat(SKMatrix matrix)
-    {
-        return FromMatrix4x4(matrix.ToMatrix4x4() * ToMatrix4x4());
-    }
-
-    public SKMatrix PostConcat(SKMatrix matrix)
-    {
-        return FromMatrix4x4(ToMatrix4x4() * matrix.ToMatrix4x4());
-    }
-
-    public static SKMatrix Concat(SKMatrix first, SKMatrix second)
-    {
-        return FromMatrix4x4(second.ToMatrix4x4() * first.ToMatrix4x4());
-    }
-
-    public static void Concat(ref SKMatrix result, SKMatrix first, SKMatrix second)
-    {
-        result = Concat(first, second);
-    }
-
-    internal static SKMatrix FromMatrix4x4(Matrix4x4 matrix)
-    {
-        return new SKMatrix
-        {
-            ScaleX = matrix.M11,
-            SkewX = matrix.M21,
-            TransX = matrix.M41,
-            SkewY = matrix.M12,
-            ScaleY = matrix.M22,
-            TransY = matrix.M42,
-            Persp0 = matrix.M14,
-            Persp1 = matrix.M24,
-            Persp2 = matrix.M44
-        };
+        _scaleX = scaleX;
+        _skewX = skewX;
+        _transX = transX;
+        _skewY = skewY;
+        _scaleY = scaleY;
+        _transY = transY;
+        _persp0 = persp0;
+        _persp1 = persp1;
+        _persp2 = persp2;
     }
 }
 
