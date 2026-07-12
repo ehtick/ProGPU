@@ -7,36 +7,7 @@ namespace ProGPU.Backend;
 
 public static unsafe class GpuTextureBlitter
 {
-    private const string ShaderSource = """
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
-    var positions = array<vec2<f32>, 3>(
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>(3.0, -1.0),
-        vec2<f32>(-1.0, 3.0));
-    var uvs = array<vec2<f32>, 3>(
-        vec2<f32>(0.0, 1.0),
-        vec2<f32>(2.0, 1.0),
-        vec2<f32>(0.0, -1.0));
-    var output: VertexOutput;
-    output.position = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
-    output.uv = uvs[vertexIndex];
-    return output;
-}
-
-@group(0) @binding(0) var blitSampler: sampler;
-@group(0) @binding(1) var sourceTexture: texture_2d<f32>;
-
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    return textureSampleLevel(sourceTexture, blitSampler, input.uv, 0.0);
-}
-""";
+    private static readonly string ShaderSource = ShaderResource.Load(typeof(GpuTextureBlitter), "TextureBlitter.wgsl");
 
     private static readonly object s_cacheLock = new();
     private static readonly Dictionary<WgpuContext, ResourceCache> s_caches = new();

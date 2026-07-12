@@ -191,7 +191,7 @@ public class DiagnosticsLoggingSourceTests
     [Fact]
     public void VectorPerlinShaderAvoidsRuntimeIndexedVectorWritesForD3D()
     {
-        string shaders = ReadSource("src", "ProGPU.Backend", "Shaders.cs");
+        string shaders = ReadSource("src", "ProGPU.Backend", "Shaders", "Vector.wgsl");
 
         Assert.Contains("fn perlin_table_noise_channel(", shaders, StringComparison.Ordinal);
         Assert.Contains("brush, 0u, index00, index10, index01, index11, fraction, smoothValue", shaders, StringComparison.Ordinal);
@@ -214,10 +214,11 @@ public class DiagnosticsLoggingSourceTests
     public void GpuHitTestingShaderChecksResultCapacityBeforeResultListRead()
     {
         string source = ReadSource("src", "ProGPU.Vector", "GpuHitTesting.cs");
+        string shader = ReadSource("src", "ProGPU.Vector", "Shaders", "GpuHitTesting.wgsl");
 
-        Assert.Contains("if (count >= capacity) {\n            break;\n        }\n\n        if (results[count + 1u].hit == 0u) {", source, StringComparison.Ordinal);
+        Assert.Contains("if (count >= capacity) {\n            break;\n        }\n\n        if (results[count + 1u].hit == 0u) {", shader, StringComparison.Ordinal);
         Assert.Contains("Buffer = deviceIndex.ResultListBuffer.BufferPtr, Offset = 0, Size = deviceIndex.ResultListBuffer.Size", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("if (count >= capacity || results[count + 1u].hit == 0u)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (count >= capacity || results[count + 1u].hit == 0u)", shader, StringComparison.Ordinal);
         Assert.DoesNotContain("Buffer = deviceIndex.ResultListBuffer.BufferPtr, Offset = 0, Size = checked((uint)(initialResults.Length * resultSize))", source, StringComparison.Ordinal);
     }
 
