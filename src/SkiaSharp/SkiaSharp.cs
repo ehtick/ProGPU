@@ -1665,60 +1665,6 @@ public abstract class SKStreamSeekable : SKStreamRewindable
 {
 }
 
-public class SKData : IDisposable
-{
-    public byte[] Bytes { get; }
-
-    public SKData(byte[] bytes)
-    {
-        Bytes = bytes;
-    }
-
-    public static SKData CreateCopy(IntPtr address, int length)
-    {
-        byte[] buffer = new byte[length];
-        System.Runtime.InteropServices.Marshal.Copy(address, buffer, 0, length);
-        return new SKData(buffer);
-    }
-
-    public static SKData Create(SKStream stream)
-    {
-        ArgumentNullException.ThrowIfNull(stream);
-        if (stream is SKStreamAsset asset)
-        {
-            return new SKData(asset.Data.ToArray());
-        }
-        if (stream is SKManagedStream managed)
-        {
-            using (var ms = new MemoryStream())
-            {
-                managed.Stream.CopyTo(ms);
-                return new SKData(ms.ToArray());
-            }
-        }
-        return new SKData(Array.Empty<byte>());
-    }
-
-    public static SKData Create(Stream stream)
-    {
-        using (var ms = new MemoryStream())
-        {
-            stream.CopyTo(ms);
-            return new SKData(ms.ToArray());
-        }
-    }
-
-    public void SaveTo(Stream stream)
-    {
-        ArgumentNullException.ThrowIfNull(stream);
-        stream.Write(Bytes, 0, Bytes.Length);
-    }
-
-    public byte[] ToArray() => (byte[])Bytes.Clone();
-
-    public void Dispose() { }
-}
-
 public class SKCodec : IDisposable
 {
     private readonly byte[] _data;

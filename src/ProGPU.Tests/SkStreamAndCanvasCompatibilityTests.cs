@@ -83,7 +83,7 @@ public sealed class SkStreamAndCanvasCompatibilityTests
             }
             using (var data = stream.GetData())
             {
-                Assert.Equal(File.ReadAllBytes(path), data.Bytes);
+                Assert.Equal(File.ReadAllBytes(path), data.ToArray());
             }
             Assert.Equal(3, stream.Position);
             Assert.True(stream.Rewind());

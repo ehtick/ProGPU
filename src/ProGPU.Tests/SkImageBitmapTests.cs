@@ -20,8 +20,8 @@ public sealed class SkImageBitmapTests
     public void PngGammaColorSpaceFlowsFromCodecThroughBitmapAndImage()
     {
         var encoded = AddPngGammaChunk(TwoPixelPngBytes(), gammaTimes100000: 100000);
-        using var codec = SKCodec.Create(new SKData(encoded));
-        using var bitmap = SKBitmap.Decode(new SKData(encoded));
+        using var codec = SKCodec.Create(SKData.CreateCopy(encoded));
+        using var bitmap = SKBitmap.Decode(SKData.CreateCopy(encoded));
         using var image = SKImage.FromBitmap(bitmap);
 
         Assert.NotNull(codec.Info.ColorSpace);
@@ -200,7 +200,7 @@ public sealed class SkImageBitmapTests
     [Fact]
     public void DecodeCodecCopiesEncodedPixelsIntoBitmap()
     {
-        using var codec = SKCodec.Create(new SKData(TwoPixelPngBytes()));
+        using var codec = SKCodec.Create(SKData.CreateCopy(TwoPixelPngBytes()));
 
         using var bitmap = SKBitmap.Decode(
             codec,
@@ -219,7 +219,7 @@ public sealed class SkImageBitmapTests
     [Fact]
     public void DecodeCodecConvertsEncodedPixelsToRequestedBgraBitmap()
     {
-        using var codec = SKCodec.Create(new SKData(TwoPixelPngBytes()));
+        using var codec = SKCodec.Create(SKData.CreateCopy(TwoPixelPngBytes()));
 
         using var bitmap = SKBitmap.Decode(
             codec,
@@ -236,7 +236,7 @@ public sealed class SkImageBitmapTests
     [Fact]
     public void DecodeCodecForcesOpaqueDestinationAlpha255()
     {
-        using var codec = SKCodec.Create(new SKData(SingleTransparentPixelPngBytes()));
+        using var codec = SKCodec.Create(SKData.CreateCopy(SingleTransparentPixelPngBytes()));
 
         using var bitmap = SKBitmap.Decode(
             codec,
