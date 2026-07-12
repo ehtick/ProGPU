@@ -470,7 +470,7 @@ public partial class SKTypeface : IDisposable
 
     public SKStreamAsset OpenStream()
     {
-        return _isEmpty ? null! : new SKStreamAsset(Font.FontData.ToArray());
+        return _isEmpty ? null! : new SKStreamAssetImplementation(Font.FontData.ToArray());
     }
 
     public SKStreamAsset OpenStream(out int ttcIndex)
@@ -501,7 +501,7 @@ public partial class SKTypeface : IDisposable
     }
 }
 
-public sealed class SKStreamAsset : SKStream
+public abstract class SKStreamAsset : SKStreamSeekable
 {
     private readonly byte[] _data;
     private readonly MemoryStream _stream;
@@ -515,39 +515,10 @@ public sealed class SKStreamAsset : SKStream
 
     internal byte[] Data => _data;
 
-    public int Length => checked((int)_stream.Length);
+    protected override Stream BackingStream => _stream;
+    protected override ReadOnlyMemory<byte>? BackingMemory => _data;
 
-    public int Read(byte[] buffer, int size)
-    {
-        ArgumentNullException.ThrowIfNull(buffer);
-        return _stream.Read(buffer, 0, Math.Min(size, buffer.Length));
-    }
-
-    public int Read(byte[] buffer, long size)
-    {
-        return Read(buffer, (int)Math.Min(size, int.MaxValue));
-    }
-
-    public int Read(IntPtr buffer, int size)
-    {
-        if (buffer == IntPtr.Zero || size <= 0)
-        {
-            return 0;
-        }
-
-        var actualSize = Math.Min(size, Length - checked((int)_stream.Position));
-        if (actualSize <= 0)
-        {
-            return 0;
-        }
-
-        var temporary = GC.AllocateUninitializedArray<byte>(actualSize);
-        var read = _stream.Read(temporary, 0, actualSize);
-        System.Runtime.InteropServices.Marshal.Copy(temporary, 0, buffer, read);
-        return read;
-    }
-
-    public IntPtr GetMemoryBase()
+    public override IntPtr GetMemoryBase()
     {
         if (_data.Length == 0)
         {
@@ -572,6 +543,14 @@ public sealed class SKStreamAsset : SKStream
         }
 
         _stream.Dispose();
+    }
+}
+
+internal sealed class SKStreamAssetImplementation : SKStreamAsset
+{
+    public SKStreamAssetImplementation(byte[] data)
+        : base(data)
+    {
     }
 }
 

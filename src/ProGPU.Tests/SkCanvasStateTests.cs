@@ -90,7 +90,7 @@ public sealed class SkCanvasStateTests
         var outerRestoreCount = canvas.SaveLayer(halfAlpha);
         canvas.DrawRect(new SKRect(10f, 10f, 40f, 40f), fill);
 
-        Assert.Equal(0, outerRestoreCount);
+        Assert.Equal(1, outerRestoreCount);
         Assert.Empty(context.Commands);
 
         canvas.RestoreToCount(outerRestoreCount);

@@ -1,4 +1,5 @@
 using System;
+using System.Buffers.Binary;
 using System.Globalization;
 using System.IO;
 using System.Numerics;
@@ -1287,7 +1288,229 @@ public struct SKImageInfo
 
 public abstract class SKStream : IDisposable
 {
+    protected virtual Stream? BackingStream => null;
+    protected virtual ReadOnlyMemory<byte>? BackingMemory => null;
+
+    public bool IsAtEnd => BackingStream is not { } stream ||
+        (stream.CanSeek && stream.Position >= stream.Length);
+    public bool HasPosition => BackingStream?.CanSeek == true;
+    public int Position
+    {
+        get => BackingStream is { CanSeek: true } stream
+            ? checked((int)stream.Position)
+            : 0;
+        set => Seek(value);
+    }
+    public bool HasLength => BackingStream?.CanSeek == true;
+    public int Length => BackingStream is { CanSeek: true } stream
+        ? checked((int)stream.Length)
+        : 0;
+
+    public sbyte ReadSByte() => ReadSByte(out var value) ? value : (sbyte)0;
+    public short ReadInt16() => ReadInt16(out var value) ? value : (short)0;
+    public int ReadInt32() => ReadInt32(out var value) ? value : 0;
+    public byte ReadByte() => ReadByte(out var value) ? value : (byte)0;
+    public ushort ReadUInt16() => ReadUInt16(out var value) ? value : (ushort)0;
+    public uint ReadUInt32() => ReadUInt32(out var value) ? value : 0u;
+    public bool ReadBool() => ReadBool(out var value) && value;
+
+    public bool ReadSByte(out sbyte value)
+    {
+        var success = ReadByte(out var raw);
+        value = unchecked((sbyte)raw);
+        return success;
+    }
+
+    public bool ReadInt16(out short value)
+    {
+        Span<byte> bytes = stackalloc byte[sizeof(short)];
+        var success = ReadExactly(bytes);
+        value = success ? BinaryPrimitives.ReadInt16LittleEndian(bytes) : (short)0;
+        return success;
+    }
+
+    public bool ReadInt32(out int value)
+    {
+        Span<byte> bytes = stackalloc byte[sizeof(int)];
+        var success = ReadExactly(bytes);
+        value = success ? BinaryPrimitives.ReadInt32LittleEndian(bytes) : 0;
+        return success;
+    }
+
+    public bool ReadByte(out byte value)
+    {
+        var raw = BackingStream?.ReadByte() ?? -1;
+        value = raw >= 0 ? (byte)raw : (byte)0;
+        return raw >= 0;
+    }
+
+    public bool ReadUInt16(out ushort value)
+    {
+        Span<byte> bytes = stackalloc byte[sizeof(ushort)];
+        var success = ReadExactly(bytes);
+        value = success ? BinaryPrimitives.ReadUInt16LittleEndian(bytes) : (ushort)0;
+        return success;
+    }
+
+    public bool ReadUInt32(out uint value)
+    {
+        Span<byte> bytes = stackalloc byte[sizeof(uint)];
+        var success = ReadExactly(bytes);
+        value = success ? BinaryPrimitives.ReadUInt32LittleEndian(bytes) : 0u;
+        return success;
+    }
+
+    public bool ReadBool(out bool value)
+    {
+        var success = ReadByte(out var raw);
+        value = raw != 0;
+        return success;
+    }
+
+    public int Read(byte[] buffer, int size)
+    {
+        ArgumentNullException.ThrowIfNull(buffer);
+        return size > 0 && BackingStream is { } stream
+            ? stream.Read(buffer, 0, Math.Min(size, buffer.Length))
+            : 0;
+    }
+
+    public unsafe int Read(IntPtr buffer, int size)
+    {
+        if (buffer == IntPtr.Zero || size <= 0 || BackingStream is not { } stream)
+        {
+            return 0;
+        }
+
+        return stream.Read(new Span<byte>(buffer.ToPointer(), size));
+    }
+
+    public int Peek(IntPtr buffer, int size)
+    {
+        if (!HasPosition)
+        {
+            return 0;
+        }
+
+        var position = Position;
+        var read = Read(buffer, size);
+        Seek(position);
+        return read;
+    }
+
+    public int Skip(int size)
+    {
+        if (size <= 0 || BackingStream is not { } stream)
+        {
+            return 0;
+        }
+
+        if (stream.CanSeek)
+        {
+            var start = stream.Position;
+            stream.Position = Math.Min(stream.Length, start + size);
+            return checked((int)(stream.Position - start));
+        }
+
+        Span<byte> scratch = stackalloc byte[256];
+        var skipped = 0;
+        while (skipped < size)
+        {
+            var read = stream.Read(scratch[..Math.Min(scratch.Length, size - skipped)]);
+            if (read == 0)
+            {
+                break;
+            }
+
+            skipped += read;
+        }
+
+        return skipped;
+    }
+
+    public bool Rewind() => Seek(0);
+
+    public bool Seek(int position)
+    {
+        if (position < 0 || BackingStream is not { CanSeek: true } stream || position > stream.Length)
+        {
+            return false;
+        }
+
+        stream.Position = position;
+        return true;
+    }
+
+    [Obsolete("The native stream move offset is capped at a 32-bit int. Use Move(int) instead.")]
+    public bool Move(long offset) => Move(checked((int)offset));
+
+    public bool Move(int offset)
+    {
+        var target = (long)Position + offset;
+        return target >= 0 && target <= int.MaxValue && Seek((int)target);
+    }
+
+    public virtual IntPtr GetMemoryBase() => IntPtr.Zero;
+
+    public SKData GetData()
+    {
+        if (BackingMemory is { } memory)
+        {
+            return new SKData(memory.ToArray());
+        }
+
+        if (BackingStream is not { } stream)
+        {
+            return new SKData(Array.Empty<byte>());
+        }
+
+        var position = stream.CanSeek ? stream.Position : 0;
+        if (stream.CanSeek)
+        {
+            stream.Position = 0;
+        }
+
+        using var copy = new MemoryStream();
+        stream.CopyTo(copy);
+        if (stream.CanSeek)
+        {
+            stream.Position = position;
+        }
+
+        return new SKData(copy.ToArray());
+    }
+
+    private bool ReadExactly(Span<byte> destination)
+    {
+        if (BackingStream is not { } stream)
+        {
+            return false;
+        }
+
+        var read = 0;
+        while (read < destination.Length)
+        {
+            var count = stream.Read(destination[read..]);
+            if (count == 0)
+            {
+                return false;
+            }
+
+            read += count;
+        }
+
+        return true;
+    }
+
     public virtual void Dispose() { }
+}
+
+public abstract class SKStreamRewindable : SKStream
+{
+}
+
+public abstract class SKStreamSeekable : SKStreamRewindable
+{
 }
 
 public class SKData : IDisposable
@@ -1308,6 +1531,11 @@ public class SKData : IDisposable
 
     public static SKData Create(SKStream stream)
     {
+        ArgumentNullException.ThrowIfNull(stream);
+        if (stream is SKStreamAsset asset)
+        {
+            return new SKData(asset.Data.ToArray());
+        }
         if (stream is SKManagedStream managed)
         {
             using (var ms = new MemoryStream())

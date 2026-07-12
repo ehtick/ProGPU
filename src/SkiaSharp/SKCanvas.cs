@@ -88,6 +88,8 @@ public class SKCanvas : IDisposable
         set => SetMatrix(value);
     }
 
+    public int SaveCount => _stateStack.Count + 1;
+
     public SKMatrix44 TotalMatrix44 => SKMatrix44.FromMatrix4x4(_currentMatrix.ToMatrix4x4());
 
     public SKCanvas(
@@ -166,14 +168,14 @@ public class SKCanvas : IDisposable
 
     public int Save()
     {
-        var restoreCount = _stateStack.Count;
+        var restoreCount = SaveCount;
         _stateStack.Push((_currentMatrix, _currentOpacity, _pushedScopes.Count));
         return restoreCount;
     }
 
     public int SaveLayer(SKRect bounds, SKPaint? paint)
     {
-        var restoreCount = _stateStack.Count;
+        var restoreCount = SaveCount;
         Save();
 
         var parentContext = _context;
@@ -239,8 +241,8 @@ public class SKCanvas : IDisposable
 
     public void RestoreToCount(int count)
     {
-        count = Math.Max(0, count);
-        while (_stateStack.Count > count)
+        var targetDepth = Math.Max(1, count) - 1;
+        while (_stateStack.Count > targetDepth)
         {
             Restore();
         }

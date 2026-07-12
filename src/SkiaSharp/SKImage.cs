@@ -1346,6 +1346,7 @@ public class SKBitmap : IDisposable
 public class SKManagedStream : SKStream
 {
     public Stream Stream { get; }
+    protected override Stream BackingStream => Stream;
 
     public SKManagedStream(Stream stream)
     {
