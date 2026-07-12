@@ -382,14 +382,7 @@ public class SKSurface : IDisposable
 
     private static int GetBytesPerPixel(SKColorType colorType)
     {
-        return colorType switch
-        {
-            SKColorType.Alpha8 => 1,
-            SKColorType.Rgb565 or SKColorType.Argb4444 => 2,
-            SKColorType.RgbaF16 => 8,
-            SKColorType.RgbaF32 => 16,
-            _ => 4
-        };
+        return SKImageInfo.GetBytesPerPixel(colorType);
     }
 
     private static void ValidateImageInfoDimensions(SKImageInfo info, string parameterName)
