@@ -35,12 +35,34 @@ public enum SKFontStyleWidth
     UltraExpanded = 9,
 }
 
-public class SKFontStyle : IDisposable
+public class SKFontStyle : SKObject, ISKSkipObjectRegistration
 {
-    public IntPtr Handle { get; } = SKObjectHandle.Create();
+    private static readonly SKFontStyle s_normal = MakeDisposeProtected(
+        SKFontStyleWeight.Normal,
+        SKFontStyleSlant.Upright);
+    private static readonly SKFontStyle s_bold = MakeDisposeProtected(
+        SKFontStyleWeight.Bold,
+        SKFontStyleSlant.Upright);
+    private static readonly SKFontStyle s_italic = MakeDisposeProtected(
+        SKFontStyleWeight.Normal,
+        SKFontStyleSlant.Italic);
+    private static readonly SKFontStyle s_boldItalic = MakeDisposeProtected(
+        SKFontStyleWeight.Bold,
+        SKFontStyleSlant.Italic);
+
     public int Weight { get; }
     public int Width { get; }
     public SKFontStyleSlant Slant { get; }
+
+    public static SKFontStyle Normal => s_normal;
+    public static SKFontStyle Bold => s_bold;
+    public static SKFontStyle Italic => s_italic;
+    public static SKFontStyle BoldItalic => s_boldItalic;
+
+    public SKFontStyle()
+        : this(SKFontStyleWeight.Normal, SKFontStyleWidth.Normal, SKFontStyleSlant.Upright)
+    {
+    }
 
     public SKFontStyle(SKFontStyleWeight weight, SKFontStyleWidth width, SKFontStyleSlant slant)
         : this((int)weight, (int)width, slant)
@@ -48,18 +70,19 @@ public class SKFontStyle : IDisposable
     }
 
     public SKFontStyle(int weight, int width, SKFontStyleSlant slant)
+        : base(SKObjectHandle.Create(), owns: true)
     {
         Weight = weight;
         Width = width;
         Slant = slant;
     }
 
-    public static readonly SKFontStyle Normal = new(SKFontStyleWeight.Normal, SKFontStyleWidth.Normal, SKFontStyleSlant.Upright);
-    public static readonly SKFontStyle Italic = new(SKFontStyleWeight.Normal, SKFontStyleWidth.Normal, SKFontStyleSlant.Italic);
-    public static readonly SKFontStyle Bold = new(SKFontStyleWeight.Bold, SKFontStyleWidth.Normal, SKFontStyleSlant.Upright);
-    public static readonly SKFontStyle BoldItalic = new(SKFontStyleWeight.Bold, SKFontStyleWidth.Normal, SKFontStyleSlant.Italic);
-
-    public void Dispose() { }
+    private static SKFontStyle MakeDisposeProtected(SKFontStyleWeight weight, SKFontStyleSlant slant)
+    {
+        var style = new SKFontStyle(weight, SKFontStyleWidth.Normal, slant);
+        style.PreventPublicDisposal();
+        return style;
+    }
 }
 
 public partial class SKTypeface : IDisposable
