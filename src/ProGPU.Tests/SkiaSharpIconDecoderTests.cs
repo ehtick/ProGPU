@@ -282,6 +282,23 @@ public sealed class SkiaSharpIconDecoderTests
     }
 
     [Fact]
+    public void DecodeCursorUsesBitmapFrameAndIgnoresHotspotFields()
+    {
+        var cursor = CreateIcon(
+            bitCount: 32,
+            xorPixels: [0, 0, 255, 128, 0, 255, 0, 255],
+            andMask: [0, 0, 0, 0]);
+        BinaryPrimitives.WriteUInt16LittleEndian(cursor.AsSpan(2), 2);
+        BinaryPrimitives.WriteUInt16LittleEndian(cursor.AsSpan(10), 1);
+        BinaryPrimitives.WriteUInt16LittleEndian(cursor.AsSpan(12), 1);
+
+        using var bitmap = SKBitmap.Decode(new SKData(cursor));
+
+        Assert.Equal(new SKColor(255, 0, 0, 128), bitmap.GetPixel(0, 0));
+        Assert.Equal(SKColors.Lime, bitmap.GetPixel(1, 0));
+    }
+
+    [Fact]
     public void Decode24BitIconWithoutAndMaskDefaultsToOpaque()
     {
         var icon = CreateIcon(

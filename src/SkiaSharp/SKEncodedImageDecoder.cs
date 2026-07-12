@@ -9,7 +9,7 @@ internal static class SKEncodedImageDecoder
     public static DecodedImage Decode(byte[] data)
     {
         ArgumentNullException.ThrowIfNull(data);
-        if (IsIcon(data))
+        if (IsIconOrCursor(data))
         {
             return DecodeIcon(data);
         }
@@ -20,18 +20,19 @@ internal static class SKEncodedImageDecoder
         return new DecodedImage(result.Width, result.Height, result.Data, ReadPngColorSpace(data));
     }
 
-    private static bool IsIcon(ReadOnlySpan<byte> data)
+    private static bool IsIconOrCursor(ReadOnlySpan<byte> data)
     {
         return data.Length >= 6
             && data[0] == 0
             && data[1] == 0
-            && data[2] == 1
-            && data[3] == 0;
+            && data[3] == 0
+            && data[2] is 1 or 2;
     }
 
     private static DecodedImage DecodeIcon(byte[] data)
     {
         var span = data.AsSpan();
+        var isCursor = span[2] == 2;
         var count = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(4, 2));
         if (count == 0 || span.Length < 6 + count * 16)
         {
@@ -45,7 +46,6 @@ internal static class SKEncodedImageDecoder
             var entry = span.Slice(entryOffset, 16);
             var width = entry[0] == 0 ? 256 : entry[0];
             var height = entry[1] == 0 ? 256 : entry[1];
-            var bitCount = BinaryPrimitives.ReadUInt16LittleEndian(entry.Slice(6, 2));
             var byteCount = BinaryPrimitives.ReadUInt32LittleEndian(entry.Slice(8, 4));
             var imageOffset = BinaryPrimitives.ReadUInt32LittleEndian(entry.Slice(12, 4));
             if ((ulong)imageOffset + byteCount > (ulong)span.Length || byteCount == 0)
@@ -53,6 +53,9 @@ internal static class SKEncodedImageDecoder
                 continue;
             }
 
+            var bitCount = isCursor
+                ? ReadCursorFrameBitCount(span.Slice((int)imageOffset, (int)byteCount))
+                : BinaryPrimitives.ReadUInt16LittleEndian(entry.Slice(6, 2));
             var candidate = new IconEntry(width, height, bitCount, (int)imageOffset, (int)byteCount);
             if (selected == null
                 || candidate.Width * candidate.Height > selected.Value.Width * selected.Value.Height
@@ -87,6 +90,17 @@ internal static class SKEncodedImageDecoder
         }
 
         return DecodeIconBitmap(payload, icon);
+    }
+
+    private static ushort ReadCursorFrameBitCount(ReadOnlySpan<byte> payload)
+    {
+        if (payload.Length < 16
+            || payload[0] == 0x89 && payload[1] == 0x50 && payload[2] == 0x4e && payload[3] == 0x47)
+        {
+            return 0;
+        }
+
+        return BinaryPrimitives.ReadUInt16LittleEndian(payload.Slice(14, 2));
     }
 
     private static DecodedImage DecodeIconBitmap(ReadOnlySpan<byte> payload, IconEntry icon)
