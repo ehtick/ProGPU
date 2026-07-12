@@ -102,6 +102,53 @@ public sealed class SkWriteStreamCompatibilityTests
     }
 
     [Fact]
+    public void ManagedReadStreamMatchesOwnershipCopyAndSnapshotContracts()
+    {
+        Assert.Throws<ArgumentNullException>(() => new SKManagedStream(null!));
+        Assert.Null(typeof(SKManagedStream).GetProperty(
+            "Stream",
+            System.Reflection.BindingFlags.Public |
+            System.Reflection.BindingFlags.Instance |
+            System.Reflection.BindingFlags.DeclaredOnly));
+
+        using var source = new TrackingMemoryStream(new byte[] { 1, 2, 3, 4, 5 });
+        source.Position = 2;
+        using (var managed = new SKManagedStream(source))
+        using (var output = new TrackingMemoryStream())
+        using (var destination = new SKManagedWStream(output))
+        {
+            Assert.Equal(3, managed.CopyTo(destination));
+            Assert.Equal(new byte[] { 3, 4, 5 }, output.ToArray());
+            Assert.Equal(1, output.FlushCount);
+            Assert.Equal(source.Length, source.Position);
+        }
+
+        Assert.True(source.CanRead);
+        source.Position = 1;
+        using (var managed = new SKManagedStream(source))
+        using (var snapshot = managed.ToMemoryStream())
+        {
+            var bytes = new byte[8];
+            Assert.Equal(4, snapshot.Read(bytes, bytes.Length));
+            Assert.Equal(new byte[] { 2, 3, 4, 5, 0, 0, 0, 0 }, bytes);
+            Assert.Equal(source.Length, source.Position);
+        }
+
+        var owned = new MemoryStream(new byte[] { 6, 7 });
+        using (var managed = new SKManagedStream(owned, disposeManagedStream: true))
+        {
+            Assert.True(owned.CanRead);
+        }
+
+        Assert.False(owned.CanRead);
+
+        var disposed = new SKManagedStream(new MemoryStream());
+        disposed.Dispose();
+        using var unusedDestination = new SKDynamicMemoryWStream();
+        Assert.Throws<ObjectDisposedException>(() => disposed.CopyTo(unusedDestination));
+    }
+
+    [Fact]
     public void StreamAndFileAdaptersUseBoundedSafeFailureSemantics()
     {
         using var output = new SKDynamicMemoryWStream();
@@ -133,6 +180,26 @@ public sealed class SkWriteStreamCompatibilityTests
         finally
         {
             File.Delete(path);
+        }
+    }
+
+    private sealed class TrackingMemoryStream : MemoryStream
+    {
+        public int FlushCount { get; private set; }
+
+        public TrackingMemoryStream()
+        {
+        }
+
+        public TrackingMemoryStream(byte[] buffer)
+            : base(buffer)
+        {
+        }
+
+        public override void Flush()
+        {
+            FlushCount++;
+            base.Flush();
         }
     }
 }

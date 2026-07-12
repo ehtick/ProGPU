@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.IO;
 using System.Numerics;
 using System.Runtime.InteropServices;
@@ -2664,11 +2665,63 @@ public class SKBitmap : SKObject
 
 public class SKManagedStream : SKStream
 {
-    public Stream Stream { get; }
-    protected override Stream BackingStream => Stream;
+    private Stream? _stream;
+    private readonly bool _disposeStream;
 
-    public SKManagedStream(Stream stream)
+    protected override Stream? BackingStream => _stream;
+
+    public SKManagedStream(Stream managedStream)
+        : this(managedStream, disposeManagedStream: false)
     {
-        Stream = stream;
+    }
+
+    public SKManagedStream(Stream managedStream, bool disposeManagedStream)
+    {
+        ArgumentNullException.ThrowIfNull(managedStream);
+        _stream = managedStream;
+        _disposeStream = disposeManagedStream;
+    }
+
+    public int CopyTo(SKWStream destination)
+    {
+        ArgumentNullException.ThrowIfNull(destination);
+        var source = _stream ?? throw new ObjectDisposedException(nameof(SKManagedStream));
+        var buffer = ArrayPool<byte>.Shared.Rent(81920);
+        try
+        {
+            var total = 0;
+            int read;
+            while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                destination.Write(buffer, read);
+                total += read;
+            }
+
+            destination.Flush();
+            return total;
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    public SKStreamAsset ToMemoryStream()
+    {
+        using var destination = new SKDynamicMemoryWStream();
+        CopyTo(destination);
+        return destination.DetachAsStream();
+    }
+
+    public override void Dispose()
+    {
+        var stream = _stream;
+        _stream = null;
+        if (_disposeStream)
+        {
+            stream?.Dispose();
+        }
+
+        base.Dispose();
     }
 }
