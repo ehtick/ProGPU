@@ -93,7 +93,34 @@ public readonly struct PathCacheKey : IEquatable<PathCacheKey>
         float subpixelX = 0f,
         float subpixelY = 0f,
         uint sampleGrid = PathAtlas.StandardCoverageSampleGrid)
-        : this(contentHash, scale, scale, subpixelX, subpixelY, sampleGrid)
+        : this(
+            contentHash,
+            scale,
+            subpixelX,
+            subpixelY,
+            sampleGrid,
+            PathAtlas.DefaultSubpixelPhaseGrid,
+            quantizeScale: false)
+    {
+    }
+
+    public PathCacheKey(
+        int contentHash,
+        float scale,
+        float subpixelX,
+        float subpixelY,
+        uint sampleGrid,
+        uint subpixelPhaseGrid,
+        bool quantizeScale)
+        : this(
+            contentHash,
+            scale,
+            scale,
+            subpixelX,
+            subpixelY,
+            sampleGrid,
+            subpixelPhaseGrid,
+            quantizeScale)
     {
     }
 
@@ -104,12 +131,33 @@ public readonly struct PathCacheKey : IEquatable<PathCacheKey>
         float subpixelX,
         float subpixelY,
         uint sampleGrid = PathAtlas.StandardCoverageSampleGrid)
+        : this(
+            contentHash,
+            scaleX,
+            scaleY,
+            subpixelX,
+            subpixelY,
+            sampleGrid,
+            PathAtlas.DefaultSubpixelPhaseGrid,
+            quantizeScale: false)
+    {
+    }
+
+    public PathCacheKey(
+        int contentHash,
+        float scaleX,
+        float scaleY,
+        float subpixelX,
+        float subpixelY,
+        uint sampleGrid,
+        uint subpixelPhaseGrid,
+        bool quantizeScale)
     {
         ContentHash = contentHash;
-        ScaleX = scaleX;
-        ScaleY = scaleY;
-        SubpixelX = QuantizeSubpixel(subpixelX);
-        SubpixelY = QuantizeSubpixel(subpixelY);
+        ScaleX = quantizeScale ? QuantizeScale(scaleX) : scaleX;
+        ScaleY = quantizeScale ? QuantizeScale(scaleY) : scaleY;
+        SubpixelX = QuantizeSubpixel(subpixelX, subpixelPhaseGrid);
+        SubpixelY = QuantizeSubpixel(subpixelY, subpixelPhaseGrid);
         SampleGrid = NormalizeSampleGrid(sampleGrid);
     }
 
@@ -136,15 +184,35 @@ public readonly struct PathCacheKey : IEquatable<PathCacheKey>
     public static bool operator ==(PathCacheKey left, PathCacheKey right) => left.Equals(right);
     public static bool operator !=(PathCacheKey left, PathCacheKey right) => !left.Equals(right);
 
-    private static float QuantizeSubpixel(float value)
+    private static float QuantizeScale(float value)
+    {
+        if (!float.IsFinite(value) || value == 0f)
+        {
+            return value;
+        }
+
+        var magnitude = MathF.Abs(value);
+        var exponent = MathF.ILogB(magnitude);
+        var step = MathF.ScaleB(1f, exponent - 10);
+        if (!float.IsFinite(step) || step <= 0f)
+        {
+            return value;
+        }
+
+        var quantized = MathF.Round(value / step) * step;
+        return float.IsFinite(quantized) ? quantized : value;
+    }
+
+    private static float QuantizeSubpixel(float value, uint phaseGrid)
     {
         if (!float.IsFinite(value))
         {
             return 0f;
         }
 
+        phaseGrid = Math.Clamp(phaseGrid, 1u, PathAtlas.DefaultSubpixelPhaseGrid);
         value -= MathF.Floor(value);
-        var quantized = MathF.Round(value * 64f) / 64f;
+        var quantized = MathF.Round(value * phaseGrid) / phaseGrid;
         return quantized >= 1f ? 0f : quantized;
     }
 
@@ -171,6 +239,7 @@ public unsafe class PathAtlas : IDisposable
 {
     public const uint StandardCoverageSampleGrid = 4;
     public const uint HighPrecisionCoverageSampleGrid = 8;
+    public const uint DefaultSubpixelPhaseGrid = 64;
 
     private const int MaxCompiledFillPathCount = 4096;
     private const int MaxCompiledHitTestPathCount = 4096;
@@ -222,6 +291,7 @@ public unsafe class PathAtlas : IDisposable
     public int CachedPathCount => _paths.Count;
     public int CachedHitTestPathCount => _compiledHitTestPaths.Count;
     public ulong Generation { get; private set; }
+    public bool CapacityExceeded { get; private set; }
 
     public PathAtlas(WgpuContext context, uint atlasSize = 2048)
     {
@@ -810,6 +880,8 @@ public unsafe class PathAtlas : IDisposable
 
     private void RepackActivePaths()
     {
+        ProGpuVectorDiagnostics.WriteLine(
+            $"[PathAtlas] Repacking generation {Generation} with {_paths.Count} cached paths at frame {_frameNumber}.");
         Generation++;
         PathInfo[]? activePaths = null;
         int activePathCount = 0;
@@ -896,13 +968,32 @@ public unsafe class PathAtlas : IDisposable
 
     private void ResetCachedPaths()
     {
+        ProGpuVectorDiagnostics.WriteLine(
+            $"[PathAtlas] Resetting generation {Generation} with {_paths.Count} cached and {_pendingPaths.Count} pending paths at frame {_frameNumber}.");
         Generation++;
         _paths.Clear();
         _pendingPaths.Clear();
         _currentX = 2;
         _currentY = 2;
         _currentRowHeight = 0;
+        CapacityExceeded = false;
         ClearAtlasTexture();
+    }
+
+    private bool TryResetAfterCapacityExceeded()
+    {
+        if (!CapacityExceeded)
+        {
+            return false;
+        }
+
+        ResetCachedPaths();
+        return true;
+    }
+
+    public void ResetForRenderRetry()
+    {
+        ResetCachedPaths();
     }
 
     private bool HasPathsUsedInCurrentFrame()
@@ -918,38 +1009,6 @@ public unsafe class PathAtlas : IDisposable
         return false;
     }
 
-    private void ReserveFrameCapacity(uint anticipatedWidth, uint anticipatedHeight)
-    {
-        if (_paths.Count == 0 || anticipatedWidth == 0 || anticipatedHeight == 0)
-        {
-            return;
-        }
-
-        const uint entryPadding = 10;
-        uint entryWidth = anticipatedWidth >= _atlasSize - Math.Min(_atlasSize, entryPadding)
-            ? _atlasSize
-            : anticipatedWidth + entryPadding;
-        uint entryHeight = anticipatedHeight >= _atlasSize - Math.Min(_atlasSize, entryPadding)
-            ? _atlasSize
-            : anticipatedHeight + entryPadding;
-        uint usableWidth = _atlasSize > 4 ? _atlasSize - 4 : _atlasSize;
-        uint entriesPerRow = Math.Max(1u, usableWidth / Math.Max(1u, entryWidth + 2));
-        uint rowsNeeded = DivRoundUp(2, entriesPerRow);
-        ulong requiredFromEmpty = 2UL + (ulong)rowsNeeded * (entryHeight + 2UL);
-        if (requiredFromEmpty > _atlasSize)
-        {
-            return;
-        }
-
-        uint nextRowY = _currentY + _currentRowHeight + 2;
-        ulong requiredEndY = (ulong)nextRowY + (ulong)rowsNeeded * (entryHeight + 2);
-
-        if (requiredEndY > _atlasSize)
-        {
-            ResetCachedPaths();
-        }
-    }
-
     private void ClearAtlasTexture()
     {
         _atlasTexture.ClearRenderTarget();
@@ -962,7 +1021,34 @@ public unsafe class PathAtlas : IDisposable
         float subpixelY = 0f,
         uint sampleGrid = StandardCoverageSampleGrid)
     {
-        return GetOrCreatePath(path, scale, scale, subpixelX, subpixelY, sampleGrid);
+        return GetOrCreatePath(
+            path,
+            scale,
+            subpixelX,
+            subpixelY,
+            sampleGrid,
+            DefaultSubpixelPhaseGrid,
+            quantizeScale: false);
+    }
+
+    public PathInfo GetOrCreatePath(
+        PathGeometry path,
+        float scale,
+        float subpixelX,
+        float subpixelY,
+        uint sampleGrid,
+        uint subpixelPhaseGrid,
+        bool quantizeScale)
+    {
+        return GetOrCreatePath(
+            path,
+            scale,
+            scale,
+            subpixelX,
+            subpixelY,
+            sampleGrid,
+            subpixelPhaseGrid,
+            quantizeScale);
     }
 
     public PathInfo GetOrCreatePath(
@@ -973,10 +1059,41 @@ public unsafe class PathAtlas : IDisposable
         float subpixelY,
         uint sampleGrid = StandardCoverageSampleGrid)
     {
+        return GetOrCreatePath(
+            path,
+            scaleX,
+            scaleY,
+            subpixelX,
+            subpixelY,
+            sampleGrid,
+            DefaultSubpixelPhaseGrid,
+            quantizeScale: false);
+    }
+
+    public PathInfo GetOrCreatePath(
+        PathGeometry path,
+        float scaleX,
+        float scaleY,
+        float subpixelX,
+        float subpixelY,
+        uint sampleGrid,
+        uint subpixelPhaseGrid,
+        bool quantizeScale)
+    {
         if (_isDisposed) throw new ObjectDisposedException(nameof(PathAtlas));
 
         int contentHash = ComputeHash(path);
-        var key = new PathCacheKey(contentHash, scaleX, scaleY, subpixelX, subpixelY, sampleGrid);
+        var key = new PathCacheKey(
+            contentHash,
+            scaleX,
+            scaleY,
+            subpixelX,
+            subpixelY,
+            sampleGrid,
+            subpixelPhaseGrid,
+            quantizeScale);
+        scaleX = key.ScaleX;
+        scaleY = key.ScaleY;
 
         if (_paths.TryGetValue(key, out var info))
         {
@@ -1086,6 +1203,7 @@ public unsafe class PathAtlas : IDisposable
             if (_currentY + gH + 2 > _atlasSize)
             {
                 ProGpuVectorDiagnostics.WriteLine("[PathAtlas] Warning: The current frame exceeds the atlas size; preserving existing path coordinates.");
+                CapacityExceeded = true;
                 info = new PathInfo
                 {
                     Key = key,
@@ -1471,7 +1589,9 @@ public unsafe class PathAtlas : IDisposable
 
     public void CleanupFrame(uint anticipatedWidth = 0, uint anticipatedHeight = 0)
     {
-        ReserveFrameCapacity(anticipatedWidth, anticipatedHeight);
+        _ = anticipatedWidth;
+        _ = anticipatedHeight;
+        TryResetAfterCapacityExceeded();
         _frameNumber++;
         for (int i = 0; i < _tempBuffers.Count; i++)
         {

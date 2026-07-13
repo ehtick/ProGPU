@@ -170,9 +170,67 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
         var pixels = window.ReadPixels();
         for (var glyphIndex = 0; glyphIndex < glyphCount; glyphIndex += 16)
         {
-            var alphaOffset = (33 * 1024 + glyphIndex * 10 + 6) * 4 + 3;
-            Assert.True(pixels[alphaOffset] > 200, $"Glyph {glyphIndex} was not rendered at its expected position.");
+            var redOffset = (33 * 1024 + glyphIndex * 10 + 6) * 4;
+            Assert.True(pixels[redOffset] > 200, $"Glyph {glyphIndex} was not rendered at its expected position.");
         }
+    }
+
+    [Fact]
+    public void FractionalTransformedVectorGlyphsUseBoundedAtlasPhases()
+    {
+        const int glyphCount = 512;
+        var font = new TtfFont(BuildMissingGlyphOutlineFont());
+        using var window = new HeadlessWindow(
+            1024,
+            384,
+            CompositorOptions.Default with { PathAtlasSize = 512 });
+        window.Content = new FractionalVectorGlyphVisual(font, glyphCount);
+
+        window.Render();
+
+        Assert.False(window.Compositor.PathAtlas.CapacityExceeded);
+        Assert.InRange(
+            window.Compositor.PathAtlas.CachedPathCount,
+            1,
+            130);
+        Assert.Equal(
+            (uint)(glyphCount * 6),
+            (uint)GetDrawCalls(window.Compositor)
+                .Where(static drawCall => drawCall.Type == Compositor.DrawCallType.Vector)
+                .Sum(static drawCall => (long)drawCall.IndexCount));
+
+        var pixels = window.ReadPixels();
+        Assert.True(
+            pixels.Where((_, index) => index % 4 == 0).Count(static red => red > 200) >= glyphCount * 8,
+            "Expected every bounded vector-glyph phase to retain visible coverage.");
+    }
+
+    [Fact]
+    public void ParentTransformedVectorGlyphsUseQuarterPixelCoveragePhases()
+    {
+        const int phaseCount = 16;
+        const int glyphCount = phaseCount * phaseCount;
+        var font = new TtfFont(BuildMissingGlyphOutlineFont());
+        using var window = new HeadlessWindow(
+            640,
+            576,
+            CompositorOptions.Default with { PathAtlasSize = 256 });
+        window.Content = new ParentPhaseVectorGlyphVisual(font, phaseCount);
+
+        window.Render();
+
+        Assert.False(window.Compositor.PathAtlas.CapacityExceeded);
+        Assert.InRange(window.Compositor.PathAtlas.CachedPathCount, 1, 16);
+        Assert.Equal(
+            (uint)(glyphCount * 6),
+            (uint)GetDrawCalls(window.Compositor)
+                .Where(static drawCall => drawCall.Type == Compositor.DrawCallType.Vector)
+                .Sum(static drawCall => (long)drawCall.IndexCount));
+
+        var pixels = window.ReadPixels();
+        Assert.True(
+            pixels.Where((_, index) => index % 4 == 0).Count(static red => red > 200) >= glyphCount * 8,
+            "Expected every parent-transform phase to retain visible vector-glyph coverage.");
     }
 
     [Fact]
@@ -239,7 +297,7 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     }
 
     [Fact]
-    public void PathAtlasReservesCapacityBeforeAFrameCanRelocateCompiledPaths()
+    public void PathAtlasFrameAdvancePreservesValidCachedCoordinates()
     {
         using var atlas = new PathAtlas(HeadlessWindow.Shared.Context, atlasSize: 256);
 
@@ -251,25 +309,184 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
         }
 
         Assert.Equal(4, atlas.CachedPathCount);
+        var generation = atlas.Generation;
 
-        atlas.CleanupFrame(anticipatedWidth: 100, anticipatedHeight: 100);
+        atlas.CleanupFrame(anticipatedWidth: 1920, anticipatedHeight: 1080);
 
-        Assert.Equal(0, atlas.CachedPathCount);
+        Assert.Equal(4, atlas.CachedPathCount);
+        Assert.Equal(generation, atlas.Generation);
     }
 
     [Fact]
-    public void PathAtlasPreservesCacheWhenFrameReservationCannotFitEvenWhenEmpty()
+    public void PathCacheKeyQuantizesScaleOnlyWhenExplicitlyRequested()
     {
-        using var atlas = new PathAtlas(HeadlessWindow.Shared.Context, atlasSize: 256);
-        atlas.GetOrCreatePath(
-            PrimitivePathGeometry.CreateRectangle(0f, 0f, 32f, 32f),
+        const float scale = 1.0003f;
+        var ordinaryPath = new PathCacheKey(1, scale, scale, 0f, 0f);
+        var vectorText = new PathCacheKey(
+            1,
+            scale,
+            scale,
+            0f,
+            0f,
+            sampleGrid: PathAtlas.StandardCoverageSampleGrid,
+            subpixelPhaseGrid: PathAtlas.DefaultSubpixelPhaseGrid,
+            quantizeScale: true);
+
+        Assert.Equal(scale, ordinaryPath.ScaleX);
+        Assert.Equal(scale, ordinaryPath.ScaleY);
+        Assert.NotEqual(scale, vectorText.ScaleX);
+        Assert.InRange(MathF.Abs(vectorText.ScaleX - scale) / scale, 0f, 1f / 2048f);
+
+        var subnormal = new PathCacheKey(
+            1,
+            float.Epsilon,
+            float.Epsilon,
+            0f,
+            0f,
+            sampleGrid: PathAtlas.StandardCoverageSampleGrid,
+            subpixelPhaseGrid: PathAtlas.DefaultSubpixelPhaseGrid,
+            quantizeScale: true);
+        Assert.Equal(float.Epsilon, subnormal.ScaleX);
+        Assert.Equal(float.Epsilon, subnormal.ScaleY);
+    }
+
+    [Fact]
+    public void PathAtlasCapacityFailureRecoversAtNextFrameBoundary()
+    {
+        using var atlas = new PathAtlas(HeadlessWindow.Shared.Context, atlasSize: 64);
+        var first = atlas.GetOrCreatePath(
+            PrimitivePathGeometry.CreateRectangle(0f, 0f, 44f, 44f),
+            scale: 1f);
+        atlas.CleanupFrame();
+        _ = atlas.GetOrCreatePath(first.Geometry, scale: 1f);
+        var missing = atlas.GetOrCreatePath(
+            PrimitivePathGeometry.CreateRectangle(0f, 0f, 12f, 12f),
             scale: 1f);
         ulong generation = atlas.Generation;
 
-        atlas.CleanupFrame(anticipatedWidth: 200, anticipatedHeight: 200);
+        Assert.True(atlas.CapacityExceeded);
+        Assert.Equal(0u, missing.Width);
 
-        Assert.Equal(1, atlas.CachedPathCount);
-        Assert.Equal(generation, atlas.Generation);
+        atlas.CleanupFrame();
+
+        Assert.False(atlas.CapacityExceeded);
+        Assert.Equal(0, atlas.CachedPathCount);
+        Assert.True(atlas.Generation > generation);
+    }
+
+    [Fact]
+    public void CompositorRetriesFrameAfterRecoverablePathAtlasCapacityFailure()
+    {
+        const int pathCount = 24;
+        using var window = new HeadlessWindow(
+            640,
+            64,
+            CompositorOptions.Default with { PathAtlasSize = 128 });
+        window.Content = new PathAtlasPressureVisual(pathCount, variant: 0);
+        window.Render();
+        var firstGeneration = window.Compositor.PathAtlas.Generation;
+
+        window.Content = new PathAtlasPressureVisual(pathCount, variant: 1);
+        window.Render();
+
+        Assert.False(window.Compositor.PathAtlas.CapacityExceeded);
+        Assert.True(window.Compositor.PathAtlas.Generation > firstGeneration);
+        Assert.Equal(
+            (uint)(pathCount * 6),
+            (uint)GetDrawCalls(window.Compositor)
+                .Where(static drawCall => drawCall.Type == Compositor.DrawCallType.Vector)
+                .Sum(static drawCall => (long)drawCall.IndexCount));
+
+        var pixels = window.ReadPixels();
+        for (var pathIndex = 0; pathIndex < pathCount; pathIndex++)
+        {
+            var redOffset = (28 * 640 + pathIndex * 24 + 8) * 4;
+            Assert.True(
+                pixels[redOffset] > 200,
+                $"Path {pathIndex} was missing after the atlas retry.");
+        }
+    }
+
+    [Fact]
+    public void OffscreenCompositorRetriesAfterRecoverablePathAtlasCapacityFailure()
+    {
+        const int pathCount = 24;
+        using var window = new HeadlessWindow(
+            640,
+            64,
+            CompositorOptions.Default with { PathAtlasSize = 128 });
+        using var target = new GpuTexture(
+            window.Context,
+            640,
+            64,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.RenderAttachment | TextureUsage.TextureBinding | TextureUsage.CopySrc,
+            "PathAtlas retry offscreen target");
+        window.Compositor.RenderOffscreen(
+            CreatePathAtlasPressureDrawingVisual(pathCount, variant: 0),
+            640,
+            64,
+            target,
+            padding: 0f,
+            dpiScale: 1f);
+        var firstGeneration = window.Compositor.PathAtlas.Generation;
+
+        window.Compositor.RenderOffscreen(
+            CreatePathAtlasPressureDrawingVisual(pathCount, variant: 1),
+            640,
+            64,
+            target,
+            padding: 0f,
+            dpiScale: 1f);
+
+        Assert.False(window.Compositor.PathAtlas.CapacityExceeded);
+        Assert.True(window.Compositor.PathAtlas.Generation > firstGeneration);
+        var pixels = target.ReadPixels();
+        for (var pathIndex = 0; pathIndex < pathCount; pathIndex++)
+        {
+            var redOffset = (28 * 640 + pathIndex * 24 + 8) * 4;
+            Assert.True(
+                pixels[redOffset] > 200,
+                $"Offscreen path {pathIndex} was missing after the atlas retry.");
+        }
+    }
+
+    [Fact]
+    public void CompositorFailsExplicitlyWhenSinglePathExceedsAtlas()
+    {
+        using var window = new HeadlessWindow(
+            96,
+            96,
+            CompositorOptions.Default with { PathAtlasSize = 64 });
+        window.Content = new OversizedPathVisual();
+
+        var exception = Assert.IsAssignableFrom<InvalidOperationException>(
+            Record.Exception(() => window.Render()));
+
+        Assert.Contains("PathAtlas", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("64x64", exception.Message, StringComparison.Ordinal);
+    }
+
+    private static DrawingVisual CreatePathAtlasPressureDrawingVisual(int pathCount, int variant)
+    {
+        var visual = new DrawingVisual { Size = new Vector2(640f, 64f) };
+        var brush = new SolidColorBrush(Vector4.One);
+        for (var pathIndex = 0; pathIndex < pathCount; pathIndex++)
+        {
+            var variantOffset = variant * 0.25f;
+            var path = PrimitivePathGeometry.CreateRectangle(
+                0f,
+                0f,
+                8f + pathIndex % 4 + variantOffset,
+                8f + pathIndex / 4 + variantOffset);
+            visual.Context.DrawPath(
+                brush,
+                null,
+                path,
+                Matrix4x4.CreateTranslation(pathIndex * 24f + 4f, 24f, 0f));
+        }
+
+        return visual;
     }
 
     [Fact]
@@ -4422,6 +4639,138 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
                     Vector2.Zero,
                     useVectorGlyphRendering: true);
             }
+        }
+    }
+
+    private sealed class FractionalVectorGlyphVisual : FrameworkElement
+    {
+        private readonly TtfFont _font;
+        private readonly int _glyphCount;
+
+        public FractionalVectorGlyphVisual(TtfFont font, int glyphCount)
+        {
+            _font = font;
+            _glyphCount = glyphCount;
+            Width = 1024f;
+            Height = 384f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            var glyphIndex = _font.GetGlyphIndex('A');
+            var glyphIndices = new[] { glyphIndex };
+            var brush = new SolidColorBrush(Vector4.One);
+            for (var index = 0; index < _glyphCount; index++)
+            {
+                var fractionalPosition = new Vector2(
+                    (index * 37 % 4093) / 4093f,
+                    0.25f);
+                var transform = Matrix4x4.CreateRotationZ(index * 0.017f) *
+                    Matrix4x4.CreateTranslation(
+                        index % 64 * 14f + 8f,
+                        index / 64 * 44f + 36f,
+                        0f);
+                context.DrawGlyphRun(
+                    glyphIndices,
+                    new[] { fractionalPosition },
+                    _font,
+                    24f,
+                    brush,
+                    Vector2.Zero,
+                    transform,
+                    useVectorGlyphRendering: true);
+            }
+        }
+    }
+
+    private sealed class PathAtlasPressureVisual : FrameworkElement
+    {
+        private readonly int _pathCount;
+        private readonly int _variant;
+
+        public PathAtlasPressureVisual(int pathCount, int variant)
+        {
+            _pathCount = pathCount;
+            _variant = variant;
+            Width = 640f;
+            Height = 64f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            var brush = new SolidColorBrush(Vector4.One);
+            for (var pathIndex = 0; pathIndex < _pathCount; pathIndex++)
+            {
+                var variantOffset = _variant * 0.25f;
+                var path = PrimitivePathGeometry.CreateRectangle(
+                    0f,
+                    0f,
+                    8f + pathIndex % 4 + variantOffset,
+                    8f + pathIndex / 4 + variantOffset);
+                context.DrawPath(
+                    brush,
+                    null,
+                    path,
+                    Matrix4x4.CreateTranslation(pathIndex * 24f + 4f, 24f, 0f));
+            }
+        }
+    }
+
+    private sealed class ParentPhaseVectorGlyphVisual : FrameworkElement
+    {
+        private readonly TtfFont _font;
+        private readonly int _phaseCount;
+
+        public ParentPhaseVectorGlyphVisual(TtfFont font, int phaseCount)
+        {
+            _font = font;
+            _phaseCount = phaseCount;
+            Width = 640f;
+            Height = 576f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            var glyphIndices = new[] { _font.GetGlyphIndex('A') };
+            var glyphPositions = new[] { Vector2.Zero };
+            var brush = new SolidColorBrush(Vector4.One);
+            for (var yPhase = 0; yPhase < _phaseCount; yPhase++)
+            {
+                for (var xPhase = 0; xPhase < _phaseCount; xPhase++)
+                {
+                    var transform = Matrix4x4.CreateTranslation(
+                        xPhase * 40f + xPhase / (float)_phaseCount + 8f,
+                        yPhase * 34f + yPhase / (float)_phaseCount + 30f,
+                        0f);
+                    context.DrawGlyphRun(
+                        glyphIndices,
+                        glyphPositions,
+                        _font,
+                        24f,
+                        brush,
+                        Vector2.Zero,
+                        transform,
+                        useVectorGlyphRendering: true);
+                }
+            }
+        }
+    }
+
+    private sealed class OversizedPathVisual : FrameworkElement
+    {
+        public OversizedPathVisual()
+        {
+            Width = 96f;
+            Height = 96f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            context.DrawPath(
+                new SolidColorBrush(Vector4.One),
+                null,
+                PrimitivePathGeometry.CreateRectangle(0f, 0f, 80f, 80f),
+                Matrix4x4.Identity);
         }
     }
 

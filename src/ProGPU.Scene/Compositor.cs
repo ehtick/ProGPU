@@ -172,6 +172,17 @@ public readonly record struct RenderTargetViewport(float X, float Y, float Width
 
 public unsafe class Compositor : IDisposable
 {
+    private sealed class PathAtlasCapacityExceededException : InvalidOperationException
+    {
+        public PathAtlasCapacityExceededException(PathAtlas atlas)
+            : base(
+                $"PathAtlas could not preserve valid coordinates while compiling the frame. " +
+                $"The live path set does not fit in the configured {atlas.AtlasSize}x{atlas.AtlasSize} atlas " +
+                $"after a reset ({atlas.CachedPathCount} cached paths).")
+        {
+        }
+    }
+
     internal const int MaxGradientStops = 65536;
     private const int PerlinNoiseTableEntryCount = 512;
     private const int MaxCachedPerlinNoiseTables = 16;
@@ -193,11 +204,14 @@ public unsafe class Compositor : IDisposable
     private const float LargeTextPathCoveragePixelThreshold = 24f;
     private const float TransformedTextPathCoverageGamma = 0.875f;
     private const int MaxCachedVectorGlyphPaths = 4096;
+    // Baked local phases retain Skia-compatible coverage; device phases bound moving-text churn.
+    private const float VectorGlyphSubpixelPhaseGrid = 128f;
+    private const uint VectorGlyphDeviceSubpixelPhaseGrid = 4;
 
     private readonly record struct VectorGlyphPathCacheKey(
         PathGeometry Outline,
         float EmScale,
-        Vector2 FractionalPosition,
+        Vector2 RasterPhase,
         float ItalicSkew,
         float ScaleX,
         bool UsesSvgCoordinates);
@@ -1912,6 +1926,33 @@ public unsafe class Compositor : IDisposable
 
     public void RenderScene(Visual root, uint width, uint height, TextureView* targetView)
     {
+        var retriedAfterPathAtlasReset = false;
+        while (true)
+        {
+            try
+            {
+                RenderSceneCore(root, width, height, targetView);
+                return;
+            }
+            catch (PathAtlasCapacityExceededException)
+            {
+                if (retriedAfterPathAtlasReset)
+                {
+                    throw;
+                }
+
+                retriedAfterPathAtlasReset = true;
+                _pathAtlas.ResetForRenderRetry();
+                _compiledSceneReusable = false;
+                ReturnPendingMaskTexturesToPool();
+                ProGpuSceneDiagnostics.WriteLine(
+                    "[Compositor] Retrying frame compilation after recoverable PathAtlas capacity exhaustion.");
+            }
+        }
+    }
+
+    private void RenderSceneCore(Visual root, uint width, uint height, TextureView* targetView)
+    {
         if (_isDisposed) return;
 
         using var currentContextScope = WgpuContext.PushCurrent(_context);
@@ -1934,6 +1975,7 @@ public unsafe class Compositor : IDisposable
         _pathAtlas.CleanupFrame(
             _explicitRenderTargetWidth ?? width,
             _explicitRenderTargetHeight ?? height);
+        var pathAtlasGenerationAtCompilationStart = _pathAtlas.Generation;
         _activeLayerTextureOwners.Clear();
 
         // Invoke pre-render actions (e.g. measure/arrange popups in UI framework)
@@ -2248,6 +2290,13 @@ SceneCompilationComplete:
             glyphBatchActive = false;
             _atlas.EndBatch();
         }
+
+        if (_pathAtlas.CapacityExceeded ||
+            _pathAtlas.Generation != pathAtlasGenerationAtCompilationStart)
+        {
+            throw new PathAtlasCapacityExceededException(_pathAtlas);
+        }
+
         compileSw.Stop();
         uploadSw = System.Diagnostics.Stopwatch.StartNew();
 
@@ -4269,7 +4318,23 @@ SceneStateUploadComplete:
         return float.IsFinite(value) ? value - MathF.Floor(value) : 0f;
     }
 
-    private void CompilePathCommand(RenderCommand cmd, Matrix4x4 transform)
+    private static float QuantizeVectorGlyphPhase(float value)
+    {
+        if (!float.IsFinite(value))
+        {
+            return 0f;
+        }
+
+        var quantized = MathF.Round(value * VectorGlyphSubpixelPhaseGrid) /
+            VectorGlyphSubpixelPhaseGrid;
+        return quantized >= 1f ? 0f : quantized;
+    }
+
+    private void CompilePathCommand(
+        RenderCommand cmd,
+        Matrix4x4 transform,
+        uint subpixelPhaseGrid = PathAtlas.DefaultSubpixelPhaseGrid,
+        bool quantizeScale = false)
     {
         SwitchBatch(BatchType.Vector);
         if (cmd.Path == null) return;
@@ -4327,13 +4392,15 @@ SceneStateUploadComplete:
                 scaleY,
                 GetSubpixelPhase(transform.M41),
                 GetSubpixelPhase(transform.M42),
-                cmd.PathSampleGrid);
+                cmd.PathSampleGrid,
+                subpixelPhaseGrid,
+                quantizeScale);
             if (info.Width > 0 && info.Height > 0)
             {
-                float unscaledMinX = info.MinX / scaleX;
-                float unscaledMinY = info.MinY / scaleY;
-                float unscaledWidth = info.Width / scaleX;
-                float unscaledHeight = info.Height / scaleY;
+                float unscaledMinX = info.MinX / info.Key.ScaleX;
+                float unscaledMinY = info.MinY / info.Key.ScaleY;
+                float unscaledWidth = info.Width / info.Key.ScaleX;
+                float unscaledHeight = info.Height / info.Key.ScaleY;
 
                 var v0 = Vector2.Transform(new Vector2(unscaledMinX, unscaledMinY), transform);
                 var v1 = Vector2.Transform(new Vector2(unscaledMinX + unscaledWidth, unscaledMinY), transform);
@@ -8367,10 +8434,13 @@ SceneStateUploadComplete:
         {
             var integralPosition = new Vector2(MathF.Floor(positioned.X), MathF.Floor(positioned.Y));
             var fractionalPosition = positioned - integralPosition;
+            var rasterPhase = new Vector2(
+                QuantizeVectorGlyphPhase(fractionalPosition.X),
+                QuantizeVectorGlyphPhase(fractionalPosition.Y));
             var key = new VectorGlyphPathCacheKey(
                 outline,
                 emScale,
-                fractionalPosition,
+                rasterPhase,
                 italicSkew,
                 scaleX,
                 UsesSvgCoordinates: false);
@@ -8385,15 +8455,15 @@ SceneStateUploadComplete:
                 positionedOutline = CreatePositionedGlyphOutline(
                     outline,
                     emScale,
-                    fractionalPosition,
+                    rasterPhase,
                     italicSkew,
                     scaleX: scaleX);
                 _vectorGlyphPathCache[key] = positionedOutline;
             }
 
             placementTransform = Matrix4x4.CreateTranslation(
-                integralPosition.X,
-                integralPosition.Y,
+                positioned.X - rasterPhase.X,
+                positioned.Y - rasterPhase.Y,
                 0f) * activeTransform;
         }
         else
@@ -8407,17 +8477,21 @@ SceneStateUploadComplete:
             placementTransform = activeTransform;
         }
 
-        CompilePathCommand(new RenderCommand
-        {
-            Type = RenderCommandType.DrawPath,
-            Path = positionedOutline,
-            Brush = textCommand.Brush,
-            IsEdgeAliased = textCommand.TextRenderingMode == TextRenderingMode.Aliased,
-            PathSampleGrid = textCommand.TextRenderingMode == TextRenderingMode.Aliased
-                ? PathAtlas.StandardCoverageSampleGrid
-                : PathAtlas.HighPrecisionCoverageSampleGrid,
-            PathCoverageGamma = pathCoverageGamma
-        }, placementTransform);
+        CompilePathCommand(
+            new RenderCommand
+            {
+                Type = RenderCommandType.DrawPath,
+                Path = positionedOutline,
+                Brush = textCommand.Brush,
+                IsEdgeAliased = textCommand.TextRenderingMode == TextRenderingMode.Aliased,
+                PathSampleGrid = textCommand.TextRenderingMode == TextRenderingMode.Aliased
+                    ? PathAtlas.StandardCoverageSampleGrid
+                    : PathAtlas.HighPrecisionCoverageSampleGrid,
+                PathCoverageGamma = pathCoverageGamma
+            },
+            placementTransform,
+            subpixelPhaseGrid: VectorGlyphDeviceSubpixelPhaseGrid,
+            quantizeScale: true);
     }
 
     private static float GetTextPathCoverageGamma(
@@ -10137,17 +10211,37 @@ SceneStateUploadComplete:
                     _pathAtlas.CleanupFrame(targetTexture.Width, targetTexture.Height);
                 }
 
-                RenderOffscreenCore(
-                    node,
-                    width,
-                    height,
-                    targetTexture,
-                    padding,
-                    dpiScale,
-                    clearColor,
-                    loadExistingContents,
-                    includeRootTransform,
-                    includeRootVisualState);
+                var retriedAfterPathAtlasReset = false;
+                while (true)
+                {
+                    try
+                    {
+                        RenderOffscreenCore(
+                            node,
+                            width,
+                            height,
+                            targetTexture,
+                            padding,
+                            dpiScale,
+                            clearColor,
+                            loadExistingContents,
+                            includeRootTransform,
+                            includeRootVisualState);
+                        break;
+                    }
+                    catch (PathAtlasCapacityExceededException)
+                    {
+                        if (!ownsOffscreenFrame || retriedAfterPathAtlasReset)
+                        {
+                            throw;
+                        }
+
+                        retriedAfterPathAtlasReset = true;
+                        _pathAtlas.ResetForRenderRetry();
+                        ProGpuSceneDiagnostics.WriteLine(
+                            "[Compositor] Retrying offscreen compilation after recoverable PathAtlas capacity exhaustion.");
+                    }
+                }
             }
             finally
             {
@@ -10261,6 +10355,7 @@ SceneStateUploadComplete:
         _pendingTextStart = 0;
 
         var extensionFrame = BeginExtensionFrame();
+        var pathAtlasGenerationAtCompilationStart = _pathAtlas.Generation;
         CommandEncoder* encoder = null;
         var extensionFrameEnded = false;
         try
@@ -10274,6 +10369,12 @@ SceneStateUploadComplete:
             includeRootVisualState);
 
         CommitPendingDrawCalls();
+
+        if (_pathAtlas.CapacityExceeded ||
+            _pathAtlas.Generation != pathAtlasGenerationAtCompilationStart)
+        {
+            throw new PathAtlasCapacityExceededException(_pathAtlas);
+        }
 
         // Upload CPU batches to dynamic GPU buffers
         if (_vectorVerticesList.Count > 0)
@@ -10624,6 +10725,11 @@ SceneStateUploadComplete:
         ReturnPendingMaskTexturesToPool();
 
         EvictUnusedBindGroups();
+        }
+        catch (PathAtlasCapacityExceededException)
+        {
+            ReturnPendingMaskTexturesToPool();
+            throw;
         }
         finally
         {
