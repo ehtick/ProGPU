@@ -12118,6 +12118,7 @@ SceneStateUploadComplete:
             GpuBlendMode.DstAtop or
             GpuBlendMode.Xor or
             GpuBlendMode.DstOver or
+            GpuBlendMode.Modulate or
             GpuBlendMode.Multiply or
             GpuBlendMode.Screen or
             GpuBlendMode.Darken or

@@ -2022,6 +2022,7 @@ public class SKCanvas : IDisposable
             SKBlendMode.Xor => GpuBlendMode.Xor,
             SKBlendMode.DstOver => GpuBlendMode.DstOver,
             SKBlendMode.Plus => GpuBlendMode.Plus,
+            SKBlendMode.Modulate => GpuBlendMode.Modulate,
             SKBlendMode.Screen => GpuBlendMode.Screen,
             SKBlendMode.Multiply => GpuBlendMode.Multiply,
             SKBlendMode.Darken => GpuBlendMode.Darken,
@@ -2043,6 +2044,12 @@ public class SKCanvas : IDisposable
 
     private bool PushPaintBlendMode(SKPaint? paint)
     {
+        if (paint?.Blender?.IsArithmetic == true)
+        {
+            throw new NotSupportedException(
+                "Arithmetic SKBlender rendering requires destination-sampling compositor support.");
+        }
+
         var blendMode = MapBlendMode(paint?.BlendMode ?? SKBlendMode.SrcOver);
         if (blendMode == GpuBlendMode.SrcOver)
         {

@@ -17,6 +17,7 @@ public partial class SKPaint : SKObject
 {
     private const float HairlineStrokeWidth = 1f;
     private SKShader? _shader;
+    private SKBlender? _blender;
     private float _strokeWidth;
 
     public SKPaintStyle Style { get; set; } = SKPaintStyle.Fill;
@@ -61,7 +62,20 @@ public partial class SKPaint : SKObject
     public SKColorFilter? ColorFilter { get; set; }
     public SKImageFilter? ImageFilter { get; set; }
     public SKPathEffect? PathEffect { get; set; }
-    public SKBlendMode BlendMode { get; set; } = SKBlendMode.SrcOver;
+    public SKBlender? Blender
+    {
+        get => _blender;
+        set => _blender = value;
+    }
+    public SKBlendMode BlendMode
+    {
+        get => Blender != null && Blender.TryGetBlendMode(out var mode)
+            ? mode
+            : SKBlendMode.SrcOver;
+        set => Blender = value == SKBlendMode.SrcOver
+            ? null
+            : SKBlender.CreateBlendMode(value);
+    }
     public bool IsAntialias
     {
         get => _isAntialias;
@@ -98,7 +112,7 @@ public partial class SKPaint : SKObject
             ColorFilter = ColorFilter,
             ImageFilter = ImageFilter,
             PathEffect = PathEffect,
-            BlendMode = BlendMode,
+            Blender = Blender,
             IsAntialias = IsAntialias,
             IsDither = IsDither,
             MaskFilter = MaskFilter,
@@ -235,7 +249,7 @@ public partial class SKPaint : SKObject
         ColorFilter = null;
         ImageFilter = null;
         PathEffect = null;
-        BlendMode = SKBlendMode.SrcOver;
+        Blender = null;
         MaskFilter = null;
         ResetLegacyTextState();
     }
@@ -243,6 +257,7 @@ public partial class SKPaint : SKObject
     protected override void Dispose(bool disposing)
     {
         Shader = null;
+        Blender = null;
         _legacyFont.Dispose();
         base.Dispose(disposing);
     }
