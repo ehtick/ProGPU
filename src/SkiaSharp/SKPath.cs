@@ -1035,9 +1035,26 @@ public class SKPath : IDisposable
     {
         if (_currentFigure == null)
         {
-            _currentFigure = new PathFigure(Vector2.Zero);
+            _currentFigure = new PathFigure(GetCurrentCommandPoint());
             Geometry.Figures.Add(_currentFigure);
         }
+    }
+
+    private Vector2 GetCurrentCommandPoint()
+    {
+        if (_currentFigure != null)
+        {
+            return GetFigureEndPoint(_currentFigure);
+        }
+        if (Geometry.Figures.Count == 0)
+        {
+            return Vector2.Zero;
+        }
+
+        var figure = Geometry.Figures[^1];
+        return figure.IsClosed
+            ? figure.StartPoint
+            : GetFigureEndPoint(figure);
     }
 
     public void MoveTo(float x, float y)
@@ -1048,6 +1065,14 @@ public class SKPath : IDisposable
 
     public void MoveTo(SKPoint p) => MoveTo(p.X, p.Y);
 
+    public void RMoveTo(float dx, float dy)
+    {
+        var current = GetCurrentCommandPoint();
+        MoveTo(current.X + dx, current.Y + dy);
+    }
+
+    public void RMoveTo(SKPoint delta) => RMoveTo(delta.X, delta.Y);
+
     public void LineTo(float x, float y)
     {
         EnsureFigure();
@@ -1055,6 +1080,14 @@ public class SKPath : IDisposable
     }
 
     public void LineTo(SKPoint p) => LineTo(p.X, p.Y);
+
+    public void RLineTo(float dx, float dy)
+    {
+        var current = GetCurrentCommandPoint();
+        LineTo(current.X + dx, current.Y + dy);
+    }
+
+    public void RLineTo(SKPoint delta) => RLineTo(delta.X, delta.Y);
 
     public void QuadTo(float x0, float y0, float x1, float y1)
     {
@@ -1064,6 +1097,19 @@ public class SKPath : IDisposable
 
     public void QuadTo(SKPoint p0, SKPoint p1) => QuadTo(p0.X, p0.Y, p1.X, p1.Y);
 
+    public void RQuadTo(float dx0, float dy0, float dx1, float dy1)
+    {
+        var current = GetCurrentCommandPoint();
+        QuadTo(
+            current.X + dx0,
+            current.Y + dy0,
+            current.X + dx1,
+            current.Y + dy1);
+    }
+
+    public void RQuadTo(SKPoint controlDelta, SKPoint endDelta) =>
+        RQuadTo(controlDelta.X, controlDelta.Y, endDelta.X, endDelta.Y);
+
     public void CubicTo(float x0, float y0, float x1, float y1, float x2, float y2)
     {
         EnsureFigure();
@@ -1072,12 +1118,67 @@ public class SKPath : IDisposable
 
     public void CubicTo(SKPoint p0, SKPoint p1, SKPoint p2) => CubicTo(p0.X, p0.Y, p1.X, p1.Y, p2.X, p2.Y);
 
+    public void RCubicTo(
+        float dx0,
+        float dy0,
+        float dx1,
+        float dy1,
+        float dx2,
+        float dy2)
+    {
+        var current = GetCurrentCommandPoint();
+        CubicTo(
+            current.X + dx0,
+            current.Y + dy0,
+            current.X + dx1,
+            current.Y + dy1,
+            current.X + dx2,
+            current.Y + dy2);
+    }
+
+    public void RCubicTo(SKPoint control1Delta, SKPoint control2Delta, SKPoint endDelta) =>
+        RCubicTo(
+            control1Delta.X,
+            control1Delta.Y,
+            control2Delta.X,
+            control2Delta.Y,
+            endDelta.X,
+            endDelta.Y);
+
     public void ArcTo(float rx, float ry, float xAxisRotation, SKPathArcSize largeArc, SKPathDirection sweep, float x, float y)
     {
         EnsureFigure();
         var sd = sweep == SKPathDirection.Clockwise ? SweepDirection.Clockwise : SweepDirection.Counterclockwise;
         _currentFigure!.Segments.Add(new ArcSegment(new Vector2(x, y), new Vector2(rx, ry), xAxisRotation, largeArc == SKPathArcSize.Large, sd));
     }
+
+    public void RArcTo(
+        float rx,
+        float ry,
+        float xAxisRotation,
+        SKPathArcSize largeArc,
+        SKPathDirection sweep,
+        float dx,
+        float dy)
+    {
+        var current = GetCurrentCommandPoint();
+        ArcTo(rx, ry, xAxisRotation, largeArc, sweep, current.X + dx, current.Y + dy);
+    }
+
+    public void RArcTo(
+        SKPoint radius,
+        float xAxisRotation,
+        SKPathArcSize largeArc,
+        SKPathDirection sweep,
+        SKPoint delta) =>
+        RArcTo(
+            radius.X,
+            radius.Y,
+            xAxisRotation,
+            largeArc,
+            sweep,
+            delta.X,
+            delta.Y);
 
     public void Close()
     {
@@ -1094,6 +1195,8 @@ public class SKPath : IDisposable
         _currentFigure = null;
         FillType = SKPathFillType.Winding;
     }
+
+    public void Rewind() => Reset();
 
     public void AddCircle(float x, float y, float radius, SKPathDirection direction = SKPathDirection.Clockwise)
     {
@@ -1127,6 +1230,20 @@ public class SKPath : IDisposable
 
     public void ConicTo(float x0, float y0, float x1, float y1, float weight) =>
         ConicTo(new SKPoint(x0, y0), new SKPoint(x1, y1), weight);
+
+    public void RConicTo(float dx0, float dy0, float dx1, float dy1, float weight)
+    {
+        var current = GetCurrentCommandPoint();
+        ConicTo(
+            current.X + dx0,
+            current.Y + dy0,
+            current.X + dx1,
+            current.Y + dy1,
+            weight);
+    }
+
+    public void RConicTo(SKPoint controlDelta, SKPoint endDelta, float weight) =>
+        RConicTo(controlDelta.X, controlDelta.Y, endDelta.X, endDelta.Y, weight);
 
     public bool Contains(float x, float y)
     {
@@ -1294,7 +1411,36 @@ public class SKPath : IDisposable
         return copy;
     }
 
-    public void Transform(SKMatrix matrix)
+    public void Offset(float dx, float dy) =>
+        TransformCore(SKMatrix.CreateTranslation(dx, dy));
+
+    public void Offset(SKPoint delta) => Offset(delta.X, delta.Y);
+
+    public void Transform(SKMatrix matrix) => TransformCore(matrix);
+
+    public void Transform(in SKMatrix matrix) => TransformCore(matrix);
+
+    public void Transform(SKMatrix matrix, SKPath destination) =>
+        TransformTo(matrix, destination);
+
+    public void Transform(in SKMatrix matrix, SKPath destination) =>
+        TransformTo(matrix, destination);
+
+    private void TransformTo(in SKMatrix matrix, SKPath destination)
+    {
+        ArgumentNullException.ThrowIfNull(destination);
+        if (ReferenceEquals(this, destination))
+        {
+            TransformCore(matrix);
+            return;
+        }
+
+        using var transformed = new SKPath(this);
+        transformed.TransformCore(matrix);
+        destination.ReplaceWith(transformed);
+    }
+
+    private void TransformCore(in SKMatrix matrix)
     {
         var m = matrix.ToMatrix4x4();
         foreach (var fig in Geometry.Figures)
@@ -1346,7 +1492,24 @@ public class SKPath : IDisposable
                 }
             }
         }
-        _currentFigure = null;
+    }
+
+    private void ReplaceWith(SKPath source)
+    {
+        Geometry.Figures.Clear();
+        PathFigure? copiedCurrentFigure = null;
+        foreach (var figure in source.Geometry.Figures)
+        {
+            var copiedFigure = CloneFigure(figure, Vector2.Zero);
+            Geometry.Figures.Add(copiedFigure);
+            if (ReferenceEquals(figure, source._currentFigure))
+            {
+                copiedCurrentFigure = copiedFigure;
+            }
+        }
+
+        _currentFigure = copiedCurrentFigure;
+        FillType = source.FillType;
     }
 
     private static PathSegment CloneSegment(PathSegment segment, Vector2 offset)
