@@ -39,6 +39,7 @@ public class SKCanvas : IDisposable
     private readonly bool _isPictureRecording;
     private SKMatrix _currentMatrix = SKMatrix.Identity;
     private float _currentOpacity = 1f;
+    private ClipState _clipState;
     private readonly List<GpuTexture> _ownedLayerTextures = new();
     private List<SKRect>? _cpuReadbackRegions;
     public enum PushKind
@@ -48,7 +49,17 @@ public class SKCanvas : IDisposable
         Opacity
     }
 
-    private readonly Stack<(SKMatrix Matrix, float Opacity, int PushedScopesCount)> _stateStack = new();
+    private readonly record struct ClipState(SKRectI DeviceBounds, bool IsRect)
+    {
+        public bool IsEmpty => DeviceBounds.Right <= DeviceBounds.Left ||
+            DeviceBounds.Bottom <= DeviceBounds.Top;
+    }
+
+    private readonly Stack<(
+        SKMatrix Matrix,
+        float Opacity,
+        int PushedScopesCount,
+        ClipState ClipState)> _stateStack = new();
     private readonly Stack<PushKind> _pushedScopes = new();
     private readonly Stack<RenderCommand> _activeClipPushes = new();
     private readonly Stack<LayerFrame> _layerStack = new();
@@ -87,6 +98,14 @@ public class SKCanvas : IDisposable
     public int SaveCount => _stateStack.Count + 1;
 
     public SKMatrix44 TotalMatrix44 => SKMatrix44.FromMatrix4x4(_currentMatrix.ToMatrix4x4());
+
+    public SKRect LocalClipBounds => GetLocalClipBounds(out var bounds) ? bounds : SKRect.Empty;
+
+    public SKRectI DeviceClipBounds => GetDeviceClipBounds(out var bounds) ? bounds : SKRectI.Empty;
+
+    public bool IsClipEmpty => _clipState.IsEmpty;
+
+    public bool IsClipRect => !_clipState.IsEmpty && _clipState.IsRect;
 
     public SKCanvas(
         DrawingContext context,
@@ -127,6 +146,9 @@ public class SKCanvas : IDisposable
         _gpuContext = gpuContext;
         _flush = flush;
         _isPictureRecording = isPictureRecording;
+        _clipState = new ClipState(
+            new SKRectI(0, 0, ToCanvasExtent(width), ToCanvasExtent(height)),
+            IsRect: true);
     }
 
     public SKCanvas(SKBitmap bitmap)
@@ -201,7 +223,7 @@ public class SKCanvas : IDisposable
     public int Save()
     {
         var restoreCount = SaveCount;
-        _stateStack.Push((_currentMatrix, _currentOpacity, _pushedScopes.Count));
+        _stateStack.Push((_currentMatrix, _currentOpacity, _pushedScopes.Count, _clipState));
         return restoreCount;
     }
 
@@ -243,6 +265,7 @@ public class SKCanvas : IDisposable
             var state = _stateStack.Pop();
             _currentMatrix = state.Matrix;
             _currentOpacity = state.Opacity;
+            _clipState = state.ClipState;
 
             // Pop any clips or layers pushed in this save frame
             while (_pushedScopes.Count > state.PushedScopesCount)
@@ -1595,6 +1618,182 @@ public class SKCanvas : IDisposable
         }
     }
 
+    private void GetPathDeviceBounds(SKPath path, out SKRect bounds, out bool isRect)
+    {
+        var transform = _currentMatrix.ToMatrix4x4();
+        if (IsAxisAligned2DTransform(transform) && TryGetRectGeometry(path.Geometry, out var rect))
+        {
+            bounds = _currentMatrix.MapRect(rect);
+            isRect = true;
+            return;
+        }
+
+        var tightBounds = path.TightBounds;
+        bounds = IsFiniteNonEmpty(tightBounds)
+            ? _currentMatrix.MapRect(tightBounds)
+            : SKRect.Empty;
+        isRect = false;
+    }
+
+    private void UpdateClipForIntersection(SKRect deviceBounds, bool isRect)
+    {
+        if (_clipState.IsEmpty)
+        {
+            return;
+        }
+
+        var incomingBounds = ToDeviceBounds(deviceBounds, isRect);
+        var current = _clipState.DeviceBounds;
+        var intersection = new SKRectI(
+            Math.Max(current.Left, incomingBounds.Left),
+            Math.Max(current.Top, incomingBounds.Top),
+            Math.Min(current.Right, incomingBounds.Right),
+            Math.Min(current.Bottom, incomingBounds.Bottom));
+        if (intersection.Right <= intersection.Left || intersection.Bottom <= intersection.Top)
+        {
+            _clipState = new ClipState(SKRectI.Empty, IsRect: false);
+            return;
+        }
+
+        _clipState = new ClipState(intersection, _clipState.IsRect && isRect);
+    }
+
+    private void UpdateClipForDifference(SKRect deviceBounds, bool isRect)
+    {
+        if (_clipState.IsEmpty)
+        {
+            return;
+        }
+
+        var excluded = ToDeviceBounds(deviceBounds, isRect);
+        var current = _clipState.DeviceBounds;
+        if (excluded.Right <= current.Left || excluded.Bottom <= current.Top ||
+            excluded.Left >= current.Right || excluded.Top >= current.Bottom)
+        {
+            return;
+        }
+
+        if (!_clipState.IsRect || !isRect)
+        {
+            _clipState = new ClipState(current, IsRect: false);
+            return;
+        }
+
+        if (excluded.Left <= current.Left && excluded.Right >= current.Right &&
+            excluded.Top <= current.Top && excluded.Bottom >= current.Bottom)
+        {
+            _clipState = new ClipState(SKRectI.Empty, IsRect: false);
+            return;
+        }
+
+        if (excluded.Top <= current.Top && excluded.Bottom >= current.Bottom)
+        {
+            if (excluded.Left <= current.Left)
+            {
+                _clipState = CreateRectClipState(
+                    excluded.Right,
+                    current.Top,
+                    current.Right,
+                    current.Bottom);
+                return;
+            }
+
+            if (excluded.Right >= current.Right)
+            {
+                _clipState = CreateRectClipState(
+                    current.Left,
+                    current.Top,
+                    excluded.Left,
+                    current.Bottom);
+                return;
+            }
+        }
+
+        if (excluded.Left <= current.Left && excluded.Right >= current.Right)
+        {
+            if (excluded.Top <= current.Top)
+            {
+                _clipState = CreateRectClipState(
+                    current.Left,
+                    excluded.Bottom,
+                    current.Right,
+                    current.Bottom);
+                return;
+            }
+
+            if (excluded.Bottom >= current.Bottom)
+            {
+                _clipState = CreateRectClipState(
+                    current.Left,
+                    current.Top,
+                    current.Right,
+                    excluded.Top);
+                return;
+            }
+        }
+
+        _clipState = new ClipState(current, IsRect: false);
+    }
+
+    private static ClipState CreateRectClipState(int left, int top, int right, int bottom) =>
+        right > left && bottom > top
+            ? new ClipState(new SKRectI(left, top, right, bottom), IsRect: true)
+            : new ClipState(SKRectI.Empty, IsRect: false);
+
+    private static SKRectI ToDeviceBounds(SKRect bounds, bool roundToNearest)
+    {
+        if (!IsFiniteNonEmpty(bounds))
+        {
+            return SKRectI.Empty;
+        }
+
+        return roundToNearest
+            ? new SKRectI(
+                RoundDeviceCoordinate(bounds.Left),
+                RoundDeviceCoordinate(bounds.Top),
+                RoundDeviceCoordinate(bounds.Right),
+                RoundDeviceCoordinate(bounds.Bottom))
+            : new SKRectI(
+                FloorDeviceCoordinate(bounds.Left),
+                FloorDeviceCoordinate(bounds.Top),
+                CeilingDeviceCoordinate(bounds.Right),
+                CeilingDeviceCoordinate(bounds.Bottom));
+    }
+
+    private static bool IsFiniteNonEmpty(SKRect bounds) =>
+        float.IsFinite(bounds.Left) &&
+        float.IsFinite(bounds.Top) &&
+        float.IsFinite(bounds.Right) &&
+        float.IsFinite(bounds.Bottom) &&
+        bounds.Right > bounds.Left &&
+        bounds.Bottom > bounds.Top;
+
+    private static int ToCanvasExtent(float value)
+    {
+        if (!float.IsFinite(value) || value <= 0f)
+        {
+            return 0;
+        }
+
+        return CeilingDeviceCoordinate(value);
+    }
+
+    private static int RoundDeviceCoordinate(float value) =>
+        ClampDeviceCoordinate(MathF.Round(value, MidpointRounding.AwayFromZero));
+
+    private static int FloorDeviceCoordinate(float value) =>
+        ClampDeviceCoordinate(MathF.Floor(value));
+
+    private static int CeilingDeviceCoordinate(float value) =>
+        ClampDeviceCoordinate(MathF.Ceiling(value));
+
+    private static int ClampDeviceCoordinate(float value) =>
+        value <= int.MinValue
+            ? int.MinValue
+            : value >= int.MaxValue
+                ? int.MaxValue
+                : (int)value;
+
     private static bool IsValidLayerBounds(SKRect bounds)
     {
         return float.IsFinite(bounds.Left) &&
@@ -1815,21 +2014,55 @@ public class SKCanvas : IDisposable
         _currentMatrix = SKMatrix.Concat(_currentMatrix, matrix2D);
     }
 
+    public bool GetLocalClipBounds(out SKRect bounds)
+    {
+        if (_clipState.IsEmpty || !_currentMatrix.TryInvert(out var inverse))
+        {
+            bounds = SKRect.Empty;
+            return false;
+        }
+
+        var device = _clipState.DeviceBounds;
+        var outsetDeviceBounds = new SKRect(
+            device.Left - 1f,
+            device.Top - 1f,
+            device.Right + 1f,
+            device.Bottom + 1f);
+        bounds = inverse.MapRect(outsetDeviceBounds);
+        if (!IsFiniteNonEmpty(bounds))
+        {
+            bounds = SKRect.Empty;
+            return false;
+        }
+
+        return true;
+    }
+
+    public bool GetDeviceClipBounds(out SKRectI bounds)
+    {
+        if (_clipState.IsEmpty)
+        {
+            bounds = SKRectI.Empty;
+            return false;
+        }
+
+        bounds = _clipState.DeviceBounds;
+        return true;
+    }
+
     public bool QuickReject(SKRect rect)
     {
-        if (rect.IsEmpty)
+        if (rect.IsEmpty || _clipState.IsEmpty)
         {
             return true;
         }
 
-        var matrix = _currentMatrix.ToMatrix4x4();
-        var p0 = Vector2.Transform(new Vector2(rect.Left, rect.Top), matrix);
-        var p1 = Vector2.Transform(new Vector2(rect.Right, rect.Top), matrix);
-        var p2 = Vector2.Transform(new Vector2(rect.Right, rect.Bottom), matrix);
-        var p3 = Vector2.Transform(new Vector2(rect.Left, rect.Bottom), matrix);
-        var min = Vector2.Min(Vector2.Min(p0, p1), Vector2.Min(p2, p3));
-        var max = Vector2.Max(Vector2.Max(p0, p1), Vector2.Max(p2, p3));
-        return max.X <= 0f || max.Y <= 0f || min.X >= _width || min.Y >= _height;
+        var deviceBounds = _currentMatrix.MapRect(rect);
+        var clip = _clipState.DeviceBounds;
+        return deviceBounds.Right <= clip.Left ||
+            deviceBounds.Bottom <= clip.Top ||
+            deviceBounds.Left >= clip.Right ||
+            deviceBounds.Top >= clip.Bottom;
     }
 
     public bool QuickReject(SKPath path)
@@ -1840,27 +2073,35 @@ public class SKCanvas : IDisposable
 
     public void ClipRect(SKRect rect, SKClipOperation operation = SKClipOperation.Intersect, bool antialias = true)
     {
+        var transform = _currentMatrix.ToMatrix4x4();
+        var isDeviceRect = IsAxisAligned2DTransform(transform);
+        var deviceBounds = _currentMatrix.MapRect(rect);
         if (operation == SKClipOperation.Difference)
         {
-            var excluded = CreateRectGeometry(rect).CreateTransformed(_currentMatrix.ToMatrix4x4());
+            UpdateClipForDifference(deviceBounds, isDeviceRect);
+            var excluded = CreateRectGeometry(rect).CreateTransformed(transform);
             PushGeometryClipScope(CreateCanvasDifferenceGeometry(excluded), Matrix4x4.Identity);
             return;
         }
 
-        PushRectClipScope(rect, _currentMatrix.ToMatrix4x4());
+        UpdateClipForIntersection(deviceBounds, isDeviceRect);
+        PushRectClipScope(rect, transform);
     }
 
     public void ClipPath(SKPath? path, SKClipOperation operation = SKClipOperation.Intersect, bool antialias = true)
     {
         ArgumentNullException.ThrowIfNull(path);
+        GetPathDeviceBounds(path, out var deviceBounds, out var isDeviceRect);
         if (operation == SKClipOperation.Difference)
         {
             if (IsInverseFillType(path.FillType))
             {
+                UpdateClipForIntersection(deviceBounds, isDeviceRect);
                 PushGeometryClipScope(path.Geometry, _currentMatrix.ToMatrix4x4());
             }
             else
             {
+                UpdateClipForDifference(deviceBounds, isDeviceRect);
                 var excluded = path.Geometry.CreateTransformed(_currentMatrix.ToMatrix4x4());
                 PushGeometryClipScope(CreateCanvasDifferenceGeometry(excluded), Matrix4x4.Identity);
             }
@@ -1869,6 +2110,7 @@ public class SKCanvas : IDisposable
 
         if (IsInverseFillType(path.FillType))
         {
+            UpdateClipForDifference(deviceBounds, isDeviceRect);
             var excluded = path.Geometry.CreateTransformed(_currentMatrix.ToMatrix4x4());
             PushGeometryClipScope(CreateCanvasDifferenceGeometry(excluded), Matrix4x4.Identity);
             return;
@@ -1877,10 +2119,12 @@ public class SKCanvas : IDisposable
         var transform = _currentMatrix.ToMatrix4x4();
         if (IsAxisAligned2DTransform(transform) && TryGetRectGeometry(path.Geometry, out var rect))
         {
+            UpdateClipForIntersection(deviceBounds, isDeviceRect);
             PushRectClipScope(rect, transform);
             return;
         }
 
+        UpdateClipForIntersection(deviceBounds, isDeviceRect);
         PushGeometryClipScope(path.Geometry, transform);
     }
 
