@@ -38,7 +38,19 @@ public class SKSurface : IDisposable
         SharedCompositorCache.Remove(context, s_compositorCacheScope);
     }
 
-    private SKSurface(WgpuContext context, int width, int height, GpuTexture? texture, bool ownsTexture, IntPtr pixels, int rowBytes, SKColorType colorType, SKAlphaType alphaType, SKColorSpace? colorSpace = null, GRSurfaceOrigin origin = GRSurfaceOrigin.TopLeft)
+    private SKSurface(
+        WgpuContext context,
+        int width,
+        int height,
+        GpuTexture? texture,
+        bool ownsTexture,
+        IntPtr pixels,
+        int rowBytes,
+        SKColorType colorType,
+        SKAlphaType alphaType,
+        SKColorSpace? colorSpace = null,
+        GRSurfaceOrigin origin = GRSurfaceOrigin.TopLeft,
+        GRRecordingContext? recordingContext = null)
     {
         _context = context;
         _width = width;
@@ -56,6 +68,8 @@ public class SKSurface : IDisposable
 
         _drawingContext = new DrawingContext();
         Canvas = new SKCanvas(_drawingContext, width, height, context, Flush);
+        Canvas.AttachSurface(this);
+        Canvas.AttachRecordingContext(recordingContext);
         _hasTextureContents = _gpuTexture != null && !_ownsTexture;
 
         if (_pixels != IntPtr.Zero && _gpuTexture != null)
@@ -180,7 +194,8 @@ public class SKSurface : IDisposable
             colorType,
             SKAlphaType.Premul,
             null,
-            origin);
+            origin,
+            grContext);
     }
 
     public static SKSurface? Create(
@@ -225,7 +240,19 @@ public class SKSurface : IDisposable
             throw new NotSupportedException("This WebGPU-backed Skia shim can only wrap single-sampled backend render targets.");
         }
 
-        return new SKSurface(grContext.Context, renderTarget.Width, renderTarget.Height, texture, false, IntPtr.Zero, 0, colorType, SKAlphaType.Premul, null, origin);
+        return new SKSurface(
+            grContext.Context,
+            renderTarget.Width,
+            renderTarget.Height,
+            texture,
+            false,
+            IntPtr.Zero,
+            0,
+            colorType,
+            SKAlphaType.Premul,
+            null,
+            origin,
+            grContext);
     }
 
     public static SKSurface Create(GRContext grContext, GRBackendRenderTarget renderTarget, GRSurfaceOrigin origin, SKColorType colorType, SKColorSpace colorSpace)
@@ -252,7 +279,18 @@ public class SKSurface : IDisposable
             "SKSurface Offscreen Texture",
             alphaMode: GpuTextureAlphaMode.Premultiplied
         );
-        return new SKSurface(grContext.Context, imageInfo.Width, imageInfo.Height, texture, true, IntPtr.Zero, 0, imageInfo.ColorType, imageInfo.AlphaType, imageInfo.ColorSpace);
+        return new SKSurface(
+            grContext.Context,
+            imageInfo.Width,
+            imageInfo.Height,
+            texture,
+            true,
+            IntPtr.Zero,
+            0,
+            imageInfo.ColorType,
+            imageInfo.AlphaType,
+            imageInfo.ColorSpace,
+            recordingContext: grContext);
     }
 
     public void Flush()
@@ -313,6 +351,18 @@ public class SKSurface : IDisposable
             _drawingContext.Clear();
             Canvas.ReleaseLayerTexturesAfterFlush();
         }
+    }
+
+    internal bool TryGetLayerBackdropTexture(out GpuTexture texture)
+    {
+        if (_hasTextureContents && _gpuTexture is { IsDisposed: false } backingTexture)
+        {
+            texture = backingTexture;
+            return true;
+        }
+
+        texture = null!;
+        return false;
     }
 
     private unsafe void CopyReadbackToCpu(byte[] readBackBytes, SKRect[]? regions)
@@ -461,25 +511,32 @@ public class SKSurface : IDisposable
             new SKImageInfo(_width, _height, _colorType, _alphaType, _colorSpace));
     }
 
-    internal SKImage CreateBorrowedImageForDraw()
-    {
-        if (_gpuTexture == null)
-        {
-            throw new InvalidOperationException("No backing texture for drawing the surface.");
-        }
-
-        Flush();
-        return SKImage.FromBorrowedTexture(
-            _gpuTexture,
-            new SKImageInfo(_width, _height, _colorType, _alphaType, _colorSpace));
-    }
-
     public void Draw(SKCanvas canvas, float x, float y, SKPaint? paint)
     {
         ArgumentNullException.ThrowIfNull(canvas);
-        using var image = CreateBorrowedImageForDraw();
-        canvas.DrawImage(image, x, y, paint);
+        using var image = Snapshot();
+        var sampling = paint?.GetLegacyFilterQualitySampling() ?? SKSamplingOptions.Default;
+        canvas.DrawImage(image, x, y, sampling, paint);
     }
+
+    public void Draw(
+        SKCanvas canvas,
+        float x,
+        float y,
+        SKSamplingOptions sampling,
+        SKPaint? paint = null)
+    {
+        ArgumentNullException.ThrowIfNull(canvas);
+        using var image = Snapshot();
+        canvas.DrawImage(image, x, y, sampling, paint);
+    }
+
+    public void Draw(
+        SKCanvas canvas,
+        SKPoint point,
+        SKSamplingOptions sampling,
+        SKPaint? paint = null) =>
+        Draw(canvas, point.X, point.Y, sampling, paint);
 
     private static unsafe void CopyPixelToRgbaPremultiplied(byte* sourceRow, byte* destinationRow, int x, SKColorType colorType, SKAlphaType alphaType)
     {
@@ -612,6 +669,7 @@ public class SKSurface : IDisposable
         {
             try
             {
+                Canvas.DetachSurface(this);
                 Canvas.Dispose();
             }
             finally

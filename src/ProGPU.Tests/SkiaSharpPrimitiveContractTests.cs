@@ -43,6 +43,8 @@ public sealed class SkiaSharpPrimitiveContractTests
         Assert.Equal(3, (int)SKTextEncoding.GlyphId);
         Assert.Equal(0, (int)SKColorChannel.R);
         Assert.Equal(3, (int)SKColorChannel.A);
+        Assert.Equal(3, (int)SKRegionOperation.XOR);
+        Assert.Equal("XOR", Enum.GetName(SKRegionOperation.XOR));
     }
 
     [Theory]
@@ -65,7 +67,7 @@ public sealed class SkiaSharpPrimitiveContractTests
     [InlineData("#GGG")]
     public void ColorParsingRejectsInvalidHexStrings(string? text)
     {
-        Assert.False(SKColor.TryParse(text, out var color));
+        Assert.False(SKColor.TryParse(text!, out var color));
         Assert.Equal((uint)SKColor.Empty, (uint)color);
     }
 
@@ -78,22 +80,27 @@ public sealed class SkiaSharpPrimitiveContractTests
     [Fact]
     public void NamedColorPaletteMatchesNativeSkiaSharp()
     {
-        var rows = typeof(SKColors)
+        var fields = typeof(SKColors)
             .GetFields(BindingFlags.Public | BindingFlags.Static)
             .Where(field => field.FieldType == typeof(SKColor))
+            .ToArray();
+        var rows = fields
             .Select(field =>
             {
                 var color = (SKColor)field.GetValue(null)!;
                 return $"{field.Name}\t{color.Red},{color.Green},{color.Blue},{color.Alpha}";
             })
+            .Append($"{nameof(SKColors.Empty)}\t{SKColors.Empty.Red},{SKColors.Empty.Green},{SKColors.Empty.Blue},{SKColors.Empty.Alpha}")
             .OrderBy(row => row, StringComparer.Ordinal)
             .ToArray();
         var fingerprint = Convert.ToHexString(
             SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\n', rows))));
 
-        Assert.Equal(141, rows.Length);
-        Assert.Equal("54D75F019C40233762AF617B48E8E7660EBCB9FC5A2A3118AA41DA3BB672C730", fingerprint);
-        Assert.NotNull(typeof(SKColors).GetProperty(nameof(SKColors.Empty)));
+        Assert.Equal(141, fields.Length);
+        Assert.DoesNotContain(fields, static field => field.Name == nameof(SKColors.Empty));
+        Assert.NotNull(typeof(SKColors).GetProperty(nameof(SKColors.Empty), BindingFlags.Public | BindingFlags.Static));
+        Assert.Equal(142, rows.Length);
+        Assert.Equal("8637BF92DE0388C4FC891C45A150CB1CE91F73CAA4F9BC5455643DC395EB1BF0", fingerprint);
     }
 
     [Fact]

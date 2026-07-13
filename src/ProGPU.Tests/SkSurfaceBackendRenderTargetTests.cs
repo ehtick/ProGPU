@@ -8,6 +8,8 @@ using Silk.NET.WebGPU;
 using SkiaSharp;
 using Xunit;
 
+#pragma warning disable CS0618 // This suite intentionally covers legacy SkiaSharp overloads.
+
 namespace ProGPU.Tests;
 
 public sealed class SkSurfaceBackendRenderTargetTests

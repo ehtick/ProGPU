@@ -1,5 +1,3 @@
-using System.Reflection;
-using ProGPU.Scene;
 using SkiaSharp;
 using Xunit;
 
@@ -8,119 +6,109 @@ namespace ProGPU.Tests;
 public sealed class SkCanvasTransformCompatibilityTests
 {
     [Fact]
-    public void ConvenienceTransformsMatchNativePreConcatOrder()
+    public void PointTranslationMatchesScalarTranslationAndEmptyPointIsNoOp()
     {
-        var context = new DrawingContext();
-        using var canvas = new SKCanvas(context, 32f, 32f);
+        using var recorder = new SKPictureRecorder();
+        var canvas = recorder.BeginRecording(new SKRect(0f, 0f, 10f, 10f));
 
-        canvas.Scale(2f, 3f);
-        canvas.Translate(4f, 5f);
-        AssertMatrix(canvas.TotalMatrix, 2f, 0f, 8f, 0f, 3f, 15f);
+        canvas.Translate(new SKPoint(3f, -4f));
+        Assert.Equal(SKMatrix.CreateTranslation(3f, -4f), canvas.TotalMatrix);
 
-        canvas.ResetMatrix();
-        canvas.Translate(4f, 5f);
-        canvas.Scale(2f, 3f);
-        AssertMatrix(canvas.TotalMatrix, 2f, 0f, 4f, 0f, 3f, 5f);
-
-        canvas.ResetMatrix();
-        canvas.RotateDegrees(90f, 4f, 5f);
-        AssertMatrix(canvas.TotalMatrix, 0f, -1f, 9f, 1f, 0f, 1f);
-
-        canvas.ResetMatrix();
-        canvas.Scale(2f, 3f, 4f, 5f);
-        AssertMatrix(canvas.TotalMatrix, 2f, 0f, -4f, 0f, 3f, -10f);
-
-        canvas.ResetMatrix();
-        canvas.Skew(2f, 3f);
-        AssertMatrix(canvas.TotalMatrix, 1f, 2f, 0f, 3f, 1f, 0f);
-    }
-
-    [Fact]
-    public void EmptyPointTransformOverloadsPreserveNativeNoOpSemantics()
-    {
-        var context = new DrawingContext();
-        using var canvas = new SKCanvas(context, 32f, 32f);
-
+        var before = canvas.TotalMatrix;
         canvas.Translate(SKPoint.Empty);
+        Assert.Equal(before, canvas.TotalMatrix);
+    }
+
+    [Fact]
+    public void UniformAndPointScalesPreserveNativeNoOpRules()
+    {
+        using var recorder = new SKPictureRecorder();
+        var canvas = recorder.BeginRecording(new SKRect(0f, 0f, 10f, 10f));
+
+        canvas.Scale(2f);
+        canvas.Scale(new SKPoint(3f, 4f));
+        Assert.Equal(SKMatrix.CreateScale(6f, 8f), canvas.TotalMatrix);
+
+        var before = canvas.TotalMatrix;
+        canvas.Scale(1f);
         canvas.Scale(SKPoint.Empty);
+        Assert.Equal(before, canvas.TotalMatrix);
+    }
+
+    [Fact]
+    public void PivotScaleMatchesNativeSequentialComposition()
+    {
+        using var actualRecorder = new SKPictureRecorder();
+        var actual = actualRecorder.BeginRecording(new SKRect(0f, 0f, 10f, 10f));
+        actual.Translate(7f, -3f);
+        actual.Scale(2f, 4f, 5f, 6f);
+
+        using var expectedRecorder = new SKPictureRecorder();
+        var expected = expectedRecorder.BeginRecording(new SKRect(0f, 0f, 10f, 10f));
+        expected.Translate(7f, -3f);
+        expected.Translate(5f, 6f);
+        expected.Scale(2f, 4f);
+        expected.Translate(-5f, -6f);
+
+        Assert.Equal(expected.TotalMatrix, actual.TotalMatrix);
+    }
+
+    [Fact]
+    public void RotationOverloadsComposeAndSkipFullDegreeTurns()
+    {
+        using var actualRecorder = new SKPictureRecorder();
+        var actual = actualRecorder.BeginRecording(new SKRect(0f, 0f, 10f, 10f));
+
+        actual.RotateDegrees(90f);
+        actual.RotateRadians(0.25f, 3f, 5f);
+
+        using var expectedRecorder = new SKPictureRecorder();
+        var expected = expectedRecorder.BeginRecording(new SKRect(0f, 0f, 10f, 10f));
+        expected.RotateDegrees(90f);
+        expected.Translate(3f, 5f);
+        expected.RotateRadians(0.25f);
+        expected.Translate(-3f, -5f);
+
+        Assert.Equal(expected.TotalMatrix, actual.TotalMatrix);
+
+        var before = actual.TotalMatrix;
+        actual.RotateDegrees(720f);
+        Assert.Equal(before, actual.TotalMatrix);
+    }
+
+    [Fact]
+    public void SkewOverloadsComposeAndSkipEmptyPoint()
+    {
+        using var recorder = new SKPictureRecorder();
+        var canvas = recorder.BeginRecording(new SKRect(0f, 0f, 10f, 10f));
+
+        canvas.Skew(0.25f, -0.5f);
+        canvas.Skew(new SKPoint(0.5f, 0.75f));
+        Assert.Equal(
+            SKMatrix.Concat(SKMatrix.CreateSkew(0.25f, -0.5f), SKMatrix.CreateSkew(0.5f, 0.75f)),
+            canvas.TotalMatrix);
+
+        var before = canvas.TotalMatrix;
         canvas.Skew(SKPoint.Empty);
-
-        Assert.Equal(SKMatrix.Identity, canvas.TotalMatrix);
-        canvas.Scale(0f, 0f);
-        Assert.Equal(0f, canvas.TotalMatrix.ScaleX);
-        Assert.Equal(0f, canvas.TotalMatrix.ScaleY);
+        Assert.Equal(before, canvas.TotalMatrix);
     }
 
     [Fact]
-    public void MatrixApisExposeNativeReadonlyReferenceContracts()
+    public void MatrixReferenceAndMatrix44OverloadsPreserveTwoDimensionalState()
     {
-        var methods = typeof(SKCanvas).GetMethods(BindingFlags.Public | BindingFlags.Instance);
-        var concat = methods.Where(method => method.Name == nameof(SKCanvas.Concat)).ToArray();
-        Assert.Equal(2, concat.Length);
-        Assert.All(concat, method =>
-        {
-            var parameter = Assert.Single(method.GetParameters());
-            Assert.Equal("m", parameter.Name);
-            Assert.True(parameter.ParameterType.IsByRef);
-            Assert.True(parameter.IsIn);
-        });
+        using var recorder = new SKPictureRecorder();
+        var canvas = recorder.BeginRecording(new SKRect(0f, 0f, 10f, 10f));
 
-        var setMatrix = methods.Where(method => method.Name == nameof(SKCanvas.SetMatrix)).ToArray();
-        Assert.Equal(3, setMatrix.Length);
-        Assert.Equal(2, setMatrix.Count(method => method.GetParameters()[0].ParameterType.IsByRef));
-        Assert.All(
-            setMatrix.Where(method => method.GetParameters()[0].ParameterType.IsByRef),
-            method => Assert.True(method.GetParameters()[0].IsIn));
-        Assert.Single(
-            setMatrix,
-            method => method.GetParameters()[0].ParameterType == typeof(SKMatrix));
-        Assert.False(typeof(SKCanvas).GetProperty(nameof(SKCanvas.TotalMatrix))!.CanWrite);
+        var translation = SKMatrix.CreateTranslation(7f, -8f);
+        canvas.SetMatrix(in translation);
+        Assert.Equal(translation, canvas.TotalMatrix);
+
+        var matrix44 = SKMatrix44.CreateScale(2f, 3f, 1f);
+        canvas.Concat(in matrix44);
+        Assert.Equal(SKMatrix.Concat(translation, SKMatrix.CreateScale(2f, 3f)), canvas.TotalMatrix);
+
+        var translation44 = SKMatrix44.CreateTranslation(-4f, 6f, 0f);
+        canvas.SetMatrix(in translation44);
+        Assert.Equal(SKMatrix.CreateTranslation(-4f, 6f), canvas.TotalMatrix);
     }
-
-    [Fact]
-    public void PrimitiveConvenienceOverloadsReuseRetainedCommands()
-    {
-        var context = new DrawingContext();
-        using var canvas = new SKCanvas(context, 64f, 64f);
-        using var paint = new SKPaint { Color = SKColors.Red };
-
-        canvas.DrawLine(new SKPoint(1f, 2f), new SKPoint(3f, 4f), paint);
-        canvas.DrawCircle(new SKPoint(8f, 9f), 3f, paint);
-        canvas.DrawOval(new SKPoint(16f, 17f), new SKSize(4f, 5f), paint);
-        canvas.DrawOval(24f, 25f, 6f, 7f, paint);
-        canvas.DrawRoundRect(new SKRect(2f, 30f, 14f, 42f), new SKSize(2f, 3f), paint);
-        canvas.DrawRoundRect(20f, 30f, 16f, 12f, 3f, 4f, paint);
-
-        Assert.Collection(
-            context.Commands,
-            command => Assert.Equal(RenderCommandType.DrawPath, command.Type),
-            command => Assert.Equal(RenderCommandType.DrawCircle, command.Type),
-            command => Assert.Equal(RenderCommandType.DrawEllipse, command.Type),
-            command => Assert.Equal(RenderCommandType.DrawEllipse, command.Type),
-            command => Assert.Equal(RenderCommandType.DrawRoundedRect, command.Type),
-            command => Assert.Equal(RenderCommandType.DrawRoundedRect, command.Type));
-    }
-
-    private static void AssertMatrix(
-        SKMatrix matrix,
-        float scaleX,
-        float skewX,
-        float transX,
-        float skewY,
-        float scaleY,
-        float transY)
-    {
-        AssertNear(scaleX, matrix.ScaleX);
-        AssertNear(skewX, matrix.SkewX);
-        AssertNear(transX, matrix.TransX);
-        AssertNear(skewY, matrix.SkewY);
-        AssertNear(scaleY, matrix.ScaleY);
-        AssertNear(transY, matrix.TransY);
-        AssertNear(0f, matrix.Persp0);
-        AssertNear(0f, matrix.Persp1);
-        AssertNear(1f, matrix.Persp2);
-    }
-
-    private static void AssertNear(float expected, float actual) =>
-        Assert.InRange(actual, expected - 0.0001f, expected + 0.0001f);
 }

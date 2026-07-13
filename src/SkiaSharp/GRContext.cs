@@ -14,6 +14,16 @@ public enum GRSurfaceOrigin
     BottomLeft = 1,
 }
 
+public enum GRBackend
+{
+    Metal,
+    OpenGL,
+    Vulkan,
+    Dawn,
+    Direct3D,
+    Unsupported,
+}
+
 public struct GRGlFramebufferInfo
 {
     public uint FramebufferId { get; set; }
@@ -209,15 +219,44 @@ public sealed class GRBackendTexture : IDisposable
     }
 }
 
-public class GRContext : IDisposable
+public class GRRecordingContext : SKObject
 {
-    public WgpuContext Context { get; }
+    internal GRRecordingContext(WgpuContext context)
+        : base(SKObjectHandle.Create(), owns: true)
+    {
+        BackendContext = context ?? throw new ArgumentNullException(nameof(context));
+    }
+
+    internal WgpuContext BackendContext { get; }
+
+    public virtual GRBackend Backend => GRBackend.Dawn;
+
+    public virtual bool IsAbandoned => IsDisposed || BackendContext.IsDisposed;
+
+    public int MaxTextureSize => 16384;
+
     public int MaxRenderTargetSize => 16384;
 
-    public GRContext(WgpuContext context)
+    public int GetMaxSurfaceSampleCount(SKColorType colorType) => 1;
+
+    protected override void DisposeNative()
     {
-        Context = context;
+        // The wrapper never owns the application WgpuContext.
     }
+}
+
+public class GRContext : GRRecordingContext
+{
+    public GRContext(WgpuContext context)
+        : base(context)
+    {
+    }
+
+    public WgpuContext Context => BackendContext;
+
+    public override GRBackend Backend => base.Backend;
+
+    public override bool IsAbandoned => base.IsAbandoned;
 
     public static GRContext CreateGl(object? interfaceObj = null, GRContextOptions? options = null)
     {
@@ -259,13 +298,8 @@ public class GRContext : IDisposable
         // No-op
     }
 
-    public int GetMaxSurfaceSampleCount(SKColorType colorType)
+    public new int GetMaxSurfaceSampleCount(SKColorType colorType)
     {
-        return 1;
-    }
-
-    public void Dispose()
-    {
-        // No-op
+        return base.GetMaxSurfaceSampleCount(colorType);
     }
 }

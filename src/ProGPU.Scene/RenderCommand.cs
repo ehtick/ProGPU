@@ -130,6 +130,47 @@ public sealed class VertexMesh2D
         IndexArray = indices.ToArray();
     }
 
+    internal static VertexMesh2D CreateOwned(
+        VertexMeshTopology topology,
+        Vector2[] positions,
+        Vector2[] textureCoordinates,
+        Vector4[] colors,
+        ushort[] indices)
+    {
+        ArgumentNullException.ThrowIfNull(positions);
+        ArgumentNullException.ThrowIfNull(textureCoordinates);
+        ArgumentNullException.ThrowIfNull(colors);
+        ArgumentNullException.ThrowIfNull(indices);
+        if (textureCoordinates.Length != 0 && textureCoordinates.Length != positions.Length)
+        {
+            throw new ArgumentException(
+                "The number of texture coordinates must match the number of vertices.",
+                nameof(textureCoordinates));
+        }
+        if (colors.Length != 0 && colors.Length != positions.Length)
+        {
+            throw new ArgumentException(
+                "The number of colors must match the number of vertices.",
+                nameof(colors));
+        }
+
+        return new VertexMesh2D(topology, positions, textureCoordinates, colors, indices);
+    }
+
+    private VertexMesh2D(
+        VertexMeshTopology topology,
+        Vector2[] positions,
+        Vector2[] textureCoordinates,
+        Vector4[] colors,
+        ushort[] indices)
+    {
+        Topology = topology;
+        PositionArray = positions;
+        TextureCoordinateArray = textureCoordinates;
+        ColorArray = colors;
+        IndexArray = indices;
+    }
+
     internal int GetTriangleCount()
     {
         var elementCount = IndexArray.Length > 0 ? IndexArray.Length : PositionArray.Length;
@@ -179,6 +220,62 @@ public enum TextureSamplingMode
     Nearest,
     Cubic,
     LinearMipmap
+}
+
+public enum TexturePatchKind : byte
+{
+    Texture,
+    FixedColor,
+    AtlasColor
+}
+
+public readonly struct TexturePatch
+{
+    public TexturePatch(Rect source, Rect destination)
+    {
+        Source = source;
+        Destination = destination;
+        Color = default;
+        Kind = TexturePatchKind.Texture;
+        DestinationTransform = default;
+        HasDestinationTransform = false;
+        ColorBlendMode = default;
+    }
+
+    public TexturePatch(Rect destination, Vector4 color)
+    {
+        Source = default;
+        Destination = destination;
+        Color = color;
+        Kind = TexturePatchKind.FixedColor;
+        DestinationTransform = default;
+        HasDestinationTransform = false;
+        ColorBlendMode = default;
+    }
+
+    public TexturePatch(
+        Rect source,
+        Rect destination,
+        Matrix3x2 destinationTransform,
+        Vector4? color = null,
+        VertexColorBlendMode colorBlendMode = VertexColorBlendMode.Dst)
+    {
+        Source = source;
+        Destination = destination;
+        Color = color.GetValueOrDefault();
+        Kind = color.HasValue ? TexturePatchKind.AtlasColor : TexturePatchKind.Texture;
+        DestinationTransform = destinationTransform;
+        HasDestinationTransform = true;
+        ColorBlendMode = colorBlendMode;
+    }
+
+    public Rect Source { get; }
+    public Rect Destination { get; }
+    public Vector4 Color { get; }
+    public TexturePatchKind Kind { get; }
+    public Matrix3x2 DestinationTransform { get; }
+    public bool HasDestinationTransform { get; }
+    public VertexColorBlendMode ColorBlendMode { get; }
 }
 
 public enum TextRenderingMode
@@ -483,7 +580,9 @@ public struct RenderCommand
     // Texture properties
     public GpuTexture? Texture;
     public Rect SrcRect;
+    public TexturePatch[]? TexturePatches;
     public TextureSamplingMode TextureSamplingMode;
+    public byte TextureMaxAnisotropy;
     public Vector2 TextureCubicCoefficients;
     public bool HasTextureCubicCoefficients;
 

@@ -675,6 +675,7 @@ public unsafe class Compositor : IDisposable
     private Sampler* _atlasSampler;
     private Sampler* _nearestTextureSampler;
     private Sampler* _mipmapTextureSampler;
+    private readonly Dictionary<byte, nint> _anisotropicTextureSamplers = new();
     private BindGroup* _atlasBindGroup;
     private BindGroupLayout* _atlasBindGroupLayout;
     private BindGroup* _atlasBindGroupOffscreen;
@@ -772,6 +773,7 @@ public unsafe class Compositor : IDisposable
         public GpuTexture? MaskTexture;
         public GpuBlendMode BlendMode;
         public TextureSamplingMode TextureSamplingMode;
+        public byte TextureMaxAnisotropy;
         public GpuTextureAlphaMode TextureAlphaMode;
 
         // Custom Extension properties
@@ -803,18 +805,32 @@ public unsafe class Compositor : IDisposable
         public readonly uint Generation;
         public readonly bool IsOffscreen;
         public readonly TextureSamplingMode SamplingMode;
+        public readonly byte MaxAnisotropy;
 
-        public TextureCacheKey(ulong textureId, uint generation, bool isOffscreen, TextureSamplingMode samplingMode)
+        public TextureCacheKey(
+            ulong textureId,
+            uint generation,
+            bool isOffscreen,
+            TextureSamplingMode samplingMode,
+            byte maxAnisotropy)
         {
             TextureId = textureId;
             Generation = generation;
             IsOffscreen = isOffscreen;
             SamplingMode = samplingMode;
+            MaxAnisotropy = samplingMode == TextureSamplingMode.LinearMipmap && maxAnisotropy > 1
+                ? (byte)Math.Clamp((int)maxAnisotropy, 2, 16)
+                : (byte)1;
         }
 
-        public bool Equals(TextureCacheKey other) => TextureId == other.TextureId && Generation == other.Generation && IsOffscreen == other.IsOffscreen && SamplingMode == other.SamplingMode;
+        public bool Equals(TextureCacheKey other) =>
+            TextureId == other.TextureId &&
+            Generation == other.Generation &&
+            IsOffscreen == other.IsOffscreen &&
+            SamplingMode == other.SamplingMode &&
+            MaxAnisotropy == other.MaxAnisotropy;
         public override bool Equals(object? obj) => obj is TextureCacheKey other && Equals(other);
-        public override int GetHashCode() => HashCode.Combine(TextureId, Generation, IsOffscreen, SamplingMode);
+        public override int GetHashCode() => HashCode.Combine(TextureId, Generation, IsOffscreen, SamplingMode, MaxAnisotropy);
     }
 
     public class CachedBindGroup
@@ -1246,6 +1262,30 @@ public unsafe class Compositor : IDisposable
                 transform,
                 xChannel,
                 yChannel);
+        }
+    }
+
+    public void ApplyMagnifier(
+        GpuTexture source,
+        GpuTexture destination,
+        Vector4 lensBounds,
+        Vector4 outputBounds,
+        Vector4 zoomTransform,
+        Vector2 inverseInset,
+        uint samplingMode,
+        Vector2 cubic)
+    {
+        lock (_context.RenderLock)
+        {
+            _compute.ApplyMagnifier(
+                source,
+                destination,
+                lensBounds,
+                outputBounds,
+                zoomTransform,
+                inverseInset,
+                samplingMode,
+                cubic);
         }
     }
 
@@ -2423,14 +2463,23 @@ SceneStateUploadComplete:
                 currentBlendMode = dc.BlendMode;
 
                 var viewPtr = texture.ViewPtr;
-                var cacheKey = new TextureCacheKey(texture.Id, texture.Generation, isOffscreen: false, dc.TextureSamplingMode);
+                var cacheKey = new TextureCacheKey(
+                    texture.Id,
+                    texture.Generation,
+                    isOffscreen: false,
+                    dc.TextureSamplingMode,
+                    dc.TextureMaxAnisotropy);
 
                 CachedBindGroup? cachedBg;
                 lock (_persistentTextureBindGroups)
                 {
                     if (!_persistentTextureBindGroups.TryGetValue(cacheKey, out cachedBg))
                     {
-                        textureEntries[0] = new BindGroupEntry { Binding = 0, Sampler = GetTextureSampler(dc.TextureSamplingMode) };
+                        textureEntries[0] = new BindGroupEntry
+                        {
+                            Binding = 0,
+                            Sampler = GetTextureSampler(dc.TextureSamplingMode, dc.TextureMaxAnisotropy)
+                        };
                         textureEntries[1] = new BindGroupEntry { Binding = 1, TextureView = viewPtr };
 
                         var bgDesc = new BindGroupDescriptor { Layout = _textureBindGroupLayout, EntryCount = 2, Entries = textureEntries };
@@ -8481,7 +8530,6 @@ SceneStateUploadComplete:
 
         CommitPendingDrawCalls();
 
-        var r = cmd.Rect;
         var textureOpacity = cmd.TextureSamplingMode == TextureSamplingMode.Cubic
             ? -_activeOpacity
             : _activeOpacity;
@@ -8497,23 +8545,157 @@ SceneStateUploadComplete:
             float.IsFinite(cmd.TextureCubicCoefficients.Y)
                 ? cmd.TextureCubicCoefficients
                 : new Vector2(0f, 0.5f);
+        var indexStart = _textureIndicesList.Count;
+        var patches = cmd.TexturePatches;
+        var patchCount = patches?.Length ?? 1;
+        _textureVerticesList.EnsureCapacity(_textureVerticesList.Count + patchCount * 4);
+        _textureIndicesList.EnsureCapacity(_textureIndicesList.Count + patchCount * 6);
 
-        var v0 = Vector2.Transform(new Vector2(r.X, r.Y), transform);
-        var v1 = Vector2.Transform(new Vector2(r.X + r.Width, r.Y), transform);
-        var v2 = Vector2.Transform(new Vector2(r.X + r.Width, r.Y + r.Height), transform);
-        var v3 = Vector2.Transform(new Vector2(r.X, r.Y + r.Height), transform);
+        if (patches == null)
+        {
+            AppendTextureQuad(
+                cmd.Texture,
+                cmd.SrcRect,
+                cmd.Rect,
+                color,
+                patchKind: 0f,
+                cubicCoefficients,
+                transform,
+                default,
+                hasDestinationTransform: false,
+                colorBlendMode: 0f,
+                patchOpacity: 1f);
+        }
+        else
+        {
+            for (var patchIndex = 0; patchIndex < patches.Length; patchIndex++)
+            {
+                var patch = patches[patchIndex];
+                if (patch.Kind == TexturePatchKind.FixedColor)
+                {
+                    var alpha = patch.Color.W * _activeOpacity;
+                    var fixedColor = isPremultiplied
+                        ? new Vector4(
+                            patch.Color.X * alpha,
+                            patch.Color.Y * alpha,
+                            patch.Color.Z * alpha,
+                            alpha)
+                        : new Vector4(patch.Color.X, patch.Color.Y, patch.Color.Z, alpha);
+                    AppendTextureQuad(
+                        cmd.Texture,
+                        default,
+                        patch.Destination,
+                        fixedColor,
+                        isPremultiplied ? 2f : 1f,
+                        cubicCoefficients,
+                        transform,
+                        default,
+                        hasDestinationTransform: false,
+                        colorBlendMode: 0f,
+                        patchOpacity: 1f);
+                }
+                else if (patch.Kind == TexturePatchKind.AtlasColor)
+                {
+                    var alpha = patch.Color.W;
+                    var atlasColor = new Vector4(
+                        patch.Color.X * alpha,
+                        patch.Color.Y * alpha,
+                        patch.Color.Z * alpha,
+                        alpha);
+                    AppendTextureQuad(
+                        cmd.Texture,
+                        patch.Source,
+                        patch.Destination,
+                        atlasColor,
+                        isPremultiplied ? 4f : 3f,
+                        cubicCoefficients,
+                        transform,
+                        patch.DestinationTransform,
+                        patch.HasDestinationTransform,
+                        (float)patch.ColorBlendMode,
+                        cmd.TextureSamplingMode == TextureSamplingMode.Cubic
+                            ? -_activeOpacity
+                            : _activeOpacity);
+                }
+                else
+                {
+                    AppendTextureQuad(
+                        cmd.Texture,
+                        patch.Source,
+                        patch.Destination,
+                        color,
+                        patchKind: 0f,
+                        cubicCoefficients,
+                        transform,
+                        patch.DestinationTransform,
+                        patch.HasDestinationTransform,
+                        colorBlendMode: 0f,
+                        patchOpacity: 1f);
+                }
+            }
+        }
 
-        uint idxStart = (uint)_textureVerticesList.Count;
+        var indexCount = _textureIndicesList.Count - indexStart;
+        if (indexCount == 0)
+        {
+            return;
+        }
+
+        _drawCalls.Add(new CompositorDrawCall
+        {
+            Type = DrawCallType.Texture,
+            IndexStart = (uint)indexStart,
+            IndexCount = (uint)indexCount,
+            Texture = cmd.Texture,
+            ClipRect = _activeClipRect,
+            MaskTexture = _maskStack.Count > 0 ? _maskStack.Peek() : null,
+            BlendMode = _activeBlendMode,
+            TextureSamplingMode = cmd.TextureSamplingMode,
+            TextureMaxAnisotropy = cmd.TextureMaxAnisotropy,
+            TextureAlphaMode = cmd.Texture.AlphaMode
+        });
+    }
+
+    private void AppendTextureQuad(
+        GpuTexture texture,
+        Rect source,
+        Rect destination,
+        Vector4 color,
+        float patchKind,
+        Vector2 cubicCoefficients,
+        Matrix4x4 transform,
+        Matrix3x2 destinationTransform,
+        bool hasDestinationTransform,
+        float colorBlendMode,
+        float patchOpacity)
+    {
+        var r = destination;
+        var v0 = new Vector2(r.X, r.Y);
+        var v1 = new Vector2(r.X + r.Width, r.Y);
+        var v2 = new Vector2(r.X + r.Width, r.Y + r.Height);
+        var v3 = new Vector2(r.X, r.Y + r.Height);
+        if (hasDestinationTransform)
+        {
+            v0 = Vector2.Transform(v0, destinationTransform);
+            v1 = Vector2.Transform(v1, destinationTransform);
+            v2 = Vector2.Transform(v2, destinationTransform);
+            v3 = Vector2.Transform(v3, destinationTransform);
+        }
+
+        v0 = Vector2.Transform(v0, transform);
+        v1 = Vector2.Transform(v1, transform);
+        v2 = Vector2.Transform(v2, transform);
+        v3 = Vector2.Transform(v3, transform);
 
         Vector2 uv0, uv1, uv2, uv3;
-        if (cmd.SrcRect.Width > 0f && cmd.SrcRect.Height > 0f)
+        if ((patchKind == 0f || patchKind >= 3f) && source.Width > 0f && source.Height > 0f)
         {
-            float texW = cmd.Texture.Width;
-            float texH = cmd.Texture.Height;
-            float l = cmd.SrcRect.X / texW;
-            float t = cmd.SrcRect.Y / texH;
-            float right = (cmd.SrcRect.X + cmd.SrcRect.Width) / texW;
-            float b = (cmd.SrcRect.Y + cmd.SrcRect.Height) / texH;
+            float texW = texture.Width;
+            float texH = texture.Height;
+            float l = source.X / texW;
+            float t = source.Y / texH;
+            float right = (source.X + source.Width) / texW;
+            float b = (source.Y + source.Height) / texH;
 
             uv0 = new Vector2(l, t);
             uv1 = new Vector2(right, t);
@@ -8542,7 +8724,7 @@ SceneStateUploadComplete:
 
             if (maxX <= clipLeft || minX >= clipRight || maxY <= clipTop || minY >= clipBottom)
             {
-                return; // Completely clipped!
+                return;
             }
 
             if (!QuadClipper.TryClipAxisAlignedQuad(
@@ -8560,14 +8742,19 @@ SceneStateUploadComplete:
             }
         }
 
+        uint idxStart = (uint)_textureVerticesList.Count;
         int originalVertexCount = _textureVerticesList.Count;
         CollectionsMarshal.SetCount(_textureVerticesList, originalVertexCount + 4);
         var vertexSpan = CollectionsMarshal.AsSpan(_textureVerticesList).Slice(originalVertexCount, 4);
 
-        vertexSpan[0] = new VectorVertex(v0, color, uv0, shapeSize: cubicCoefficients);
-        vertexSpan[1] = new VectorVertex(v1, color, uv1, shapeSize: cubicCoefficients);
-        vertexSpan[2] = new VectorVertex(v2, color, uv2, shapeSize: cubicCoefficients);
-        vertexSpan[3] = new VectorVertex(v3, color, uv3, shapeSize: cubicCoefficients);
+        vertexSpan[0] = new VectorVertex(
+            v0, color, uv0, patchKind, cubicCoefficients, colorBlendMode, patchOpacity);
+        vertexSpan[1] = new VectorVertex(
+            v1, color, uv1, patchKind, cubicCoefficients, colorBlendMode, patchOpacity);
+        vertexSpan[2] = new VectorVertex(
+            v2, color, uv2, patchKind, cubicCoefficients, colorBlendMode, patchOpacity);
+        vertexSpan[3] = new VectorVertex(
+            v3, color, uv3, patchKind, cubicCoefficients, colorBlendMode, patchOpacity);
 
         int originalIndexCount = _textureIndicesList.Count;
         CollectionsMarshal.SetCount(_textureIndicesList, originalIndexCount + 6);
@@ -8579,23 +8766,15 @@ SceneStateUploadComplete:
         indexSpan[3] = idxStart;
         indexSpan[4] = idxStart + 2;
         indexSpan[5] = idxStart + 3;
-
-        _drawCalls.Add(new CompositorDrawCall
-        {
-            Type = DrawCallType.Texture,
-            IndexStart = (uint)(_textureIndicesList.Count - 6),
-            IndexCount = 6,
-            Texture = cmd.Texture,
-            ClipRect = _activeClipRect,
-            MaskTexture = _maskStack.Count > 0 ? _maskStack.Peek() : null,
-            BlendMode = _activeBlendMode,
-            TextureSamplingMode = cmd.TextureSamplingMode,
-            TextureAlphaMode = cmd.Texture.AlphaMode
-        });
     }
 
-    internal Sampler* GetTextureSampler(TextureSamplingMode samplingMode)
+    internal Sampler* GetTextureSampler(TextureSamplingMode samplingMode, byte maxAnisotropy = 1)
     {
+        if (samplingMode == TextureSamplingMode.LinearMipmap && maxAnisotropy > 1)
+        {
+            return GetAnisotropicTextureSampler(maxAnisotropy);
+        }
+
         return samplingMode switch
         {
             TextureSamplingMode.Nearest when _nearestTextureSampler != null =>
@@ -8604,6 +8783,34 @@ SceneStateUploadComplete:
                 _mipmapTextureSampler,
             _ => _atlasSampler
         };
+    }
+
+    private Sampler* GetAnisotropicTextureSampler(byte requestedMaxAnisotropy)
+    {
+        var maxAnisotropy = (byte)Math.Clamp((int)requestedMaxAnisotropy, 2, 16);
+        lock (_anisotropicTextureSamplers)
+        {
+            if (_anisotropicTextureSamplers.TryGetValue(maxAnisotropy, out var existing))
+            {
+                return (Sampler*)existing;
+            }
+
+            var descriptor = new SamplerDescriptor
+            {
+                AddressModeU = AddressMode.ClampToEdge,
+                AddressModeV = AddressMode.ClampToEdge,
+                AddressModeW = AddressMode.ClampToEdge,
+                MagFilter = FilterMode.Linear,
+                MinFilter = FilterMode.Linear,
+                MipmapFilter = MipmapFilterMode.Linear,
+                LodMaxClamp = 32f,
+                LodMinClamp = 0f,
+                MaxAnisotropy = maxAnisotropy
+            };
+            var sampler = _context.Wgpu.DeviceCreateSampler(_context.Device, &descriptor);
+            _anisotropicTextureSamplers.Add(maxAnisotropy, (nint)sampler);
+            return sampler;
+        }
     }
 
     private void CommitPendingVectorDrawCall()
@@ -8762,6 +8969,11 @@ SceneStateUploadComplete:
                 if (_atlasSampler != null) _context.QueueSamplerDisposal((IntPtr)_atlasSampler);
                 if (_nearestTextureSampler != null) _context.QueueSamplerDisposal((IntPtr)_nearestTextureSampler);
                 if (_mipmapTextureSampler != null) _context.QueueSamplerDisposal((IntPtr)_mipmapTextureSampler);
+                foreach (var sampler in _anisotropicTextureSamplers.Values)
+                {
+                    _context.QueueSamplerDisposal(sampler);
+                }
+                _anisotropicTextureSamplers.Clear();
 
                 if (_vectorUniformBindGroup != null) _context.QueueBindGroupDisposal((IntPtr)_vectorUniformBindGroup);
                 if (_vectorUniformBindGroupOffscreen != null) _context.QueueBindGroupDisposal((IntPtr)_vectorUniformBindGroupOffscreen);
@@ -9143,7 +9355,8 @@ SceneStateUploadComplete:
                 texture.Id,
                 texture.Generation,
                 isOffscreen: true,
-                drawCall.TextureSamplingMode);
+                drawCall.TextureSamplingMode,
+                drawCall.TextureMaxAnisotropy);
             CachedBindGroup? cachedBindGroup;
             lock (_persistentTextureBindGroups)
             {
@@ -9153,7 +9366,9 @@ SceneStateUploadComplete:
                     entries[0] = new BindGroupEntry
                     {
                         Binding = 0,
-                        Sampler = GetTextureSampler(drawCall.TextureSamplingMode)
+                        Sampler = GetTextureSampler(
+                            drawCall.TextureSamplingMode,
+                            drawCall.TextureMaxAnisotropy)
                     };
                     entries[1] = new BindGroupEntry
                     {
@@ -10235,14 +10450,23 @@ SceneStateUploadComplete:
                 currentBlendMode = dc.BlendMode;
 
                 var viewPtr = texture.ViewPtr;
-                var cacheKey = new TextureCacheKey(texture.Id, texture.Generation, isOffscreen: true, dc.TextureSamplingMode);
+                var cacheKey = new TextureCacheKey(
+                    texture.Id,
+                    texture.Generation,
+                    isOffscreen: true,
+                    dc.TextureSamplingMode,
+                    dc.TextureMaxAnisotropy);
 
                 CachedBindGroup? cachedBg;
                 lock (_persistentTextureBindGroups)
                 {
                     if (!_persistentTextureBindGroups.TryGetValue(cacheKey, out cachedBg))
                     {
-                        textureEntries[0] = new BindGroupEntry { Binding = 0, Sampler = GetTextureSampler(dc.TextureSamplingMode) };
+                        textureEntries[0] = new BindGroupEntry
+                        {
+                            Binding = 0,
+                            Sampler = GetTextureSampler(dc.TextureSamplingMode, dc.TextureMaxAnisotropy)
+                        };
                         textureEntries[1] = new BindGroupEntry { Binding = 1, TextureView = viewPtr };
 
                         var bgDesc = new BindGroupDescriptor { Layout = _textureBindGroupLayoutOffscreen, EntryCount = 2, Entries = textureEntries };
@@ -12049,6 +12273,7 @@ SceneStateUploadComplete:
             GpuBlendMode.DstAtop or
             GpuBlendMode.Xor or
             GpuBlendMode.DstOver or
+            GpuBlendMode.Modulate or
             GpuBlendMode.Multiply or
             GpuBlendMode.Screen or
             GpuBlendMode.Darken or
@@ -12531,14 +12756,23 @@ SceneStateUploadComplete:
                     _context.Wgpu.RenderPassEncoderSetBindGroup(pass, 2, maskBindGroup, 0, null);
 
                     var viewPtr = texture.ViewPtr;
-                    var cacheKey = new TextureCacheKey(texture.Id, texture.Generation, isOffscreen: true, dc.TextureSamplingMode);
+                    var cacheKey = new TextureCacheKey(
+                        texture.Id,
+                        texture.Generation,
+                        isOffscreen: true,
+                        dc.TextureSamplingMode,
+                        dc.TextureMaxAnisotropy);
 
                     CachedBindGroup? cachedBg;
                     lock (_persistentTextureBindGroups)
                     {
                         if (!_persistentTextureBindGroups.TryGetValue(cacheKey, out cachedBg))
                         {
-                            textureEntries[0] = new BindGroupEntry { Binding = 0, Sampler = GetTextureSampler(dc.TextureSamplingMode) };
+                            textureEntries[0] = new BindGroupEntry
+                            {
+                                Binding = 0,
+                                Sampler = GetTextureSampler(dc.TextureSamplingMode, dc.TextureMaxAnisotropy)
+                            };
                             textureEntries[1] = new BindGroupEntry { Binding = 1, TextureView = viewPtr };
 
                             var bgDesc = new BindGroupDescriptor { Layout = _textureBindGroupLayoutOffscreen, EntryCount = 2, Entries = textureEntries };

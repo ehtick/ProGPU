@@ -7,82 +7,98 @@ namespace ProGPU.Tests;
 public sealed class SkDrawableCompatibilityTests
 {
     [Fact]
-    public void DrawableReportsManagedMetadataAndTracksGeneration()
+    public void MetadataDelegatesToVirtualHooks()
     {
         using var drawable = new TestDrawable();
 
-        Assert.Equal(typeof(SKObject), typeof(SKDrawable).BaseType);
-        Assert.Equal(new SKRect(1f, 2f, 11f, 12f), drawable.Bounds);
-        Assert.Equal(64, drawable.ApproximateBytesUsed);
-        var generation = drawable.GenerationId;
+        Assert.Equal(new SKRect(2f, 3f, 22f, 13f), drawable.Bounds);
+        Assert.Equal(137, drawable.ApproximateBytesUsed);
+    }
+
+    [Fact]
+    public void NotifyDrawingChangedAdvancesGeneration()
+    {
+        using var drawable = new TestDrawable();
+        var initial = drawable.GenerationId;
+
         drawable.NotifyDrawingChanged();
-        Assert.NotEqual(generation, drawable.GenerationId);
+
+        Assert.Equal(unchecked(initial + 1), drawable.GenerationId);
     }
 
     [Fact]
-    public void DrawablePlaybackComposesMatrixAndRestoresCanvasState()
+    public void DrawComposesMatrixAndRestoresCanvasState()
     {
-        var context = new DrawingContext();
-        using var canvas = new SKCanvas(context, 64f, 64f);
         using var drawable = new TestDrawable();
-        canvas.Translate(3f, 4f);
+        using var recorder = new SKPictureRecorder();
+        var canvas = recorder.BeginRecording(new SKRect(0f, 0f, 100f, 100f));
+        canvas.Translate(5f, 7f);
+        var before = canvas.TotalMatrix;
+        var local = SKMatrix.CreateScaleTranslation(2f, 3f, 11f, 13f);
 
-        canvas.DrawDrawable(drawable, 5f, 6f);
-        canvas.DrawDrawable(drawable, new SKPoint(7f, 8f));
+        drawable.Draw(canvas, in local);
 
-        Assert.Equal(2, context.Commands.Count);
-        Assert.Equal(8f, context.Commands[0].Transform.M41);
-        Assert.Equal(10f, context.Commands[0].Transform.M42);
-        Assert.Equal(10f, context.Commands[1].Transform.M41);
-        Assert.Equal(12f, context.Commands[1].Transform.M42);
-        Assert.Equal(1, canvas.SaveCount);
+        Assert.Equal(SKMatrix.Concat(before, local), drawable.MatrixAtDraw);
+        Assert.Equal(before, canvas.TotalMatrix);
     }
 
     [Fact]
-    public void DefaultSnapshotRecordsDrawableIntoPicture()
+    public void CanvasOverloadsApplyPointAndMatrixTransforms()
+    {
+        using var drawable = new TestDrawable();
+        using var recorder = new SKPictureRecorder();
+        var canvas = recorder.BeginRecording(new SKRect(0f, 0f, 100f, 100f));
+
+        canvas.DrawDrawable(drawable, new SKPoint(7f, 9f));
+        Assert.Equal(SKMatrix.CreateTranslation(7f, 9f), drawable.MatrixAtDraw);
+
+        var matrix = SKMatrix.CreateRotationDegrees(30f, 2f, 3f);
+        canvas.DrawDrawable(drawable, in matrix);
+        Assert.Equal(matrix, drawable.MatrixAtDraw);
+
+        canvas.DrawDrawable(drawable, 4f, 6f);
+        Assert.Equal(SKMatrix.CreateTranslation(4f, 6f), drawable.MatrixAtDraw);
+    }
+
+    [Fact]
+    public void DefaultSnapshotRecordsDrawableCommandsAndBounds()
     {
         using var drawable = new TestDrawable();
         using var picture = drawable.Snapshot();
+
         Assert.Equal(drawable.Bounds, picture.CullRect);
-
-        var context = new DrawingContext();
-        using var canvas = new SKCanvas(context, 64f, 64f);
-        picture.Playback(canvas);
-
-        var command = Assert.Single(context.Commands);
-        Assert.Equal(RenderCommandType.DrawPicture, command.Type);
-        Assert.NotNull(command.Picture);
+        var command = Assert.Single(picture.Picture.Commands);
+        Assert.Equal(RenderCommandType.DrawRect, command.Type);
+        Assert.Equal(drawable.Bounds, new SKRect(
+            command.Rect.X,
+            command.Rect.Y,
+            command.Rect.Right,
+            command.Rect.Bottom));
     }
 
     [Fact]
-    public void PictureRecorderCanFinishAsDrawable()
+    public void OwnedDrawableUsesInheritedLifetime()
     {
-        using var recorder = new SKPictureRecorder();
-        var recordingCanvas = recorder.BeginRecording(new SKRect(0f, 0f, 20f, 30f));
-        using (var paint = new SKPaint { Color = SKColors.Blue })
-        {
-            recordingCanvas.DrawRect(new SKRect(0f, 0f, 10f, 10f), paint);
-        }
+        var drawable = new TestDrawable();
 
-        using var drawable = recorder.EndRecordingAsDrawable();
-        Assert.Equal(new SKRect(0f, 0f, 20f, 30f), drawable.Bounds);
-
-        var context = new DrawingContext();
-        using var canvas = new SKCanvas(context, 20f, 30f);
-        canvas.DrawDrawable(drawable, 0f, 0f);
-        var command = Assert.Single(context.Commands);
-        Assert.Equal(RenderCommandType.DrawPicture, command.Type);
+        Assert.NotEqual(IntPtr.Zero, drawable.Handle);
+        drawable.Dispose();
+        Assert.Equal(IntPtr.Zero, drawable.Handle);
     }
 
     private sealed class TestDrawable : SKDrawable
     {
+        public SKMatrix MatrixAtDraw { get; private set; }
+
         protected internal override void OnDraw(SKCanvas canvas)
         {
+            MatrixAtDraw = canvas.TotalMatrix;
             using var paint = new SKPaint { Color = SKColors.Red };
-            canvas.DrawRect(new SKRect(1f, 2f, 11f, 12f), paint);
+            canvas.DrawRect(OnGetBounds(), paint);
         }
 
-        protected internal override int OnGetApproximateBytesUsed() => 64;
-        protected internal override SKRect OnGetBounds() => new(1f, 2f, 11f, 12f);
+        protected internal override int OnGetApproximateBytesUsed() => 137;
+
+        protected internal override SKRect OnGetBounds() => new(2f, 3f, 22f, 13f);
     }
 }

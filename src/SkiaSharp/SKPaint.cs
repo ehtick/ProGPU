@@ -17,6 +17,8 @@ public partial class SKPaint : SKObject
 {
     private const float HairlineStrokeWidth = 1f;
     private SKShader? _shader;
+    private SKBlender? _blender;
+    private float _strokeWidth;
 
     public SKPaintStyle Style { get; set; } = SKPaintStyle.Fill;
     public SKColor Color { get; set; } = SKColors.Black;
@@ -34,7 +36,11 @@ public partial class SKPaint : SKObject
         get => Style != SKPaintStyle.Fill;
         set => Style = value ? SKPaintStyle.Stroke : SKPaintStyle.Fill;
     }
-    public float StrokeWidth { get; set; }
+    public float StrokeWidth
+    {
+        get => _strokeWidth;
+        set => _strokeWidth = value >= 0f ? value : 0f;
+    }
     public float StrokeMiter { get; set; } = 4f;
     public SKStrokeCap StrokeCap { get; set; } = SKStrokeCap.Butt;
     public SKStrokeJoin StrokeJoin { get; set; } = SKStrokeJoin.Miter;
@@ -56,7 +62,20 @@ public partial class SKPaint : SKObject
     public SKColorFilter? ColorFilter { get; set; }
     public SKImageFilter? ImageFilter { get; set; }
     public SKPathEffect? PathEffect { get; set; }
-    public SKBlendMode BlendMode { get; set; } = SKBlendMode.SrcOver;
+    public SKBlender? Blender
+    {
+        get => _blender;
+        set => _blender = value;
+    }
+    public SKBlendMode BlendMode
+    {
+        get => Blender != null && Blender.TryGetBlendMode(out var mode)
+            ? mode
+            : SKBlendMode.SrcOver;
+        set => Blender = value == SKBlendMode.SrcOver
+            ? null
+            : SKBlender.CreateBlendMode(value);
+    }
     public bool IsAntialias
     {
         get => _isAntialias;
@@ -93,7 +112,7 @@ public partial class SKPaint : SKObject
             ColorFilter = ColorFilter,
             ImageFilter = ImageFilter,
             PathEffect = PathEffect,
-            BlendMode = BlendMode,
+            Blender = Blender,
             IsAntialias = IsAntialias,
             IsDither = IsDither,
             MaskFilter = MaskFilter,
@@ -230,7 +249,7 @@ public partial class SKPaint : SKObject
         ColorFilter = null;
         ImageFilter = null;
         PathEffect = null;
-        BlendMode = SKBlendMode.SrcOver;
+        Blender = null;
         MaskFilter = null;
         ResetLegacyTextState();
     }
@@ -238,69 +257,17 @@ public partial class SKPaint : SKObject
     protected override void Dispose(bool disposing)
     {
         Shader = null;
+        Blender = null;
         _legacyFont.Dispose();
         base.Dispose(disposing);
     }
 
-    public SKPath? GetFillPath(SKPath src) =>
-        GetFillPathResult(src);
+    public SKPath? GetFillPath(SKPath src) => GetFillPath(src, 1f);
 
-    public SKPath? GetFillPath(SKPath src, float resScale) =>
-        GetFillPathResult(src);
-
-    public SKPath? GetFillPath(SKPath src, SKMatrix matrix) =>
-        GetFillPathResult(src);
-
-    public SKPath? GetFillPath(SKPath src, SKRect cullRect) =>
-        GetFillPathResult(src);
-
-    public SKPath? GetFillPath(SKPath src, SKRect cullRect, float resScale) =>
-        GetFillPathResult(src);
-
-    public SKPath? GetFillPath(SKPath src, SKRect cullRect, SKMatrix matrix) =>
-        GetFillPathResult(src);
-
-    public bool GetFillPath(SKPath src, SKPath dst) =>
-        GetFillPathCore(src, dst);
-
-    public bool GetFillPath(SKPath src, SKPath dst, float resScale) =>
-        GetFillPathCore(src, dst);
-
-    public bool GetFillPath(SKPath src, SKPath dst, SKMatrix matrix) =>
-        GetFillPathCore(src, dst);
-
-    public bool GetFillPath(SKPath src, SKPath dst, SKRect cullRect) =>
-        GetFillPathCore(src, dst);
-
-    public bool GetFillPath(SKPath src, SKPath dst, SKRect cullRect, float resScale) =>
-        GetFillPathCore(src, dst);
-
-    public bool GetFillPath(SKPath src, SKPath dst, SKRect cullRect, SKMatrix matrix) =>
-        GetFillPathCore(src, dst);
-
-    public bool GetFillPath(SKPath src, SKPathBuilder dst) =>
-        GetFillPathBuilder(src, dst);
-
-    public bool GetFillPath(SKPath src, SKPathBuilder dst, float resScale) =>
-        GetFillPathBuilder(src, dst);
-
-    public bool GetFillPath(SKPath src, SKPathBuilder dst, SKMatrix matrix) =>
-        GetFillPathBuilder(src, dst);
-
-    public bool GetFillPath(SKPath src, SKPathBuilder dst, SKRect cullRect) =>
-        GetFillPathBuilder(src, dst);
-
-    public bool GetFillPath(SKPath src, SKPathBuilder dst, SKRect cullRect, float resScale) =>
-        GetFillPathBuilder(src, dst);
-
-    public bool GetFillPath(SKPath src, SKPathBuilder dst, SKRect cullRect, SKMatrix matrix) =>
-        GetFillPathBuilder(src, dst);
-
-    private SKPath? GetFillPathResult(SKPath src)
+    public SKPath? GetFillPath(SKPath src, float resScale)
     {
         ArgumentNullException.ThrowIfNull(src);
-        var result = new SKPath();
-        if (GetFillPathCore(src, result))
+        if (TryCreateFillPath(src, NormalizeResolutionScale(resScale), out var result))
         {
             return result;
         }
@@ -309,52 +276,124 @@ public partial class SKPaint : SKObject
         return null;
     }
 
-    private bool GetFillPathBuilder(SKPath src, SKPathBuilder dst)
+    public SKPath? GetFillPath(SKPath src, SKRect cullRect) =>
+        GetFillPath(src, cullRect, 1f);
+
+    public SKPath? GetFillPath(SKPath src, SKRect cullRect, float resScale) =>
+        GetFillPath(src, resScale);
+
+    public SKPath? GetFillPath(SKPath src, SKMatrix matrix) =>
+        GetFillPath(src, GetResolutionScale(matrix));
+
+    public SKPath? GetFillPath(SKPath src, SKRect cullRect, SKMatrix matrix) =>
+        GetFillPath(src, GetResolutionScale(matrix));
+
+    [Obsolete("Use the SKPathBuilder overload instead.")]
+    public bool GetFillPath(SKPath src, SKPath dst) => GetFillPath(src, dst, 1f);
+
+    [Obsolete("Use the SKPathBuilder overload instead.")]
+    public bool GetFillPath(SKPath src, SKPath dst, float resScale)
     {
         ArgumentNullException.ThrowIfNull(src);
         ArgumentNullException.ThrowIfNull(dst);
-        using var result = new SKPath();
-        if (!GetFillPathCore(src, result))
+        if (!TryCreateFillPath(src, NormalizeResolutionScale(resScale), out var result))
         {
+            result.Dispose();
             return false;
         }
 
-        dst.AddPath(result);
+        using (result)
+        {
+            dst.Reset();
+            dst.FillType = result.FillType;
+            dst.AddPath(result);
+        }
+
         return true;
     }
 
-    private bool GetFillPathCore(SKPath src, SKPath dst)
+    [Obsolete("Use the SKPathBuilder overload instead.")]
+    public bool GetFillPath(SKPath src, SKPath dst, SKRect cullRect) =>
+        GetFillPath(src, dst, 1f);
+
+    [Obsolete("Use the SKPathBuilder overload instead.")]
+    public bool GetFillPath(SKPath src, SKPath dst, SKRect cullRect, float resScale) =>
+        GetFillPath(src, dst, resScale);
+
+    [Obsolete("Use the SKPathBuilder overload instead.")]
+    public bool GetFillPath(SKPath src, SKPath dst, SKMatrix matrix) =>
+        GetFillPath(src, dst, GetResolutionScale(matrix));
+
+    [Obsolete("Use the SKPathBuilder overload instead.")]
+    public bool GetFillPath(SKPath src, SKPath dst, SKRect cullRect, SKMatrix matrix) =>
+        GetFillPath(src, dst, GetResolutionScale(matrix));
+
+    public bool GetFillPath(SKPath src, SKPathBuilder dst) => GetFillPath(src, dst, 1f);
+
+    public bool GetFillPath(SKPath src, SKPathBuilder dst, float resScale)
     {
         ArgumentNullException.ThrowIfNull(src);
         ArgumentNullException.ThrowIfNull(dst);
-        using var sourceCopy = ReferenceEquals(src, dst) ? new SKPath(src) : null;
-        src = sourceCopy ?? src;
-        dst.Reset();
+
+        // Skia's builder overload starts from a source snapshot. If a device-dependent
+        // hairline cannot be materialized, that snapshot is the observable fallback.
+        dst.ReplaceWith(new SKPath(src));
+        if (!TryCreateFillPath(src, NormalizeResolutionScale(resScale), out var result))
+        {
+            result.Dispose();
+            return false;
+        }
+
+        dst.ReplaceWith(result);
+        return true;
+    }
+
+    public bool GetFillPath(SKPath src, SKPathBuilder dst, SKRect cullRect) =>
+        GetFillPath(src, dst, 1f);
+
+    public bool GetFillPath(SKPath src, SKPathBuilder dst, SKRect cullRect, float resScale) =>
+        GetFillPath(src, dst, resScale);
+
+    public bool GetFillPath(SKPath src, SKPathBuilder dst, SKMatrix matrix) =>
+        GetFillPath(src, dst, GetResolutionScale(matrix));
+
+    public bool GetFillPath(SKPath src, SKPathBuilder dst, SKRect cullRect, SKMatrix matrix) =>
+        GetFillPath(src, dst, GetResolutionScale(matrix));
+
+    private bool TryCreateFillPath(SKPath source, float resScale, out SKPath destination)
+    {
+        destination = new SKPath();
         if (Style == SKPaintStyle.Fill)
         {
-            dst.AddPath(src);
+            destination.FillType = source.FillType;
+            destination.AddPath(source);
             return true;
         }
 
         if (Style == SKPaintStyle.StrokeAndFill)
         {
-            dst.AddPath(src);
+            destination.AddPath(source);
         }
 
-        if (!float.IsFinite(StrokeWidth) || StrokeWidth <= 0f)
+        if (StrokeWidth == 0f)
         {
-            return !dst.IsEmpty;
+            return Style == SKPaintStyle.StrokeAndFill;
+        }
+
+        if (!float.IsFinite(StrokeWidth))
+        {
+            return true;
         }
 
         var halfWidth = StrokeWidth / 2f;
-        foreach (var figure in src.Geometry.Figures)
+        foreach (var figure in source.Geometry.Figures)
         {
-            if (TryAddOvalStroke(dst, figure, halfWidth))
+            if (TryAddOvalStroke(destination, figure, halfWidth))
             {
                 continue;
             }
 
-            var points = FlattenFigure(figure);
+            var points = FlattenFigure(figure, resScale);
             RemoveConsecutiveDuplicatePoints(points);
             if (figure.IsClosed &&
                 points.Count > 1 &&
@@ -367,11 +406,11 @@ public partial class SKPaint : SKObject
             {
                 if (StrokeCap == SKStrokeCap.Round)
                 {
-                    dst.AddCircle(figure.StartPoint.X, figure.StartPoint.Y, halfWidth);
+                    destination.AddCircle(figure.StartPoint.X, figure.StartPoint.Y, halfWidth);
                 }
                 else if (StrokeCap == SKStrokeCap.Square)
                 {
-                    dst.AddRect(new SKRect(
+                    destination.AddRect(new SKRect(
                         figure.StartPoint.X - halfWidth,
                         figure.StartPoint.Y - halfWidth,
                         figure.StartPoint.X + halfWidth,
@@ -383,29 +422,35 @@ public partial class SKPaint : SKObject
 
             if (PathEffect is { Intervals.Length: > 0 } pathEffect)
             {
-                AddDashedStrokeSegments(dst, points, figure.IsClosed, halfWidth, pathEffect);
+                AddDashedStrokeSegments(destination, points, figure.IsClosed, halfWidth, pathEffect);
                 continue;
             }
 
             for (var i = 1; i < points.Count; i++)
             {
-                AddStrokeSegment(dst, points[i - 1], points[i], halfWidth);
+                AddStrokeSegment(destination, points[i - 1], points[i], halfWidth);
             }
 
             if (figure.IsClosed && points.Count > 1)
             {
-                AddStrokeSegment(dst, points[^1], points[0], halfWidth);
+                AddStrokeSegment(destination, points[^1], points[0], halfWidth);
             }
 
-            AddStrokeJoins(dst, points, figure.IsClosed, halfWidth * 2f);
+            AddStrokeJoins(destination, points, figure.IsClosed, halfWidth * 2f);
             if (!figure.IsClosed)
             {
-                AddStrokeCaps(dst, points, halfWidth * 2f);
+                AddStrokeCaps(destination, points, halfWidth * 2f);
             }
         }
 
-        return !dst.IsEmpty;
+        return true;
     }
+
+    private static float NormalizeResolutionScale(float resScale) =>
+        float.IsFinite(resScale) && resScale > 1f ? resScale : 1f;
+
+    private static float GetResolutionScale(SKMatrix matrix) =>
+        NormalizeResolutionScale(TransformMetrics.GetStrokeScale(matrix.ToMatrix4x4()));
 
     internal static void NormalizeStrokeWinding(SKPath source, SKPath stroke)
     {
@@ -820,9 +865,15 @@ public partial class SKPaint : SKObject
         }
     }
 
-    private static List<Vector2> FlattenFigure(PathFigure figure)
+    private static List<Vector2> FlattenFigure(PathFigure figure, float resScale = 1f)
     {
-        const int curveSegments = 24;
+        // Skia increases stroker precision with the device resolution. The square-root
+        // schedule preserves sub-pixel quality without making large transforms linear
+        // in scale; the cap keeps adversarial matrices bounded.
+        var curveSegments = Math.Clamp(
+            (int)MathF.Ceiling(24f * MathF.Sqrt(NormalizeResolutionScale(resScale))),
+            24,
+            192);
         var result = new List<Vector2> { figure.StartPoint };
         var current = figure.StartPoint;
         foreach (var segment in figure.Segments)
@@ -1048,22 +1099,6 @@ public class SKShader : IDisposable
     internal ComposedShaderData? Composed => _composed;
     internal SKColorFilter? ColorFilter => _colorFilter;
     internal PerlinNoiseShaderData? PerlinNoise => _perlinNoise;
-
-    internal static SKShader CreatePicture(
-        GpuPicture picture,
-        SKShaderTileMode tileModeX,
-        SKShaderTileMode tileModeY,
-        SKMatrix localMatrix,
-        SKRect tileRect)
-    {
-        return CreatePicture(
-            picture,
-            tileModeX,
-            tileModeY,
-            SKFilterMode.Nearest,
-            localMatrix,
-            tileRect);
-    }
 
     internal static SKShader CreatePicture(
         GpuPicture picture,
@@ -2098,11 +2133,12 @@ public class SKColorFilter : IDisposable
     }
 }
 
-public class SKImageFilter : IDisposable
+public partial class SKImageFilter : SKObject
 {
     internal enum FilterKind
     {
         Blur,
+        Compose,
         DropShadow,
         Arithmetic,
         BlendMode,
@@ -2113,6 +2149,8 @@ public class SKImageFilter : IDisposable
         DistantLitSpecular,
         Erode,
         Image,
+        Magnifier,
+        MatrixTransform,
         MatrixConvolution,
         Merge,
         Offset,
@@ -2126,6 +2164,7 @@ public class SKImageFilter : IDisposable
     }
 
     private SKImageFilter(FilterKind kind, object? parameters, SKImageFilter? input, SKRect? cropRect)
+        : base(SKObjectHandle.Create(), owns: true)
     {
         Kind = kind;
         Parameters = parameters;
@@ -2133,7 +2172,6 @@ public class SKImageFilter : IDisposable
         CropRect = cropRect;
     }
 
-    public IntPtr Handle { get; } = SKObjectHandle.Create();
     internal FilterKind Kind { get; }
     internal object? Parameters { get; }
     internal SKImageFilter? Input { get; }
@@ -2158,7 +2196,7 @@ public class SKImageFilter : IDisposable
     public SKColor ShadowColor => Parameters is DropShadowData shadow ? shadow.Color : SKColor.Empty;
 
     public static SKImageFilter CreateBlur(float sigmaX, float sigmaY, SKImageFilter? input = null) =>
-        new(FilterKind.Blur, new BlurData(sigmaX, sigmaY, SKShaderTileMode.Clamp), input, null);
+        new(FilterKind.Blur, new BlurData(sigmaX, sigmaY, SKShaderTileMode.Decal), input, null);
 
     public static SKImageFilter CreateBlur(
         float sigmaX,
@@ -2228,23 +2266,23 @@ public class SKImageFilter : IDisposable
         float k3,
         float k4,
         bool enforcePremultipliedColor,
-        SKImageFilter background,
+        SKImageFilter? background,
         SKImageFilter? foreground = null,
         SKRect? cropRect = null) =>
         new(FilterKind.Arithmetic, new ArithmeticData(k1, k2, k3, k4, enforcePremultipliedColor, background, foreground), null, cropRect);
 
     public static SKImageFilter CreateBlendMode(
         SKBlendMode mode,
-        SKImageFilter background,
+        SKImageFilter? background,
         SKImageFilter? foreground = null,
         SKRect? cropRect = null) =>
-        new(FilterKind.BlendMode, new BlendModeData(mode, background, foreground), null, cropRect);
+        new(FilterKind.BlendMode, new BlendModeData(mode, null, background, foreground), null, cropRect);
 
     public static SKImageFilter CreateColorFilter(
-        SKColorFilter colorFilter,
+        SKColorFilter cf,
         SKImageFilter? input = null,
         SKRect? cropRect = null) =>
-        new(FilterKind.ColorFilter, colorFilter ?? throw new ArgumentNullException(nameof(colorFilter)), input, cropRect);
+        new(FilterKind.ColorFilter, cf ?? throw new ArgumentNullException(nameof(cf)), input, cropRect);
 
     public static SKImageFilter CreateDilate(
         float radiusX,
@@ -2260,7 +2298,15 @@ public class SKImageFilter : IDisposable
         SKImageFilter displacement,
         SKImageFilter? input = null,
         SKRect? cropRect = null) =>
-        new(FilterKind.DisplacementMap, new DisplacementData(xChannelSelector, yChannelSelector, scale, displacement), input, cropRect);
+        new(
+            FilterKind.DisplacementMap,
+            new DisplacementData(
+                xChannelSelector,
+                yChannelSelector,
+                scale,
+                displacement ?? throw new ArgumentNullException(nameof(displacement))),
+            input,
+            cropRect);
 
     public static SKImageFilter CreateDistantLitDiffuse(
         SKPoint3 direction,
@@ -2292,30 +2338,15 @@ public class SKImageFilter : IDisposable
         SKImage image,
         SKRect source,
         SKRect destination,
-        SKSamplingOptions sampling) =>
-        new(FilterKind.Image, new ImageData(image, source, destination, sampling), null, null);
-
-    public static SKImageFilter CreateMatrixConvolution(
-        SKSizeI kernelSize,
-        float[] kernel,
-        float gain,
-        float bias,
-        SKPointI kernelOffset,
-        SKShaderTileMode tileMode,
-        bool convolveAlpha,
-        SKImageFilter? input = null,
-        SKRect? cropRect = null) =>
-        new(FilterKind.MatrixConvolution, new MatrixConvolutionData(
-            kernelSize,
-            (float[])(kernel ?? throw new ArgumentNullException(nameof(kernel))).Clone(),
-            gain,
-            bias,
-            kernelOffset,
-            tileMode,
-            convolveAlpha), input, cropRect);
-
-    public static SKImageFilter CreateMerge(SKImageFilter[] filters, SKRect? cropRect = null) =>
-        new(FilterKind.Merge, (SKImageFilter[])(filters ?? throw new ArgumentNullException(nameof(filters))).Clone(), null, cropRect);
+        SKSamplingOptions sampling)
+    {
+        ArgumentNullException.ThrowIfNull(image);
+        return new SKImageFilter(
+            FilterKind.Image,
+            new ImageData(image, source, destination, sampling),
+            null,
+            null);
+    }
 
     public static SKImageFilter CreateOffset(
         float dx,
@@ -2324,8 +2355,8 @@ public class SKImageFilter : IDisposable
         SKRect? cropRect = null) =>
         new(FilterKind.Offset, new OffsetData(dx, dy), input, cropRect);
 
-    public static SKImageFilter CreateShader(SKShader shader, bool dither, SKRect? cropRect = null) =>
-        new(FilterKind.Shader, new ShaderData(shader ?? throw new ArgumentNullException(nameof(shader)), dither), null, cropRect);
+    public static SKImageFilter CreateShader(SKShader? shader, bool dither, SKRect? cropRect = null) =>
+        new(FilterKind.Shader, new ShaderData(shader, dither), null, cropRect);
 
     public static SKImageFilter CreatePicture(SKPicture picture, SKRect targetRect) =>
         new(FilterKind.Picture, new PictureData(picture ?? throw new ArgumentNullException(nameof(picture)), targetRect), null, null);
@@ -2375,21 +2406,78 @@ public class SKImageFilter : IDisposable
         new(FilterKind.SpotLitSpecular, new SpotLightData(location, target, specularExponent, cutoffAngle, lightColor, surfaceScale, ks, shininess), input, cropRect);
 
     public static SKImageFilter CreateTile(SKRect source, SKRect destination, SKImageFilter? input = null) =>
-        new(FilterKind.Tile, new TileData(source, destination), input, null);
+        new(
+            FilterKind.Tile,
+            new TileData(source, destination),
+            input ?? throw new ArgumentNullException(nameof(input)),
+            null);
 
-    public void Dispose() { }
+    private static SKImageFilter CreateMatrixConvolutionCore(
+        SKSizeI kernelSize,
+        ReadOnlySpan<float> kernel,
+        float gain,
+        float bias,
+        SKPointI kernelOffset,
+        SKShaderTileMode tileMode,
+        bool convolveAlpha,
+        SKImageFilter? input,
+        SKRect? cropRect)
+    {
+        var requiredLength = checked(kernelSize.Width * kernelSize.Height);
+        if (kernel.Length != requiredLength)
+        {
+            throw new ArgumentException(
+                "Kernel length must match the dimensions of the kernel size (Width * Height).",
+                nameof(kernel));
+        }
+
+        return new SKImageFilter(
+            FilterKind.MatrixConvolution,
+            new MatrixConvolutionData(
+                kernelSize,
+                kernel.ToArray(),
+                gain,
+                bias,
+                kernelOffset,
+                tileMode,
+                convolveAlpha),
+            input,
+            cropRect);
+    }
+
+    private static SKImageFilter CreateMergeCore(
+        ReadOnlySpan<SKImageFilter> filters,
+        SKRect? cropRect)
+    {
+        var copy = new SKImageFilter?[filters.Length];
+        for (var index = 0; index < filters.Length; index++)
+        {
+            copy[index] = filters[index];
+        }
+
+        return new SKImageFilter(FilterKind.Merge, copy, null, cropRect);
+    }
+
+    private static SKImageFilter CreateMergeCore(
+        SKImageFilter? first,
+        SKImageFilter? second,
+        SKRect? cropRect) =>
+        new(FilterKind.Merge, new SKImageFilter?[] { first, second }, null, cropRect);
 
     internal sealed record BlurData(float SigmaX, float SigmaY, SKShaderTileMode TileMode);
+    internal sealed record ComposeData(SKImageFilter Outer, SKImageFilter Inner);
     internal sealed record DropShadowData(float Dx, float Dy, float SigmaX, float SigmaY, SKColor Color, bool ShadowOnly);
-    internal sealed record ArithmeticData(float K1, float K2, float K3, float K4, bool EnforcePremultipliedColor, SKImageFilter Background, SKImageFilter? Foreground);
-    internal sealed record BlendModeData(SKBlendMode Mode, SKImageFilter Background, SKImageFilter? Foreground);
+    internal sealed record ArithmeticData(float K1, float K2, float K3, float K4, bool EnforcePremultipliedColor, SKImageFilter? Background, SKImageFilter? Foreground);
+    internal sealed record BlendModeData(SKBlendMode? Mode, SKBlender? Blender, SKImageFilter? Background, SKImageFilter? Foreground);
     internal sealed record MorphologyData(float RadiusX, float RadiusY);
     internal sealed record DisplacementData(SKColorChannel XChannel, SKColorChannel YChannel, float Scale, SKImageFilter Displacement);
     internal sealed record DistantLightData(SKPoint3 Direction, SKColor Color, float SurfaceScale, float Constant, float Shininess);
     internal sealed record ImageData(SKImage Image, SKRect Source, SKRect Destination, SKSamplingOptions Sampling);
+    internal sealed record MagnifierData(SKRect LensBounds, float ZoomAmount, float Inset, SKSamplingOptions Sampling);
+    internal sealed record MatrixTransformData(SKMatrix Matrix, SKSamplingOptions Sampling);
     internal sealed record MatrixConvolutionData(SKSizeI KernelSize, float[] Kernel, float Gain, float Bias, SKPointI KernelOffset, SKShaderTileMode TileMode, bool ConvolveAlpha);
     internal sealed record OffsetData(float Dx, float Dy);
-    internal sealed record ShaderData(SKShader Shader, bool Dither);
+    internal sealed record ShaderData(SKShader? Shader, bool Dither);
     internal sealed record PictureData(SKPicture Picture, SKRect TargetRect);
     internal sealed record PointLightData(SKPoint3 Location, SKColor Color, float SurfaceScale, float Constant, float Shininess);
     internal sealed record SpotLightData(SKPoint3 Location, SKPoint3 Target, float SpecularExponent, float CutoffAngle, SKColor Color, float SurfaceScale, float Constant, float Shininess);

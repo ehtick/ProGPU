@@ -27,6 +27,7 @@ public class SKCanvas : IDisposable
     }
 
     private readonly record struct ImageFilterCacheKey(
+        GpuTexture Source,
         SKImageFilter Filter,
         bool PreserveSourceColorSpace);
 
@@ -37,8 +38,11 @@ public class SKCanvas : IDisposable
     private readonly Action? _flush;
     private readonly SKBitmap? _bitmap;
     private readonly bool _isPictureRecording;
+    private SKSurface? _surface;
+    private GRRecordingContext? _recordingContext;
     private SKMatrix _currentMatrix = SKMatrix.Identity;
     private float _currentOpacity = 1f;
+    private ClipState _clipState;
     private readonly List<GpuTexture> _ownedLayerTextures = new();
     private List<SKRect>? _cpuReadbackRegions;
     public enum PushKind
@@ -48,7 +52,17 @@ public class SKCanvas : IDisposable
         Opacity
     }
 
-    private readonly Stack<(SKMatrix Matrix, float Opacity, int PushedScopesCount)> _stateStack = new();
+    private readonly record struct ClipState(SKRectI DeviceBounds, bool IsRect)
+    {
+        public bool IsEmpty => DeviceBounds.Right <= DeviceBounds.Left ||
+            DeviceBounds.Bottom <= DeviceBounds.Top;
+    }
+
+    private readonly Stack<(
+        SKMatrix Matrix,
+        float Opacity,
+        int PushedScopesCount,
+        ClipState ClipState)> _stateStack = new();
     private readonly Stack<PushKind> _pushedScopes = new();
     private readonly Stack<RenderCommand> _activeClipPushes = new();
     private readonly Stack<LayerFrame> _layerStack = new();
@@ -59,6 +73,9 @@ public class SKCanvas : IDisposable
             DrawingContext parentContext,
             DrawingContext layerContext,
             SKPaint? paint,
+            SKImageFilter? backdrop,
+            SKCanvasSaveLayerRecFlags flags,
+            DrawingContext? previousContext,
             int stateDepth,
             SKRect bounds,
             SKMatrix boundsMatrix,
@@ -67,6 +84,9 @@ public class SKCanvas : IDisposable
             ParentContext = parentContext;
             LayerContext = layerContext;
             Paint = paint;
+            Backdrop = backdrop;
+            Flags = flags;
+            PreviousContext = previousContext;
             StateDepth = stateDepth;
             Bounds = bounds;
             BoundsMatrix = boundsMatrix;
@@ -76,6 +96,9 @@ public class SKCanvas : IDisposable
         public DrawingContext ParentContext { get; }
         public DrawingContext LayerContext { get; }
         public SKPaint? Paint { get; }
+        public SKImageFilter? Backdrop { get; }
+        public SKCanvasSaveLayerRecFlags Flags { get; }
+        public DrawingContext? PreviousContext { get; }
         public int StateDepth { get; }
         public SKRect Bounds { get; }
         public SKMatrix BoundsMatrix { get; }
@@ -87,6 +110,18 @@ public class SKCanvas : IDisposable
     public int SaveCount => _stateStack.Count + 1;
 
     public SKMatrix44 TotalMatrix44 => SKMatrix44.FromMatrix4x4(_currentMatrix.ToMatrix4x4());
+
+    public SKRect LocalClipBounds => GetLocalClipBounds(out var bounds) ? bounds : SKRect.Empty;
+
+    public SKRectI DeviceClipBounds => GetDeviceClipBounds(out var bounds) ? bounds : SKRectI.Empty;
+
+    public bool IsClipEmpty => _clipState.IsEmpty;
+
+    public bool IsClipRect => !_clipState.IsEmpty && _clipState.IsRect;
+
+    public SKSurface? Surface => _surface;
+
+    public GRRecordingContext? Context => _recordingContext;
 
     public SKCanvas(
         DrawingContext context,
@@ -127,6 +162,10 @@ public class SKCanvas : IDisposable
         _gpuContext = gpuContext;
         _flush = flush;
         _isPictureRecording = isPictureRecording;
+        _recordingContext = gpuContext == null ? null : new GRContext(gpuContext);
+        _clipState = new ClipState(
+            new SKRectI(0, 0, ToCanvasExtent(width), ToCanvasExtent(height)),
+            IsRect: true);
     }
 
     public SKCanvas(SKBitmap bitmap)
@@ -137,49 +176,154 @@ public class SKCanvas : IDisposable
             SKContextHelper.GetContext())
     {
         _bitmap = bitmap;
+        _recordingContext = null;
         bitmap.AttachCanvas(this);
     }
 
-    internal DrawingContext Context => _context;
+    internal DrawingContext DrawingContext => _context;
+
+    internal void AttachSurface(SKSurface surface)
+    {
+        ArgumentNullException.ThrowIfNull(surface);
+        _surface = surface;
+    }
+
+    internal void AttachRecordingContext(GRRecordingContext? recordingContext)
+    {
+        _recordingContext = recordingContext;
+    }
+
+    internal void DetachSurface(SKSurface surface)
+    {
+        if (ReferenceEquals(_surface, surface))
+        {
+            _surface = null;
+        }
+    }
+
+    internal DrawingContext? CurrentLayerPreviousContext =>
+        _layerStack.TryPeek(out var layer) ? layer.PreviousContext : null;
+
+    internal SKPaint? CurrentLayerPaint =>
+        _layerStack.TryPeek(out var layer) ? layer.Paint : null;
+
+    internal SKImageFilter? CurrentLayerBackdrop =>
+        _layerStack.TryPeek(out var layer) ? layer.Backdrop : null;
+
+    internal SKCanvasSaveLayerRecFlags CurrentLayerFlags =>
+        _layerStack.TryPeek(out var layer) ? layer.Flags : SKCanvasSaveLayerRecFlags.None;
+
+    internal SKRect? CurrentLayerBounds =>
+        _layerStack.TryPeek(out var layer) ? layer.Bounds : null;
 
     public void Clear()
     {
-        Clear(SKColors.Transparent);
+        Clear(SKColors.Empty);
     }
 
-    public void Clear(SKColor color)
+    public void Clear(SKColor color) =>
+        DrawDeviceColor(new Vector4(color.R / 255f, color.G / 255f, color.B / 255f, color.A / 255f), SKBlendMode.Src);
+
+    public void Clear(SKColorF color)
     {
-        var c = new Vector4(color.R / 255f, color.G / 255f, color.B / 255f, color.A / 255f);
-        var brush = new SolidColorBrush(c);
-        _context.PushBlendMode(GpuBlendMode.Src);
-        _context.Commands.Add(new RenderCommand
+        var clamped = color.Clamp();
+        DrawDeviceColor(new Vector4(clamped.Red, clamped.Green, clamped.Blue, clamped.Alpha), SKBlendMode.Src);
+    }
+
+    public void DrawColor(SKColor color, SKBlendMode mode = SKBlendMode.Src) =>
+        DrawDeviceColor(new Vector4(color.R / 255f, color.G / 255f, color.B / 255f, color.A / 255f), mode);
+
+    public void DrawColor(SKColorF color, SKBlendMode mode = SKBlendMode.Src)
+    {
+        var clamped = color.Clamp();
+        DrawDeviceColor(new Vector4(clamped.Red, clamped.Green, clamped.Blue, clamped.Alpha), mode);
+    }
+
+    private void DrawDeviceColor(Vector4 color, SKBlendMode mode)
+    {
+        var blendMode = MapBlendMode(mode);
+        var pushedBlendMode = blendMode != GpuBlendMode.SrcOver;
+        if (pushedBlendMode)
         {
-            Type = RenderCommandType.DrawRect,
-            Rect = new Rect(0, 0, _width, _height),
-            Brush = brush,
-            Transform = Matrix4x4.Identity // Clear is always in identity screen space
-        });
-        _context.PopBlendMode();
+            _context.PushBlendMode(blendMode);
+        }
+
+        try
+        {
+            _context.Commands.Add(new RenderCommand
+            {
+                Type = RenderCommandType.DrawRect,
+                Rect = new Rect(0f, 0f, _width, _height),
+                Brush = new SolidColorBrush(color),
+                Transform = Matrix4x4.Identity,
+            });
+        }
+        finally
+        {
+            if (pushedBlendMode)
+            {
+                _context.PopBlendMode();
+            }
+        }
+    }
+
+    public void Discard()
+    {
+        // Retained canvases have no immediate attachment contents to invalidate.
     }
 
     public int Save()
     {
         var restoreCount = SaveCount;
-        _stateStack.Push((_currentMatrix, _currentOpacity, _pushedScopes.Count));
+        _stateStack.Push((_currentMatrix, _currentOpacity, _pushedScopes.Count, _clipState));
         return restoreCount;
     }
 
     public int SaveLayer(SKRect bounds, SKPaint? paint)
+    {
+        return SaveLayerCore(
+            bounds,
+            paint,
+            backdrop: null,
+            SKCanvasSaveLayerRecFlags.None);
+    }
+
+    public int SaveLayer(in SKCanvasSaveLayerRec rec)
+    {
+        return SaveLayerCore(
+            rec.Bounds ?? new SKRect(0, 0, _width, _height),
+            rec.Paint,
+            rec.Backdrop,
+            rec.Flags);
+    }
+
+    private int SaveLayerCore(
+        SKRect bounds,
+        SKPaint? paint,
+        SKImageFilter? backdrop,
+        SKCanvasSaveLayerRecFlags flags)
     {
         var restoreCount = SaveCount;
         Save();
 
         var parentContext = _context;
         var layerContext = new DrawingContext();
+        DrawingContext? previousContext = null;
+        if (IsValidLayerBounds(bounds) &&
+            (backdrop != null ||
+             (flags & SKCanvasSaveLayerRecFlags.InitializeWithPrevious) != 0))
+        {
+            previousContext = new DrawingContext();
+            previousContext.Append(parentContext);
+        }
+
         _layerStack.Push(new LayerFrame(
             parentContext,
             layerContext,
             paint?.Clone(),
+            backdrop,
+            flags,
+            previousContext,
             _stateStack.Count,
             bounds,
             _currentMatrix,
@@ -207,6 +351,7 @@ public class SKCanvas : IDisposable
             var state = _stateStack.Pop();
             _currentMatrix = state.Matrix;
             _currentOpacity = state.Opacity;
+            _clipState = state.ClipState;
 
             // Pop any clips or layers pushed in this save frame
             while (_pushedScopes.Count > state.PushedScopesCount)
@@ -246,13 +391,27 @@ public class SKCanvas : IDisposable
 
     private void RestoreLayer(LayerFrame layerFrame)
     {
+        try
+        {
+            RestoreLayerCore(layerFrame);
+        }
+        finally
+        {
+            layerFrame.LayerContext.Clear();
+            layerFrame.PreviousContext?.Clear();
+            layerFrame.Paint?.Dispose();
+        }
+    }
+
+    private void RestoreLayerCore(LayerFrame layerFrame)
+    {
         _context = layerFrame.ParentContext;
         var hasSourceGeneratingFilter = layerFrame.Paint?.ImageFilter != null ||
-            layerFrame.Paint?.ColorFilter != null;
+            layerFrame.Paint?.ColorFilter != null ||
+            layerFrame.PreviousContext != null;
         if ((!hasSourceGeneratingFilter && layerFrame.LayerContext.Commands.Count == 0) ||
             !IsValidLayerBounds(layerFrame.Bounds))
         {
-            layerFrame.LayerContext.Clear();
             return;
         }
 
@@ -412,9 +571,15 @@ public class SKCanvas : IDisposable
     private static bool HasLinearImageFilterSource(SKImageFilter filter)
     {
         var visited = new HashSet<SKImageFilter>();
-        SKImageFilter? current = filter;
-        while (current != null && visited.Add(current))
+        var pending = new Stack<SKImageFilter>();
+        pending.Push(filter);
+        while (pending.TryPop(out var current))
         {
+            if (!visited.Add(current))
+            {
+                continue;
+            }
+
             if (current.Kind == SKImageFilter.FilterKind.Image &&
                 current.Parameters is SKImageFilter.ImageData imageData)
             {
@@ -428,10 +593,46 @@ public class SKCanvas : IDisposable
                 return pictureColorSpace.IsLinear;
             }
 
-            current = current.Input;
+            if (current.Input != null)
+            {
+                pending.Push(current.Input);
+            }
+
+            switch (current.Parameters)
+            {
+                case SKImageFilter.ComposeData compose:
+                    pending.Push(compose.Outer);
+                    pending.Push(compose.Inner);
+                    break;
+                case SKImageFilter.ArithmeticData arithmetic:
+                    PushOptional(pending, arithmetic.Background);
+                    PushOptional(pending, arithmetic.Foreground);
+                    break;
+                case SKImageFilter.BlendModeData blend:
+                    PushOptional(pending, blend.Background);
+                    PushOptional(pending, blend.Foreground);
+                    break;
+                case SKImageFilter.DisplacementData displacement:
+                    pending.Push(displacement.Displacement);
+                    break;
+                case SKImageFilter[] merge:
+                    foreach (var input in merge)
+                    {
+                        PushOptional(pending, input);
+                    }
+                    break;
+            }
         }
 
         return false;
+
+        static void PushOptional(Stack<SKImageFilter> pending, SKImageFilter? filter)
+        {
+            if (filter != null)
+            {
+                pending.Push(filter);
+            }
+        }
     }
 
     private static bool TryGetPictureImageColorSpace(
@@ -541,7 +742,7 @@ public class SKCanvas : IDisposable
         Matrix4x4 filterTransform,
         bool preserveSourceColorSpace = false)
     {
-        var cacheKey = new ImageFilterCacheKey(filter, preserveSourceColorSpace);
+        var cacheKey = new ImageFilterCacheKey(sourceTexture, filter, preserveSourceColorSpace);
         if (cache.TryGetValue(cacheKey, out var cached))
         {
             return cached;
@@ -558,6 +759,23 @@ public class SKCanvas : IDisposable
                     input,
                     blur.SigmaX * GetAxisScale(filterTransform, Vector2.UnitX),
                     blur.SigmaY * GetAxisScale(filterTransform, Vector2.UnitY));
+                break;
+            }
+            case SKImageFilter.FilterKind.Compose:
+            {
+                var compose = (SKImageFilter.ComposeData)filter.Parameters!;
+                var inner = EvaluateImageFilter(
+                    sourceTexture,
+                    compose.Inner,
+                    cache,
+                    filterTransform,
+                    preserveSourceColorSpace);
+                result = EvaluateImageFilter(
+                    inner,
+                    compose.Outer,
+                    cache,
+                    filterTransform,
+                    preserveSourceColorSpace);
                 break;
             }
             case SKImageFilter.FilterKind.DropShadow:
@@ -605,13 +823,18 @@ public class SKCanvas : IDisposable
             }
             case SKImageFilter.FilterKind.Merge:
             {
-                var filters = (SKImageFilter[])filter.Parameters!;
+                var filters = (SKImageFilter?[])filter.Parameters!;
                 var inputs = new GpuTexture[filters.Length];
                 var width = sourceTexture.Width;
                 var height = sourceTexture.Height;
                 for (var i = 0; i < filters.Length; i++)
                 {
-                    inputs[i] = EvaluateImageFilter(sourceTexture, filters[i], cache, filterTransform, preserveSourceColorSpace);
+                    inputs[i] = EvaluateOptionalInput(
+                        sourceTexture,
+                        filters[i],
+                        cache,
+                        filterTransform,
+                        preserveSourceColorSpace);
                     width = Math.Max(width, inputs[i].Width);
                     height = Math.Max(height, inputs[i].Height);
                 }
@@ -633,7 +856,12 @@ public class SKCanvas : IDisposable
             case SKImageFilter.FilterKind.Arithmetic:
             {
                 var arithmetic = (SKImageFilter.ArithmeticData)filter.Parameters!;
-                var background = EvaluateImageFilter(sourceTexture, arithmetic.Background, cache, filterTransform, preserveSourceColorSpace);
+                var background = EvaluateOptionalInput(
+                    sourceTexture,
+                    arithmetic.Background,
+                    cache,
+                    filterTransform,
+                    preserveSourceColorSpace);
                 var foreground = EvaluateOptionalInput(sourceTexture, arithmetic.Foreground, cache, filterTransform, preserveSourceColorSpace);
                 result = RenderArithmeticComposite(background, foreground, arithmetic);
                 break;
@@ -667,6 +895,26 @@ public class SKCanvas : IDisposable
                     filterTransform);
                 break;
             }
+            case SKImageFilter.FilterKind.MatrixTransform:
+            {
+                var input = EvaluateOptionalInput(sourceTexture, filter.Input, cache, filterTransform, preserveSourceColorSpace);
+                result = RenderMatrixTransform(
+                    input,
+                    (SKImageFilter.MatrixTransformData)filter.Parameters!,
+                    filterTransform);
+                break;
+            }
+            case SKImageFilter.FilterKind.Magnifier:
+            {
+                var input = EvaluateOptionalInput(sourceTexture, filter.Input, cache, filterTransform, preserveSourceColorSpace);
+                input = ApplyFilterCrop(input, filter.CropRect, filterTransform);
+                result = RenderMagnifier(
+                    input,
+                    (SKImageFilter.MagnifierData)filter.Parameters!,
+                    filterTransform,
+                    filter.CropRect);
+                break;
+            }
             case SKImageFilter.FilterKind.DistantLitDiffuse:
             case SKImageFilter.FilterKind.DistantLitSpecular:
             case SKImageFilter.FilterKind.PointLitDiffuse:
@@ -681,9 +929,42 @@ public class SKCanvas : IDisposable
             case SKImageFilter.FilterKind.BlendMode:
             {
                 var blend = (SKImageFilter.BlendModeData)filter.Parameters!;
-                var background = EvaluateImageFilter(sourceTexture, blend.Background, cache, filterTransform, preserveSourceColorSpace);
+                var background = EvaluateOptionalInput(
+                    sourceTexture,
+                    blend.Background,
+                    cache,
+                    filterTransform,
+                    preserveSourceColorSpace);
                 var foreground = EvaluateOptionalInput(sourceTexture, blend.Foreground, cache, filterTransform, preserveSourceColorSpace);
-                result = RenderImageBlend(background, foreground, blend.Mode);
+                if (blend.Blender?.Arithmetic is { } arithmetic)
+                {
+                    result = RenderArithmeticComposite(
+                        background,
+                        foreground,
+                        new SKImageFilter.ArithmeticData(
+                            arithmetic.K1,
+                            arithmetic.K2,
+                            arithmetic.K3,
+                            arithmetic.K4,
+                            arithmetic.EnforcePremul,
+                            null,
+                            null));
+                }
+                else
+                {
+                    var mode = blend.Mode;
+                    if (!mode.HasValue &&
+                        blend.Blender?.TryGetBlendMode(out var blenderMode) == true)
+                    {
+                        mode = blenderMode;
+                    }
+
+                    result = RenderImageBlend(
+                        background,
+                        foreground,
+                        mode ?? throw new NotSupportedException(
+                            "The SKBlender image filter is not supported."));
+                }
                 break;
             }
             case SKImageFilter.FilterKind.Image:
@@ -755,7 +1036,10 @@ public class SKCanvas : IDisposable
                 break;
         }
 
-        result = ApplyFilterCrop(result, filter.CropRect, filterTransform);
+        if (filter.Kind != SKImageFilter.FilterKind.Magnifier)
+        {
+            result = ApplyFilterCrop(result, filter.CropRect, filterTransform);
+        }
         cache[cacheKey] = result;
         return result;
     }
@@ -1017,6 +1301,205 @@ public class SKCanvas : IDisposable
         return destination;
     }
 
+    private GpuTexture RenderMatrixTransform(
+        GpuTexture input,
+        SKImageFilter.MatrixTransformData matrixTransform,
+        Matrix4x4 filterTransform)
+    {
+        if (matrixTransform.Matrix.IsIdentity)
+        {
+            return input;
+        }
+
+        if (!TryCreateImageFilterDeviceTransform(
+                matrixTransform.Matrix,
+                filterTransform,
+                out var deviceTransform))
+        {
+            return RenderFilterPass(
+                "SKImageFilter Matrix Transform Empty",
+                input.Width,
+                input.Height,
+                static _ => { });
+        }
+
+        return RenderFilterPass(
+            "SKImageFilter Matrix Transform",
+            input.Width,
+            input.Height,
+            context => context.DrawTexture(
+                input,
+                new Rect(0f, 0f, input.Width, input.Height),
+                new Rect(0f, 0f, input.Width, input.Height),
+                deviceTransform,
+                MapSampling(matrixTransform.Sampling),
+                MapCubicSampling(matrixTransform.Sampling)));
+    }
+
+    internal static bool TryCreateImageFilterDeviceTransform(
+        SKMatrix matrix,
+        Matrix4x4 filterTransform,
+        out Matrix4x4 deviceTransform)
+    {
+        var layerTransform = filterTransform == default
+            ? Matrix4x4.Identity
+            : filterTransform;
+        if (!Matrix4x4.Invert(layerTransform, out var inverseLayerTransform))
+        {
+            deviceTransform = default;
+            return false;
+        }
+
+        deviceTransform = inverseLayerTransform *
+            matrix.ToMatrix4x4() *
+            layerTransform;
+        return IsFinite(deviceTransform);
+    }
+
+    private GpuTexture RenderMagnifier(
+        GpuTexture input,
+        SKImageFilter.MagnifierData magnifier,
+        Matrix4x4 filterTransform,
+        SKRect? inputCropRect)
+    {
+        if (magnifier.ZoomAmount <= 1f)
+        {
+            return input;
+        }
+
+        var layerTransform = filterTransform == default
+            ? Matrix4x4.Identity
+            : filterTransform;
+        var lensBounds = MapRectToBounds(magnifier.LensBounds, layerTransform);
+        if (!IsValidLayerBounds(lensBounds))
+        {
+            return RenderFilterPass(
+                "SKImageFilter Magnifier Empty",
+                input.Width,
+                input.Height,
+                static _ => { });
+        }
+
+        var textureBounds = new SKRect(0f, 0f, input.Width, input.Height);
+        var visibleLensBounds = Intersect(lensBounds, textureBounds);
+        var availableInputBounds = inputCropRect is { } cropRect && IsValidLayerBounds(cropRect)
+            ? Intersect(MapRectToBounds(cropRect, layerTransform), textureBounds)
+            : textureBounds;
+        var outputBounds = Intersect(visibleLensBounds, availableInputBounds);
+        if (!IsValidLayerBounds(visibleLensBounds) ||
+            !IsValidLayerBounds(availableInputBounds) ||
+            !IsValidLayerBounds(outputBounds))
+        {
+            return RenderFilterPass(
+                "SKImageFilter Magnifier Empty",
+                input.Width,
+                input.Height,
+                static _ => { });
+        }
+
+        var zoomTransform = CreateMagnifierZoomTransform(
+            lensBounds,
+            visibleLensBounds,
+            availableInputBounds,
+            magnifier.ZoomAmount);
+
+        var insetX = magnifier.Inset * GetAxisScale(layerTransform, Vector2.UnitX);
+        var insetY = magnifier.Inset * GetAxisScale(layerTransform, Vector2.UnitY);
+        var inverseInset = new Vector2(
+            insetX > 0f && float.IsFinite(insetX) ? 1f / insetX : 0f,
+            insetY > 0f && float.IsFinite(insetY) ? 1f / insetY : 0f);
+        var samplingMode = magnifier.Sampling.UseCubic
+            ? 2u
+            : magnifier.Sampling.Filter == SKFilterMode.Nearest &&
+              !magnifier.Sampling.IsAniso &&
+              magnifier.Sampling.Mipmap == SKMipmapMode.None
+                ? 0u
+                : 1u;
+        var cubic = MapCubicSampling(magnifier.Sampling) ?? Vector2.Zero;
+
+        var context = GetGpuContext();
+        var destination = CreateOwnedFilterTexture(
+            context,
+            "SKImageFilter Magnifier Destination",
+            storage: true,
+            input.Width,
+            input.Height);
+        GetCompositorForContext(context).ApplyMagnifier(
+            input,
+            destination,
+            new Vector4(
+                lensBounds.Left,
+                lensBounds.Top,
+                lensBounds.Right,
+                lensBounds.Bottom),
+            new Vector4(
+                outputBounds.Left,
+                outputBounds.Top,
+                outputBounds.Right,
+                outputBounds.Bottom),
+            zoomTransform,
+            inverseInset,
+            samplingMode,
+            cubic);
+        return destination;
+    }
+
+    internal static Vector4 CreateMagnifierZoomTransform(
+        SKRect lensBounds,
+        SKRect visibleLensBounds,
+        SKRect availableInputBounds,
+        float zoomAmount)
+    {
+        var inverseZoom = 1f / zoomAmount;
+        var centerX = Math.Clamp(
+            (lensBounds.Left + lensBounds.Right) * 0.5f,
+            availableInputBounds.Left,
+            availableInputBounds.Right);
+        var centerY = Math.Clamp(
+            (lensBounds.Top + lensBounds.Bottom) * 0.5f,
+            availableInputBounds.Top,
+            availableInputBounds.Bottom);
+        var translateX = centerX * (1f - inverseZoom);
+        var translateY = centerY * (1f - inverseZoom);
+        if (!Contains(availableInputBounds, visibleLensBounds))
+        {
+            var visibleSourceBounds = new SKRect(
+                translateX + inverseZoom * visibleLensBounds.Left,
+                translateY + inverseZoom * visibleLensBounds.Top,
+                translateX + inverseZoom * visibleLensBounds.Right,
+                translateY + inverseZoom * visibleLensBounds.Bottom);
+            if (availableInputBounds.Width >= visibleSourceBounds.Width &&
+                availableInputBounds.Height >= visibleSourceBounds.Height)
+            {
+                var fittedLeft = visibleSourceBounds.Left < availableInputBounds.Left
+                    ? availableInputBounds.Left
+                    : Math.Min(visibleSourceBounds.Right, availableInputBounds.Right) -
+                      visibleSourceBounds.Width;
+                var fittedTop = visibleSourceBounds.Top < availableInputBounds.Top
+                    ? availableInputBounds.Top
+                    : Math.Min(visibleSourceBounds.Bottom, availableInputBounds.Bottom) -
+                      visibleSourceBounds.Height;
+                translateX = fittedLeft - inverseZoom * visibleLensBounds.Left;
+                translateY = fittedTop - inverseZoom * visibleLensBounds.Top;
+            }
+        }
+
+        return new Vector4(translateX, translateY, inverseZoom, inverseZoom);
+    }
+
+    private static SKRect Intersect(SKRect first, SKRect second) =>
+        new(
+            Math.Max(first.Left, second.Left),
+            Math.Max(first.Top, second.Top),
+            Math.Min(first.Right, second.Right),
+            Math.Min(first.Bottom, second.Bottom));
+
+    private static bool Contains(SKRect outer, SKRect inner) =>
+        outer.Left <= inner.Left &&
+        outer.Top <= inner.Top &&
+        outer.Right >= inner.Right &&
+        outer.Bottom >= inner.Bottom;
+
     private static bool TryGetFilterCropPixelBounds(
         SKRect? cropRect,
         Matrix4x4 filterTransform,
@@ -1193,11 +1676,20 @@ public class SKCanvas : IDisposable
     }
 
     private GpuTexture RenderShaderFilter(
-        SKShader shader,
+        SKShader? shader,
         Matrix4x4 filterTransform,
         uint width,
         uint height)
     {
+        if (shader == null)
+        {
+            return RenderFilterPass(
+                "SKImageFilter Empty Shader",
+                width,
+                height,
+                static _ => { });
+        }
+
         return RenderFilterPass(
             "SKImageFilter Shader",
             width,
@@ -1367,18 +1859,28 @@ public class SKCanvas : IDisposable
     private static TextureSamplingMode MapSampling(SKSamplingOptions sampling) =>
         sampling.UseCubic
             ? TextureSamplingMode.Cubic
-            : sampling.MipmapMode != SKMipmapMode.None
+            : sampling.IsAniso || sampling.Mipmap != SKMipmapMode.None
                 ? TextureSamplingMode.LinearMipmap
-                : sampling.FilterMode == SKFilterMode.Nearest
+                : sampling.Filter == SKFilterMode.Nearest
                     ? TextureSamplingMode.Nearest
                     : TextureSamplingMode.Linear;
 
+    private static TextureSamplingMode MapFilterMode(SKFilterMode filterMode) =>
+        filterMode == SKFilterMode.Nearest
+            ? TextureSamplingMode.Nearest
+            : TextureSamplingMode.Linear;
+
     private static Vector2? MapCubicSampling(SKSamplingOptions sampling) =>
         sampling.UseCubic &&
-        float.IsFinite(sampling.CubicResampler.B) &&
-        float.IsFinite(sampling.CubicResampler.C)
-            ? new Vector2(sampling.CubicResampler.B, sampling.CubicResampler.C)
+        float.IsFinite(sampling.Cubic.B) &&
+        float.IsFinite(sampling.Cubic.C)
+            ? new Vector2(sampling.Cubic.B, sampling.Cubic.C)
             : null;
+
+    private static byte MapMaxAnisotropy(SKSamplingOptions sampling) =>
+        sampling.IsAniso
+            ? (byte)Math.Clamp(sampling.MaxAniso, 1, 16)
+            : (byte)1;
 
     private static Vector4 ToVector4(SKColor color)
     {
@@ -1401,42 +1903,60 @@ public class SKCanvas : IDisposable
             layerFrame.BoundsMatrix.ToMatrix4x4());
         var textureWidth = GetRequiredTextureExtent(_width, transformedBounds.Right);
         var textureHeight = GetRequiredTextureExtent(_height, transformedBounds.Bottom);
+        var textureFormat = GetSaveLayerTextureFormat(layerFrame.Flags);
         var texture = new GpuTexture(
             context,
             textureWidth,
             textureHeight,
-            TextureFormat.Rgba8Unorm,
+            textureFormat,
             TextureUsage.RenderAttachment | TextureUsage.CopySrc | TextureUsage.CopyDst | TextureUsage.TextureBinding,
             "SKCanvas SaveLayer Texture",
             alphaMode: GpuTextureAlphaMode.Premultiplied);
 
         var visual = new DrawingVisual { Size = new Vector2(textureWidth, textureHeight) };
-        ReplayActiveClipPushes(visual.Context, layerFrame.ActiveClipPushes);
-        var pushedLayerBoundsClip = PushLayerBoundsClip(visual.Context, layerFrame);
-        visual.Context.Append(layerFrame.LayerContext);
-        if (pushedLayerBoundsClip)
-        {
-            visual.Context.PopClip();
-        }
-        PopReplayedClipPushes(visual.Context, layerFrame.ActiveClipPushes);
-
+        GpuTexture? initialTexture = null;
         var textureRetained = false;
         try
         {
-            try
+            if (layerFrame.PreviousContext != null)
             {
-                GetCompositorForContext(context).RenderOffscreen(
-                    visual,
+                initialTexture = RenderPreviousLayerToTexture(
+                    layerFrame,
+                    context,
                     textureWidth,
                     textureHeight,
-                    texture,
-                    padding: 0f,
-                    dpiScale: 1f);
+                    textureFormat);
+                if (layerFrame.Backdrop != null)
+                {
+                    initialTexture = RenderImageFilterGraph(
+                        initialTexture,
+                        layerFrame.Backdrop,
+                        layerFrame.BoundsMatrix.ToMatrix4x4());
+                }
             }
-            finally
+
+            ReplayActiveClipPushes(visual.Context, layerFrame.ActiveClipPushes);
+            var pushedLayerBoundsClip = PushLayerBoundsClip(visual.Context, layerFrame);
+            if (initialTexture != null)
             {
-                visual.Context.Clear();
+                visual.Context.DrawTexture(
+                    initialTexture,
+                    new Rect(0f, 0f, initialTexture.Width, initialTexture.Height));
             }
+            visual.Context.Append(layerFrame.LayerContext);
+            if (pushedLayerBoundsClip)
+            {
+                visual.Context.PopClip();
+            }
+            PopReplayedClipPushes(visual.Context, layerFrame.ActiveClipPushes);
+
+            GetCompositorForContext(context, textureFormat).RenderOffscreen(
+                visual,
+                textureWidth,
+                textureHeight,
+                texture,
+                padding: 0f,
+                dpiScale: 1f);
 
             layerFrame.LayerContext.Clear();
             _ownedLayerTextures.Add(texture);
@@ -1445,9 +1965,69 @@ public class SKCanvas : IDisposable
         }
         finally
         {
+            visual.Context.Clear();
+            if (initialTexture != null)
+            {
+                ReleaseOwnedLayerTexture(initialTexture);
+            }
+
             if (!textureRetained)
             {
                 layerFrame.LayerContext.Clear();
+                texture.Dispose();
+            }
+        }
+    }
+
+    private GpuTexture RenderPreviousLayerToTexture(
+        LayerFrame layerFrame,
+        WgpuContext context,
+        uint textureWidth,
+        uint textureHeight,
+        TextureFormat textureFormat)
+    {
+        var texture = new GpuTexture(
+            context,
+            textureWidth,
+            textureHeight,
+            textureFormat,
+            TextureUsage.RenderAttachment |
+            TextureUsage.CopySrc |
+            TextureUsage.CopyDst |
+            TextureUsage.TextureBinding,
+            "SKCanvas SaveLayer Previous Texture",
+            alphaMode: GpuTextureAlphaMode.Premultiplied);
+        var visual = new DrawingVisual { Size = new Vector2(textureWidth, textureHeight) };
+
+        var retained = false;
+        try
+        {
+            if (_surface?.TryGetLayerBackdropTexture(out var backingTexture) == true)
+            {
+                visual.Context.DrawTexture(
+                    backingTexture,
+                    new Rect(0f, 0f, backingTexture.Width, backingTexture.Height));
+            }
+
+            visual.Context.Append(layerFrame.PreviousContext!);
+            GetCompositorForContext(context, textureFormat).RenderOffscreen(
+                visual,
+                textureWidth,
+                textureHeight,
+                texture,
+                padding: 0f,
+                dpiScale: 1f,
+                clearColor: Vector4.Zero);
+
+            _ownedLayerTextures.Add(texture);
+            retained = true;
+            return texture;
+        }
+        finally
+        {
+            visual.Context.Clear();
+            if (!retained)
+            {
                 texture.Dispose();
             }
         }
@@ -1463,6 +2043,11 @@ public class SKCanvas : IDisposable
 
         return (uint)Math.Min(Math.Ceiling(extent), uint.MaxValue);
     }
+
+    internal static TextureFormat GetSaveLayerTextureFormat(SKCanvasSaveLayerRecFlags flags) =>
+        (flags & SKCanvasSaveLayerRecFlags.F16ColorType) != 0
+            ? TextureFormat.Rgba16float
+            : TextureFormat.Rgba8Unorm;
 
     private bool PushLayerBoundsClip(DrawingContext context, LayerFrame layerFrame)
     {
@@ -1549,6 +2134,182 @@ public class SKCanvas : IDisposable
         }
     }
 
+    private void GetPathDeviceBounds(SKPath path, out SKRect bounds, out bool isRect)
+    {
+        var transform = _currentMatrix.ToMatrix4x4();
+        if (IsAxisAligned2DTransform(transform) && TryGetRectGeometry(path.Geometry, out var rect))
+        {
+            bounds = _currentMatrix.MapRect(rect);
+            isRect = true;
+            return;
+        }
+
+        var tightBounds = path.TightBounds;
+        bounds = IsFiniteNonEmpty(tightBounds)
+            ? _currentMatrix.MapRect(tightBounds)
+            : SKRect.Empty;
+        isRect = false;
+    }
+
+    private void UpdateClipForIntersection(SKRect deviceBounds, bool isRect)
+    {
+        if (_clipState.IsEmpty)
+        {
+            return;
+        }
+
+        var incomingBounds = ToDeviceBounds(deviceBounds, isRect);
+        var current = _clipState.DeviceBounds;
+        var intersection = new SKRectI(
+            Math.Max(current.Left, incomingBounds.Left),
+            Math.Max(current.Top, incomingBounds.Top),
+            Math.Min(current.Right, incomingBounds.Right),
+            Math.Min(current.Bottom, incomingBounds.Bottom));
+        if (intersection.Right <= intersection.Left || intersection.Bottom <= intersection.Top)
+        {
+            _clipState = new ClipState(SKRectI.Empty, IsRect: false);
+            return;
+        }
+
+        _clipState = new ClipState(intersection, _clipState.IsRect && isRect);
+    }
+
+    private void UpdateClipForDifference(SKRect deviceBounds, bool isRect)
+    {
+        if (_clipState.IsEmpty)
+        {
+            return;
+        }
+
+        var excluded = ToDeviceBounds(deviceBounds, isRect);
+        var current = _clipState.DeviceBounds;
+        if (excluded.Right <= current.Left || excluded.Bottom <= current.Top ||
+            excluded.Left >= current.Right || excluded.Top >= current.Bottom)
+        {
+            return;
+        }
+
+        if (!_clipState.IsRect || !isRect)
+        {
+            _clipState = new ClipState(current, IsRect: false);
+            return;
+        }
+
+        if (excluded.Left <= current.Left && excluded.Right >= current.Right &&
+            excluded.Top <= current.Top && excluded.Bottom >= current.Bottom)
+        {
+            _clipState = new ClipState(SKRectI.Empty, IsRect: false);
+            return;
+        }
+
+        if (excluded.Top <= current.Top && excluded.Bottom >= current.Bottom)
+        {
+            if (excluded.Left <= current.Left)
+            {
+                _clipState = CreateRectClipState(
+                    excluded.Right,
+                    current.Top,
+                    current.Right,
+                    current.Bottom);
+                return;
+            }
+
+            if (excluded.Right >= current.Right)
+            {
+                _clipState = CreateRectClipState(
+                    current.Left,
+                    current.Top,
+                    excluded.Left,
+                    current.Bottom);
+                return;
+            }
+        }
+
+        if (excluded.Left <= current.Left && excluded.Right >= current.Right)
+        {
+            if (excluded.Top <= current.Top)
+            {
+                _clipState = CreateRectClipState(
+                    current.Left,
+                    excluded.Bottom,
+                    current.Right,
+                    current.Bottom);
+                return;
+            }
+
+            if (excluded.Bottom >= current.Bottom)
+            {
+                _clipState = CreateRectClipState(
+                    current.Left,
+                    current.Top,
+                    current.Right,
+                    excluded.Top);
+                return;
+            }
+        }
+
+        _clipState = new ClipState(current, IsRect: false);
+    }
+
+    private static ClipState CreateRectClipState(int left, int top, int right, int bottom) =>
+        right > left && bottom > top
+            ? new ClipState(new SKRectI(left, top, right, bottom), IsRect: true)
+            : new ClipState(SKRectI.Empty, IsRect: false);
+
+    private static SKRectI ToDeviceBounds(SKRect bounds, bool roundToNearest)
+    {
+        if (!IsFiniteNonEmpty(bounds))
+        {
+            return SKRectI.Empty;
+        }
+
+        return roundToNearest
+            ? new SKRectI(
+                RoundDeviceCoordinate(bounds.Left),
+                RoundDeviceCoordinate(bounds.Top),
+                RoundDeviceCoordinate(bounds.Right),
+                RoundDeviceCoordinate(bounds.Bottom))
+            : new SKRectI(
+                FloorDeviceCoordinate(bounds.Left),
+                FloorDeviceCoordinate(bounds.Top),
+                CeilingDeviceCoordinate(bounds.Right),
+                CeilingDeviceCoordinate(bounds.Bottom));
+    }
+
+    private static bool IsFiniteNonEmpty(SKRect bounds) =>
+        float.IsFinite(bounds.Left) &&
+        float.IsFinite(bounds.Top) &&
+        float.IsFinite(bounds.Right) &&
+        float.IsFinite(bounds.Bottom) &&
+        bounds.Right > bounds.Left &&
+        bounds.Bottom > bounds.Top;
+
+    private static int ToCanvasExtent(float value)
+    {
+        if (!float.IsFinite(value) || value <= 0f)
+        {
+            return 0;
+        }
+
+        return CeilingDeviceCoordinate(value);
+    }
+
+    private static int RoundDeviceCoordinate(float value) =>
+        ClampDeviceCoordinate(MathF.Round(value, MidpointRounding.AwayFromZero));
+
+    private static int FloorDeviceCoordinate(float value) =>
+        ClampDeviceCoordinate(MathF.Floor(value));
+
+    private static int CeilingDeviceCoordinate(float value) =>
+        ClampDeviceCoordinate(MathF.Ceiling(value));
+
+    private static int ClampDeviceCoordinate(float value) =>
+        value <= int.MinValue
+            ? int.MinValue
+            : value >= int.MaxValue
+                ? int.MaxValue
+                : (int)value;
+
     private static bool IsValidLayerBounds(SKRect bounds)
     {
         return float.IsFinite(bounds.Left) &&
@@ -1567,9 +2328,11 @@ public class SKCanvas : IDisposable
             MathF.Abs(bounds.Height - _height) < 0.0001f;
     }
 
-    private static Compositor GetCompositorForContext(WgpuContext context)
+    private static Compositor GetCompositorForContext(
+        WgpuContext context,
+        TextureFormat renderFormat = TextureFormat.Rgba8Unorm)
     {
-        return SharedCompositorCache.GetOrCreate(context, TextureFormat.Rgba8Unorm, s_compositorCacheScope);
+        return SharedCompositorCache.GetOrCreate(context, renderFormat, s_compositorCacheScope);
     }
 
     private static void RemoveCachedCompositor(WgpuContext context)
@@ -1593,6 +2356,7 @@ public class SKCanvas : IDisposable
             SKBlendMode.Xor => GpuBlendMode.Xor,
             SKBlendMode.DstOver => GpuBlendMode.DstOver,
             SKBlendMode.Plus => GpuBlendMode.Plus,
+            SKBlendMode.Modulate => GpuBlendMode.Modulate,
             SKBlendMode.Screen => GpuBlendMode.Screen,
             SKBlendMode.Multiply => GpuBlendMode.Multiply,
             SKBlendMode.Darken => GpuBlendMode.Darken,
@@ -1614,6 +2378,12 @@ public class SKCanvas : IDisposable
 
     private bool PushPaintBlendMode(SKPaint? paint)
     {
+        if (paint?.Blender?.IsArithmetic == true)
+        {
+            throw new NotSupportedException(
+                "Arithmetic SKBlender rendering requires destination-sampling compositor support.");
+        }
+
         var blendMode = MapBlendMode(paint?.BlendMode ?? SKBlendMode.SrcOver);
         if (blendMode == GpuBlendMode.SrcOver)
         {
@@ -1634,13 +2404,8 @@ public class SKCanvas : IDisposable
 
     public void Translate(float dx, float dy)
     {
-        if (dx == 0f && dy == 0f)
-        {
-            return;
-        }
-
-        var translation = SKMatrix.CreateTranslation(dx, dy);
-        Concat(in translation);
+        _currentMatrix.TransX += dx * _currentMatrix.ScaleX + dy * _currentMatrix.SkewX;
+        _currentMatrix.TransY += dx * _currentMatrix.SkewY + dy * _currentMatrix.ScaleY;
     }
 
     public void Translate(SKPoint point)
@@ -1651,17 +2416,20 @@ public class SKCanvas : IDisposable
         }
     }
 
-    public void Scale(float s) => Scale(s, s);
+    public void Scale(float scale)
+    {
+        if (scale != 1f)
+        {
+            Scale(scale, scale);
+        }
+    }
 
     public void Scale(float sx, float sy)
     {
-        if (sx == 1f && sy == 1f)
-        {
-            return;
-        }
-
-        var scale = SKMatrix.CreateScale(sx, sy);
-        Concat(in scale);
+        _currentMatrix.ScaleX *= sx;
+        _currentMatrix.SkewY *= sx;
+        _currentMatrix.SkewX *= sy;
+        _currentMatrix.ScaleY *= sy;
     }
 
     public void Scale(SKPoint size)
@@ -1686,24 +2454,10 @@ public class SKCanvas : IDisposable
 
     public void RotateDegrees(float degrees)
     {
-        if ((double)degrees % 360d == 0d)
+        if ((double)degrees % 360d != 0d)
         {
-            return;
+            Concat(SKMatrix.CreateRotationDegrees(degrees));
         }
-
-        var rotation = SKMatrix.CreateRotationDegrees(degrees);
-        Concat(in rotation);
-    }
-
-    public void RotateRadians(float radians)
-    {
-        if ((double)radians % (Math.PI * 2d) == 0d)
-        {
-            return;
-        }
-
-        var rotation = SKMatrix.FromMatrix4x4(Matrix4x4.CreateRotationZ(radians));
-        Concat(in rotation);
     }
 
     public void RotateDegrees(float degrees, float px, float py)
@@ -1716,6 +2470,14 @@ public class SKCanvas : IDisposable
         Translate(px, py);
         RotateDegrees(degrees);
         Translate(-px, -py);
+    }
+
+    public void RotateRadians(float radians)
+    {
+        if ((double)radians % (Math.PI * 2d) != 0d)
+        {
+            Concat(SKMatrix.CreateRotation(radians));
+        }
     }
 
     public void RotateRadians(float radians, float px, float py)
@@ -1732,15 +2494,10 @@ public class SKCanvas : IDisposable
 
     public void Skew(float sx, float sy)
     {
-        if (sx == 0f && sy == 0f)
+        if (sx != 0f || sy != 0f)
         {
-            return;
+            Concat(SKMatrix.CreateSkew(sx, sy));
         }
-
-        var skew = SKMatrix.Identity;
-        skew.SkewX = sx;
-        skew.SkewY = sy;
-        Concat(in skew);
     }
 
     public void Skew(SKPoint skew)
@@ -1751,19 +2508,18 @@ public class SKCanvas : IDisposable
         }
     }
 
+    public void SetMatrix(SKMatrix matrix)
+    {
+        _currentMatrix = matrix;
+    }
+
     public void SetMatrix(in SKMatrix matrix)
     {
         _currentMatrix = matrix;
     }
 
-    public void SetMatrix(SKMatrix matrix)
-    {
-        SetMatrix(in matrix);
-    }
-
     public void SetMatrix(in SKMatrix44 matrix)
     {
-        ArgumentNullException.ThrowIfNull(matrix);
         _currentMatrix = SKMatrix.FromMatrix4x4(matrix.ToMatrix4x4());
     }
 
@@ -1772,33 +2528,66 @@ public class SKCanvas : IDisposable
         _currentMatrix = SKMatrix.Identity;
     }
 
-    public void Concat(in SKMatrix m)
+    public void Concat(in SKMatrix matrix)
     {
-        _currentMatrix = SKMatrix.Concat(_currentMatrix, m);
+        _currentMatrix = SKMatrix.Concat(_currentMatrix, matrix);
     }
 
-    public void Concat(in SKMatrix44 m)
+    public void Concat(in SKMatrix44 matrix)
     {
-        ArgumentNullException.ThrowIfNull(m);
-        var matrix = SKMatrix.FromMatrix4x4(m.ToMatrix4x4());
-        Concat(in matrix);
+        var matrix2D = SKMatrix.FromMatrix4x4(matrix.ToMatrix4x4());
+        _currentMatrix = SKMatrix.Concat(_currentMatrix, matrix2D);
+    }
+
+    public bool GetLocalClipBounds(out SKRect bounds)
+    {
+        if (_clipState.IsEmpty || !_currentMatrix.TryInvert(out var inverse))
+        {
+            bounds = SKRect.Empty;
+            return false;
+        }
+
+        var device = _clipState.DeviceBounds;
+        var outsetDeviceBounds = new SKRect(
+            device.Left - 1f,
+            device.Top - 1f,
+            device.Right + 1f,
+            device.Bottom + 1f);
+        bounds = inverse.MapRect(outsetDeviceBounds);
+        if (!IsFiniteNonEmpty(bounds))
+        {
+            bounds = SKRect.Empty;
+            return false;
+        }
+
+        return true;
+    }
+
+    public bool GetDeviceClipBounds(out SKRectI bounds)
+    {
+        if (_clipState.IsEmpty)
+        {
+            bounds = SKRectI.Empty;
+            return false;
+        }
+
+        bounds = _clipState.DeviceBounds;
+        return true;
     }
 
     public bool QuickReject(SKRect rect)
     {
-        if (rect.IsEmpty)
+        if (rect.IsEmpty || _clipState.IsEmpty)
         {
             return true;
         }
 
-        var matrix = _currentMatrix.ToMatrix4x4();
-        var p0 = Vector2.Transform(new Vector2(rect.Left, rect.Top), matrix);
-        var p1 = Vector2.Transform(new Vector2(rect.Right, rect.Top), matrix);
-        var p2 = Vector2.Transform(new Vector2(rect.Right, rect.Bottom), matrix);
-        var p3 = Vector2.Transform(new Vector2(rect.Left, rect.Bottom), matrix);
-        var min = Vector2.Min(Vector2.Min(p0, p1), Vector2.Min(p2, p3));
-        var max = Vector2.Max(Vector2.Max(p0, p1), Vector2.Max(p2, p3));
-        return max.X <= 0f || max.Y <= 0f || min.X >= _width || min.Y >= _height;
+        var deviceBounds = _currentMatrix.MapRect(rect);
+        var clip = _clipState.DeviceBounds;
+        return deviceBounds.Right <= clip.Left ||
+            deviceBounds.Bottom <= clip.Top ||
+            deviceBounds.Left >= clip.Right ||
+            deviceBounds.Top >= clip.Bottom;
     }
 
     public bool QuickReject(SKPath path)
@@ -1809,27 +2598,35 @@ public class SKCanvas : IDisposable
 
     public void ClipRect(SKRect rect, SKClipOperation operation = SKClipOperation.Intersect, bool antialias = true)
     {
+        var transform = _currentMatrix.ToMatrix4x4();
+        var isDeviceRect = IsAxisAligned2DTransform(transform);
+        var deviceBounds = _currentMatrix.MapRect(rect);
         if (operation == SKClipOperation.Difference)
         {
-            var excluded = CreateRectGeometry(rect).CreateTransformed(_currentMatrix.ToMatrix4x4());
+            UpdateClipForDifference(deviceBounds, isDeviceRect);
+            var excluded = CreateRectGeometry(rect).CreateTransformed(transform);
             PushGeometryClipScope(CreateCanvasDifferenceGeometry(excluded), Matrix4x4.Identity);
             return;
         }
 
-        PushRectClipScope(rect, _currentMatrix.ToMatrix4x4());
+        UpdateClipForIntersection(deviceBounds, isDeviceRect);
+        PushRectClipScope(rect, transform);
     }
 
     public void ClipPath(SKPath? path, SKClipOperation operation = SKClipOperation.Intersect, bool antialias = true)
     {
         ArgumentNullException.ThrowIfNull(path);
+        GetPathDeviceBounds(path, out var deviceBounds, out var isDeviceRect);
         if (operation == SKClipOperation.Difference)
         {
             if (IsInverseFillType(path.FillType))
             {
+                UpdateClipForIntersection(deviceBounds, isDeviceRect);
                 PushGeometryClipScope(path.Geometry, _currentMatrix.ToMatrix4x4());
             }
             else
             {
+                UpdateClipForDifference(deviceBounds, isDeviceRect);
                 var excluded = path.Geometry.CreateTransformed(_currentMatrix.ToMatrix4x4());
                 PushGeometryClipScope(CreateCanvasDifferenceGeometry(excluded), Matrix4x4.Identity);
             }
@@ -1838,6 +2635,7 @@ public class SKCanvas : IDisposable
 
         if (IsInverseFillType(path.FillType))
         {
+            UpdateClipForDifference(deviceBounds, isDeviceRect);
             var excluded = path.Geometry.CreateTransformed(_currentMatrix.ToMatrix4x4());
             PushGeometryClipScope(CreateCanvasDifferenceGeometry(excluded), Matrix4x4.Identity);
             return;
@@ -1846,10 +2644,12 @@ public class SKCanvas : IDisposable
         var transform = _currentMatrix.ToMatrix4x4();
         if (IsAxisAligned2DTransform(transform) && TryGetRectGeometry(path.Geometry, out var rect))
         {
+            UpdateClipForIntersection(deviceBounds, isDeviceRect);
             PushRectClipScope(rect, transform);
             return;
         }
 
+        UpdateClipForIntersection(deviceBounds, isDeviceRect);
         PushGeometryClipScope(path.Geometry, transform);
     }
 
@@ -1894,6 +2694,47 @@ public class SKCanvas : IDisposable
         return regions;
     }
 
+    public void DrawAnnotation(SKRect rect, string key, SKData? value)
+    {
+        // Raster canvases intentionally ignore document-only annotation metadata.
+    }
+
+    public void DrawUrlAnnotation(SKRect rect, SKData? value)
+    {
+        // Raster canvases intentionally ignore document-only annotation metadata.
+    }
+
+    public SKData DrawUrlAnnotation(SKRect rect, string value)
+    {
+        var data = SKData.FromCString(value);
+        DrawUrlAnnotation(rect, data);
+        return data;
+    }
+
+    public void DrawNamedDestinationAnnotation(SKPoint point, SKData? value)
+    {
+        // Raster canvases intentionally ignore document-only annotation metadata.
+    }
+
+    public SKData DrawNamedDestinationAnnotation(SKPoint point, string value)
+    {
+        var data = SKData.FromCString(value);
+        DrawNamedDestinationAnnotation(point, data);
+        return data;
+    }
+
+    public void DrawLinkDestinationAnnotation(SKRect rect, SKData? value)
+    {
+        // Raster canvases intentionally ignore document-only annotation metadata.
+    }
+
+    public SKData DrawLinkDestinationAnnotation(SKRect rect, string value)
+    {
+        var data = SKData.FromCString(value);
+        DrawLinkDestinationAnnotation(rect, data);
+        return data;
+    }
+
     private static SKRect MapRectToBounds(SKRect rect, Matrix4x4 matrix)
     {
         var topLeft = Vector2.Transform(new Vector2(rect.Left, rect.Top), matrix);
@@ -1907,7 +2748,7 @@ public class SKCanvas : IDisposable
             MathF.Max(MathF.Max(topLeft.Y, topRight.Y), MathF.Max(bottomRight.Y, bottomLeft.Y)));
     }
 
-    public void DrawPicture(SKPicture picture)
+    private void DrawPictureCore(SKPicture picture)
     {
         ArgumentNullException.ThrowIfNull(picture);
         var sourcePicture = picture.Picture;
@@ -1992,7 +2833,7 @@ public class SKCanvas : IDisposable
         return converted;
     }
 
-    public void DrawPicture(SKPicture picture, SKPaint? paint)
+    public void DrawPicture(SKPicture picture, SKPaint? paint = null)
     {
         ArgumentNullException.ThrowIfNull(picture);
         var pushedBlendMode = PushPaintBlendMode(paint);
@@ -2006,7 +2847,7 @@ public class SKCanvas : IDisposable
                 pushedOpacity = true;
             }
 
-            DrawPicture(picture);
+            DrawPictureCore(picture);
         }
         finally
         {
@@ -2019,29 +2860,106 @@ public class SKCanvas : IDisposable
         }
     }
 
-    public void DrawDrawable(SKDrawable drawable, in SKMatrix matrix)
+    public void DrawPicture(SKPicture picture, float x, float y, SKPaint? paint = null)
     {
-        ArgumentNullException.ThrowIfNull(drawable);
-        drawable.Draw(this, matrix);
+        var matrix = SKMatrix.CreateTranslation(x, y);
+        DrawPicture(picture, in matrix, paint);
     }
 
-    public void DrawDrawable(SKDrawable drawable, float x, float y)
+    public void DrawPicture(SKPicture picture, SKPoint point, SKPaint? paint = null) =>
+        DrawPicture(picture, point.X, point.Y, paint);
+
+    public void DrawPicture(SKPicture picture, in SKMatrix matrix, SKPaint? paint = null)
     {
-        ArgumentNullException.ThrowIfNull(drawable);
-        DrawDrawable(drawable, SKMatrix.CreateTranslation(x, y));
+        ArgumentNullException.ThrowIfNull(picture);
+        var previousMatrix = _currentMatrix;
+        try
+        {
+            _currentMatrix = SKMatrix.Concat(previousMatrix, matrix);
+            DrawPicture(picture, paint);
+        }
+        finally
+        {
+            _currentMatrix = previousMatrix;
+        }
     }
 
-    public void DrawDrawable(SKDrawable drawable, SKPoint p)
-    {
-        ArgumentNullException.ThrowIfNull(drawable);
-        DrawDrawable(drawable, SKMatrix.CreateTranslation(p.X, p.Y));
-    }
+    public void DrawDrawable(SKDrawable drawable, in SKMatrix matrix) =>
+        drawable.Draw(this, in matrix);
+
+    public void DrawDrawable(SKDrawable drawable, SKPoint point) =>
+        drawable.Draw(this, point.X, point.Y);
+
+    public void DrawDrawable(SKDrawable drawable, float x, float y) =>
+        drawable.Draw(this, x, y);
 
     public void DrawLine(float x0, float y0, float x1, float y1, SKPaint paint)
     {
         using var path = new SKPath();
         path.MoveTo(x0, y0);
         path.LineTo(x1, y1);
+        DrawPath(path, paint);
+    }
+
+    public void DrawLine(SKPoint point0, SKPoint point1, SKPaint paint) =>
+        DrawLine(point0.X, point0.Y, point1.X, point1.Y, paint);
+
+    public void DrawArc(
+        SKRect oval,
+        float startAngle,
+        float sweepAngle,
+        bool useCenter,
+        SKPaint paint)
+    {
+        ArgumentNullException.ThrowIfNull(paint);
+        if (oval.IsEmpty || sweepAngle == 0f)
+        {
+            return;
+        }
+
+        var radiusX = oval.Width * 0.5f;
+        var radiusY = oval.Height * 0.5f;
+        var center = new SKPoint(oval.MidX, oval.MidY);
+        var startRadians = startAngle * (MathF.PI / 180f);
+        var clampedSweep = Math.Clamp(sweepAngle, -360f, 360f);
+        var start = new SKPoint(
+            center.X + MathF.Cos(startRadians) * radiusX,
+            center.Y + MathF.Sin(startRadians) * radiusY);
+
+        using var path = new SKPath();
+        if (MathF.Abs(clampedSweep) >= 360f)
+        {
+            path.AddOval(
+                oval,
+                clampedSweep >= 0f ? SKPathDirection.Clockwise : SKPathDirection.CounterClockwise);
+        }
+        else
+        {
+            if (useCenter)
+            {
+                path.MoveTo(center);
+                path.LineTo(start);
+            }
+            else
+            {
+                path.MoveTo(start);
+            }
+
+            var endRadians = (startAngle + clampedSweep) * (MathF.PI / 180f);
+            path.ArcTo(
+                radiusX,
+                radiusY,
+                0f,
+                MathF.Abs(clampedSweep) > 180f ? SKPathArcSize.Large : SKPathArcSize.Small,
+                clampedSweep >= 0f ? SKPathDirection.Clockwise : SKPathDirection.CounterClockwise,
+                center.X + MathF.Cos(endRadians) * radiusX,
+                center.Y + MathF.Sin(endRadians) * radiusY);
+            if (useCenter)
+            {
+                path.Close();
+            }
+        }
+
         DrawPath(path, paint);
     }
 
@@ -2052,7 +2970,47 @@ public class SKCanvas : IDisposable
         DrawPointsCore(mode, points, paint);
     }
 
-    public void DrawPoint(SKPoint p, SKPaint paint) => DrawPoint(p.X, p.Y, paint);
+    private void DrawPointsCore(SKPointMode mode, ReadOnlySpan<SKPoint> points, SKPaint paint)
+    {
+        if (points.Length == 0)
+        {
+            return;
+        }
+
+        using var path = new SKPath();
+        switch (mode)
+        {
+            case SKPointMode.Points:
+                foreach (var point in points)
+                {
+                    path.MoveTo(point);
+                    path.LineTo(point);
+                }
+                break;
+            case SKPointMode.Lines:
+                for (var index = 0; index + 1 < points.Length; index += 2)
+                {
+                    path.MoveTo(points[index]);
+                    path.LineTo(points[index + 1]);
+                }
+                break;
+            case SKPointMode.Polygon:
+                path.MoveTo(points[0]);
+                for (var index = 1; index < points.Length; index++)
+                {
+                    path.LineTo(points[index]);
+                }
+                break;
+            default:
+                return;
+        }
+
+        using var strokePaint = paint.Clone();
+        strokePaint.Style = SKPaintStyle.Stroke;
+        DrawPath(path, strokePaint);
+    }
+
+    public void DrawPoint(SKPoint point, SKPaint paint) => DrawPoint(point.X, point.Y, paint);
 
     public void DrawPoint(float x, float y, SKPaint paint)
     {
@@ -2062,7 +3020,7 @@ public class SKCanvas : IDisposable
         DrawPointsCore(SKPointMode.Points, point, paint);
     }
 
-    public void DrawPoint(SKPoint p, SKColor color) => DrawPoint(p.X, p.Y, color);
+    public void DrawPoint(SKPoint point, SKColor color) => DrawPoint(point.X, point.Y, color);
 
     public void DrawPoint(float x, float y, SKColor color)
     {
@@ -2073,98 +3031,6 @@ public class SKCanvas : IDisposable
         };
         DrawPoint(x, y, paint);
     }
-
-    private void DrawPointsCore(SKPointMode mode, ReadOnlySpan<SKPoint> points, SKPaint paint)
-    {
-        if (points.IsEmpty)
-        {
-            return;
-        }
-
-        if (mode != SKPointMode.Points)
-        {
-            if (points.Length < 2)
-            {
-                return;
-            }
-
-            using var path = new SKPath();
-            if (mode == SKPointMode.Lines)
-            {
-                for (var index = 0; index + 1 < points.Length; index += 2)
-                {
-                    path.MoveTo(points[index]);
-                    path.LineTo(points[index + 1]);
-                }
-            }
-            else
-            {
-                path.MoveTo(points[0]);
-                for (var index = 1; index < points.Length; index++)
-                {
-                    path.LineTo(points[index]);
-                }
-            }
-
-            using var strokePaint = paint.Clone();
-            strokePaint.Style = SKPaintStyle.Stroke;
-            DrawPath(path, strokePaint);
-            return;
-        }
-
-        var radius = paint.StrokeWidth > 0f ? paint.StrokeWidth * 0.5f : 0f;
-        var round = paint.StrokeCap == SKStrokeCap.Round;
-        if (HasSpecialShader(paint.Shader))
-        {
-            using var path = new SKPath();
-            for (var index = 0; index < points.Length; index++)
-            {
-                var point = points[index];
-                if (round)
-                {
-                    path.AddCircle(point.X, point.Y, radius);
-                }
-                else
-                {
-                    path.AddRect(new SKRect(
-                        point.X - radius,
-                        point.Y - radius,
-                        point.X + radius,
-                        point.Y + radius));
-                }
-            }
-
-            using var fillPaint = paint.Clone();
-            fillPaint.Style = SKPaintStyle.Fill;
-            DrawPath(path, fillPaint);
-            return;
-        }
-
-        var converted = GC.AllocateUninitializedArray<Vector2>(points.Length);
-        for (var index = 0; index < points.Length; index++)
-        {
-            converted[index] = new Vector2(points[index].X, points[index].Y);
-        }
-
-        var pushedBlendMode = PushPaintBlendMode(paint);
-        try
-        {
-            _context.DrawPointBatch(
-                paint.ToFillBrush(),
-                converted,
-                radius,
-                round,
-                _currentMatrix.ToMatrix4x4(),
-                !paint.IsAntialias);
-        }
-        finally
-        {
-            PopPaintBlendMode(pushedBlendMode);
-        }
-    }
-
-    public void DrawLine(SKPoint p0, SKPoint p1, SKPaint paint) =>
-        DrawLine(p0.X, p0.Y, p1.X, p1.Y, paint);
 
     public void DrawRect(float x, float y, float w, float h, SKPaint paint)
     {
@@ -2248,18 +3114,11 @@ public class SKCanvas : IDisposable
         DrawRoundRect(new SKRoundRect(rect, rx, ry), paint);
     }
 
-    public void DrawRoundRect(
-        float x,
-        float y,
-        float w,
-        float h,
-        float rx,
-        float ry,
-        SKPaint paint) =>
-        DrawRoundRect(SKRect.Create(x, y, w, h), rx, ry, paint);
+    public void DrawRoundRect(float x, float y, float width, float height, float rx, float ry, SKPaint paint) =>
+        DrawRoundRect(new SKRect(x, y, x + width, y + height), rx, ry, paint);
 
-    public void DrawRoundRect(SKRect rect, SKSize r, SKPaint paint) =>
-        DrawRoundRect(rect, r.Width, r.Height, paint);
+    public void DrawRoundRect(SKRect rect, SKSize radius, SKPaint paint) =>
+        DrawRoundRect(rect, radius.Width, radius.Height, paint);
 
     private static bool TryGetUniformRadii(SKRoundRect rect, out float radiusX, out float radiusY)
     {
@@ -2276,12 +3135,6 @@ public class SKCanvas : IDisposable
 
         return true;
     }
-
-    public void DrawOval(float cx, float cy, float rx, float ry, SKPaint paint) =>
-        DrawOval(new SKRect(cx - rx, cy - ry, cx + rx, cy + ry), paint);
-
-    public void DrawOval(SKPoint c, SKSize r, SKPaint paint) =>
-        DrawOval(c.X, c.Y, r.Width, r.Height, paint);
 
     public void DrawOval(SKRect rect, SKPaint paint)
     {
@@ -2319,42 +3172,11 @@ public class SKCanvas : IDisposable
         }
     }
 
-    public void DrawArc(
-        SKRect oval,
-        float startAngle,
-        float sweepAngle,
-        bool useCenter,
-        SKPaint paint)
-    {
-        ArgumentNullException.ThrowIfNull(paint);
-        if (!float.IsFinite(oval.Left) ||
-            !float.IsFinite(oval.Top) ||
-            !float.IsFinite(oval.Right) ||
-            !float.IsFinite(oval.Bottom) ||
-            !float.IsFinite(startAngle) ||
-            !float.IsFinite(sweepAngle) ||
-            oval.Width <= 0f ||
-            oval.Height <= 0f ||
-            sweepAngle == 0f)
-        {
-            return;
-        }
+    public void DrawOval(float cx, float cy, float rx, float ry, SKPaint paint) =>
+        DrawOval(new SKRect(cx - rx, cy - ry, cx + rx, cy + ry), paint);
 
-        var boundedSweep = Math.Clamp(sweepAngle, -360f, 360f);
-        using var path = new SKPath();
-        if (useCenter)
-        {
-            path.MoveTo(oval.MidX, oval.MidY);
-            path.ArcTo(oval, startAngle, boundedSweep, forceMoveTo: false);
-            path.Close();
-        }
-        else
-        {
-            path.ArcTo(oval, startAngle, boundedSweep, forceMoveTo: true);
-        }
-
-        DrawPath(path, paint);
-    }
+    public void DrawOval(SKPoint center, SKSize radius, SKPaint paint) =>
+        DrawOval(center.X, center.Y, radius.Width, radius.Height, paint);
 
     public void DrawCircle(float cx, float cy, float radius, SKPaint paint)
     {
@@ -2392,8 +3214,8 @@ public class SKCanvas : IDisposable
         }
     }
 
-    public void DrawCircle(SKPoint c, float radius, SKPaint paint) =>
-        DrawCircle(c.X, c.Y, radius, paint);
+    public void DrawCircle(SKPoint center, float radius, SKPaint paint) =>
+        DrawCircle(center.X, center.Y, radius, paint);
 
     public void DrawRoundRectDifference(SKRoundRect outer, SKRoundRect inner, SKPaint paint)
     {
@@ -2514,6 +3336,55 @@ public class SKCanvas : IDisposable
                 vertices.Mesh,
                 (VertexColorBlendMode)mode,
                 _currentMatrix.ToMatrix4x4(),
+                !paint.IsAntialias);
+        }
+        finally
+        {
+            PopPaintBlendMode(pushedBlendMode);
+        }
+    }
+
+    public void DrawPatch(
+        SKPoint[] cubics,
+        SKColor[]? colors,
+        SKPoint[]? texCoords,
+        SKPaint paint) =>
+        DrawPatch(cubics, colors, texCoords, SKBlendMode.Modulate, paint);
+
+    public void DrawPatch(
+        SKPoint[] cubics,
+        SKColor[]? colors,
+        SKPoint[]? texCoords,
+        SKBlendMode mode,
+        SKPaint paint)
+    {
+        ArgumentNullException.ThrowIfNull(cubics);
+        if (cubics.Length != 12)
+        {
+            throw new ArgumentException("Cubics must have a length of 12.", nameof(cubics));
+        }
+        if (colors != null && colors.Length != 4)
+        {
+            throw new ArgumentException("Colors must have a length of 4.", nameof(colors));
+        }
+        if (texCoords != null && texCoords.Length != 4)
+        {
+            throw new ArgumentException(
+                "Texture coordinates must have a length of 4.",
+                nameof(texCoords));
+        }
+        ArgumentNullException.ThrowIfNull(paint);
+
+        var transform = _currentMatrix.ToMatrix4x4();
+        var mesh = SKPatchLayout.CreateMesh(cubics, colors, texCoords, transform);
+        var pushedBlendMode = PushPaintBlendMode(paint);
+        try
+        {
+            _context.DrawVertexMesh(
+                paint.ToFillBrush(),
+                mesh,
+                (VertexColorBlendMode)mode,
+                transform,
                 !paint.IsAntialias);
         }
         finally
@@ -2728,8 +3599,8 @@ public class SKCanvas : IDisposable
                     sourcePath.Geometry.Figures.Add(figure);
                 }
 
-                using var fillPath = new SKPath();
-                if (paint.GetFillPath(sourcePath, fillPath))
+                using var fillPath = paint.GetFillPath(sourcePath);
+                if (fillPath != null)
                 {
                     DrawShaderLayer(shader, fillPath.Geometry, fillPath.Bounds, paint, drawAsFill: true);
                 }
@@ -2924,9 +3795,7 @@ public class SKCanvas : IDisposable
                         Rect = new Rect(tileRect.Left, tileRect.Top, tileRect.Width, tileRect.Height),
                         SrcRect = new Rect(0f, 0f, texture.Width, texture.Height),
                         Transform = pictureTransform,
-                        TextureSamplingMode = filterMode == SKFilterMode.Nearest
-                            ? TextureSamplingMode.Nearest
-                            : TextureSamplingMode.Linear
+                        TextureSamplingMode = MapFilterMode(filterMode)
                     });
                 }
             }
@@ -3014,6 +3883,16 @@ public class SKCanvas : IDisposable
         return float.IsFinite(scale) && scale > 0f ? scale : 1f;
     }
 
+    private static bool IsFinite(Matrix4x4 matrix) =>
+        float.IsFinite(matrix.M11) && float.IsFinite(matrix.M12) &&
+        float.IsFinite(matrix.M13) && float.IsFinite(matrix.M14) &&
+        float.IsFinite(matrix.M21) && float.IsFinite(matrix.M22) &&
+        float.IsFinite(matrix.M23) && float.IsFinite(matrix.M24) &&
+        float.IsFinite(matrix.M31) && float.IsFinite(matrix.M32) &&
+        float.IsFinite(matrix.M33) && float.IsFinite(matrix.M34) &&
+        float.IsFinite(matrix.M41) && float.IsFinite(matrix.M42) &&
+        float.IsFinite(matrix.M43) && float.IsFinite(matrix.M44);
+
     private static Vector2 TransformFilterVector(Vector2 vector, Matrix4x4 transform)
     {
         if (transform == default)
@@ -3062,6 +3941,7 @@ public class SKCanvas : IDisposable
         texture = ApplyTextureColorFilter(texture, shaderColorFilter);
         texture = ApplyTextureColorFilter(texture, paintColorFilter);
         var samplingMode = MapSampling(imageShader.Sampling);
+        var maxAnisotropy = MapMaxAnisotropy(imageShader.Sampling);
         var cubicCoefficients = MapCubicSampling(imageShader.Sampling);
         _context.PushGeometryClip(clipGeometry, _currentMatrix.ToMatrix4x4());
         try
@@ -3084,6 +3964,7 @@ public class SKCanvas : IDisposable
                         SrcRect = new Rect(0f, 0f, imageShader.Image.Width, imageShader.Image.Height),
                         Transform = placement * localMatrix * _currentMatrix.ToMatrix4x4(),
                         TextureSamplingMode = samplingMode,
+                        TextureMaxAnisotropy = maxAnisotropy,
                         TextureCubicCoefficients = cubicCoefficients.GetValueOrDefault(),
                         HasTextureCubicCoefficients = cubicCoefficients.HasValue
                     });
@@ -3200,6 +4081,7 @@ public class SKCanvas : IDisposable
         return fillType is SKPathFillType.InverseWinding or SKPathFillType.InverseEvenOdd;
     }
 
+    [Obsolete("Use the overload with SKSamplingOptions instead.")]
     public void DrawImage(SKImage image, SKRect source, SKRect dest, SKPaint? paint = null)
     {
         DrawImage(
@@ -3216,35 +4098,17 @@ public class SKCanvas : IDisposable
         SKRect dest,
         TextureSamplingMode samplingMode,
         SKPaint? paint,
-        Vector2? cubicCoefficients = null)
+        Vector2? cubicCoefficients = null,
+        byte maxAnisotropy = 1)
     {
         ArgumentNullException.ThrowIfNull(image);
+        var opacity = paint != null ? paint.Color.A / 255f : 1f;
         var retainedTexture = RetainImageTexture(
             image,
             samplingMode == TextureSamplingMode.LinearMipmap);
-        DrawRetainedImageCore(
-            retainedTexture,
-            image.ColorSpace,
-            source,
-            dest,
-            samplingMode,
-            paint,
-            cubicCoefficients);
-    }
-
-    private void DrawRetainedImageCore(
-        GpuTexture retainedTexture,
-        SKColorSpace? sourceColorSpace,
-        SKRect source,
-        SKRect dest,
-        TextureSamplingMode samplingMode,
-        SKPaint? paint,
-        Vector2? cubicCoefficients = null)
-    {
-        var opacity = paint != null ? paint.Color.A / 255f : 1f;
         if (!_isPictureRecording)
         {
-            retainedTexture = ConvertImageTextureToSrgb(retainedTexture, sourceColorSpace);
+            retainedTexture = ConvertImageTextureToSrgb(retainedTexture, image.ColorSpace);
         }
         if (paint?.ColorFilter is { } colorFilter)
         {
@@ -3294,6 +4158,7 @@ public class SKCanvas : IDisposable
                     source.Height + sourceExtensionY),
                 Transform = _currentMatrix.ToMatrix4x4(),
                 TextureSamplingMode = samplingMode,
+                TextureMaxAnisotropy = maxAnisotropy,
                 TextureCubicCoefficients = cubicCoefficients.GetValueOrDefault(),
                 HasTextureCubicCoefficients = cubicCoefficients.HasValue,
                 IsEdgeAliased = paint is { IsAntialias: false }
@@ -3316,6 +4181,73 @@ public class SKCanvas : IDisposable
         }
     }
 
+    private void DrawImagePatchesCore(
+        SKImage image,
+        TexturePatch[] patches,
+        SKRect destination,
+        TextureSamplingMode samplingMode,
+        SKPaint? paint,
+        Vector2? cubicCoefficients = null,
+        byte maxAnisotropy = 1)
+    {
+        if (patches.Length == 0)
+        {
+            return;
+        }
+
+        var retainedTexture = RetainImageTexture(
+            image,
+            samplingMode == TextureSamplingMode.LinearMipmap);
+        if (!_isPictureRecording)
+        {
+            retainedTexture = ConvertImageTextureToSrgb(retainedTexture, image.ColorSpace);
+        }
+        if (paint?.ColorFilter is { } colorFilter)
+        {
+            var filteredTexture = RenderColorFilter(retainedTexture, colorFilter, cropRect: null);
+            if (!ReferenceEquals(filteredTexture, retainedTexture))
+            {
+                RetainLayerTextureForDeferredCommand(filteredTexture);
+                retainedTexture = filteredTexture;
+            }
+        }
+
+        var pushedBlendMode = PushPaintBlendMode(paint);
+        var pushedOpacity = false;
+        try
+        {
+            var opacity = paint?.Color.Alpha / 255f ?? 1f;
+            if (opacity < 1f)
+            {
+                _context.PushOpacity(opacity);
+                pushedOpacity = true;
+            }
+
+            _context.Commands.Add(new RenderCommand
+            {
+                Type = RenderCommandType.DrawTexture,
+                Texture = retainedTexture,
+                TexturePatches = patches,
+                Rect = ToRect(destination),
+                Transform = _currentMatrix.ToMatrix4x4(),
+                TextureSamplingMode = samplingMode,
+                TextureMaxAnisotropy = maxAnisotropy,
+                TextureCubicCoefficients = cubicCoefficients.GetValueOrDefault(),
+                HasTextureCubicCoefficients = cubicCoefficients.HasValue,
+                IsEdgeAliased = paint is { IsAntialias: false }
+            });
+        }
+        finally
+        {
+            if (pushedOpacity)
+            {
+                _context.PopOpacity();
+            }
+
+            PopPaintBlendMode(pushedBlendMode);
+        }
+    }
+
     public void DrawImage(
         SKImage image,
         SKRect source,
@@ -3324,12 +4256,19 @@ public class SKCanvas : IDisposable
         SKPaint? paint = null)
     {
         var samplingMode = MapSampling(sampling);
-        DrawImageCore(image, source, dest, samplingMode, paint, MapCubicSampling(sampling));
+        DrawImageCore(
+            image,
+            source,
+            dest,
+            samplingMode,
+            paint,
+            MapCubicSampling(sampling),
+            MapMaxAnisotropy(sampling));
     }
 
     public void DrawImage(
         SKImage image,
-        SKRect dest,
+        SKRect destination,
         SKSamplingOptions sampling,
         SKPaint? paint = null)
     {
@@ -3337,21 +4276,12 @@ public class SKCanvas : IDisposable
         DrawImage(
             image,
             new SKRect(0f, 0f, image.Width, image.Height),
-            dest,
+            destination,
             sampling,
             paint);
     }
 
-    public void DrawImage(SKImage image, SKPoint p, SKPaint? paint = null) =>
-        DrawImage(image, p.X, p.Y, paint);
-
-    public void DrawImage(
-        SKImage image,
-        SKPoint p,
-        SKSamplingOptions sampling,
-        SKPaint? paint = null) =>
-        DrawImage(image, p.X, p.Y, sampling, paint);
-
+    [Obsolete("Use the overload with SKSamplingOptions instead.")]
     public void DrawImage(SKImage image, float x, float y, SKPaint? paint = null)
     {
         ArgumentNullException.ThrowIfNull(image);
@@ -3362,12 +4292,7 @@ public class SKCanvas : IDisposable
             paint);
     }
 
-    public void DrawImage(
-        SKImage image,
-        float x,
-        float y,
-        SKSamplingOptions sampling,
-        SKPaint? paint = null)
+    public void DrawImage(SKImage image, float x, float y, SKSamplingOptions sampling, SKPaint? paint = null)
     {
         ArgumentNullException.ThrowIfNull(image);
         DrawImage(
@@ -3378,132 +4303,413 @@ public class SKCanvas : IDisposable
             paint);
     }
 
-    public void DrawImage(SKImage image, SKRect dest, SKPaint? paint = null)
+    [Obsolete("Use the overload with SKSamplingOptions instead.")]
+    public void DrawImage(SKImage image, SKPoint point, SKPaint? paint = null) =>
+        DrawImage(image, point.X, point.Y, paint);
+
+    public void DrawImage(SKImage image, SKPoint point, SKSamplingOptions sampling, SKPaint? paint = null) =>
+        DrawImage(image, point.X, point.Y, sampling, paint);
+
+    [Obsolete("Use the overload with SKSamplingOptions instead.")]
+    public void DrawImage(SKImage image, SKRect destination, SKPaint? paint = null)
     {
         ArgumentNullException.ThrowIfNull(image);
         DrawImage(
             image,
             new SKRect(0f, 0f, image.Width, image.Height),
-            dest,
+            destination,
             paint);
     }
 
-    public void DrawBitmap(SKBitmap bitmap, SKPoint p, SKPaint? paint = null) =>
-        DrawBitmap(bitmap, p.X, p.Y, paint);
-
-    public void DrawBitmap(
-        SKBitmap bitmap,
-        SKPoint p,
-        SKSamplingOptions sampling,
+    [Obsolete("Use the overload with SKSamplingOptions instead.")]
+    public void DrawAtlas(
+        SKImage atlas,
+        SKRect[] sprites,
+        SKRotationScaleMatrix[] transforms,
         SKPaint? paint = null) =>
-        DrawBitmap(bitmap, p.X, p.Y, sampling, paint);
-
-    public void DrawBitmap(SKBitmap bitmap, float x, float y, SKPaint? paint = null)
-    {
-        ArgumentNullException.ThrowIfNull(bitmap);
-        DrawBitmap(
-            bitmap,
-            new SKRect(0f, 0f, bitmap.Width, bitmap.Height),
-            new SKRect(x, y, x + bitmap.Width, y + bitmap.Height),
-            paint);
-    }
-
-    public void DrawBitmap(
-        SKBitmap bitmap,
-        float x,
-        float y,
-        SKSamplingOptions sampling,
-        SKPaint? paint = null)
-    {
-        ArgumentNullException.ThrowIfNull(bitmap);
-        DrawBitmap(
-            bitmap,
-            new SKRect(0f, 0f, bitmap.Width, bitmap.Height),
-            new SKRect(x, y, x + bitmap.Width, y + bitmap.Height),
-            sampling,
-            paint);
-    }
-
-    public void DrawBitmap(SKBitmap bitmap, SKRect dest, SKPaint? paint = null)
-    {
-        ArgumentNullException.ThrowIfNull(bitmap);
-        DrawBitmap(
-            bitmap,
-            new SKRect(0f, 0f, bitmap.Width, bitmap.Height),
-            dest,
-            paint);
-    }
-
-    public void DrawBitmap(
-        SKBitmap bitmap,
-        SKRect dest,
-        SKSamplingOptions sampling,
-        SKPaint? paint = null)
-    {
-        ArgumentNullException.ThrowIfNull(bitmap);
-        DrawBitmap(
-            bitmap,
-            new SKRect(0f, 0f, bitmap.Width, bitmap.Height),
-            dest,
-            sampling,
-            paint);
-    }
-
-    public void DrawBitmap(
-        SKBitmap bitmap,
-        SKRect source,
-        SKRect dest,
-        SKPaint? paint = null) =>
-        DrawBitmap(
-            bitmap,
-            source,
-            dest,
+        DrawAtlasCore(
+            atlas,
+            sprites,
+            transforms,
+            colors: null,
+            SKBlendMode.Dst,
             paint?.GetLegacyFilterQualitySampling() ?? SKSamplingOptions.Default,
+            cullRect: null,
             paint);
 
-    public void DrawBitmap(
-        SKBitmap bitmap,
-        SKRect source,
-        SKRect dest,
+    public void DrawAtlas(
+        SKImage atlas,
+        SKRect[] sprites,
+        SKRotationScaleMatrix[] transforms,
         SKSamplingOptions sampling,
+        SKPaint? paint = null) =>
+        DrawAtlasCore(
+            atlas,
+            sprites,
+            transforms,
+            colors: null,
+            SKBlendMode.Dst,
+            sampling,
+            cullRect: null,
+            paint);
+
+    [Obsolete("Use the overload with SKSamplingOptions instead.")]
+    public void DrawAtlas(
+        SKImage atlas,
+        SKRect[] sprites,
+        SKRotationScaleMatrix[] transforms,
+        SKColor[]? colors,
+        SKBlendMode mode,
+        SKPaint? paint = null) =>
+        DrawAtlasCore(
+            atlas,
+            sprites,
+            transforms,
+            colors,
+            mode,
+            paint?.GetLegacyFilterQualitySampling() ?? SKSamplingOptions.Default,
+            cullRect: null,
+            paint);
+
+    public void DrawAtlas(
+        SKImage atlas,
+        SKRect[] sprites,
+        SKRotationScaleMatrix[] transforms,
+        SKColor[]? colors,
+        SKBlendMode mode,
+        SKSamplingOptions sampling,
+        SKPaint? paint = null) =>
+        DrawAtlasCore(atlas, sprites, transforms, colors, mode, sampling, cullRect: null, paint);
+
+    [Obsolete("Use the overload with SKSamplingOptions instead.")]
+    public void DrawAtlas(
+        SKImage atlas,
+        SKRect[] sprites,
+        SKRotationScaleMatrix[] transforms,
+        SKColor[]? colors,
+        SKBlendMode mode,
+        SKRect cullRect,
+        SKPaint? paint = null) =>
+        DrawAtlasCore(
+            atlas,
+            sprites,
+            transforms,
+            colors,
+            mode,
+            paint?.GetLegacyFilterQualitySampling() ?? SKSamplingOptions.Default,
+            cullRect,
+            paint);
+
+    public void DrawAtlas(
+        SKImage atlas,
+        SKRect[] sprites,
+        SKRotationScaleMatrix[] transforms,
+        SKColor[]? colors,
+        SKBlendMode mode,
+        SKSamplingOptions sampling,
+        SKRect cullRect,
+        SKPaint? paint = null) =>
+        DrawAtlasCore(atlas, sprites, transforms, colors, mode, sampling, cullRect, paint);
+
+    private void DrawAtlasCore(
+        SKImage atlas,
+        SKRect[] sprites,
+        SKRotationScaleMatrix[] transforms,
+        SKColor[]? colors,
+        SKBlendMode mode,
+        SKSamplingOptions sampling,
+        SKRect? cullRect,
+        SKPaint? paint)
+    {
+        ArgumentNullException.ThrowIfNull(atlas);
+        ArgumentNullException.ThrowIfNull(sprites);
+        ArgumentNullException.ThrowIfNull(transforms);
+        if (transforms.Length != sprites.Length)
+        {
+            throw new ArgumentException(
+                "The number of transforms must match the number of sprites.",
+                nameof(transforms));
+        }
+        if (colors != null && colors.Length != sprites.Length)
+        {
+            throw new ArgumentException(
+                "The number of colors must match the number of sprites.",
+                nameof(colors));
+        }
+
+        var patches = SKAtlasLayout.CreatePatches(
+            sprites,
+            transforms,
+            colors,
+            mode,
+            paint?.ColorFilter,
+            out var computedBounds);
+        DrawImagePatchesCore(
+            atlas,
+            patches,
+            cullRect ?? computedBounds,
+            MapSampling(sampling),
+            paint,
+            MapCubicSampling(sampling),
+            MapMaxAnisotropy(sampling));
+    }
+
+    public void DrawBitmapNinePatch(
+        SKBitmap bitmap,
+        SKRectI center,
+        SKRect destination,
+        SKPaint? paint = null) =>
+        DrawBitmapNinePatch(bitmap, center, destination, SKFilterMode.Nearest, paint);
+
+    public void DrawBitmapNinePatch(
+        SKBitmap bitmap,
+        SKRectI center,
+        SKRect destination,
+        SKFilterMode filterMode,
         SKPaint? paint = null)
     {
         ArgumentNullException.ThrowIfNull(bitmap);
-        if (bitmap.DrawsNothing)
+        using var image = SKImage.FromBitmap(bitmap);
+        DrawImageNinePatch(image, center, destination, filterMode, paint);
+    }
+
+    public void DrawImageNinePatch(
+        SKImage image,
+        SKRectI center,
+        SKRect destination,
+        SKPaint? paint = null) =>
+        DrawImageNinePatch(image, center, destination, SKFilterMode.Nearest, paint);
+
+    public void DrawImageNinePatch(
+        SKImage image,
+        SKRectI center,
+        SKRect destination,
+        SKFilterMode filterMode = SKFilterMode.Nearest,
+        SKPaint? paint = null)
+    {
+        ArgumentNullException.ThrowIfNull(image);
+        if (center.Left < 0 ||
+            center.Top < 0 ||
+            center.Right > image.Width ||
+            center.Bottom > image.Height)
+        {
+            throw new ArgumentException(
+                "Center rectangle must be contained inside the image bounds.",
+                nameof(center));
+        }
+
+        if (!SKLatticeLayout.TryCreateNinePatch(
+                image.Width,
+                image.Height,
+                center,
+                destination,
+                out var patches))
         {
             return;
         }
 
-        var samplingMode = MapSampling(sampling);
-        var retainedTexture = RetainBitmapTexture(
-            bitmap,
-            samplingMode == TextureSamplingMode.LinearMipmap);
-        DrawRetainedImageCore(
-            retainedTexture,
-            bitmap.ColorSpace,
-            source,
-            dest,
-            samplingMode,
-            paint,
-            MapCubicSampling(sampling));
+        DrawImagePatchesCore(image, patches, destination, MapFilterMode(filterMode), paint);
     }
 
-    public void DrawSurface(SKSurface surface, SKPoint p, SKPaint? paint = null) =>
-        DrawSurface(surface, p.X, p.Y, paint);
+    public void DrawBitmapLattice(
+        SKBitmap bitmap,
+        int[] xDivs,
+        int[] yDivs,
+        SKRect destination,
+        SKPaint? paint = null) =>
+        DrawBitmapLattice(bitmap, xDivs, yDivs, destination, SKFilterMode.Nearest, paint);
 
-    public void DrawSurface(
-        SKSurface surface,
-        SKPoint p,
+    public void DrawBitmapLattice(
+        SKBitmap bitmap,
+        int[] xDivs,
+        int[] yDivs,
+        SKRect destination,
+        SKFilterMode filterMode,
+        SKPaint? paint = null)
+    {
+        ArgumentNullException.ThrowIfNull(bitmap);
+        using var image = SKImage.FromBitmap(bitmap);
+        DrawImageLattice(image, xDivs, yDivs, destination, filterMode, paint);
+    }
+
+    public void DrawImageLattice(
+        SKImage image,
+        int[] xDivs,
+        int[] yDivs,
+        SKRect destination,
+        SKPaint? paint = null) =>
+        DrawImageLattice(image, xDivs, yDivs, destination, SKFilterMode.Nearest, paint);
+
+    public void DrawImageLattice(
+        SKImage image,
+        int[] xDivs,
+        int[] yDivs,
+        SKRect destination,
+        SKFilterMode filterMode,
+        SKPaint? paint = null) =>
+        DrawImageLattice(
+            image,
+            new SKLattice { XDivs = xDivs, YDivs = yDivs },
+            destination,
+            filterMode,
+            paint);
+
+    public void DrawBitmapLattice(
+        SKBitmap bitmap,
+        SKLattice lattice,
+        SKRect destination,
+        SKPaint? paint = null) =>
+        DrawBitmapLattice(bitmap, lattice, destination, SKFilterMode.Nearest, paint);
+
+    public void DrawBitmapLattice(
+        SKBitmap bitmap,
+        SKLattice lattice,
+        SKRect destination,
+        SKFilterMode filterMode,
+        SKPaint? paint = null)
+    {
+        ArgumentNullException.ThrowIfNull(bitmap);
+        using var image = SKImage.FromBitmap(bitmap);
+        DrawImageLattice(image, lattice, destination, filterMode, paint);
+    }
+
+    public void DrawImageLattice(
+        SKImage image,
+        SKLattice lattice,
+        SKRect destination,
+        SKPaint? paint = null) =>
+        DrawImageLattice(image, lattice, destination, SKFilterMode.Nearest, paint);
+
+    public void DrawImageLattice(
+        SKImage image,
+        SKLattice lattice,
+        SKRect destination,
+        SKFilterMode filterMode,
+        SKPaint? paint = null)
+    {
+        ArgumentNullException.ThrowIfNull(image);
+        if (lattice.XDivs == null)
+        {
+            throw new ArgumentNullException("XDivs");
+        }
+        if (lattice.YDivs == null)
+        {
+            throw new ArgumentNullException("YDivs");
+        }
+
+        if (!SKLatticeLayout.TryCreateLattice(
+                image.Width,
+                image.Height,
+                lattice,
+                destination,
+                paint?.ColorFilter,
+                out var patches))
+        {
+            return;
+        }
+
+        DrawImagePatchesCore(image, patches, destination, MapFilterMode(filterMode), paint);
+    }
+
+    [Obsolete("Use the overload with SKSamplingOptions instead.")]
+    public void DrawBitmap(SKBitmap bitmap, SKPoint point, SKPaint? paint = null) =>
+        DrawBitmap(bitmap, point.X, point.Y, paint);
+
+    [Obsolete("Use the overload with SKSamplingOptions instead.")]
+    public void DrawBitmap(SKBitmap bitmap, float x, float y, SKPaint? paint = null)
+    {
+        ArgumentNullException.ThrowIfNull(bitmap);
+        using var image = SKImage.FromBitmap(bitmap);
+        DrawImage(
+            image,
+            x,
+            y,
+            paint?.GetLegacyFilterQualitySampling() ?? SKSamplingOptions.Default,
+            paint);
+    }
+
+    [Obsolete("Use the overload with SKSamplingOptions instead.")]
+    public void DrawBitmap(SKBitmap bitmap, SKRect destination, SKPaint? paint = null)
+    {
+        ArgumentNullException.ThrowIfNull(bitmap);
+        using var image = SKImage.FromBitmap(bitmap);
+        DrawImage(
+            image,
+            destination,
+            paint?.GetLegacyFilterQualitySampling() ?? SKSamplingOptions.Default,
+            paint);
+    }
+
+    [Obsolete("Use the overload with SKSamplingOptions instead.")]
+    public void DrawBitmap(SKBitmap bitmap, SKRect source, SKRect destination, SKPaint? paint = null)
+    {
+        ArgumentNullException.ThrowIfNull(bitmap);
+        using var image = SKImage.FromBitmap(bitmap);
+        DrawImage(
+            image,
+            source,
+            destination,
+            paint?.GetLegacyFilterQualitySampling() ?? SKSamplingOptions.Default,
+            paint);
+    }
+
+    public void DrawBitmap(
+        SKBitmap bitmap,
+        SKPoint point,
         SKSamplingOptions sampling,
         SKPaint? paint = null) =>
-        DrawSurface(surface, p.X, p.Y, sampling, paint);
+        DrawBitmap(bitmap, point.X, point.Y, sampling, paint);
+
+    public void DrawBitmap(
+        SKBitmap bitmap,
+        float x,
+        float y,
+        SKSamplingOptions sampling,
+        SKPaint? paint = null)
+    {
+        ArgumentNullException.ThrowIfNull(bitmap);
+        using var image = SKImage.FromBitmap(bitmap);
+        DrawImage(image, x, y, sampling, paint);
+    }
+
+    public void DrawBitmap(
+        SKBitmap bitmap,
+        SKRect destination,
+        SKSamplingOptions sampling,
+        SKPaint? paint = null)
+    {
+        ArgumentNullException.ThrowIfNull(bitmap);
+        using var image = SKImage.FromBitmap(bitmap);
+        DrawImage(image, destination, sampling, paint);
+    }
+
+    public void DrawBitmap(
+        SKBitmap bitmap,
+        SKRect source,
+        SKRect destination,
+        SKSamplingOptions sampling,
+        SKPaint? paint = null)
+    {
+        ArgumentNullException.ThrowIfNull(bitmap);
+        using var image = SKImage.FromBitmap(bitmap);
+        DrawImage(image, source, destination, sampling, paint);
+    }
+
+    public void DrawSurface(SKSurface surface, SKPoint point, SKPaint? paint = null) =>
+        DrawSurface(surface, point.X, point.Y, paint);
 
     public void DrawSurface(SKSurface surface, float x, float y, SKPaint? paint = null)
     {
         ArgumentNullException.ThrowIfNull(surface);
-        using var image = surface.CreateBorrowedImageForDraw();
-        DrawImage(image, x, y, paint);
+        surface.Draw(this, x, y, paint);
     }
+
+    public void DrawSurface(
+        SKSurface surface,
+        SKPoint point,
+        SKSamplingOptions sampling,
+        SKPaint? paint = null) =>
+        DrawSurface(surface, point.X, point.Y, sampling, paint);
 
     public void DrawSurface(
         SKSurface surface,
@@ -3513,24 +4719,7 @@ public class SKCanvas : IDisposable
         SKPaint? paint = null)
     {
         ArgumentNullException.ThrowIfNull(surface);
-        using var image = surface.CreateBorrowedImageForDraw();
-        DrawImage(image, x, y, sampling, paint);
-    }
-
-    private GpuTexture RetainBitmapTexture(SKBitmap bitmap, bool generateMipmaps)
-    {
-        var retainedTexture = SKImage.CreateTextureFromBitmap(
-            bitmap,
-            GetGpuContext(),
-            generateMipmaps,
-            "SKCanvas DrawBitmap Retained Source Texture");
-        if (bitmap.ColorSpace is { } bitmapColorSpace)
-        {
-            s_textureColorSpaces.Add(retainedTexture, new TextureColorSpace(bitmapColorSpace));
-        }
-
-        _context.RetainResource(retainedTexture);
-        return retainedTexture;
+        surface.Draw(this, x, y, sampling, paint);
     }
 
     private GpuTexture RetainImageTexture(SKImage image, bool generateMipmaps = false)
@@ -3599,8 +4788,6 @@ public class SKCanvas : IDisposable
 
     public void DrawTextBlob(SKTextBlob textBlob, float x, float y, SKPaint paint)
     {
-        ArgumentNullException.ThrowIfNull(textBlob);
-        ArgumentNullException.ThrowIfNull(paint);
         if (paint.Shader != null ||
             paint.Style != SKPaintStyle.Fill ||
             textBlob.HasEmboldenedRuns)
@@ -3726,29 +4913,10 @@ public class SKCanvas : IDisposable
     private static float GetFiniteFontSkewX(SKFont font) =>
         float.IsFinite(font.SkewX) ? font.SkewX : 0f;
 
-    public void DrawText(SKTextBlob text, float x, float y, SKPaint paint)
+    public void DrawText(SKTextBlob textBlob, float x, float y, SKPaint paint)
     {
-        ArgumentNullException.ThrowIfNull(text);
-        ArgumentNullException.ThrowIfNull(paint);
-        DrawTextBlob(text, x, y, paint);
+        DrawTextBlob(textBlob, x, y, paint);
     }
-
-    public void DrawText(string text, SKPoint p, SKPaint paint) =>
-        DrawText(text, p, paint.GetLegacyTextAlign(), paint.GetLegacyFont(), paint);
-
-    public void DrawText(string text, float x, float y, SKPaint paint) =>
-        DrawText(text, x, y, paint.GetLegacyTextAlign(), paint.GetLegacyFont(), paint);
-
-    public void DrawText(string text, SKPoint p, SKFont font, SKPaint paint) =>
-        DrawText(text, p, paint.GetLegacyTextAlign(), font, paint);
-
-    public void DrawText(
-        string text,
-        SKPoint p,
-        SKTextAlign textAlign,
-        SKFont font,
-        SKPaint paint) =>
-        DrawText(text, p.X, p.Y, textAlign, font, paint);
 
     public void DrawText(
         string text,
@@ -3794,20 +4962,39 @@ public class SKCanvas : IDisposable
         DrawTextBlob(blob, x, y, paint);
     }
 
+    [Obsolete("Use DrawText(string text, SKPoint p, SKTextAlign textAlign, SKFont font, SKPaint paint) instead.", true)]
+    public void DrawText(string text, SKPoint point, SKPaint paint) =>
+        DrawText(text, point, paint.GetLegacyTextAlign(), paint.GetLegacyFont(), paint);
+
+    [Obsolete("Use DrawText(string text, float x, float y, SKTextAlign textAlign, SKFont font, SKPaint paint) instead.", true)]
+    public void DrawText(string text, float x, float y, SKPaint paint) =>
+        DrawText(text, x, y, paint.GetLegacyTextAlign(), paint.GetLegacyFont(), paint);
+
+    [Obsolete("Use DrawText(string text, SKPoint p, SKTextAlign textAlign, SKFont font, SKPaint paint) instead.")]
+    public void DrawText(string text, SKPoint point, SKFont font, SKPaint paint) =>
+        DrawText(text, point, paint.GetLegacyTextAlign(), font, paint);
+
+    public void DrawText(
+        string text,
+        SKPoint point,
+        SKTextAlign textAlign,
+        SKFont font,
+        SKPaint paint) =>
+        DrawText(text, point.X, point.Y, textAlign, font, paint);
+
+    [Obsolete("Use DrawText(string text, float x, float y, SKTextAlign textAlign, SKFont font, SKPaint paint) instead.")]
     public void DrawText(string text, float x, float y, SKFont font, SKPaint paint) =>
         DrawText(text, x, y, paint.GetLegacyTextAlign(), font, paint);
 
+    [Obsolete("Use DrawTextOnPath(string text, SKPath path, float hOffset, float vOffset, SKTextAlign textAlign, SKFont font, SKPaint paint) instead.", true)]
     public void DrawTextOnPath(string text, SKPath path, SKPoint offset, SKPaint paint) =>
         DrawTextOnPath(text, path, offset, warpGlyphs: true, paint);
 
-    public void DrawTextOnPath(
-        string text,
-        SKPath path,
-        float hOffset,
-        float vOffset,
-        SKPaint paint) =>
+    [Obsolete("Use DrawTextOnPath(string text, SKPath path, float hOffset, float vOffset, SKTextAlign textAlign, SKFont font, SKPaint paint) instead.", true)]
+    public void DrawTextOnPath(string text, SKPath path, float hOffset, float vOffset, SKPaint paint) =>
         DrawTextOnPath(text, path, new SKPoint(hOffset, vOffset), warpGlyphs: true, paint);
 
+    [Obsolete("Use DrawTextOnPath(string text, SKPath path, SKPoint offset, bool warpGlyphs, SKTextAlign textAlign, SKFont font, SKPaint paint) instead.", true)]
     public void DrawTextOnPath(
         string text,
         SKPath path,
@@ -3816,20 +5003,14 @@ public class SKCanvas : IDisposable
         SKPaint paint) =>
         DrawTextOnPath(text, path, offset, warpGlyphs, paint.GetLegacyFont(), paint);
 
+    [Obsolete("Use the overload with SKTextAlign parameter instead.")]
     public void DrawTextOnPath(
         string text,
         SKPath path,
         SKPoint offset,
         SKFont font,
         SKPaint paint) =>
-        DrawTextOnPath(
-            text,
-            path,
-            offset,
-            warpGlyphs: true,
-            paint.GetLegacyTextAlign(),
-            font,
-            paint);
+        DrawTextOnPath(text, path, offset, warpGlyphs: true, paint.GetLegacyTextAlign(), font, paint);
 
     public void DrawTextOnPath(
         string text,
@@ -3840,6 +5021,7 @@ public class SKCanvas : IDisposable
         SKPaint paint) =>
         DrawTextOnPath(text, path, offset, warpGlyphs: true, textAlign, font, paint);
 
+    [Obsolete("Use the overload with SKTextAlign parameter instead.")]
     public void DrawTextOnPath(
         string text,
         SKPath path,
@@ -3847,14 +5029,7 @@ public class SKCanvas : IDisposable
         float vOffset,
         SKFont font,
         SKPaint paint) =>
-        DrawTextOnPath(
-            text,
-            path,
-            new SKPoint(hOffset, vOffset),
-            warpGlyphs: true,
-            paint.GetLegacyTextAlign(),
-            font,
-            paint);
+        DrawTextOnPath(text, path, new SKPoint(hOffset, vOffset), warpGlyphs: true, paint.GetLegacyTextAlign(), font, paint);
 
     public void DrawTextOnPath(
         string text,
@@ -3873,6 +5048,7 @@ public class SKCanvas : IDisposable
             font,
             paint);
 
+    [Obsolete("Use the overload with SKTextAlign parameter instead.")]
     public void DrawTextOnPath(
         string text,
         SKPath path,
@@ -3880,14 +5056,7 @@ public class SKCanvas : IDisposable
         bool warpGlyphs,
         SKFont font,
         SKPaint paint) =>
-        DrawTextOnPath(
-            text,
-            path,
-            offset,
-            warpGlyphs,
-            paint.GetLegacyTextAlign(),
-            font,
-            paint);
+        DrawTextOnPath(text, path, offset, warpGlyphs, paint.GetLegacyTextAlign(), font, paint);
 
     public void DrawTextOnPath(
         string text,
@@ -3936,7 +5105,7 @@ public class SKCanvas : IDisposable
         }
 
         using var surface = SKSurface.Create(_bitmap.Info, _bitmap.GetPixels(), _bitmap.RowBytes);
-        surface.Canvas.Context.Append(_context);
+        surface.Canvas.DrawingContext.Append(_context);
         surface.Flush();
         _context.Clear();
     }
@@ -3951,6 +5120,16 @@ public class SKCanvas : IDisposable
         _ownedLayerTextures.Clear();
     }
 
+    private void ReleaseUnrestoredLayers()
+    {
+        while (_layerStack.TryPop(out var layer))
+        {
+            layer.LayerContext.Clear();
+            layer.PreviousContext?.Clear();
+            layer.Paint?.Dispose();
+        }
+    }
+
     public void Dispose()
     {
         try
@@ -3960,7 +5139,9 @@ public class SKCanvas : IDisposable
         finally
         {
             _bitmap?.DetachCanvas(this);
+            ReleaseUnrestoredLayers();
             ReleaseLayerTexturesAfterFlush();
+            _surface = null;
         }
     }
 }

@@ -34,7 +34,8 @@ public enum GpuBlendMode
     Hue,
     Saturation,
     Color,
-    Luminosity
+    Luminosity,
+    Modulate
 }
 
 public unsafe class RenderPipelineCache : IDisposable
@@ -368,6 +369,10 @@ public unsafe class RenderPipelineCache : IDisposable
             case GpuBlendMode.Multiply:
                 blendState.Color = new BlendComponent { SrcFactor = BlendFactor.Dst, DstFactor = BlendFactor.OneMinusSrcAlpha, Operation = BlendOperation.Add };
                 blendState.Alpha = new BlendComponent { SrcFactor = BlendFactor.One, DstFactor = BlendFactor.OneMinusSrcAlpha, Operation = BlendOperation.Add };
+                break;
+            case GpuBlendMode.Modulate:
+                blendState.Color = new BlendComponent { SrcFactor = BlendFactor.Dst, DstFactor = BlendFactor.Zero, Operation = BlendOperation.Add };
+                blendState.Alpha = new BlendComponent { SrcFactor = BlendFactor.DstAlpha, DstFactor = BlendFactor.Zero, Operation = BlendOperation.Add };
                 break;
             case GpuBlendMode.Screen:
                 blendState.Color = new BlendComponent { SrcFactor = BlendFactor.One, DstFactor = BlendFactor.OneMinusSrc, Operation = BlendOperation.Add };

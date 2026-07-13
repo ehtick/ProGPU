@@ -1,0 +1,107 @@
+using System.Numerics;
+using ProGPU.Scene;
+using ProGPU.Vector;
+using SkiaSharp;
+using Xunit;
+
+namespace ProGPU.Tests;
+
+public sealed class SkCanvasCoreOperationCompatibilityTests
+{
+    [Fact]
+    public void ColorFClearUsesClampedDeviceSpaceSourceColor()
+    {
+        using var recorder = new SKPictureRecorder();
+        var canvas = recorder.BeginRecording(new SKRect(0f, 0f, 20f, 20f));
+
+        canvas.Clear(new SKColorF(-1f, 0.25f, 2f, 0.5f));
+        using var picture = recorder.EndRecording();
+
+        Assert.Collection(
+            picture.Picture.Commands,
+            command => Assert.Equal(RenderCommandType.PushBlendMode, command.Type),
+            command =>
+            {
+                Assert.Equal(RenderCommandType.DrawRect, command.Type);
+                var brush = Assert.IsType<SolidColorBrush>(command.Brush);
+                Assert.Equal(new Vector4(0f, 0.25f, 1f, 0.5f), brush.Color);
+                Assert.Equal(Matrix4x4.Identity, command.Transform);
+            },
+            command => Assert.Equal(RenderCommandType.PopBlendMode, command.Type));
+    }
+
+    [Fact]
+    public void DrawColorUsesRequestedBlendModeWithoutCanvasTransform()
+    {
+        using var recorder = new SKPictureRecorder();
+        var canvas = recorder.BeginRecording(new SKRect(0f, 0f, 20f, 20f));
+        canvas.Translate(7f, 9f);
+
+        canvas.DrawColor(SKColors.Red, SKBlendMode.Multiply);
+        using var picture = recorder.EndRecording();
+
+        Assert.Collection(
+            picture.Picture.Commands,
+            command => Assert.Equal(RenderCommandType.PushBlendMode, command.Type),
+            command =>
+            {
+                Assert.Equal(RenderCommandType.DrawRect, command.Type);
+                Assert.Equal(Matrix4x4.Identity, command.Transform);
+            },
+            command => Assert.Equal(RenderCommandType.PopBlendMode, command.Type));
+    }
+
+    [Fact]
+    public void ArcCenterFlagControlsContourClosure()
+    {
+        using var paint = new SKPaint { Style = SKPaintStyle.Stroke };
+        using var openRecorder = new SKPictureRecorder();
+        var openCanvas = openRecorder.BeginRecording(new SKRect(0f, 0f, 30f, 30f));
+        openCanvas.DrawArc(new SKRect(2f, 4f, 22f, 16f), 0f, 90f, false, paint);
+        using var openPicture = openRecorder.EndRecording();
+        var openPath = Assert.Single(openPicture.Picture.Commands).Path!;
+
+        using var wedgeRecorder = new SKPictureRecorder();
+        var wedgeCanvas = wedgeRecorder.BeginRecording(new SKRect(0f, 0f, 30f, 30f));
+        wedgeCanvas.DrawArc(new SKRect(2f, 4f, 22f, 16f), 0f, 90f, true, paint);
+        using var wedgePicture = wedgeRecorder.EndRecording();
+        var wedgePath = Assert.Single(wedgePicture.Picture.Commands).Path!;
+
+        Assert.True(openPath.TryGetBounds(out var openMin, out var openMax));
+        Assert.True(wedgePath.TryGetBounds(out var wedgeMin, out var wedgeMax));
+        Assert.True(wedgeMin.X <= openMin.X);
+        Assert.True(wedgeMax.Y >= openMax.Y);
+    }
+
+    [Fact]
+    public void FullArcRecordsOneOvalPath()
+    {
+        using var recorder = new SKPictureRecorder();
+        var canvas = recorder.BeginRecording(new SKRect(0f, 0f, 30f, 30f));
+        using var paint = new SKPaint();
+
+        canvas.DrawArc(new SKRect(2f, 4f, 22f, 16f), 15f, 720f, false, paint);
+        using var picture = recorder.EndRecording();
+
+        var command = Assert.Single(picture.Picture.Commands);
+        Assert.Equal(RenderCommandType.DrawPath, command.Type);
+        Assert.True(command.Path!.TryGetBounds(out var min, out var max));
+        Assert.Equal(new Vector2(2f, 4f), min);
+        Assert.Equal(new Vector2(22f, 16f), max);
+    }
+
+    [Fact]
+    public void DiscardIsRetainedNoOpAndTotalMatrixIsReadOnly()
+    {
+        using var recorder = new SKPictureRecorder();
+        var canvas = recorder.BeginRecording(new SKRect(0f, 0f, 20f, 20f));
+        canvas.Translate(3f, 5f);
+        var before = canvas.TotalMatrix;
+
+        canvas.Discard();
+        Assert.Equal(before, canvas.TotalMatrix);
+        Assert.False(typeof(SKCanvas).GetProperty(nameof(SKCanvas.TotalMatrix))!.CanWrite);
+        using var picture = recorder.EndRecording();
+        Assert.Empty(picture.Picture.Commands);
+    }
+}

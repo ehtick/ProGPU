@@ -114,8 +114,8 @@ public partial class SKFont : IDisposable
             StrokeJoin = SKStrokeJoin.Miter,
             StrokeMiter = 4f
         };
-        using var strokePath = new SKPath();
-        if (emboldenPaint.GetFillPath(path, strokePath))
+        using var strokePath = emboldenPaint.GetFillPath(path);
+        if (strokePath != null)
         {
             SKPaint.NormalizeStrokeWinding(path, strokePath);
             var emboldenedPath = new SKPath(path);

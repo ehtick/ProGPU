@@ -464,7 +464,12 @@ public sealed unsafe class BackdropMaterialExtensionPipeline : ICompositorExtens
         TextureSamplingMode samplingMode,
         bool isOffscreen)
     {
-        var key = new Compositor.TextureCacheKey(texture.Id, texture.Generation, isOffscreen, samplingMode);
+        var key = new Compositor.TextureCacheKey(
+            texture.Id,
+            texture.Generation,
+            isOffscreen,
+            samplingMode,
+            maxAnisotropy: 1);
         lock (_textureBindGroups)
         {
             if (_textureBindGroups.TryGetValue(key, out var cached))

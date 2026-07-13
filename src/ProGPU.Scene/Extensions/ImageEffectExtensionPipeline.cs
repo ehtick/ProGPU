@@ -409,7 +409,8 @@ namespace ProGPU.Scene.Extensions
                 p.Texture.Id,
                 p.Texture.Generation,
                 isOffscreen,
-                p.SamplingMode);
+                p.SamplingMode,
+                maxAnisotropy: 1);
             Compositor.CachedBindGroup? cachedBg;
             lock (_textureBindGroups)
             {

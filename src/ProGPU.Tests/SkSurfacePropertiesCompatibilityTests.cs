@@ -1,3 +1,4 @@
+using System.Reflection;
 using SkiaSharp;
 using Xunit;
 
@@ -6,39 +7,55 @@ namespace ProGPU.Tests;
 public sealed class SkSurfacePropertiesCompatibilityTests
 {
     [Fact]
-    public void PixelGeometryValuesMatchSkiaSharp148()
+    public void SurfaceFlagsMatchNativeContract()
     {
-        Assert.Equal(0, (int)SKPixelGeometry.Unknown);
-        Assert.Equal(1, (int)SKPixelGeometry.RgbHorizontal);
-        Assert.Equal(2, (int)SKPixelGeometry.BgrHorizontal);
-        Assert.Equal(3, (int)SKPixelGeometry.RgbVertical);
-        Assert.Equal(4, (int)SKPixelGeometry.BgrVertical);
+        Assert.NotNull(typeof(SKSurfacePropsFlags).GetCustomAttribute<FlagsAttribute>());
+        Assert.Equal(0, (int)SKSurfacePropsFlags.None);
+        Assert.Equal(1, (int)SKSurfacePropsFlags.UseDeviceIndependentFonts);
     }
 
     [Fact]
-    public void ConstructorsRetainFlagsAndPixelGeometry()
+    public void PixelGeometryConstructorUsesNoFlags()
     {
-        using var defaults = new SKSurfaceProperties(SKPixelGeometry.RgbHorizontal);
-        Assert.Equal(SKSurfacePropsFlags.None, defaults.Flags);
-        Assert.Equal(SKPixelGeometry.RgbHorizontal, defaults.PixelGeometry);
-        Assert.False(defaults.IsUseDeviceIndependentFonts);
+        using var properties = new SKSurfaceProperties(SKPixelGeometry.BgrVertical);
 
-        using var typed = new SKSurfaceProperties(
-            SKSurfacePropsFlags.UseDeviceIndependentFonts,
-            SKPixelGeometry.BgrVertical);
-        Assert.Equal(SKSurfacePropsFlags.UseDeviceIndependentFonts, typed.Flags);
-        Assert.Equal(SKPixelGeometry.BgrVertical, typed.PixelGeometry);
-        Assert.True(typed.IsUseDeviceIndependentFonts);
+        Assert.Equal(SKSurfacePropsFlags.None, properties.Flags);
+        Assert.Equal(SKPixelGeometry.BgrVertical, properties.PixelGeometry);
+        Assert.False(properties.IsUseDeviceIndependentFonts);
     }
 
     [Fact]
-    public void UIntConstructorPreservesUnknownFlagBits()
+    public void UnsignedConstructorPreservesUnknownFlagBits()
     {
-        const uint flags = 0x80000001u;
-        using var properties = new SKSurfaceProperties(flags, SKPixelGeometry.RgbVertical);
+        using var properties = new SKSurfaceProperties(0x80000001u, (SKPixelGeometry)37);
 
-        Assert.Equal(flags, unchecked((uint)properties.Flags));
+        Assert.Equal(unchecked((SKSurfacePropsFlags)0x80000001u), properties.Flags);
+        Assert.Equal((SKPixelGeometry)37, properties.PixelGeometry);
         Assert.True(properties.IsUseDeviceIndependentFonts);
-        Assert.Equal(SKPixelGeometry.RgbVertical, properties.PixelGeometry);
+    }
+
+    [Fact]
+    public void EnumConstructorPreservesNativeValues()
+    {
+        using var properties = new SKSurfaceProperties(
+            SKSurfacePropsFlags.UseDeviceIndependentFonts,
+            SKPixelGeometry.RgbHorizontal);
+
+        Assert.Equal(SKSurfacePropsFlags.UseDeviceIndependentFonts, properties.Flags);
+        Assert.Equal(SKPixelGeometry.RgbHorizontal, properties.PixelGeometry);
+        Assert.True(properties.IsUseDeviceIndependentFonts);
+    }
+
+    [Fact]
+    public void OwnedSurfacePropertiesUseInheritedLifetime()
+    {
+        var properties = new SKSurfaceProperties(SKPixelGeometry.Unknown);
+
+        Assert.NotEqual(IntPtr.Zero, properties.Handle);
+        properties.Dispose();
+        Assert.Equal(IntPtr.Zero, properties.Handle);
+        Assert.Null(typeof(SKSurfaceProperties).GetMethod(
+            nameof(IDisposable.Dispose),
+            BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly));
     }
 }

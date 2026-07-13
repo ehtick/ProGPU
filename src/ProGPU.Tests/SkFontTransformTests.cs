@@ -5,6 +5,8 @@ using ProGPU.Vector;
 using SkiaSharp;
 using Xunit;
 
+#pragma warning disable CS0618 // This suite intentionally covers legacy SkiaSharp overloads.
+
 namespace ProGPU.Tests;
 
 public sealed class SkFontTransformTests
@@ -81,7 +83,6 @@ public sealed class SkFontTransformTests
         };
         using var normalPath = normal.GetTextPath("H");
         using var emboldenedPath = emboldened.GetTextPath("H");
-        using var expectedPath = new SKPath();
         using var fakeBoldPaint = new SKPaint
         {
             Style = SKPaintStyle.StrokeAndFill,
@@ -90,7 +91,7 @@ public sealed class SkFontTransformTests
             StrokeMiter = 4f
         };
 
-        Assert.True(fakeBoldPaint.GetFillPath(normalPath, expectedPath));
+        using var expectedPath = Assert.IsType<SKPath>(fakeBoldPaint.GetFillPath(normalPath));
         Assert.Equal(expectedPath.Bounds, emboldenedPath.Bounds);
         AssertNear(normal.MeasureText("H"), emboldened.MeasureText("H"));
     }

@@ -23,6 +23,44 @@ public class ShaderResourceTests
     }
 
     [Fact]
+    public void TextureShaderSupportsBatchedFixedColorLatticeCells()
+    {
+        Assert.Contains("@location(3) patchKind: f32", Shaders.TextureShader, StringComparison.Ordinal);
+        Assert.Contains("@interpolate(flat) patchKind", Shaders.TextureShader, StringComparison.Ordinal);
+        Assert.Contains(
+            "if (input.patchKind > 0.5 && input.patchKind < 2.5)",
+            Shaders.TextureShader,
+            StringComparison.Ordinal);
+        Assert.Contains("if (input.patchKind > 1.5)", Shaders.TextureShader, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TextureShaderSupportsBatchedAtlasTransformsAndColorBlending()
+    {
+        Assert.Contains("@location(5) colorBlendMode: f32", Shaders.TextureShader, StringComparison.Ordinal);
+        Assert.Contains("@location(6) patchOpacity: f32", Shaders.TextureShader, StringComparison.Ordinal);
+        Assert.Contains("fn blend_atlas_color(", Shaders.TextureShader, StringComparison.Ordinal);
+        Assert.Contains("Sprite is the blend source", Shaders.TextureShader, StringComparison.Ordinal);
+        Assert.Contains("if (input.patchKind > 2.5)", Shaders.TextureShader, StringComparison.Ordinal);
+        Assert.Contains("u32(round(input.colorBlendMode))", Shaders.TextureShader, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MagnifierShaderPreservesSkiaLensWeightingAndSamplingQuality()
+    {
+        Assert.Contains(
+            "2.0 - length(vec2<f32>(2.0) - edgeInset)",
+            ComputeShaders.Magnifier,
+            StringComparison.Ordinal);
+        Assert.Contains("weight *= weight", ComputeShaders.Magnifier, StringComparison.Ordinal);
+        Assert.Contains("let outputBounds = params.outputBounds", ComputeShaders.Magnifier, StringComparison.Ordinal);
+        Assert.Contains("fn sample_linear", ComputeShaders.Magnifier, StringComparison.Ordinal);
+        Assert.Contains("fn sample_cubic", ComputeShaders.Magnifier, StringComparison.Ordinal);
+        Assert.Contains("for (var y = -1; y <= 2", ComputeShaders.Magnifier, StringComparison.Ordinal);
+        Assert.Contains("for (var x = -1; x <= 2", ComputeShaders.Magnifier, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void EveryShaderSourceIsEmbeddedAndDocumentsItsCostModel()
     {
         DirectoryInfo root = FindRepositoryRoot();

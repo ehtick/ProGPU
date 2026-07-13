@@ -35,12 +35,20 @@ public enum SKFontStyleWidth
     UltraExpanded = 9,
 }
 
-public class SKFontStyle : SKObject
+public class SKFontStyle : SKObject, ISKSkipObjectRegistration
 {
-    private static readonly SKFontStyle s_normal = MakeDisposeProtected(SKFontStyleWeight.Normal, SKFontStyleSlant.Upright);
-    private static readonly SKFontStyle s_bold = MakeDisposeProtected(SKFontStyleWeight.Bold, SKFontStyleSlant.Upright);
-    private static readonly SKFontStyle s_italic = MakeDisposeProtected(SKFontStyleWeight.Normal, SKFontStyleSlant.Italic);
-    private static readonly SKFontStyle s_boldItalic = MakeDisposeProtected(SKFontStyleWeight.Bold, SKFontStyleSlant.Italic);
+    private static readonly SKFontStyle s_normal = MakeDisposeProtected(
+        SKFontStyleWeight.Normal,
+        SKFontStyleSlant.Upright);
+    private static readonly SKFontStyle s_bold = MakeDisposeProtected(
+        SKFontStyleWeight.Bold,
+        SKFontStyleSlant.Upright);
+    private static readonly SKFontStyle s_italic = MakeDisposeProtected(
+        SKFontStyleWeight.Normal,
+        SKFontStyleSlant.Italic);
+    private static readonly SKFontStyle s_boldItalic = MakeDisposeProtected(
+        SKFontStyleWeight.Bold,
+        SKFontStyleSlant.Italic);
 
     public int Weight { get; }
     public int Width { get; }

@@ -49,8 +49,8 @@ public sealed class SkBitmapShaderCompatibilityTests
         Assert.Equal(SKShaderTileMode.Repeat, shader.TileModeX);
         Assert.Equal(SKShaderTileMode.Mirror, shader.TileModeY);
         Assert.True(shader.Sampling.UseCubic);
-        Assert.Equal(0.2f, shader.Sampling.CubicResampler.B);
-        Assert.Equal(0.4f, shader.Sampling.CubicResampler.C);
+        Assert.Equal(0.2f, shader.Sampling.Cubic.B);
+        Assert.Equal(0.4f, shader.Sampling.Cubic.C);
 
         var mapSampling = typeof(SKCanvas).GetMethod(
             "MapSampling",

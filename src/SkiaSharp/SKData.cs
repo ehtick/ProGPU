@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace SkiaSharp;
 
@@ -340,6 +341,15 @@ public class SKData : IDisposable
         }
 
         return new SKData(address, length, releaseProc, context);
+    }
+
+    internal static SKData FromCString(string? value)
+    {
+        var textBytes = Encoding.ASCII.GetBytes(value ?? string.Empty);
+        var bytes = GC.AllocateUninitializedArray<byte>(checked(textBytes.Length + 1));
+        textBytes.CopyTo(bytes, 0);
+        bytes[^1] = 0;
+        return new SKData(bytes);
     }
 
     public SKData Subset(ulong offset, ulong length)

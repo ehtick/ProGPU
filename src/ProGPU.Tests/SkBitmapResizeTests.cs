@@ -41,6 +41,28 @@ public sealed class SkBitmapResizeTests
     }
 
     [Fact]
+    public void ResizeAnisotropicUsesLinearCpuFallback()
+    {
+        using var source = CreateFourColorBitmap(SKAlphaType.Unpremul);
+        using var linear = source.Resize(
+            new SKImageInfo(3, 3, SKColorType.Rgba8888, SKAlphaType.Unpremul),
+            new SKSamplingOptions(SKFilterMode.Linear));
+        using var anisotropic = source.Resize(
+            new SKImageInfo(3, 3, SKColorType.Rgba8888, SKAlphaType.Unpremul),
+            new SKSamplingOptions(8));
+
+        Assert.NotNull(linear);
+        Assert.NotNull(anisotropic);
+        for (var y = 0; y < 3; y++)
+        {
+            for (var x = 0; x < 3; x++)
+            {
+                Assert.Equal(linear.GetPixel(x, y), anisotropic.GetPixel(x, y));
+            }
+        }
+    }
+
+    [Fact]
     public void ResizeCubicPreservesMitchellAndCatmullRomKernels()
     {
         using var source = CreateFourColorBitmap(SKAlphaType.Unpremul);

@@ -5,22 +5,6 @@ using ProGPU.Vector;
 
 namespace SkiaSharp;
 
-public enum SKPathConvexity
-{
-    Unknown = 0,
-    Convex = 1,
-    Concave = 2,
-}
-
-[Flags]
-public enum SKPathSegmentMask
-{
-    Line = 1,
-    Quad = 2,
-    Conic = 4,
-    Cubic = 8,
-}
-
 public enum SKPath1DPathEffectStyle
 {
     Translate = 0,
@@ -128,8 +112,19 @@ public partial class SKPath
 
     public int VerbCount => BuildRawOperations().Count;
 
-    public void AddArc(SKRect oval, float startAngle, float sweepAngle) =>
+    public void AddArc(SKRect oval, float startAngle, float sweepAngle)
+    {
+        if (!IsValidOvalArc(oval, startAngle, sweepAngle))
+        {
+            return;
+        }
+
         AppendOvalArc(oval, startAngle, sweepAngle, forceMoveTo: true);
+        if (MathF.Abs(sweepAngle) >= 360f)
+        {
+            Close();
+        }
+    }
 
     public void AddPathReverse(SKPath other)
     {
@@ -174,7 +169,14 @@ public partial class SKPath
     public void AddRoundRect(SKRoundRect rect, SKPathDirection direction, uint startIndex)
     {
         ArgumentNullException.ThrowIfNull(rect);
-        AppendRoundRect(rect.Rect, rect.CornerRadii, direction, startIndex % 8);
+        if (startIndex > 7)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(startIndex),
+                "Starting index must be in the range of 0..7 (inclusive).");
+        }
+
+        AppendRoundRect(rect.Rect, rect.CornerRadii, direction, startIndex);
     }
 
     public void ArcTo(SKPoint point1, SKPoint point2, float radius) =>
@@ -188,8 +190,29 @@ public partial class SKPath
         SKPoint xy) =>
         ArcTo(r.X, r.Y, xAxisRotate, largeArc, sweep, xy.X, xy.Y);
 
-    public void ArcTo(SKRect oval, float startAngle, float sweepAngle, bool forceMoveTo) =>
-        AppendOvalArc(oval, startAngle, sweepAngle, forceMoveTo);
+    public void ArcTo(SKRect oval, float startAngle, float sweepAngle, bool forceMoveTo)
+    {
+        if (!TryGetOvalArc(
+                oval,
+                startAngle,
+                sweepAngle,
+                out var center,
+                out var radiusX,
+                out var radiusY,
+                out var sweep,
+                out var start))
+        {
+            return;
+        }
+
+        ConnectOvalArc(start, forceMoveTo);
+        if (MathF.Abs(sweepAngle) >= 360f)
+        {
+            return;
+        }
+
+        AppendOvalArcSegments(center, radiusX, radiusY, startAngle, sweep);
+    }
 
     public void ArcTo(float x1, float y1, float x2, float y2, float radius)
     {
@@ -299,7 +322,7 @@ public partial class SKPath
         }
 
         var operations = BuildRawOperations();
-        var result = new SKPoint[Math.Min(max, CountPoints(operations))];
+        var result = new SKPoint[max];
         WritePoints(operations, result);
         return result;
     }
@@ -404,23 +427,6 @@ public partial class SKPath
         FillType = SKPathFillType.Winding;
     }
 
-    public SKPath Simplify()
-    {
-        var result = new SKPath(this);
-        result.FillType = FillType is SKPathFillType.InverseEvenOdd or SKPathFillType.EvenOdd
-            ? SKPathFillType.EvenOdd
-            : SKPathFillType.Winding;
-        return result;
-    }
-
-    public bool Simplify(SKPath result)
-    {
-        ArgumentNullException.ThrowIfNull(result);
-        using var simplified = Simplify();
-        CopyTo(simplified, result);
-        return true;
-    }
-
     public string ToSvgPathData()
     {
         var builder = new StringBuilder(Math.Max(16, VerbCount * 16));
@@ -480,20 +486,6 @@ public partial class SKPath
         return builder.ToString();
     }
 
-    public SKPath ToWinding()
-    {
-        var result = new SKPath(this) { FillType = SKPathFillType.Winding };
-        return result;
-    }
-
-    public bool ToWinding(SKPath result)
-    {
-        ArgumentNullException.ThrowIfNull(result);
-        using var winding = ToWinding();
-        CopyTo(winding, result);
-        return true;
-    }
-
     public void Transform(in SKMatrix matrix) => Transform((SKMatrix)matrix);
 
     public void Transform(SKMatrix matrix, SKPath destination) =>
@@ -511,9 +503,18 @@ public partial class SKPath
         int pow2)
     {
         ArgumentNullException.ThrowIfNull(pts);
+        pow2 = ValidateConicPow2(pow2);
+        var requiredPointCount = checked((1 << pow2) * 2 + 1);
+        if (pts.Length < requiredPointCount)
+        {
+            throw new ArgumentException(
+                $"The destination requires at least {requiredPointCount} points.",
+                nameof(pts));
+        }
+
         var converted = ConvertConicToQuads(p0, p1, p2, w, pow2);
-        Array.Copy(converted, pts, Math.Min(converted.Length, pts.Length));
-        return 1 << ValidateConicPow2(pow2);
+        Array.Copy(converted, pts, converted.Length);
+        return 1 << pow2;
     }
 
     public static SKPoint[] ConvertConicToQuads(
@@ -592,30 +593,88 @@ public partial class SKPath
 
     private void AppendOvalArc(SKRect oval, float startAngle, float sweepAngle, bool forceMoveTo)
     {
-        var radiusX = MathF.Abs(oval.Width) * 0.5f;
-        var radiusY = MathF.Abs(oval.Height) * 0.5f;
-        var center = new Vector2(oval.MidX, oval.MidY);
-        var sweep = Math.Clamp(sweepAngle, -360f, 360f);
-        var start = GetOvalPoint(center, radiusX, radiusY, startAngle);
-        if (forceMoveTo || Geometry.Figures.Count == 0)
-        {
-            MoveTo(start.X, start.Y);
-        }
-        else
-        {
-            EnsureFigure();
-            if (!Near(_currentPoint, start))
-            {
-                LineTo(start.X, start.Y);
-            }
-        }
-
-        if (!float.IsFinite(startAngle) || !float.IsFinite(sweep) ||
-            radiusX <= PathEpsilon || radiusY <= PathEpsilon || MathF.Abs(sweep) <= PathEpsilon)
+        if (!TryGetOvalArc(
+                oval,
+                startAngle,
+                sweepAngle,
+                out var center,
+                out var radiusX,
+                out var radiusY,
+                out var sweep,
+                out var start))
         {
             return;
         }
 
+        ConnectOvalArc(start, forceMoveTo);
+        AppendOvalArcSegments(center, radiusX, radiusY, startAngle, sweep);
+    }
+
+    private static bool IsValidOvalArc(SKRect oval, float startAngle, float sweepAngle) =>
+        TryGetOvalArc(
+            oval,
+            startAngle,
+            sweepAngle,
+            out _,
+            out _,
+            out _,
+            out _,
+            out _);
+
+    private static bool TryGetOvalArc(
+        SKRect oval,
+        float startAngle,
+        float sweepAngle,
+        out Vector2 center,
+        out float radiusX,
+        out float radiusY,
+        out float sweep,
+        out Vector2 start)
+    {
+        center = new Vector2(oval.MidX, oval.MidY);
+        radiusX = MathF.Abs(oval.Width) * 0.5f;
+        radiusY = MathF.Abs(oval.Height) * 0.5f;
+        sweep = Math.Clamp(sweepAngle, -360f, 360f);
+        start = default;
+        if (!float.IsFinite(startAngle) ||
+            !float.IsFinite(sweepAngle) ||
+            !float.IsFinite(center.X) ||
+            !float.IsFinite(center.Y) ||
+            !float.IsFinite(radiusX) ||
+            !float.IsFinite(radiusY) ||
+            radiusX <= PathEpsilon ||
+            radiusY <= PathEpsilon ||
+            MathF.Abs(sweep) <= PathEpsilon)
+        {
+            return false;
+        }
+
+        start = GetOvalPoint(center, radiusX, radiusY, startAngle);
+        return true;
+    }
+
+    private void ConnectOvalArc(Vector2 start, bool forceMoveTo)
+    {
+        if (forceMoveTo || Geometry.Figures.Count == 0)
+        {
+            MoveTo(start.X, start.Y);
+            return;
+        }
+
+        EnsureFigure();
+        if (!Near(_currentPoint, start))
+        {
+            LineTo(start.X, start.Y);
+        }
+    }
+
+    private void AppendOvalArcSegments(
+        Vector2 center,
+        float radiusX,
+        float radiusY,
+        float startAngle,
+        float sweep)
+    {
         var segmentCount = Math.Max(1, (int)MathF.Ceiling(MathF.Abs(sweep) / 180f));
         var segmentSweep = sweep / segmentCount;
         var direction = segmentSweep >= 0f ? SweepDirection.Clockwise : SweepDirection.Counterclockwise;
@@ -662,12 +721,17 @@ public partial class SKPath
         var currentIndex = (int)startIndex;
         MoveTo(points[currentIndex].X, points[currentIndex].Y);
         var step = direction == SKPathDirection.Clockwise ? 1 : -1;
-        for (var count = 0; count < 8; count++)
+        for (var edge = 1; edge <= 8; edge++)
         {
             var nextIndex = (currentIndex + step + 8) % 8;
             var isArc = direction == SKPathDirection.Clockwise
                 ? currentIndex % 2 == 1
                 : currentIndex % 2 == 0;
+            if (edge == 8 && !isArc)
+            {
+                break;
+            }
+
             if (isArc)
             {
                 var cornerIndex = direction == SKPathDirection.Clockwise
@@ -792,8 +856,28 @@ public partial class SKPath
     {
         var angle = angleDegrees * MathF.PI / 180f;
         return new Vector2(
-            center.X + radiusX * MathF.Cos(angle),
-            center.Y + radiusY * MathF.Sin(angle));
+            center.X + radiusX * SnapUnitTrigonometricValue(MathF.Cos(angle)),
+            center.Y + radiusY * SnapUnitTrigonometricValue(MathF.Sin(angle)));
+    }
+
+    private static float SnapUnitTrigonometricValue(float value)
+    {
+        if (MathF.Abs(value) <= PathEpsilon)
+        {
+            return 0f;
+        }
+
+        if (MathF.Abs(value - 1f) <= PathEpsilon)
+        {
+            return 1f;
+        }
+
+        if (MathF.Abs(value + 1f) <= PathEpsilon)
+        {
+            return -1f;
+        }
+
+        return value;
     }
 
     private static void NormalizeRoundRectRadii(SKRect rect, Span<Vector2> radii)
@@ -1361,6 +1445,11 @@ public partial class SKPath
         var current = start;
         var currentTheta = theta;
         var remainingDelta = totalDelta;
+        var rotation = arc.RotationAngle * (MathF.PI / 180f);
+        var cosRotation = MathF.Cos(rotation);
+        var sinRotation = MathF.Sin(rotation);
+        var axisX = new Vector2(cosRotation * radiusX, sinRotation * radiusX);
+        var axisY = new Vector2(-sinRotation * radiusY, cosRotation * radiusY);
         for (var index = 0; index < segmentCount; index++)
         {
             var segmentDelta = MathF.CopySign(
@@ -1369,21 +1458,14 @@ public partial class SKPath
             var endTheta = currentTheta + segmentDelta;
             var midpointTheta = currentTheta + segmentDelta * 0.5f;
             var weight = MathF.Cos(segmentDelta * 0.5f);
-            var ellipseMidpoint = ArcSegmentGeometry.EvaluatePoint(
-                center,
-                radiusX,
-                radiusY,
-                arc.RotationAngle,
-                midpointTheta);
-            var control = center + (ellipseMidpoint - center) / weight;
+            var control = center +
+                axisX * SnapUnitTrigonometricValue(MathF.Cos(midpointTheta) / weight) +
+                axisY * SnapUnitTrigonometricValue(MathF.Sin(midpointTheta) / weight);
             var end = index == segmentCount - 1
                 ? runEnd
-                : ArcSegmentGeometry.EvaluatePoint(
-                    center,
-                    radiusX,
-                    radiusY,
-                    arc.RotationAngle,
-                    endTheta);
+                : center +
+                    axisX * SnapUnitTrigonometricValue(MathF.Cos(endTheta)) +
+                    axisY * SnapUnitTrigonometricValue(MathF.Sin(endTheta));
             operations.Add(new IteratorOperation(SKPathVerb.Conic, current, control, end, default, weight, explicitlyClosed, false));
             current = end;
             currentTheta = endTheta;
@@ -1518,7 +1600,7 @@ public partial class SKPath
 
     private static int ValidateConicPow2(int pow2)
     {
-        if ((uint)pow2 > 10u)
+        if ((uint)pow2 > 20u)
         {
             throw new ArgumentOutOfRangeException(nameof(pow2));
         }
@@ -1582,6 +1664,14 @@ public partial class SKPath
         bool ExplicitlyClosed,
         bool IsSyntheticCloseLine);
 
+    private static void ValidateIteratorPoints(Span<SKPoint> points)
+    {
+        if (points.Length != 4)
+        {
+            throw new ArgumentException("Must be an array of four elements.", nameof(points));
+        }
+    }
+
     public sealed class RawIterator : SKObject
     {
         private readonly List<IteratorOperation> _operations;
@@ -1604,6 +1694,7 @@ public partial class SKPath
 
         public SKPathVerb Next(Span<SKPoint> points)
         {
+            ValidateIteratorPoints(points);
             if (_index >= _operations.Count)
             {
                 return SKPathVerb.Done;
@@ -1653,6 +1744,7 @@ public partial class SKPath
 
         public SKPathVerb Next(Span<SKPoint> points)
         {
+            ValidateIteratorPoints(points);
             if (_index >= _operations.Count)
             {
                 _isCloseLine = false;
@@ -1699,9 +1791,18 @@ public partial class SKPath
                     raw.RemoveAt(raw.Count - 1);
                 }
 
+                var closesContour = figure.IsClosed || forceClose;
+                if (forceClose)
+                {
+                    for (var index = 0; index < raw.Count; index++)
+                    {
+                        raw[index] = raw[index] with { ExplicitlyClosed = true };
+                    }
+                }
+
                 result.AddRange(raw);
                 var current = GetFigureEnd(figure);
-                if (figure.IsClosed || forceClose)
+                if (closesContour)
                 {
                     var hasSyntheticCloseLine = !Near(current, figure.StartPoint);
                     if (hasSyntheticCloseLine)
@@ -1713,7 +1814,7 @@ public partial class SKPath
                             default,
                             default,
                             0f,
-                            figure.IsClosed,
+                            closesContour,
                             true));
                     }
 
@@ -1724,7 +1825,7 @@ public partial class SKPath
                         default,
                         default,
                         0f,
-                        figure.IsClosed,
+                        closesContour,
                         hasSyntheticCloseLine));
                 }
             }

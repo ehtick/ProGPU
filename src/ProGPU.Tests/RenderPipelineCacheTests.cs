@@ -73,6 +73,17 @@ public sealed class RenderPipelineCacheTests
         Assert.Equal(BlendFactor.One, blend.Alpha.DstFactor);
     }
 
+    [Fact]
+    public void ModulateBlendMultipliesSourceByDestination()
+    {
+        var blend = CreateBlendState(GpuBlendMode.Modulate, GpuTextureAlphaMode.Premultiplied);
+
+        Assert.Equal(BlendFactor.Dst, blend.Color.SrcFactor);
+        Assert.Equal(BlendFactor.Zero, blend.Color.DstFactor);
+        Assert.Equal(BlendFactor.DstAlpha, blend.Alpha.SrcFactor);
+        Assert.Equal(BlendFactor.Zero, blend.Alpha.DstFactor);
+    }
+
     private static BlendState CreateBlendState(GpuBlendMode blendMode, GpuTextureAlphaMode sourceAlphaMode)
     {
         var method = typeof(RenderPipelineCache).GetMethod(

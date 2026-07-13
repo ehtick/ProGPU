@@ -1,3 +1,4 @@
+using System.Reflection;
 using SkiaSharp;
 using Xunit;
 
@@ -6,7 +7,7 @@ namespace ProGPU.Tests;
 public sealed class SkFontStyleCompatibilityTests
 {
     [Fact]
-    public void DefaultConstructorUsesNormalStyle()
+    public void DefaultConstructorCreatesNativeNormalStyle()
     {
         using var style = new SKFontStyle();
 
@@ -16,17 +17,17 @@ public sealed class SkFontStyleCompatibilityTests
     }
 
     [Fact]
-    public void IntegerConstructorPreservesCallerValues()
+    public void IntegerConstructorPreservesArbitraryNativeValues()
     {
-        using var style = new SKFontStyle(575, 11, SKFontStyleSlant.Oblique);
+        using var style = new SKFontStyle(-17, 23, (SKFontStyleSlant)19);
 
-        Assert.Equal(575, style.Weight);
-        Assert.Equal(11, style.Width);
-        Assert.Equal(SKFontStyleSlant.Oblique, style.Slant);
+        Assert.Equal(-17, style.Weight);
+        Assert.Equal(23, style.Width);
+        Assert.Equal((SKFontStyleSlant)19, style.Slant);
     }
 
     [Fact]
-    public void StaticStylesAreStableAndMatchNativeValues()
+    public void NamedStylesHaveNativeValuesAndStableIdentity()
     {
         Assert.Same(SKFontStyle.Normal, SKFontStyle.Normal);
         Assert.Same(SKFontStyle.Bold, SKFontStyle.Bold);
@@ -40,11 +41,14 @@ public sealed class SkFontStyleCompatibilityTests
     }
 
     [Fact]
-    public void StaticStylesIgnorePublicDisposalWhileOwnedStylesReleaseTheirHandle()
+    public void NamedStylesIgnorePublicDisposalWhileOwnedInstancesReleaseHandles()
     {
-        var sharedHandle = SKFontStyle.Normal.Handle;
-        SKFontStyle.Normal.Dispose();
-        Assert.Equal(sharedHandle, SKFontStyle.Normal.Handle);
+        var singleton = SKFontStyle.Bold;
+        var singletonHandle = singleton.Handle;
+        singleton.Dispose();
+
+        Assert.NotEqual(IntPtr.Zero, singletonHandle);
+        Assert.Equal(singletonHandle, singleton.Handle);
 
         var owned = new SKFontStyle();
         Assert.NotEqual(IntPtr.Zero, owned.Handle);
@@ -52,7 +56,25 @@ public sealed class SkFontStyleCompatibilityTests
         Assert.Equal(IntPtr.Zero, owned.Handle);
     }
 
-    private static void AssertStyle(SKFontStyle style, SKFontStyleWeight weight, SKFontStyleSlant slant)
+    [Fact]
+    public void NamedStylesArePropertiesAndNoShimMembersAreDeclared()
+    {
+        var type = typeof(SKFontStyle);
+
+        Assert.Empty(type.GetFields(BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly));
+        Assert.Equal(
+            new[] { "Bold", "BoldItalic", "Italic", "Normal" },
+            type.GetProperties(BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly)
+                .Select(static property => property.Name)
+                .Order(StringComparer.Ordinal));
+        Assert.Null(type.GetMethod(nameof(IDisposable.Dispose), BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly));
+        Assert.Null(type.GetProperty(nameof(SKObject.Handle), BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly));
+    }
+
+    private static void AssertStyle(
+        SKFontStyle style,
+        SKFontStyleWeight weight,
+        SKFontStyleSlant slant)
     {
         Assert.Equal((int)weight, style.Weight);
         Assert.Equal((int)SKFontStyleWidth.Normal, style.Width);

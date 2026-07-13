@@ -126,9 +126,8 @@ public sealed class SkFontTextApiTests
         };
         var glyph = font.GetGlyph('g');
         using var glyphPath = font.GetGlyphPath(glyph);
-        using var fillPath = new SKPath();
         Assert.NotNull(glyphPath);
-        Assert.True(paint.GetFillPath(glyphPath, fillPath));
+        using var fillPath = Assert.IsType<SKPath>(paint.GetFillPath(glyphPath));
 
         font.GetGlyphWidths(new[] { glyph }, out var bounds, paint);
         font.MeasureText("g", out var measuredBounds, paint);

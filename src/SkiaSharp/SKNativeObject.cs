@@ -1,5 +1,9 @@
 namespace SkiaSharp;
 
+internal interface ISKSkipObjectRegistration
+{
+}
+
 public abstract class SKNativeObject : IDisposable
 {
     private int _disposed;

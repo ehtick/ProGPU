@@ -10,6 +10,8 @@ using SkiaSharp;
 using Silk.NET.WebGPU;
 using Xunit;
 
+#pragma warning disable CS0618 // This suite intentionally covers legacy SkiaSharp overloads.
+
 namespace ProGPU.Tests;
 
 public sealed class SkCanvasStateTests
@@ -661,6 +663,7 @@ public sealed class SkCanvasStateTests
             new SKPointI(1, 0),
             SKShaderTileMode.Repeat,
             convolveAlpha: true,
+            input: null,
             cropRect: new SKRect(2f, 0f, 4f, 2f));
         using var layerPaint = new SKPaint { ImageFilter = convolution };
         using var red = new SKPaint { Color = SKColors.Red, IsAntialias = false };
@@ -2132,7 +2135,7 @@ public sealed class SkCanvasStateTests
         roundRect.SetRect(new SKRect(1f, 2f, 21f, 12f));
         canvas.DrawRoundRect(roundRect, paint);
 
-        Assert.All(roundRect.CornerRadii, radius => Assert.Equal(default, radius));
+        Assert.All(roundRect.Radii, radius => Assert.Equal(default, radius));
         var command = Assert.Single(context.Commands);
         Assert.Equal(RenderCommandType.DrawRoundedRect, command.Type);
         Assert.Equal(new Rect(1f, 2f, 20f, 10f), command.Rect);
@@ -2571,7 +2574,6 @@ public sealed class SkCanvasStateTests
         using var source = new SKPath();
         source.MoveTo(0f, 0f);
         source.LineTo(100f, 0f);
-        using var destination = new SKPath();
         using var paint = new SKPaint
         {
             Style = SKPaintStyle.Stroke,
@@ -2579,7 +2581,7 @@ public sealed class SkCanvasStateTests
             PathEffect = SKPathEffect.CreateDash(new[] { 10f, 10f }, 0f)
         };
 
-        Assert.True(paint.GetFillPath(source, destination));
+        using var destination = Assert.IsType<SKPath>(paint.GetFillPath(source));
         Assert.Equal(5, destination.Geometry.Figures.Count);
     }
 
