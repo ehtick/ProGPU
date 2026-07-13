@@ -378,11 +378,25 @@ public partial class SKPath : IDisposable
                     AppendPoint(builder, 'L', points[1]);
                     break;
                 case SKPathVerb.Quad:
-                case SKPathVerb.Conic:
                     builder.Append('Q');
                     AppendCoordinates(builder, points[1]);
                     builder.Append(' ');
                     AppendCoordinates(builder, points[2]);
+                    break;
+                case SKPathVerb.Conic:
+                    var conicPoints = ConvertConicToQuads(
+                        points[0],
+                        points[1],
+                        points[2],
+                        iterator.ConicWeight(),
+                        pow2: 5);
+                    for (var pointIndex = 1; pointIndex < conicPoints.Length; pointIndex += 2)
+                    {
+                        builder.Append('Q');
+                        AppendCoordinates(builder, conicPoints[pointIndex]);
+                        builder.Append(' ');
+                        AppendCoordinates(builder, conicPoints[pointIndex + 1]);
+                    }
                     break;
                 case SKPathVerb.Cubic:
                     builder.Append('C');

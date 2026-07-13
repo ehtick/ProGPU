@@ -95,9 +95,12 @@ public sealed class SkPathSerializationCompatibilityTests
         path.CubicTo(13f, 14f, 15f, 16f, 17f, 18f);
         path.Close();
 
-        Assert.Equal(
-            "M1.25 2.5L3 4Q5 6 7 8Q9 10 11 12C13 14 15 16 17 18L1.25 2.5Z",
-            path.ToSvgPathData());
+        var pathData = path.ToSvgPathData();
+
+        Assert.StartsWith("M1.25 2.5L3 4Q5 6 7 8Q", pathData, StringComparison.Ordinal);
+        Assert.Equal(33, pathData.Count(character => character == 'Q'));
+        Assert.DoesNotContain("Q9 10 11 12", pathData, StringComparison.Ordinal);
+        Assert.EndsWith("C13 14 15 16 17 18L1.25 2.5Z", pathData, StringComparison.Ordinal);
     }
 
     [Fact]
