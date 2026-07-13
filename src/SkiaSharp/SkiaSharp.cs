@@ -3517,57 +3517,57 @@ public abstract class SKStream : SKObject
     public uint ReadUInt32() => ReadUInt32(out var value) ? value : 0u;
     public bool ReadBool() => ReadBool(out var value) && value;
 
-    public bool ReadSByte(out sbyte value)
+    public bool ReadSByte(out sbyte buffer)
     {
         var success = ReadByte(out var raw);
-        value = unchecked((sbyte)raw);
+        buffer = unchecked((sbyte)raw);
         return success;
     }
 
-    public bool ReadInt16(out short value)
+    public bool ReadInt16(out short buffer)
     {
         Span<byte> bytes = stackalloc byte[sizeof(short)];
         var success = ReadExactly(bytes);
-        value = success ? BinaryPrimitives.ReadInt16LittleEndian(bytes) : (short)0;
+        buffer = success ? BinaryPrimitives.ReadInt16LittleEndian(bytes) : (short)0;
         return success;
     }
 
-    public bool ReadInt32(out int value)
+    public bool ReadInt32(out int buffer)
     {
         Span<byte> bytes = stackalloc byte[sizeof(int)];
         var success = ReadExactly(bytes);
-        value = success ? BinaryPrimitives.ReadInt32LittleEndian(bytes) : 0;
+        buffer = success ? BinaryPrimitives.ReadInt32LittleEndian(bytes) : 0;
         return success;
     }
 
-    public bool ReadByte(out byte value)
+    public bool ReadByte(out byte buffer)
     {
         Span<byte> bytes = stackalloc byte[sizeof(byte)];
         var success = ReadExactly(bytes);
-        value = success ? bytes[0] : (byte)0;
+        buffer = success ? bytes[0] : (byte)0;
         return success;
     }
 
-    public bool ReadUInt16(out ushort value)
+    public bool ReadUInt16(out ushort buffer)
     {
         Span<byte> bytes = stackalloc byte[sizeof(ushort)];
         var success = ReadExactly(bytes);
-        value = success ? BinaryPrimitives.ReadUInt16LittleEndian(bytes) : (ushort)0;
+        buffer = success ? BinaryPrimitives.ReadUInt16LittleEndian(bytes) : (ushort)0;
         return success;
     }
 
-    public bool ReadUInt32(out uint value)
+    public bool ReadUInt32(out uint buffer)
     {
         Span<byte> bytes = stackalloc byte[sizeof(uint)];
         var success = ReadExactly(bytes);
-        value = success ? BinaryPrimitives.ReadUInt32LittleEndian(bytes) : 0u;
+        buffer = success ? BinaryPrimitives.ReadUInt32LittleEndian(bytes) : 0u;
         return success;
     }
 
-    public bool ReadBool(out bool value)
+    public bool ReadBool(out bool buffer)
     {
         var success = ReadByte(out var raw);
-        value = raw != 0;
+        buffer = raw != 0;
         return success;
     }
 

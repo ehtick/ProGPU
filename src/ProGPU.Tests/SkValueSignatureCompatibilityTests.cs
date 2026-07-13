@@ -31,9 +31,19 @@ public sealed class SkValueSignatureCompatibilityTests
                 [typeof(SKColorSpaceXyz), typeof(SKColorSpaceXyz)]),
             "a",
             "b");
+        AssertStreamReadParameter<sbyte>(nameof(SKStream.ReadSByte));
+        AssertStreamReadParameter<short>(nameof(SKStream.ReadInt16));
+        AssertStreamReadParameter<int>(nameof(SKStream.ReadInt32));
+        AssertStreamReadParameter<byte>(nameof(SKStream.ReadByte));
+        AssertStreamReadParameter<ushort>(nameof(SKStream.ReadUInt16));
+        AssertStreamReadParameter<uint>(nameof(SKStream.ReadUInt32));
+        AssertStreamReadParameter<bool>(nameof(SKStream.ReadBool));
     }
 
     private static MethodInfo? GetEquals<T>() => typeof(T).GetMethod(nameof(Equals), [typeof(T)]);
+
+    private static void AssertStreamReadParameter<T>(string name) =>
+        AssertParameterNames(typeof(SKStream).GetMethod(name, [typeof(T).MakeByRefType()]), "buffer");
 
     private static void AssertParameterNames(MethodBase? method, params string[] expected)
     {
