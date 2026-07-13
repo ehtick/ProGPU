@@ -1190,14 +1190,14 @@ public readonly struct SKColor : IEquatable<SKColor>
         }
     }
 
-    public SKColor(byte r, byte g, byte b, byte a)
+    public SKColor(byte red, byte green, byte blue, byte alpha)
     {
-        _color = (uint)((a << 24) | (r << 16) | (g << 8) | b);
+        _color = (uint)((alpha << 24) | (red << 16) | (green << 8) | blue);
     }
 
-    public SKColor(byte r, byte g, byte b)
+    public SKColor(byte red, byte green, byte blue)
     {
-        _color = 0xff000000u | (uint)(r << 16) | (uint)(g << 8) | b;
+        _color = 0xff000000u | (uint)(red << 16) | (uint)(green << 8) | blue;
     }
 
     public SKColor(uint value)
@@ -1239,9 +1239,9 @@ public readonly struct SKColor : IEquatable<SKColor>
     public void ToHsv(out float h, out float s, out float v) =>
         new SKColorF(Red / 255f, Green / 255f, Blue / 255f).ToHsv(out h, out s, out v);
 
-    public bool Equals(SKColor other) => _color == other._color;
+    public bool Equals(SKColor obj) => _color == obj._color;
 
-    public override bool Equals(object? obj) => obj is SKColor other && Equals(other);
+    public override bool Equals(object? other) => other is SKColor color && Equals(color);
 
     public override int GetHashCode() => _color.GetHashCode();
 
@@ -1722,9 +1722,9 @@ public readonly struct SKColorF : IEquatable<SKColorF>
         }
     }
 
-    public bool Equals(SKColorF other) =>
-        _red == other._red && _green == other._green &&
-        _blue == other._blue && _alpha == other._alpha;
+    public bool Equals(SKColorF obj) =>
+        _red == obj._red && _green == obj._green &&
+        _blue == obj._blue && _alpha == obj._alpha;
 
     public override bool Equals(object? obj) => obj is SKColorF other && Equals(other);
 
@@ -2713,7 +2713,7 @@ public struct SKRotationScaleMatrix : IEquatable<SKRotationScaleMatrix>
 
     public static SKRotationScaleMatrix CreateTranslation(float x, float y) => new(1f, 0f, x, y);
 
-    public static SKRotationScaleMatrix CreateScale(float scale) => new(scale, 0f, 0f, 0f);
+    public static SKRotationScaleMatrix CreateScale(float s) => new(s, 0f, 0f, 0f);
 
     public static SKRotationScaleMatrix CreateRotation(float radians, float anchorX, float anchorY) =>
         Create(1f, radians, 0f, 0f, anchorX, anchorY);
@@ -2721,8 +2721,8 @@ public struct SKRotationScaleMatrix : IEquatable<SKRotationScaleMatrix>
     public static SKRotationScaleMatrix CreateRotationDegrees(float degrees, float anchorX, float anchorY) =>
         CreateDegrees(1f, degrees, 0f, 0f, anchorX, anchorY);
 
-    public readonly bool Equals(SKRotationScaleMatrix other) =>
-        SCos == other.SCos && SSin == other.SSin && TX == other.TX && TY == other.TY;
+    public readonly bool Equals(SKRotationScaleMatrix obj) =>
+        SCos == obj.SCos && SSin == obj.SSin && TX == obj.TX && TY == obj.TY;
     public override readonly bool Equals(object? obj) => obj is SKRotationScaleMatrix other && Equals(other);
     public static bool operator ==(SKRotationScaleMatrix left, SKRotationScaleMatrix right) => left.Equals(right);
     public static bool operator !=(SKRotationScaleMatrix left, SKRotationScaleMatrix right) => !left.Equals(right);
@@ -2800,7 +2800,7 @@ public readonly struct SKCubicResampler : IEquatable<SKCubicResampler>
         _c = c;
     }
 
-    public bool Equals(SKCubicResampler other) => _b == other._b && _c == other._c;
+    public bool Equals(SKCubicResampler obj) => _b == obj._b && _c == obj._c;
 
     public override bool Equals(object? obj) => obj is SKCubicResampler other && Equals(other);
 
@@ -2839,25 +2839,25 @@ public readonly struct SKSamplingOptions : IEquatable<SKSamplingOptions>
 
     internal SKCubicResampler CubicResampler => _cubic;
 
-    public SKSamplingOptions(SKFilterMode filterMode, SKMipmapMode mipmapMode)
+    public SKSamplingOptions(SKFilterMode filter, SKMipmapMode mipmap)
     {
         _maxAniso = default;
         _useCubic = default;
         _cubic = default;
-        _filter = filterMode;
-        _mipmap = mipmapMode;
+        _filter = filter;
+        _mipmap = mipmap;
     }
 
-    public SKSamplingOptions(SKFilterMode filterMode)
-        : this(filterMode, SKMipmapMode.None)
+    public SKSamplingOptions(SKFilterMode filter)
+        : this(filter, SKMipmapMode.None)
     {
     }
 
-    public SKSamplingOptions(SKCubicResampler cubicResampler)
+    public SKSamplingOptions(SKCubicResampler resampler)
     {
         _maxAniso = default;
         _useCubic = 1;
-        _cubic = cubicResampler;
+        _cubic = resampler;
         _filter = default;
         _mipmap = default;
     }
@@ -2871,9 +2871,9 @@ public readonly struct SKSamplingOptions : IEquatable<SKSamplingOptions>
         _mipmap = default;
     }
 
-    public bool Equals(SKSamplingOptions other) =>
-        _maxAniso == other._maxAniso && _useCubic == other._useCubic &&
-        _cubic == other._cubic && _filter == other._filter && _mipmap == other._mipmap;
+    public bool Equals(SKSamplingOptions obj) =>
+        _maxAniso == obj._maxAniso && _useCubic == obj._useCubic &&
+        _cubic == obj._cubic && _filter == obj._filter && _mipmap == obj._mipmap;
 
     public override bool Equals(object? obj) => obj is SKSamplingOptions other && Equals(other);
 
@@ -2994,13 +2994,13 @@ public struct SKImageInfo : IEquatable<SKImageInfo>
         int height,
         SKColorType colorType,
         SKAlphaType alphaType,
-        SKColorSpace? colorSpace)
+        SKColorSpace? colorspace)
     {
         Width = width;
         Height = height;
         ColorType = colorType;
         AlphaType = alphaType;
-        ColorSpace = colorSpace;
+        ColorSpace = colorspace;
     }
 
     public readonly SKImageInfo WithSize(SKSizeI size) => WithSize(size.Width, size.Height);
@@ -3013,33 +3013,33 @@ public struct SKImageInfo : IEquatable<SKImageInfo>
         return result;
     }
 
-    public readonly SKImageInfo WithColorType(SKColorType colorType)
+    public readonly SKImageInfo WithColorType(SKColorType newColorType)
     {
         var result = this;
-        result.ColorType = colorType;
+        result.ColorType = newColorType;
         return result;
     }
 
-    public readonly SKImageInfo WithColorSpace(SKColorSpace? colorSpace)
+    public readonly SKImageInfo WithColorSpace(SKColorSpace? newColorSpace)
     {
         var result = this;
-        result.ColorSpace = colorSpace;
+        result.ColorSpace = newColorSpace;
         return result;
     }
 
-    public readonly SKImageInfo WithAlphaType(SKAlphaType alphaType)
+    public readonly SKImageInfo WithAlphaType(SKAlphaType newAlphaType)
     {
         var result = this;
-        result.AlphaType = alphaType;
+        result.AlphaType = newAlphaType;
         return result;
     }
 
-    public readonly bool Equals(SKImageInfo other) =>
-        ReferenceEquals(ColorSpace, other.ColorSpace) &&
-        Width == other.Width &&
-        Height == other.Height &&
-        ColorType == other.ColorType &&
-        AlphaType == other.AlphaType;
+    public readonly bool Equals(SKImageInfo obj) =>
+        ReferenceEquals(ColorSpace, obj.ColorSpace) &&
+        Width == obj.Width &&
+        Height == obj.Height &&
+        ColorType == obj.ColorType &&
+        AlphaType == obj.AlphaType;
 
     public override readonly bool Equals(object? obj) => obj is SKImageInfo other && Equals(other);
 
