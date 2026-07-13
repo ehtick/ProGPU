@@ -1030,60 +1030,87 @@ public partial class SKPaint : SKObject
     }
 }
 
-public class SKShader : IDisposable
+public partial class SKShader : SKObject
 {
-    public IntPtr Handle { get; } = SKObjectHandle.Create();
     private readonly Func<Brush>? _brushCreator;
     private readonly PictureShaderData? _picture;
     private readonly ImageShaderData? _image;
     private readonly ComposedShaderData? _composed;
     private readonly PerlinNoiseShaderData? _perlinNoise;
-    private SKColorFilter? _colorFilter;
+    private readonly LocalMatrixShaderData? _localMatrix;
+    private readonly ColorFilterShaderData? _colorFilter;
     private int _referenceCount = 1;
-    private bool _disposed;
 
     private SKShader(Func<Brush> brushCreator)
+        : base(SKObjectHandle.Create(), owns: true)
     {
         _brushCreator = brushCreator;
     }
 
     private SKShader(PictureShaderData picture)
+        : base(SKObjectHandle.Create(), owns: true)
     {
         _picture = picture;
     }
 
     private SKShader(ImageShaderData image)
+        : base(SKObjectHandle.Create(), owns: true)
     {
         _image = image;
     }
 
     private SKShader(ComposedShaderData composed)
+        : base(SKObjectHandle.Create(), owns: true)
     {
         _composed = composed;
     }
 
     private SKShader(PerlinNoiseShaderData perlinNoise)
+        : base(SKObjectHandle.Create(), owns: true)
     {
         _perlinNoise = perlinNoise;
     }
 
+    private SKShader(LocalMatrixShaderData localMatrix)
+        : base(SKObjectHandle.Create(), owns: true)
+    {
+        _localMatrix = localMatrix;
+    }
+
+    private SKShader(ColorFilterShaderData colorFilter)
+        : base(SKObjectHandle.Create(), owns: true)
+    {
+        _colorFilter = colorFilter;
+    }
+
     public Brush ToBrush()
     {
+        if (_localMatrix is { } localMatrix)
+        {
+            var brush = localMatrix.Shader.ToBrush();
+            return ApplyCoordinateTransform(brush, localMatrix.Inverse, localMatrix.IsInvertible)
+                ? brush
+                : new SolidColorBrush(Vector4.Zero);
+        }
+
+        if (_colorFilter is { } colorFilter)
+        {
+            return ApplyColorFilter(colorFilter.Shader.ToBrush(), colorFilter.Filter);
+        }
+
         if (_brushCreator != null)
         {
-            return ApplyColorFilter(_brushCreator(), _colorFilter);
+            return _brushCreator();
         }
 
         if (_perlinNoise is { } perlinNoise)
         {
-            return ApplyColorFilter(
-                new PerlinNoiseBrush(
-                    perlinNoise.IsTurbulence,
-                    new Vector2(perlinNoise.BaseFrequencyX, perlinNoise.BaseFrequencyY),
-                    perlinNoise.NumOctaves,
-                    perlinNoise.Seed,
-                    new Vector2(perlinNoise.TileSize.X, perlinNoise.TileSize.Y)),
-                _colorFilter);
+            return new PerlinNoiseBrush(
+                perlinNoise.IsTurbulence,
+                new Vector2(perlinNoise.BaseFrequencyX, perlinNoise.BaseFrequencyY),
+                perlinNoise.NumOctaves,
+                perlinNoise.Seed,
+                new Vector2(perlinNoise.TileSize.X, perlinNoise.TileSize.Y));
         }
 
         if (_picture != null || _image != null || _composed != null)
@@ -1097,8 +1124,9 @@ public class SKShader : IDisposable
     internal PictureShaderData? Picture => _picture;
     internal ImageShaderData? Image => _image;
     internal ComposedShaderData? Composed => _composed;
-    internal SKColorFilter? ColorFilter => _colorFilter;
     internal PerlinNoiseShaderData? PerlinNoise => _perlinNoise;
+    internal LocalMatrixShaderData? LocalMatrix => _localMatrix;
+    internal ColorFilterShaderData? ColorFilter => _colorFilter;
 
     internal static SKShader CreatePicture(
         GpuPicture picture,
@@ -1117,16 +1145,16 @@ public class SKShader : IDisposable
             tileRect));
     }
 
-    internal static SKShader CreateImage(
+    internal static SKShader CreateRetainedImage(
         SKImage image,
         SKShaderTileMode tileModeX,
         SKShaderTileMode tileModeY,
         SKMatrix localMatrix)
     {
-        return CreateImage(image, tileModeX, tileModeY, localMatrix, SKSamplingOptions.Default);
+        return CreateRetainedImage(image, tileModeX, tileModeY, localMatrix, SKSamplingOptions.Default);
     }
 
-    internal static SKShader CreateImage(
+    internal static SKShader CreateRetainedImage(
         SKImage image,
         SKShaderTileMode tileModeX,
         SKShaderTileMode tileModeY,
@@ -1138,7 +1166,7 @@ public class SKShader : IDisposable
 
     internal void AddReference()
     {
-        if (_disposed)
+        if (IsDisposed)
         {
             throw new ObjectDisposedException(nameof(SKShader));
         }
@@ -1162,26 +1190,30 @@ public class SKShader : IDisposable
             _picture?.Dispose();
             _image?.Dispose();
             _composed?.Dispose();
+            _localMatrix?.Dispose();
+            _colorFilter?.Dispose();
         }
     }
 
     public static SKShader CreateColor(SKColor color)
     {
-        return new SKShader(() =>
-        {
-            var c = new Vector4(color.R / 255.0f, color.G / 255.0f, color.B / 255.0f, color.A / 255.0f);
-            return new SolidColorBrush(c);
-        });
+        var value = new Vector4(
+            color.R / 255.0f,
+            color.G / 255.0f,
+            color.B / 255.0f,
+            color.A / 255.0f);
+        return new SKShader(() => new SolidColorBrush(value));
     }
 
     public static SKShader CreateColor(SKColorF color, SKColorSpace colorSpace)
     {
         ArgumentNullException.ThrowIfNull(colorSpace);
-        return new SKShader(() => new SolidColorBrush(new Vector4(
+        var value = new Vector4(
             Math.Clamp(color.R, 0f, 1f),
             Math.Clamp(color.G, 0f, 1f),
             Math.Clamp(color.B, 0f, 1f),
-            Math.Clamp(color.A, 0f, 1f))));
+            Math.Clamp(color.A, 0f, 1f));
+        return new SKShader(() => new SolidColorBrush(value));
     }
 
     public static SKShader CreateColor(SKColor color, SKColorSpace colorSpace)
@@ -1209,10 +1241,13 @@ public class SKShader : IDisposable
         SKShaderTileMode mode)
     {
         var spreadMethod = MapTileMode(mode);
+        var stops = CreateGradientStops(colors, colorPos);
         return new SKShader(() =>
         {
-            var stops = CreateGradientStops(colors, colorPos);
-            return new LinearGradientBrush(new Vector2(start.X, start.Y), new Vector2(end.X, end.Y), stops)
+            return new LinearGradientBrush(
+                new Vector2(start.X, start.Y),
+                new Vector2(end.X, end.Y),
+                CloneGradientStops(stops))
             {
                 SpreadMethod = spreadMethod
             };
@@ -1239,18 +1274,23 @@ public class SKShader : IDisposable
         SKShaderTileMode mode,
         SKMatrix localMatrix)
     {
-        ArgumentNullException.ThrowIfNull(colorSpace);
         var spreadMethod = MapTileMode(mode);
+        var stops = CreateGradientStops(colors, colorPos);
+        var interpolationMode = colorSpace?.IsLinear == true
+            ? GradientColorInterpolationMode.ScRgbLinearInterpolation
+            : GradientColorInterpolationMode.SRgbLinearInterpolation;
+        if (!TryGetShaderCoordinateTransform(localMatrix, out var coordinateTransform))
+        {
+            return CreateEmpty();
+        }
         return new SKShader(() => new LinearGradientBrush(
             new Vector2(start.X, start.Y),
             new Vector2(end.X, end.Y),
-            CreateGradientStops(colors, colorPos))
+            CloneGradientStops(stops))
         {
             SpreadMethod = spreadMethod,
-            CoordinateTransform = GetShaderCoordinateTransform(localMatrix),
-            ColorInterpolationMode = colorSpace.IsLinear
-                ? GradientColorInterpolationMode.ScRgbLinearInterpolation
-                : GradientColorInterpolationMode.SRgbLinearInterpolation,
+            CoordinateTransform = coordinateTransform,
+            ColorInterpolationMode = interpolationMode,
         });
     }
 
@@ -1263,13 +1303,18 @@ public class SKShader : IDisposable
         SKMatrix localMatrix)
     {
         var spreadMethod = MapTileMode(mode);
+        var stops = CreateGradientStops(colors, colorPos);
+        if (!TryGetShaderCoordinateTransform(localMatrix, out var coordinateTransform))
+        {
+            return CreateEmpty();
+        }
         return new SKShader(() => new LinearGradientBrush(
             new Vector2(start.X, start.Y),
             new Vector2(end.X, end.Y),
-            CreateGradientStops(colors, colorPos))
+            CloneGradientStops(stops))
         {
             SpreadMethod = spreadMethod,
-            CoordinateTransform = GetShaderCoordinateTransform(localMatrix)
+            CoordinateTransform = coordinateTransform
         });
     }
 
@@ -1281,10 +1326,13 @@ public class SKShader : IDisposable
         SKShaderTileMode mode)
     {
         var spreadMethod = MapTileMode(mode);
+        var stops = CreateGradientStops(colors, colorPos);
         return new SKShader(() =>
         {
-            var stops = CreateGradientStops(colors, colorPos);
-            return new RadialGradientBrush(new Vector2(center.X, center.Y), radius, stops)
+            return new RadialGradientBrush(
+                new Vector2(center.X, center.Y),
+                radius,
+                CloneGradientStops(stops))
             {
                 SpreadMethod = spreadMethod
             };
@@ -1311,18 +1359,23 @@ public class SKShader : IDisposable
         SKShaderTileMode mode,
         SKMatrix localMatrix)
     {
-        ArgumentNullException.ThrowIfNull(colorSpace);
         var spreadMethod = MapTileMode(mode);
+        var stops = CreateGradientStops(colors, colorPos);
+        var interpolationMode = colorSpace?.IsLinear == true
+            ? GradientColorInterpolationMode.ScRgbLinearInterpolation
+            : GradientColorInterpolationMode.SRgbLinearInterpolation;
+        if (!TryGetShaderCoordinateTransform(localMatrix, out var coordinateTransform))
+        {
+            return CreateEmpty();
+        }
         return new SKShader(() => new RadialGradientBrush(
             new Vector2(center.X, center.Y),
             radius,
-            CreateGradientStops(colors, colorPos))
+            CloneGradientStops(stops))
         {
             SpreadMethod = spreadMethod,
-            CoordinateTransform = GetShaderCoordinateTransform(localMatrix),
-            ColorInterpolationMode = colorSpace.IsLinear
-                ? GradientColorInterpolationMode.ScRgbLinearInterpolation
-                : GradientColorInterpolationMode.SRgbLinearInterpolation,
+            CoordinateTransform = coordinateTransform,
+            ColorInterpolationMode = interpolationMode,
         });
     }
 
@@ -1335,13 +1388,18 @@ public class SKShader : IDisposable
         SKMatrix localMatrix)
     {
         var spreadMethod = MapTileMode(mode);
+        var stops = CreateGradientStops(colors, colorPos);
+        if (!TryGetShaderCoordinateTransform(localMatrix, out var coordinateTransform))
+        {
+            return CreateEmpty();
+        }
         return new SKShader(() => new RadialGradientBrush(
             new Vector2(center.X, center.Y),
             radius,
-            CreateGradientStops(colors, colorPos))
+            CloneGradientStops(stops))
         {
             SpreadMethod = spreadMethod,
-            CoordinateTransform = GetShaderCoordinateTransform(localMatrix)
+            CoordinateTransform = coordinateTransform
         });
     }
 
@@ -1355,16 +1413,15 @@ public class SKShader : IDisposable
         SKShaderTileMode mode)
     {
         var spreadMethod = MapTileMode(mode);
+        var stops = CreateGradientStops(colors, colorPos);
         return new SKShader(() =>
         {
-            var stops = CreateGradientStops(colors, colorPos);
-
             return new TwoPointConicalGradientBrush(
                 new Vector2(start.X, start.Y),
                 startRadius,
                 new Vector2(end.X, end.Y),
                 endRadius,
-                stops)
+                CloneGradientStops(stops))
             {
                 SpreadMethod = spreadMethod
             };
@@ -1404,20 +1461,25 @@ public class SKShader : IDisposable
         SKShaderTileMode mode,
         SKMatrix localMatrix)
     {
-        ArgumentNullException.ThrowIfNull(colorSpace);
         var spreadMethod = MapTileMode(mode);
+        var stops = CreateGradientStops(colors, colorPos);
+        var interpolationMode = colorSpace?.IsLinear == true
+            ? GradientColorInterpolationMode.ScRgbLinearInterpolation
+            : GradientColorInterpolationMode.SRgbLinearInterpolation;
+        if (!TryGetShaderCoordinateTransform(localMatrix, out var coordinateTransform))
+        {
+            return CreateEmpty();
+        }
         return new SKShader(() => new TwoPointConicalGradientBrush(
             new Vector2(start.X, start.Y),
             startRadius,
             new Vector2(end.X, end.Y),
             endRadius,
-            CreateGradientStops(colors, colorPos))
+            CloneGradientStops(stops))
         {
             SpreadMethod = spreadMethod,
-            CoordinateTransform = GetShaderCoordinateTransform(localMatrix),
-            ColorInterpolationMode = colorSpace.IsLinear
-                ? GradientColorInterpolationMode.ScRgbLinearInterpolation
-                : GradientColorInterpolationMode.SRgbLinearInterpolation,
+            CoordinateTransform = coordinateTransform,
+            ColorInterpolationMode = interpolationMode,
         });
     }
 
@@ -1460,15 +1522,20 @@ public class SKShader : IDisposable
         SKMatrix localMatrix)
     {
         var spreadMethod = MapTileMode(mode);
+        var stops = CreateGradientStops(colors, colorPos);
+        if (!TryGetShaderCoordinateTransform(localMatrix, out var coordinateTransform))
+        {
+            return CreateEmpty();
+        }
         return new SKShader(() => new TwoPointConicalGradientBrush(
             new Vector2(start.X, start.Y),
             startRadius,
             new Vector2(end.X, end.Y),
             endRadius,
-            CreateGradientStops(colors, colorPos))
+            CloneGradientStops(stops))
         {
             SpreadMethod = spreadMethod,
-            CoordinateTransform = GetShaderCoordinateTransform(localMatrix)
+            CoordinateTransform = coordinateTransform
         });
     }
 
@@ -1478,12 +1545,14 @@ public class SKShader : IDisposable
         float[]? colorPos,
         SKMatrix localMatrix)
     {
-        return new SKShader(() => new SweepGradientBrush(
-            new Vector2(center.X, center.Y),
-            CreateGradientStops(colors, colorPos))
-        {
-            CoordinateTransform = GetShaderCoordinateTransform(localMatrix)
-        });
+        return CreateSweepGradient(
+            center,
+            colors,
+            colorPos,
+            SKShaderTileMode.Clamp,
+            0f,
+            360f,
+            localMatrix);
     }
 
     public static SKShader CreateBitmap(
@@ -1492,40 +1561,29 @@ public class SKShader : IDisposable
         SKShaderTileMode tileModeY)
     {
         ArgumentNullException.ThrowIfNull(bitmap);
-        return CreateImage(SKImage.FromBitmap(bitmap), tileModeX, tileModeY, SKMatrix.Identity);
+        return CreateRetainedImage(SKImage.FromBitmap(bitmap), tileModeX, tileModeY, SKMatrix.Identity);
     }
 
     public static SKShader CreateCompose(SKShader destination, SKShader source)
     {
-        ArgumentNullException.ThrowIfNull(destination);
-        ArgumentNullException.ThrowIfNull(source);
-        return new SKShader(new ComposedShaderData(destination, source));
+        return CreateCompose(destination, source, SKBlendMode.SrcOver);
     }
 
     public SKShader WithColorFilter(SKColorFilter colorFilter)
     {
-        _colorFilter = colorFilter ?? throw new ArgumentNullException(nameof(colorFilter));
-        return this;
+        ArgumentNullException.ThrowIfNull(colorFilter);
+        return new SKShader(new ColorFilterShaderData(this, colorFilter));
     }
 
-    public void Dispose()
+    public SKShader WithLocalMatrix(SKMatrix localMatrix)
     {
-        if (_disposed)
-        {
-            return;
-        }
+        return new SKShader(new LocalMatrixShaderData(this, localMatrix));
+    }
 
-        _disposed = true;
+    protected override void Dispose(bool disposing)
+    {
         ReleaseReference();
-    }
-
-    ~SKShader()
-    {
-        if (!_disposed)
-        {
-            _disposed = true;
-            ReleaseReference();
-        }
+        base.Dispose(disposing);
     }
 
     internal sealed class PictureShaderData : IDisposable
@@ -1599,22 +1657,65 @@ public class SKShader : IDisposable
 
     internal sealed class ComposedShaderData : IDisposable
     {
-        public ComposedShaderData(SKShader destination, SKShader source)
+        public ComposedShaderData(
+            SKShader destination,
+            SKShader source,
+            SKBlendMode? blendMode,
+            SKBlender.ArithmeticBlend? arithmetic)
         {
             Destination = destination;
             Source = source;
+            BlendMode = blendMode;
+            Arithmetic = arithmetic;
             Destination.AddReference();
             Source.AddReference();
         }
 
         public SKShader Destination { get; }
         public SKShader Source { get; }
+        public SKBlendMode? BlendMode { get; }
+        public SKBlender.ArithmeticBlend? Arithmetic { get; }
 
         public void Dispose()
         {
             Destination.ReleaseReference();
             Source.ReleaseReference();
         }
+    }
+
+    internal sealed class LocalMatrixShaderData : IDisposable
+    {
+        public LocalMatrixShaderData(SKShader shader, SKMatrix matrix)
+        {
+            Shader = shader;
+            Matrix = matrix;
+            var matrix4x4 = matrix.ToMatrix4x4();
+            IsInvertible = Matrix4x4.Invert(matrix4x4, out var inverse) && IsFinite(inverse);
+            Inverse = IsInvertible ? inverse : Matrix4x4.Identity;
+            Shader.AddReference();
+        }
+
+        public SKShader Shader { get; }
+        public SKMatrix Matrix { get; }
+        public Matrix4x4 Inverse { get; }
+        public bool IsInvertible { get; }
+
+        public void Dispose() => Shader.ReleaseReference();
+    }
+
+    internal sealed class ColorFilterShaderData : IDisposable
+    {
+        public ColorFilterShaderData(SKShader shader, SKColorFilter filter)
+        {
+            Shader = shader;
+            Filter = filter;
+            Shader.AddReference();
+        }
+
+        public SKShader Shader { get; }
+        public SKColorFilter Filter { get; }
+
+        public void Dispose() => Shader.ReleaseReference();
     }
 
     internal sealed record PerlinNoiseShaderData(
@@ -1654,6 +1755,59 @@ public class SKShader : IDisposable
         return brush;
     }
 
+    internal static bool ApplyLocalMatrix(Brush brush, SKMatrix localMatrix)
+    {
+        if (brush is SolidColorBrush)
+        {
+            return true;
+        }
+
+        var matrix = localMatrix.ToMatrix4x4();
+        if (!Matrix4x4.Invert(matrix, out var inverse) || !IsFinite(inverse))
+        {
+            return false;
+        }
+
+        return ApplyCoordinateTransform(brush, inverse, isInvertible: true);
+    }
+
+    private static bool ApplyCoordinateTransform(
+        Brush brush,
+        Matrix4x4 inverse,
+        bool isInvertible)
+    {
+        if (brush is SolidColorBrush)
+        {
+            return true;
+        }
+
+        if (!isInvertible)
+        {
+            return false;
+        }
+
+        switch (brush)
+        {
+            case LinearGradientBrush linear:
+                linear.CoordinateTransform = inverse * linear.CoordinateTransform;
+                break;
+            case RadialGradientBrush radial:
+                radial.CoordinateTransform = inverse * radial.CoordinateTransform;
+                break;
+            case TwoPointConicalGradientBrush conical:
+                conical.CoordinateTransform = inverse * conical.CoordinateTransform;
+                break;
+            case SweepGradientBrush sweep:
+                sweep.CoordinateTransform = inverse * sweep.CoordinateTransform;
+                break;
+            case PerlinNoiseBrush perlin:
+                perlin.CoordinateTransform = inverse * perlin.CoordinateTransform;
+                break;
+        }
+
+        return true;
+    }
+
     private static void ApplyColorFilter(GradientStop[] stops, SKColorFilter colorFilter)
     {
         for (var i = 0; i < stops.Length; i++)
@@ -1686,9 +1840,9 @@ public class SKShader : IDisposable
     private static GradientStop[] CreateGradientStops(SKColor[] colors, float[]? colorPos)
     {
         ArgumentNullException.ThrowIfNull(colors);
-        if (colorPos != null && colorPos.Length < colors.Length)
+        if (colorPos != null && colorPos.Length != colors.Length)
         {
-            throw new ArgumentException("Color position array must have at least as many entries as the color array.", nameof(colorPos));
+            throw new ArgumentException("The number of colors must match the number of color positions.", nameof(colorPos));
         }
 
         var stops = new GradientStop[colors.Length];
@@ -1709,9 +1863,9 @@ public class SKShader : IDisposable
     private static GradientStop[] CreateGradientStops(SKColorF[] colors, float[]? colorPos)
     {
         ArgumentNullException.ThrowIfNull(colors);
-        if (colorPos != null && colorPos.Length < colors.Length)
+        if (colorPos != null && colorPos.Length != colors.Length)
         {
-            throw new ArgumentException("Color position array must have at least as many entries as the color array.", nameof(colorPos));
+            throw new ArgumentException("The number of colors must match the number of color positions.", nameof(colorPos));
         }
 
         var stops = new GradientStop[colors.Length];
@@ -1732,6 +1886,9 @@ public class SKShader : IDisposable
         return stops;
     }
 
+    private static GradientStop[] CloneGradientStops(GradientStop[] stops) =>
+        (GradientStop[])stops.Clone();
+
     private static GradientSpreadMethod MapTileMode(SKShaderTileMode mode)
     {
         return mode switch
@@ -1744,12 +1901,29 @@ public class SKShader : IDisposable
         };
     }
 
-    private static Matrix4x4 GetShaderCoordinateTransform(SKMatrix localMatrix)
+    private static bool TryGetShaderCoordinateTransform(
+        SKMatrix localMatrix,
+        out Matrix4x4 coordinateTransform)
     {
-        return Matrix4x4.Invert(localMatrix.ToMatrix4x4(), out var inverse)
-            ? inverse
-            : Matrix4x4.Identity;
+        if (Matrix4x4.Invert(localMatrix.ToMatrix4x4(), out coordinateTransform) &&
+            IsFinite(coordinateTransform))
+        {
+            return true;
+        }
+
+        coordinateTransform = Matrix4x4.Identity;
+        return false;
     }
+
+    private static bool IsFinite(Matrix4x4 matrix) =>
+        float.IsFinite(matrix.M11) && float.IsFinite(matrix.M12) &&
+        float.IsFinite(matrix.M13) && float.IsFinite(matrix.M14) &&
+        float.IsFinite(matrix.M21) && float.IsFinite(matrix.M22) &&
+        float.IsFinite(matrix.M23) && float.IsFinite(matrix.M24) &&
+        float.IsFinite(matrix.M31) && float.IsFinite(matrix.M32) &&
+        float.IsFinite(matrix.M33) && float.IsFinite(matrix.M34) &&
+        float.IsFinite(matrix.M41) && float.IsFinite(matrix.M42) &&
+        float.IsFinite(matrix.M43) && float.IsFinite(matrix.M44);
 }
 
 public class SKColorFilter : IDisposable
@@ -1763,11 +1937,13 @@ public class SKColorFilter : IDisposable
     private readonly byte[]? _blueTable;
     private readonly float[]? _colorMatrix;
     private readonly bool _lumaColor;
+    private readonly bool _isBlendColor;
 
     private SKColorFilter(SKColor color, SKBlendMode mode)
     {
         Color = color;
         Mode = mode;
+        _isBlendColor = true;
     }
 
     private SKColorFilter(byte[] alpha, byte[] red, byte[] green, byte[] blue)
@@ -1790,6 +1966,13 @@ public class SKColorFilter : IDisposable
 
     internal float[]? ColorMatrix => _colorMatrix;
     internal bool IsLumaColor => _lumaColor;
+
+    internal bool TryGetBlendColor(out SKColor color, out SKBlendMode mode)
+    {
+        color = Color;
+        mode = Mode;
+        return _isBlendColor;
+    }
 
     internal bool TryGetColorTables(
         out ReadOnlyMemory<byte> alpha,

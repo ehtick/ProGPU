@@ -4131,6 +4131,8 @@ SceneStateUploadComplete:
             SweepGradientBrush sweep => new SweepGradientBrush(sweep.Center, sweep.Stops)
             {
                 Opacity = sweep.Opacity,
+                StartAngle = sweep.StartAngle,
+                EndAngle = sweep.EndAngle,
                 SpreadMethod = sweep.SpreadMethod,
                 ColorInterpolationMode = sweep.ColorInterpolationMode,
                 CoordinateTransform = inverseCommandTransform * sweep.CoordinateTransform
@@ -7489,6 +7491,7 @@ SceneStateUploadComplete:
         {
             gpuBrush.Type = 6;
             gpuBrush.Center = sweep.Center;
+            gpuBrush.StartPoint = new Vector2(sweep.StartAngle, sweep.EndAngle);
             SetBrushCoordinateTransform(ref gpuBrush, sweep.CoordinateTransform);
             gpuBrush.SpreadMethod = (uint)sweep.SpreadMethod;
             gpuBrush.ColorInterpolationMode = (uint)sweep.ColorInterpolationMode;

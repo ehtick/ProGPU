@@ -31,6 +31,77 @@ public class SKCanvas : IDisposable
         SKImageFilter Filter,
         bool PreserveSourceColorSpace);
 
+    private readonly struct ShaderColorFilterList
+    {
+        private readonly SKColorFilter? _first;
+        private readonly SKColorFilter? _second;
+        private readonly SKColorFilter? _third;
+        private readonly SKColorFilter? _fourth;
+        private readonly SKColorFilter[]? _overflow;
+
+        private ShaderColorFilterList(
+            SKColorFilter? first,
+            SKColorFilter? second,
+            SKColorFilter? third,
+            SKColorFilter? fourth,
+            SKColorFilter[]? overflow,
+            int count)
+        {
+            _first = first;
+            _second = second;
+            _third = third;
+            _fourth = fourth;
+            _overflow = overflow;
+            Count = count;
+        }
+
+        public int Count { get; }
+
+        public SKColorFilter this[int index]
+        {
+            get
+            {
+                ArgumentOutOfRangeException.ThrowIfNegative(index);
+                ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, Count);
+                if (_overflow != null)
+                {
+                    return _overflow[index];
+                }
+
+                return index switch
+                {
+                    0 => _first!,
+                    1 => _second!,
+                    2 => _third!,
+                    _ => _fourth!,
+                };
+            }
+        }
+
+        public ShaderColorFilterList Prepend(SKColorFilter filter)
+        {
+            return Count switch
+            {
+                0 => new(filter, null, null, null, null, 1),
+                1 => new(filter, _first, null, null, null, 2),
+                2 => new(filter, _first, _second, null, null, 3),
+                3 => new(filter, _first, _second, _third, null, 4),
+                _ => CreateOverflow(filter),
+            };
+        }
+
+        private ShaderColorFilterList CreateOverflow(SKColorFilter filter)
+        {
+            var overflow = new SKColorFilter[Count + 1];
+            overflow[0] = filter;
+            for (var index = 0; index < Count; index++)
+            {
+                overflow[index + 1] = this[index];
+            }
+            return new(null, null, null, null, overflow, overflow.Length);
+        }
+    }
+
     private DrawingContext _context;
     private readonly float _width;
     private readonly float _height;
@@ -1056,6 +1127,31 @@ public class SKCanvas : IDisposable
 
     private GpuTexture RenderColorFilter(GpuTexture input, SKColorFilter colorFilter, SKRect? cropRect)
     {
+        if (colorFilter.TryGetBlendColor(out var blendColor, out var blendMode))
+        {
+            if (blendMode == SKBlendMode.Dst)
+            {
+                return ApplyFilterCrop(input, cropRect);
+            }
+
+            var foreground = RenderFilterPass(
+                "SKColorFilter Blend Color",
+                input.Width,
+                input.Height,
+                context => context.DrawRectangle(
+                    new SolidColorBrush(ToVector4(blendColor)),
+                    null,
+                    new Rect(0f, 0f, input.Width, input.Height)));
+            try
+            {
+                return RenderImageBlend(input, foreground, blendMode);
+            }
+            finally
+            {
+                ReleaseOwnedLayerTexture(foreground);
+            }
+        }
+
         if (colorFilter.TryGetColorTables(out var alpha, out var red, out var green, out var blue))
         {
             var context = GetGpuContext();
@@ -1190,7 +1286,9 @@ public class SKCanvas : IDisposable
         var destination = CreateOwnedFilterTexture(
             context,
             "SKImageFilter Blend Destination",
-            storage: true);
+            storage: true,
+            width: Math.Max(background.Width, foreground.Width),
+            height: Math.Max(background.Height, foreground.Height));
         GetCompositorForContext(context).ApplyImageBlend(
             background,
             foreground,
@@ -1209,7 +1307,9 @@ public class SKCanvas : IDisposable
         var destination = CreateOwnedFilterTexture(
             context,
             "SKImageFilter Arithmetic Destination",
-            storage: true);
+            storage: true,
+            width: Math.Max(background.Width, foreground.Width),
+            height: Math.Max(background.Height, foreground.Height));
         GetCompositorForContext(context).ApplyArithmeticComposite(
             background,
             foreground,
@@ -3570,7 +3670,7 @@ public class SKCanvas : IDisposable
     private bool TryDrawSpecialShader(PathGeometry clipGeometry, SKRect targetBounds, SKPaint paint)
     {
         var shader = paint.Shader;
-        if (shader == null || (shader.Picture == null && shader.Image == null && shader.Composed == null))
+        if (!HasSpecialShader(shader))
         {
             return false;
         }
@@ -3588,7 +3688,7 @@ public class SKCanvas : IDisposable
 
             if (paint.Style == SKPaintStyle.Fill)
             {
-                DrawShaderLayer(shader, clipGeometry, targetBounds, paint, drawAsFill: false);
+                DrawShaderLayer(shader!, clipGeometry, targetBounds, paint, drawAsFill: false);
             }
             else
             {
@@ -3602,7 +3702,7 @@ public class SKCanvas : IDisposable
                 using var fillPath = paint.GetFillPath(sourcePath);
                 if (fillPath != null)
                 {
-                    DrawShaderLayer(shader, fillPath.Geometry, fillPath.Bounds, paint, drawAsFill: true);
+                    DrawShaderLayer(shader!, fillPath.Geometry, fillPath.Bounds, paint, drawAsFill: true);
                 }
             }
         }
@@ -3621,8 +3721,22 @@ public class SKCanvas : IDisposable
 
     private static bool HasSpecialShader(SKShader? shader)
     {
-        return shader != null
-            && (shader.Picture != null || shader.Image != null || shader.Composed != null);
+        if (shader == null)
+        {
+            return false;
+        }
+
+        if (shader.ColorFilter != null)
+        {
+            return true;
+        }
+
+        if (shader.LocalMatrix is { } localMatrix)
+        {
+            return HasSpecialShader(localMatrix.Shader);
+        }
+
+        return shader.Picture != null || shader.Image != null || shader.Composed != null;
     }
 
     private void DrawShaderLayer(
@@ -3632,11 +3746,60 @@ public class SKCanvas : IDisposable
         SKPaint paint,
         bool drawAsFill)
     {
+        DrawShaderLayer(
+            shader,
+            clipGeometry,
+            targetBounds,
+            paint,
+            drawAsFill,
+            SKMatrix.Identity,
+            shaderColorFilters: default);
+    }
+
+    private void DrawShaderLayer(
+        SKShader shader,
+        PathGeometry clipGeometry,
+        SKRect targetBounds,
+        SKPaint paint,
+        bool drawAsFill,
+        SKMatrix inheritedLocalMatrix,
+        ShaderColorFilterList shaderColorFilters)
+    {
+        if (shader.LocalMatrix is { } localMatrix)
+        {
+            DrawShaderLayer(
+                localMatrix.Shader,
+                clipGeometry,
+                targetBounds,
+                paint,
+                drawAsFill,
+                SKMatrix.Concat(inheritedLocalMatrix, localMatrix.Matrix),
+                shaderColorFilters);
+            return;
+        }
+
+        if (shader.ColorFilter is { } colorFilter)
+        {
+            DrawShaderLayer(
+                colorFilter.Shader,
+                clipGeometry,
+                targetBounds,
+                paint,
+                drawAsFill,
+                inheritedLocalMatrix,
+                shaderColorFilters.Prepend(colorFilter.Filter));
+            return;
+        }
+
         if (shader.Composed is { } composed)
         {
-            if (TryCreateComposedConicalBrush(composed, out var conicalBrush))
+            if (shaderColorFilters.Count == 0 &&
+                paint.ColorFilter == null &&
+                !HasShaderColorFilter(composed.Destination) &&
+                !HasShaderColorFilter(composed.Source) &&
+                TryCreateComposedConicalBrush(composed, out var conicalBrush) &&
+                SKShader.ApplyLocalMatrix(conicalBrush, inheritedLocalMatrix))
             {
-                SKShader.ApplyColorFilter(conicalBrush, paint.ColorFilter);
                 var style = drawAsFill ? SKPaintStyle.Fill : paint.Style;
                 var conicalFill = style == SKPaintStyle.Stroke ? null : conicalBrush;
                 var conicalPen = style == SKPaintStyle.Fill
@@ -3651,8 +3814,23 @@ public class SKCanvas : IDisposable
                 return;
             }
 
-            DrawShaderLayer(composed.Destination, clipGeometry, targetBounds, paint, drawAsFill);
-            DrawShaderLayer(composed.Source, clipGeometry, targetBounds, paint, drawAsFill);
+            DrawComposedShaderLayer(
+                composed,
+                clipGeometry,
+                paint,
+                inheritedLocalMatrix,
+                shaderColorFilters);
+            return;
+        }
+
+        if (shaderColorFilters.Count != 0)
+        {
+            DrawFilteredShaderLayer(
+                shader,
+                clipGeometry,
+                paint,
+                inheritedLocalMatrix,
+                shaderColorFilters);
             return;
         }
 
@@ -3664,8 +3842,8 @@ public class SKCanvas : IDisposable
                 picture.TileModeX,
                 picture.TileModeY,
                 picture.FilterMode,
-                picture.LocalMatrix,
-                shader.ColorFilter,
+                SKMatrix.Concat(inheritedLocalMatrix, picture.LocalMatrix),
+                shaderColorFilter: null,
                 paint.ColorFilter,
                 clipGeometry,
                 targetBounds);
@@ -3674,11 +3852,21 @@ public class SKCanvas : IDisposable
 
         if (shader.Image is { } image)
         {
-            DrawTiledImage(image, shader.ColorFilter, paint.ColorFilter, clipGeometry, targetBounds);
+            DrawTiledImage(
+                image,
+                SKMatrix.Concat(inheritedLocalMatrix, image.LocalMatrix),
+                shaderColorFilter: null,
+                paint.ColorFilter,
+                clipGeometry,
+                targetBounds);
             return;
         }
 
         var brush = shader.ToBrush();
+        if (!SKShader.ApplyLocalMatrix(brush, inheritedLocalMatrix))
+        {
+            return;
+        }
         var shaderStyle = drawAsFill ? SKPaintStyle.Fill : paint.Style;
         var fill = shaderStyle == SKPaintStyle.Stroke ? null : brush;
         var pen = shaderStyle == SKPaintStyle.Fill
@@ -3692,11 +3880,194 @@ public class SKCanvas : IDisposable
             !paint.IsAntialias);
     }
 
+    private void DrawComposedShaderLayer(
+        SKShader.ComposedShaderData composed,
+        PathGeometry clipGeometry,
+        SKPaint paint,
+        SKMatrix inheritedLocalMatrix,
+        ShaderColorFilterList shaderColorFilters)
+    {
+        var destination = RenderShaderLayerTexture(
+            composed.Destination,
+            paint.IsAntialias,
+            inheritedLocalMatrix);
+        GpuTexture? source = null;
+        GpuTexture? result = null;
+        try
+        {
+            source = RenderShaderLayerTexture(
+                composed.Source,
+                paint.IsAntialias,
+                inheritedLocalMatrix);
+            result = composed.Arithmetic is { } arithmetic
+                ? RenderArithmeticComposite(
+                    destination,
+                    source,
+                    new SKImageFilter.ArithmeticData(
+                        arithmetic.K1,
+                        arithmetic.K2,
+                        arithmetic.K3,
+                        arithmetic.K4,
+                        arithmetic.EnforcePremul,
+                        null,
+                        null))
+                : RenderImageBlend(
+                    destination,
+                    source,
+                    composed.BlendMode ?? SKBlendMode.SrcOver);
+
+            result = ApplyShaderColorFilters(result, shaderColorFilters);
+            result = ApplyShaderColorFilter(result, paint.ColorFilter);
+            DrawShaderTextureResult(result, clipGeometry);
+            result = null;
+        }
+        finally
+        {
+            ReleaseOwnedLayerTexture(destination);
+            if (source != null)
+            {
+                ReleaseOwnedLayerTexture(source);
+            }
+            if (result != null)
+            {
+                ReleaseOwnedLayerTexture(result);
+            }
+        }
+    }
+
+    private void DrawFilteredShaderLayer(
+        SKShader shader,
+        PathGeometry clipGeometry,
+        SKPaint paint,
+        SKMatrix inheritedLocalMatrix,
+        ShaderColorFilterList shaderColorFilters)
+    {
+        GpuTexture? result = RenderShaderLayerTexture(
+            shader,
+            paint.IsAntialias,
+            inheritedLocalMatrix);
+        try
+        {
+            result = ApplyShaderColorFilters(result, shaderColorFilters);
+            result = ApplyShaderColorFilter(result, paint.ColorFilter);
+            DrawShaderTextureResult(result, clipGeometry);
+            result = null;
+        }
+        finally
+        {
+            if (result != null)
+            {
+                ReleaseOwnedLayerTexture(result);
+            }
+        }
+    }
+
+    private GpuTexture RenderShaderLayerTexture(
+        SKShader shader,
+        bool isAntialias,
+        SKMatrix inheritedLocalMatrix)
+    {
+        var coverageBounds = GetShaderLayerCoverageBounds();
+        var coverageGeometry = CreateRectGeometry(coverageBounds);
+        return RenderFilterPass(
+            "SKShader Layer",
+            GetTextureWidth(),
+            GetTextureHeight(),
+            context =>
+            {
+                using var canvas = new SKCanvas(context, _width, _height, GetGpuContext());
+                canvas.SetMatrix(_currentMatrix);
+                using var layerPaint = new SKPaint
+                {
+                    Color = SKColors.White,
+                    Style = SKPaintStyle.Fill,
+                    IsAntialias = isAntialias,
+                };
+                canvas.DrawShaderLayer(
+                    shader,
+                    coverageGeometry,
+                    coverageBounds,
+                    layerPaint,
+                    drawAsFill: true,
+                    inheritedLocalMatrix: inheritedLocalMatrix,
+                    shaderColorFilters: default);
+            });
+    }
+
+    private SKRect GetShaderLayerCoverageBounds()
+    {
+        var deviceBounds = new SKRect(0f, 0f, _width, _height);
+        return _currentMatrix.TryInvert(out var inverse)
+            ? inverse.MapRect(deviceBounds)
+            : deviceBounds;
+    }
+
+    private GpuTexture ApplyShaderColorFilters(
+        GpuTexture texture,
+        ShaderColorFilterList colorFilters)
+    {
+        for (var index = 0; index < colorFilters.Count; index++)
+        {
+            texture = ApplyShaderColorFilter(texture, colorFilters[index]);
+        }
+
+        return texture;
+    }
+
+    private GpuTexture ApplyShaderColorFilter(GpuTexture texture, SKColorFilter? colorFilter)
+    {
+        if (colorFilter == null)
+        {
+            return texture;
+        }
+
+        var filtered = RenderColorFilter(texture, colorFilter, cropRect: null);
+        if (!ReferenceEquals(filtered, texture))
+        {
+            ReleaseOwnedLayerTexture(texture);
+        }
+        return filtered;
+    }
+
+    private void DrawShaderTextureResult(GpuTexture texture, PathGeometry clipGeometry)
+    {
+        _context.PushGeometryClip(clipGeometry, _currentMatrix.ToMatrix4x4());
+        try
+        {
+            DrawRestoredLayerTexture(
+                texture,
+                new Rect(0f, 0f, texture.Width, texture.Height));
+        }
+        finally
+        {
+            _context.PopGeometryClip();
+        }
+    }
+
+    private static bool HasShaderColorFilter(SKShader shader)
+    {
+        if (shader.ColorFilter != null)
+        {
+            return true;
+        }
+
+        if (shader.LocalMatrix is { } localMatrix)
+        {
+            return HasShaderColorFilter(localMatrix.Shader);
+        }
+
+        return false;
+    }
+
     private static bool TryCreateComposedConicalBrush(
         SKShader.ComposedShaderData composed,
         out TwoPointConicalGradientBrush brush)
     {
         brush = null!;
+        if (composed.Arithmetic != null || composed.BlendMode != SKBlendMode.SrcOver)
+        {
+            return false;
+        }
         Brush destination;
         Brush source;
         try
@@ -3915,6 +4286,7 @@ public class SKCanvas : IDisposable
 
     private void DrawTiledImage(
         SKShader.ImageShaderData imageShader,
+        SKMatrix shaderMatrix,
         SKColorFilter? shaderColorFilter,
         SKColorFilter? paintColorFilter,
         PathGeometry clipGeometry,
@@ -3926,7 +4298,7 @@ public class SKCanvas : IDisposable
             return;
         }
 
-        var localMatrix = imageShader.LocalMatrix.ToMatrix4x4();
+        var localMatrix = shaderMatrix.ToMatrix4x4();
         GetPictureShaderBounds(targetBounds, localMatrix, out var minX, out var minY, out var maxX, out var maxY);
         GetTileRange(imageShader.TileModeX, minX, maxX, tileRect.Width, out var startX, out var endX);
         GetTileRange(imageShader.TileModeY, minY, maxY, tileRect.Height, out var startY, out var endY);

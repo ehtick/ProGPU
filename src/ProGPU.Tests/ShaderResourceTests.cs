@@ -61,6 +61,27 @@ public class ShaderResourceTests
     }
 
     [Fact]
+    public void VectorShaderMapsSkiaSweepAngleRangesBeforeTiling()
+    {
+        Assert.Contains(
+            "let angleDegrees = angleTurns * 360.0",
+            Shaders.VectorShader,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "brush.gradientStart.y - brush.gradientStart.x",
+            Shaders.VectorShader,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "t = (angleDegrees - brush.gradientStart.x) / angleSpan",
+            Shaders.VectorShader,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "This is O(1) time and O(1) local storage.",
+            Shaders.VectorShader,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void EveryShaderSourceIsEmbeddedAndDocumentsItsCostModel()
     {
         DirectoryInfo root = FindRepositoryRoot();

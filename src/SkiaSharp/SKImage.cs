@@ -278,7 +278,7 @@ public class SKImage : IDisposable
         SKShaderTileMode tileModeY,
         SKMatrix localMatrix)
     {
-        return SKShader.CreateImage(CreateOwnedCopy(), tileModeX, tileModeY, localMatrix);
+        return SKShader.CreateRetainedImage(CreateOwnedCopy(), tileModeX, tileModeY, localMatrix);
     }
 
     public SKShader ToShader(SKShaderTileMode tileModeX, SKShaderTileMode tileModeY)
@@ -2506,7 +2506,7 @@ public class SKBitmap : SKObject
         SKShaderTileMode tmy,
         SKSamplingOptions sampling,
         SKMatrix localMatrix) =>
-        SKShader.CreateImage(SKImage.FromBitmap(this), tmx, tmy, localMatrix, sampling);
+        SKShader.CreateRetainedImage(SKImage.FromBitmap(this), tmx, tmy, localMatrix, sampling);
 
 #pragma warning disable CS0619
     [Obsolete("Use ToShader(SKShaderTileMode tmx, SKShaderTileMode tmy, SKSamplingOptions sampling, SKMatrix localMatrix) instead.", true)]

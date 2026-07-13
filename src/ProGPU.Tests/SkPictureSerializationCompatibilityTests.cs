@@ -184,7 +184,12 @@ public sealed class SkPictureSerializationCompatibilityTests
             new SolidColorBrush(new Vector4(1f, 0f, 0f, 1f)),
             new RadialGradientBrush(Vector2.One, new Vector2(2f, 3f), 4f, 5f, stops),
             conical,
-            new SweepGradientBrush(new Vector2(6f, 7f), stops),
+            new SweepGradientBrush(new Vector2(6f, 7f), stops)
+            {
+                StartAngle = -45f,
+                EndAngle = 765f,
+                SpreadMethod = GradientSpreadMethod.Reflect,
+            },
             new PerlinNoiseBrush(true, new Vector2(0.1f, 0.2f), 4, 3f, new Vector2(32f, 48f)),
             new HatchPatternBrush(30f, 5f, 2f, Vector4.One),
             new CrossHatchBrush(45f, 6f, 3f, Vector4.UnitW),
@@ -218,6 +223,10 @@ public sealed class SkPictureSerializationCompatibilityTests
         }
         var actualConical = Assert.IsType<TwoPointConicalGradientBrush>(copy.Picture.Commands[2].Brush);
         Assert.Equal(conical.OutsideColor, actualConical.OutsideColor);
+        var actualSweep = Assert.IsType<SweepGradientBrush>(copy.Picture.Commands[3].Brush);
+        Assert.Equal(-45f, actualSweep.StartAngle);
+        Assert.Equal(765f, actualSweep.EndAngle);
+        Assert.Equal(GradientSpreadMethod.Reflect, actualSweep.SpreadMethod);
         var actualNoise = Assert.IsType<PerlinNoiseBrush>(copy.Picture.Commands[4].Brush);
         Assert.Equal(4, actualNoise.NumOctaves);
         Assert.Equal(new Vector2(32f, 48f), actualNoise.TileSize);

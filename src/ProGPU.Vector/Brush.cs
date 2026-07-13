@@ -135,6 +135,8 @@ public class TwoPointConicalGradientBrush : Brush
 public class SweepGradientBrush : Brush
 {
     public Vector2 Center { get; set; }
+    public float StartAngle { get; set; }
+    public float EndAngle { get; set; } = 360f;
     public Matrix4x4 CoordinateTransform { get; set; } = Matrix4x4.Identity;
     public GradientSpreadMethod SpreadMethod { get; set; } = GradientSpreadMethod.Repeat;
     public GradientColorInterpolationMode ColorInterpolationMode { get; set; } = GradientColorInterpolationMode.SRgbLinearInterpolation;

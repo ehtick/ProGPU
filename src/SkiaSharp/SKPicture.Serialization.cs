@@ -161,6 +161,7 @@ internal static class PictureArchive
         CrossHatch,
         ThemeResource,
         BackdropMaterial,
+        SweepAngles,
     }
 
     private enum SegmentKind : byte
@@ -440,7 +441,8 @@ internal static class PictureArchive
             LinearGradientBrush => BrushKind.Linear,
             RadialGradientBrush => BrushKind.Radial,
             TwoPointConicalGradientBrush => BrushKind.TwoPointConical,
-            SweepGradientBrush => BrushKind.Sweep,
+            SweepGradientBrush sweep when sweep.StartAngle == 0f && sweep.EndAngle == 360f => BrushKind.Sweep,
+            SweepGradientBrush => BrushKind.SweepAngles,
             PerlinNoiseBrush => BrushKind.PerlinNoise,
             HatchPatternBrush => BrushKind.Hatch,
             CrossHatchBrush => BrushKind.CrossHatch,
@@ -497,6 +499,11 @@ internal static class PictureArchive
                 WriteMatrix(writer, sweep.CoordinateTransform);
                 writer.Write((int)sweep.SpreadMethod);
                 writer.Write((int)sweep.ColorInterpolationMode);
+                if (kind == BrushKind.SweepAngles)
+                {
+                    writer.Write(sweep.StartAngle);
+                    writer.Write(sweep.EndAngle);
+                }
                 WriteGradientStops(writer, sweep.Stops);
                 break;
             case PerlinNoiseBrush noise:
@@ -555,6 +562,7 @@ internal static class PictureArchive
             BrushKind.Radial => ReadRadialGradient(reader),
             BrushKind.TwoPointConical => ReadConicalGradient(reader),
             BrushKind.Sweep => ReadSweepGradient(reader),
+            BrushKind.SweepAngles => ReadSweepGradient(reader, hasAngles: true),
             BrushKind.PerlinNoise => ReadPerlinNoise(reader),
             BrushKind.Hatch => new HatchPatternBrush(
                 reader.ReadSingle(),
@@ -634,14 +642,18 @@ internal static class PictureArchive
         return brush;
     }
 
-    private static SweepGradientBrush ReadSweepGradient(BinaryReader reader)
+    private static SweepGradientBrush ReadSweepGradient(BinaryReader reader, bool hasAngles = false)
     {
         var center = ReadVector2(reader);
         var transform = ReadMatrix(reader);
         var spread = ReadEnum<GradientSpreadMethod>(reader);
         var colorMode = ReadEnum<GradientColorInterpolationMode>(reader);
+        var startAngle = hasAngles ? reader.ReadSingle() : 0f;
+        var endAngle = hasAngles ? reader.ReadSingle() : 360f;
         return new SweepGradientBrush(center, ReadGradientStops(reader))
         {
+            StartAngle = startAngle,
+            EndAngle = endAngle,
             CoordinateTransform = transform,
             SpreadMethod = spread,
             ColorInterpolationMode = colorMode,

@@ -1197,12 +1197,17 @@ fn vector_fs_main(input: VertexOutput) -> vec4<f32> {
             t = solution.x;
             gradientCoverage = solution.y;
         } else if (brush.brushType == 6u) {
-            // Sweep gradient, starting at the positive X axis and increasing clockwise.
+            // Sweep gradient: atan2 produces one clockwise turn in [0, 360). The affine
+            // angular remap places startAngle at t=0 and endAngle at t=1 before the common
+            // clamp/repeat/mirror/decal policy. This is O(1) time and O(1) local storage.
             let direction = brushCoord - brush.gradientCenter;
-            t = atan2(direction.y, direction.x) / (2.0 * 3.141592653589793);
-            if (t < 0.0) {
-                t = t + 1.0;
+            var angleTurns = atan2(direction.y, direction.x) / (2.0 * 3.141592653589793);
+            if (angleTurns < 0.0) {
+                angleTurns = angleTurns + 1.0;
             }
+            let angleDegrees = angleTurns * 360.0;
+            let angleSpan = max(brush.gradientStart.y - brush.gradientStart.x, 0.000001);
+            t = (angleDegrees - brush.gradientStart.x) / angleSpan;
         } else if (brush.brushType == 7u) {
             let noiseColor = sample_perlin_noise(brush, brushCoord);
             finalColor = vec4<f32>(noiseColor.rgb, noiseColor.a * brush.opacity);
