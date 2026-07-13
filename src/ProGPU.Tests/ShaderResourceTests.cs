@@ -23,6 +23,15 @@ public class ShaderResourceTests
     }
 
     [Fact]
+    public void TextureShaderSupportsBatchedFixedColorLatticeCells()
+    {
+        Assert.Contains("@location(3) patchKind: f32", Shaders.TextureShader, StringComparison.Ordinal);
+        Assert.Contains("@interpolate(flat) patchKind", Shaders.TextureShader, StringComparison.Ordinal);
+        Assert.Contains("if (input.patchKind > 0.5)", Shaders.TextureShader, StringComparison.Ordinal);
+        Assert.Contains("if (input.patchKind > 1.5)", Shaders.TextureShader, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void EveryShaderSourceIsEmbeddedAndDocumentsItsCostModel()
     {
         DirectoryInfo root = FindRepositoryRoot();

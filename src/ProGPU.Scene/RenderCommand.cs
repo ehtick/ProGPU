@@ -55,6 +55,36 @@ public enum TextureSamplingMode
     LinearMipmap
 }
 
+public enum TexturePatchKind : byte
+{
+    Texture,
+    FixedColor
+}
+
+public readonly struct TexturePatch
+{
+    public TexturePatch(Rect source, Rect destination)
+    {
+        Source = source;
+        Destination = destination;
+        Color = default;
+        Kind = TexturePatchKind.Texture;
+    }
+
+    public TexturePatch(Rect destination, Vector4 color)
+    {
+        Source = default;
+        Destination = destination;
+        Color = color;
+        Kind = TexturePatchKind.FixedColor;
+    }
+
+    public Rect Source { get; }
+    public Rect Destination { get; }
+    public Vector4 Color { get; }
+    public TexturePatchKind Kind { get; }
+}
+
 public enum TextRenderingMode
 {
     Grayscale,
@@ -357,6 +387,7 @@ public struct RenderCommand
     // Texture properties
     public GpuTexture? Texture;
     public Rect SrcRect;
+    public TexturePatch[]? TexturePatches;
     public TextureSamplingMode TextureSamplingMode;
     public byte TextureMaxAnisotropy;
     public Vector2 TextureCubicCoefficients;

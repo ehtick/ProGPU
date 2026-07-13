@@ -1,10 +1,11 @@
-// Algorithm: Transform textured quads, resolve tile modes, and sample nearest, linear, or Mitchell-Netravali cubic kernels before compositing.
-// Time complexity: O(1) per invocation; cubic filtering performs a fixed 4x4 sample footprint.
-// Space complexity: O(1) local storage and O(1) bounded texture bandwidth per fragment.
+// Algorithm: Transform batched image/lattice quads, emit fixed-color lattice cells without sampling, or sample nearest, linear, or Mitchell-Netravali cubic kernels before compositing.
+// Time complexity: O(1) per invocation; fixed-color cells perform no image sample and cubic filtering performs a fixed 4x4 sample footprint.
+// Space complexity: O(1) local storage and O(1) bounded texture bandwidth per fragment; one indexed batch stores four vertices and six indices per visible lattice cell.
 struct VertexInput {
     @location(0) position: vec2<f32>,
     @location(1) color: vec4<f32>,
     @location(2) texCoord: vec2<f32>,
+    @location(3) patchKind: f32,
     @location(4) cubicResampler: vec2<f32>,
 };
 
@@ -13,6 +14,7 @@ struct VertexOutput {
     @location(0) color: vec4<f32>,
     @location(1) texCoord: vec2<f32>,
     @location(2) @interpolate(flat) cubicResampler: vec2<f32>,
+    @location(3) @interpolate(flat) patchKind: f32,
 };
 
 struct Uniforms {
@@ -32,6 +34,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     output.color = input.color;
     output.texCoord = input.texCoord;
     output.cubicResampler = input.cubicResampler;
+    output.patchKind = input.patchKind;
     return output;
 }
 
@@ -100,6 +103,20 @@ fn sample_bicubic(uv: vec2<f32>, resampler: vec2<f32>) -> vec4<f32> {
 }
 
 fn texture_fs_main(input: VertexOutput) -> vec4<f32> {
+    let screen_uv = input.position.xy / uniforms.canvasSize;
+    let maskAlpha = textureSample(maskTexture, maskSampler, screen_uv).r;
+    if (maskAlpha <= 0.0) {
+        discard;
+    }
+
+    // patchKind 1 carries straight fixed color; 2 carries premultiplied fixed color.
+    if (input.patchKind > 0.5) {
+        if (input.patchKind > 1.5) {
+            return vec4<f32>(input.color.rgb * maskAlpha, input.color.a * maskAlpha);
+        }
+        return vec4<f32>(input.color.rgb, input.color.a * maskAlpha);
+    }
+
     var texColor = textureSample(texTexture, texSampler, input.texCoord);
     if (input.color.a < 0.0) {
         texColor = sample_bicubic(input.texCoord, input.cubicResampler);
@@ -107,11 +124,6 @@ fn texture_fs_main(input: VertexOutput) -> vec4<f32> {
     let opacity = abs(input.color.a);
     let sourceIsPremultiplied = input.color.g > 0.5;
     let rgbScale = input.color.r;
-    let screen_uv = input.position.xy / uniforms.canvasSize;
-    let maskAlpha = textureSample(maskTexture, maskSampler, screen_uv).r;
-    if (maskAlpha <= 0.0) {
-        discard;
-    }
     let coverage = opacity * maskAlpha;
     if (sourceIsPremultiplied) {
         return vec4<f32>(texColor.rgb * rgbScale * maskAlpha, texColor.a * coverage);

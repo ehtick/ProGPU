@@ -699,6 +699,15 @@ ProGPU implements a **Dynamic Z-Ordered Draw Call Batching** mechanism within `C
 - **Ordered Flush Commits (`CommitPendingDrawCalls`)**: Whenever a boundary-crossing operation is encountered (such as an offscreen compiled texture draw call or layer bounds transition), the compositor flushes accumulated vector and text batches using `CommitPendingDrawCalls()`. This groups consecutive visual primitives into single drawing calls while guaranteeing they are submitted to the GPU command encoder in the exact Z-order depth traversed by the visual tree.
 - **Zero-Allocation Dynamic Offsets**: The batched ranges directly index into GPU-mapped vertex and index backing buffers, avoiding CPU copy operations and preserving near-native rendering speeds.
 
+#### Retained lattice and nine-patch batching
+
+Skia-compatible lattice and nine-patch image draws use the same ordered texture path without multiplying submission overhead:
+
+- The CPU iterator follows Skia's alternating fixed/scalable segment model. With enough destination space, fixed source segments keep their pixel length and scalable segments divide the remainder proportionally. When the destination is smaller than all fixed segments, scalable segments collapse to zero and fixed segments shrink proportionally.
+- A call records one `RenderCommand` containing one contiguous `TexturePatch[]`. Transparent and collapsed cells are removed during layout. Fixed-color cells retain their filtered RGBA value beside ordinary source/destination texture cells.
+- `CompileTextureCommand` reserves one contiguous vertex/index range, emits four vertices and six indices per visible cell, and creates one `CompositorDrawCall`. Fixed-color cells use the same texture pipeline with a flat per-vertex discriminator, so they avoid texture sampling without causing a pipeline switch or an extra draw.
+- For X and Y div counts and C visible cells, layout costs `O(X + Y + C)` time and storage, compositor expansion costs `O(C)`, and GPU submission remains one draw call per lattice operation. This prevents a conventional 9-patch from becoming nine retained commands or nine GPU submissions.
+
 ---
 
 ### 14. Zero-Allocation Vector Drawing & Skia-like GpuPicture Caching
@@ -975,7 +984,16 @@ ProGPU routes all graphics and compute tasks directly to the GPU using specializ
     $$\alpha = 1.0 - \text{smoothstep}(-0.5, 0.5, d_{\text{shape}})$$
   - **Gradient Interpolation**: Evaluates Linear (`brushType == 1u`) and Radial (`brushType == 2u`) gradients dynamically for up to 4 stop colors by calculating projection coordinates and interpolating between bounds using stop offsets.
 
-### 2. TextShader (SDF Glyph Render Pipeline)
+### 2. TextureShader (Image, lattice, and sampling pipeline)
+- **Role**: Draws ordinary image quads and batched lattice/nine-patch cells through one indexed texture pipeline.
+- **Why It is Used**: Preserves image Z-order while keeping each retained image or lattice operation to one GPU draw, regardless of visible lattice-cell count.
+- **Implementation Mechanics**:
+  - Normal cells interpolate source UVs and use nearest, linear, mipmapped, or a bounded 4x4 Mitchell-Netravali cubic sample footprint.
+  - Lattice fixed-color cells carry a flat `patchKind` discriminator and return their vertex RGBA directly, performing no image sample. Separate straight and premultiplied encodings preserve blend correctness for both texture alpha modes.
+  - Every fragment samples the active opacity mask once. Premultiplied image and fixed-color paths scale RGB with coverage; straight-alpha paths retain straight RGB and scale alpha.
+  - CPU layout and vertex generation are `O(C)` for C visible cells, fragment work is `O(1)`, and one indexed draw stores four vertices and six indices per cell.
+
+### 3. TextShader (SDF Glyph Render Pipeline)
 - **Role**: Specialized graphics shader for high-speed, sharp text display.
 - **Why It is Used**: Traditional text rasterization blurs heavily under scaling. The TextShader samples high-precision SDF textures and applies dilation offsets and power-based sharpness filters to ensure text remains crisp at any display size or zoom level.
 - **Implementation Mechanics**:
@@ -983,7 +1001,7 @@ ProGPU routes all graphics and compute tasks directly to the GPU using specializ
   - Applies a dilation scale based on the requested stroke thickness: `let dilated = clamp(alpha * input.strokeThickness, 0.0, 1.0);`
   - Filters sharpness using a power curve driven by the corner radius: `let finalAlpha = pow(dilated, input.cornerRadius);`
 
-### 3. GlyphRasterizerShader (GPGPU Analytical Glyph Rasterizer)
+### 4. GlyphRasterizerShader (GPGPU Analytical Glyph Rasterizer)
 - **Role**: WebGPU compute shader tasked with pre-rasterizing vector glyph outlines into the glyph atlas texture.
 - **Why It is Used**: Bypasses slow CPU-based glyph rasterizers entirely, using parallel GPU threads to rasterize outlines directly on the GPU.
 - **Implementation Mechanics**:
@@ -992,7 +1010,7 @@ ProGPU routes all graphics and compute tasks directly to the GPU using specializ
   - Solves quadratic equations directly inside the WGSL shader (`solve_quadratic`) to evaluate Bezier curve boundaries, updating winding directions according to the curve's vertical tangent derivative.
   - Writes the calculated coverage mask directly to the storage texture: `textureStore(atlasTexture, writeCoord, vec4<f32>(coverage, 0.0, 0.0, 0.0));`
 
-### 4. PathRasterizerShader (GPGPU Analytical Vector Path Rasterizer)
+### 5. PathRasterizerShader (GPGPU Analytical Vector Path Rasterizer)
 - **Role**: Advanced WebGPU compute shader that computes analytical non-zero winding fills for arbitrary paths.
 - **Why It is Used**: Bypasses CPU segment flattening and triangulation completely, allowing the GPU to raycast complex Bezier geometry directly.
 - **Implementation Mechanics**:
@@ -1002,7 +1020,7 @@ ProGPU routes all graphics and compute tasks directly to the GPU using specializ
     If $D \leq 0$, it extracts up to 3 real roots using trigonometric cosine angles, updating the winding number according to the tangent derivative $P'_y(t) = 3 a t^2 + 2 b t + c$.
   - Executes 4-point supersampling (SSAA) using subpixel sampling coordinate offsets (`+0.25`, `+0.75`) in local space (`fp2`), achieving hardware-accurate anti-aliased edge coverage.
 
-### 5. GaussianBlur (Horizontal & Vertical Compute Filters)
+### 6. GaussianBlur (Horizontal & Vertical Compute Filters)
 - **Role**: Parallel compute shaders for high-performance backdrop and glass blurs.
 - **Why It is Used**: Bypasses slow pixel shader convolution passes by executing parallel thread blocks directly on texture buffers.
 - **Implementation Mechanics**:
@@ -1011,7 +1029,7 @@ ProGPU routes all graphics and compute tasks directly to the GPU using specializ
     $$\text{color} = 0.0625 \cdot T[-2] + 0.25 \cdot T[-1] + 0.375 \cdot T[0] + 0.25 \cdot T[1] + 0.0625 \cdot T[2]$$
   - Clamps texture coordinate bounds inside `textureLoad` to eliminate edge bleed artifacts.
 
-### 6. DropShadow (Ambient Shadow & Neon Glow Compute Filter)
+### 7. DropShadow (Ambient Shadow & Neon Glow Compute Filter)
 - **Role**: WebGPU compute shader calculating soft drop shadows and glowing neon halos for layout elements.
 - **Why It is Used**: Evaluates dynamic blurring and translation offsets over element boundaries in a single dispatch pass.
 - **Implementation Mechanics**:

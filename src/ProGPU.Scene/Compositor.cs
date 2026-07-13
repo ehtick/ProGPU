@@ -8294,7 +8294,6 @@ SceneStateUploadComplete:
 
         CommitPendingDrawCalls();
 
-        var r = cmd.Rect;
         var textureOpacity = cmd.TextureSamplingMode == TextureSamplingMode.Cubic
             ? -_activeOpacity
             : _activeOpacity;
@@ -8310,23 +8309,107 @@ SceneStateUploadComplete:
             float.IsFinite(cmd.TextureCubicCoefficients.Y)
                 ? cmd.TextureCubicCoefficients
                 : new Vector2(0f, 0.5f);
+        var indexStart = _textureIndicesList.Count;
+        var patches = cmd.TexturePatches;
+        var patchCount = patches?.Length ?? 1;
+        _textureVerticesList.EnsureCapacity(_textureVerticesList.Count + patchCount * 4);
+        _textureIndicesList.EnsureCapacity(_textureIndicesList.Count + patchCount * 6);
+
+        if (patches == null)
+        {
+            AppendTextureQuad(
+                cmd.Texture,
+                cmd.SrcRect,
+                cmd.Rect,
+                color,
+                patchKind: 0f,
+                cubicCoefficients,
+                transform);
+        }
+        else
+        {
+            for (var patchIndex = 0; patchIndex < patches.Length; patchIndex++)
+            {
+                var patch = patches[patchIndex];
+                if (patch.Kind == TexturePatchKind.FixedColor)
+                {
+                    var alpha = patch.Color.W * _activeOpacity;
+                    var fixedColor = isPremultiplied
+                        ? new Vector4(
+                            patch.Color.X * alpha,
+                            patch.Color.Y * alpha,
+                            patch.Color.Z * alpha,
+                            alpha)
+                        : new Vector4(patch.Color.X, patch.Color.Y, patch.Color.Z, alpha);
+                    AppendTextureQuad(
+                        cmd.Texture,
+                        default,
+                        patch.Destination,
+                        fixedColor,
+                        isPremultiplied ? 2f : 1f,
+                        cubicCoefficients,
+                        transform);
+                }
+                else
+                {
+                    AppendTextureQuad(
+                        cmd.Texture,
+                        patch.Source,
+                        patch.Destination,
+                        color,
+                        patchKind: 0f,
+                        cubicCoefficients,
+                        transform);
+                }
+            }
+        }
+
+        var indexCount = _textureIndicesList.Count - indexStart;
+        if (indexCount == 0)
+        {
+            return;
+        }
+
+        _drawCalls.Add(new CompositorDrawCall
+        {
+            Type = DrawCallType.Texture,
+            IndexStart = (uint)indexStart,
+            IndexCount = (uint)indexCount,
+            Texture = cmd.Texture,
+            ClipRect = _activeClipRect,
+            MaskTexture = _maskStack.Count > 0 ? _maskStack.Peek() : null,
+            BlendMode = _activeBlendMode,
+            TextureSamplingMode = cmd.TextureSamplingMode,
+            TextureMaxAnisotropy = cmd.TextureMaxAnisotropy,
+            TextureAlphaMode = cmd.Texture.AlphaMode
+        });
+    }
+
+    private void AppendTextureQuad(
+        GpuTexture texture,
+        Rect source,
+        Rect destination,
+        Vector4 color,
+        float patchKind,
+        Vector2 cubicCoefficients,
+        Matrix4x4 transform)
+    {
+        var r = destination;
 
         var v0 = Vector2.Transform(new Vector2(r.X, r.Y), transform);
         var v1 = Vector2.Transform(new Vector2(r.X + r.Width, r.Y), transform);
         var v2 = Vector2.Transform(new Vector2(r.X + r.Width, r.Y + r.Height), transform);
         var v3 = Vector2.Transform(new Vector2(r.X, r.Y + r.Height), transform);
 
-        uint idxStart = (uint)_textureVerticesList.Count;
-
         Vector2 uv0, uv1, uv2, uv3;
-        if (cmd.SrcRect.Width > 0f && cmd.SrcRect.Height > 0f)
+        if (patchKind == 0f && source.Width > 0f && source.Height > 0f)
         {
-            float texW = cmd.Texture.Width;
-            float texH = cmd.Texture.Height;
-            float l = cmd.SrcRect.X / texW;
-            float t = cmd.SrcRect.Y / texH;
-            float right = (cmd.SrcRect.X + cmd.SrcRect.Width) / texW;
-            float b = (cmd.SrcRect.Y + cmd.SrcRect.Height) / texH;
+            float texW = texture.Width;
+            float texH = texture.Height;
+            float l = source.X / texW;
+            float t = source.Y / texH;
+            float right = (source.X + source.Width) / texW;
+            float b = (source.Y + source.Height) / texH;
 
             uv0 = new Vector2(l, t);
             uv1 = new Vector2(right, t);
@@ -8355,7 +8438,7 @@ SceneStateUploadComplete:
 
             if (maxX <= clipLeft || minX >= clipRight || maxY <= clipTop || minY >= clipBottom)
             {
-                return; // Completely clipped!
+                return;
             }
 
             if (!QuadClipper.TryClipAxisAlignedQuad(
@@ -8373,14 +8456,15 @@ SceneStateUploadComplete:
             }
         }
 
+        uint idxStart = (uint)_textureVerticesList.Count;
         int originalVertexCount = _textureVerticesList.Count;
         CollectionsMarshal.SetCount(_textureVerticesList, originalVertexCount + 4);
         var vertexSpan = CollectionsMarshal.AsSpan(_textureVerticesList).Slice(originalVertexCount, 4);
 
-        vertexSpan[0] = new VectorVertex(v0, color, uv0, shapeSize: cubicCoefficients);
-        vertexSpan[1] = new VectorVertex(v1, color, uv1, shapeSize: cubicCoefficients);
-        vertexSpan[2] = new VectorVertex(v2, color, uv2, shapeSize: cubicCoefficients);
-        vertexSpan[3] = new VectorVertex(v3, color, uv3, shapeSize: cubicCoefficients);
+        vertexSpan[0] = new VectorVertex(v0, color, uv0, patchKind, cubicCoefficients);
+        vertexSpan[1] = new VectorVertex(v1, color, uv1, patchKind, cubicCoefficients);
+        vertexSpan[2] = new VectorVertex(v2, color, uv2, patchKind, cubicCoefficients);
+        vertexSpan[3] = new VectorVertex(v3, color, uv3, patchKind, cubicCoefficients);
 
         int originalIndexCount = _textureIndicesList.Count;
         CollectionsMarshal.SetCount(_textureIndicesList, originalIndexCount + 6);
@@ -8392,20 +8476,6 @@ SceneStateUploadComplete:
         indexSpan[3] = idxStart;
         indexSpan[4] = idxStart + 2;
         indexSpan[5] = idxStart + 3;
-
-        _drawCalls.Add(new CompositorDrawCall
-        {
-            Type = DrawCallType.Texture,
-            IndexStart = (uint)(_textureIndicesList.Count - 6),
-            IndexCount = 6,
-            Texture = cmd.Texture,
-            ClipRect = _activeClipRect,
-            MaskTexture = _maskStack.Count > 0 ? _maskStack.Peek() : null,
-            BlendMode = _activeBlendMode,
-            TextureSamplingMode = cmd.TextureSamplingMode,
-            TextureMaxAnisotropy = cmd.TextureMaxAnisotropy,
-            TextureAlphaMode = cmd.Texture.AlphaMode
-        });
     }
 
     internal Sampler* GetTextureSampler(TextureSamplingMode samplingMode, byte maxAnisotropy = 1)

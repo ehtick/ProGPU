@@ -1409,6 +1409,11 @@ public class SKCanvas : IDisposable
                     ? TextureSamplingMode.Nearest
                     : TextureSamplingMode.Linear;
 
+    private static TextureSamplingMode MapFilterMode(SKFilterMode filterMode) =>
+        filterMode == SKFilterMode.Nearest
+            ? TextureSamplingMode.Nearest
+            : TextureSamplingMode.Linear;
+
     private static Vector2? MapCubicSampling(SKSamplingOptions sampling) =>
         sampling.UseCubic &&
         float.IsFinite(sampling.Cubic.B) &&
@@ -3239,6 +3244,66 @@ public class SKCanvas : IDisposable
         }
     }
 
+    private void DrawImagePatchesCore(
+        SKImage image,
+        TexturePatch[] patches,
+        SKRect destination,
+        TextureSamplingMode samplingMode,
+        SKPaint? paint)
+    {
+        if (patches.Length == 0)
+        {
+            return;
+        }
+
+        var retainedTexture = RetainImageTexture(image);
+        if (!_isPictureRecording)
+        {
+            retainedTexture = ConvertImageTextureToSrgb(retainedTexture, image.ColorSpace);
+        }
+        if (paint?.ColorFilter is { } colorFilter)
+        {
+            var filteredTexture = RenderColorFilter(retainedTexture, colorFilter, cropRect: null);
+            if (!ReferenceEquals(filteredTexture, retainedTexture))
+            {
+                RetainLayerTextureForDeferredCommand(filteredTexture);
+                retainedTexture = filteredTexture;
+            }
+        }
+
+        var pushedBlendMode = PushPaintBlendMode(paint);
+        var pushedOpacity = false;
+        try
+        {
+            var opacity = paint?.Color.Alpha / 255f ?? 1f;
+            if (opacity < 1f)
+            {
+                _context.PushOpacity(opacity);
+                pushedOpacity = true;
+            }
+
+            _context.Commands.Add(new RenderCommand
+            {
+                Type = RenderCommandType.DrawTexture,
+                Texture = retainedTexture,
+                TexturePatches = patches,
+                Rect = ToRect(destination),
+                Transform = _currentMatrix.ToMatrix4x4(),
+                TextureSamplingMode = samplingMode,
+                IsEdgeAliased = paint is { IsAntialias: false }
+            });
+        }
+        finally
+        {
+            if (pushedOpacity)
+            {
+                _context.PopOpacity();
+            }
+
+            PopPaintBlendMode(pushedBlendMode);
+        }
+    }
+
     public void DrawImage(
         SKImage image,
         SKRect source,
@@ -3310,6 +3375,163 @@ public class SKCanvas : IDisposable
             new SKRect(0f, 0f, image.Width, image.Height),
             destination,
             paint);
+    }
+
+    public void DrawBitmapNinePatch(
+        SKBitmap bitmap,
+        SKRectI center,
+        SKRect destination,
+        SKPaint? paint = null) =>
+        DrawBitmapNinePatch(bitmap, center, destination, SKFilterMode.Nearest, paint);
+
+    public void DrawBitmapNinePatch(
+        SKBitmap bitmap,
+        SKRectI center,
+        SKRect destination,
+        SKFilterMode filterMode,
+        SKPaint? paint = null)
+    {
+        ArgumentNullException.ThrowIfNull(bitmap);
+        using var image = SKImage.FromBitmap(bitmap);
+        DrawImageNinePatch(image, center, destination, filterMode, paint);
+    }
+
+    public void DrawImageNinePatch(
+        SKImage image,
+        SKRectI center,
+        SKRect destination,
+        SKPaint? paint = null) =>
+        DrawImageNinePatch(image, center, destination, SKFilterMode.Nearest, paint);
+
+    public void DrawImageNinePatch(
+        SKImage image,
+        SKRectI center,
+        SKRect destination,
+        SKFilterMode filterMode = SKFilterMode.Nearest,
+        SKPaint? paint = null)
+    {
+        ArgumentNullException.ThrowIfNull(image);
+        if (center.Left < 0 ||
+            center.Top < 0 ||
+            center.Right > image.Width ||
+            center.Bottom > image.Height)
+        {
+            throw new ArgumentException(
+                "Center rectangle must be contained inside the image bounds.",
+                nameof(center));
+        }
+
+        if (!SKLatticeLayout.TryCreateNinePatch(
+                image.Width,
+                image.Height,
+                center,
+                destination,
+                out var patches))
+        {
+            return;
+        }
+
+        DrawImagePatchesCore(image, patches, destination, MapFilterMode(filterMode), paint);
+    }
+
+    public void DrawBitmapLattice(
+        SKBitmap bitmap,
+        int[] xDivs,
+        int[] yDivs,
+        SKRect destination,
+        SKPaint? paint = null) =>
+        DrawBitmapLattice(bitmap, xDivs, yDivs, destination, SKFilterMode.Nearest, paint);
+
+    public void DrawBitmapLattice(
+        SKBitmap bitmap,
+        int[] xDivs,
+        int[] yDivs,
+        SKRect destination,
+        SKFilterMode filterMode,
+        SKPaint? paint = null)
+    {
+        ArgumentNullException.ThrowIfNull(bitmap);
+        using var image = SKImage.FromBitmap(bitmap);
+        DrawImageLattice(image, xDivs, yDivs, destination, filterMode, paint);
+    }
+
+    public void DrawImageLattice(
+        SKImage image,
+        int[] xDivs,
+        int[] yDivs,
+        SKRect destination,
+        SKPaint? paint = null) =>
+        DrawImageLattice(image, xDivs, yDivs, destination, SKFilterMode.Nearest, paint);
+
+    public void DrawImageLattice(
+        SKImage image,
+        int[] xDivs,
+        int[] yDivs,
+        SKRect destination,
+        SKFilterMode filterMode,
+        SKPaint? paint = null) =>
+        DrawImageLattice(
+            image,
+            new SKLattice { XDivs = xDivs, YDivs = yDivs },
+            destination,
+            filterMode,
+            paint);
+
+    public void DrawBitmapLattice(
+        SKBitmap bitmap,
+        SKLattice lattice,
+        SKRect destination,
+        SKPaint? paint = null) =>
+        DrawBitmapLattice(bitmap, lattice, destination, SKFilterMode.Nearest, paint);
+
+    public void DrawBitmapLattice(
+        SKBitmap bitmap,
+        SKLattice lattice,
+        SKRect destination,
+        SKFilterMode filterMode,
+        SKPaint? paint = null)
+    {
+        ArgumentNullException.ThrowIfNull(bitmap);
+        using var image = SKImage.FromBitmap(bitmap);
+        DrawImageLattice(image, lattice, destination, filterMode, paint);
+    }
+
+    public void DrawImageLattice(
+        SKImage image,
+        SKLattice lattice,
+        SKRect destination,
+        SKPaint? paint = null) =>
+        DrawImageLattice(image, lattice, destination, SKFilterMode.Nearest, paint);
+
+    public void DrawImageLattice(
+        SKImage image,
+        SKLattice lattice,
+        SKRect destination,
+        SKFilterMode filterMode,
+        SKPaint? paint = null)
+    {
+        ArgumentNullException.ThrowIfNull(image);
+        if (lattice.XDivs == null)
+        {
+            throw new ArgumentNullException("XDivs");
+        }
+        if (lattice.YDivs == null)
+        {
+            throw new ArgumentNullException("YDivs");
+        }
+
+        if (!SKLatticeLayout.TryCreateLattice(
+                image.Width,
+                image.Height,
+                lattice,
+                destination,
+                paint?.ColorFilter,
+                out var patches))
+        {
+            return;
+        }
+
+        DrawImagePatchesCore(image, patches, destination, MapFilterMode(filterMode), paint);
     }
 
     [Obsolete("Use the overload with SKSamplingOptions instead.")]
