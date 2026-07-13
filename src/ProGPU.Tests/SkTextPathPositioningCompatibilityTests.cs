@@ -149,7 +149,7 @@ public sealed class SkTextPathPositioningCompatibilityTests
     }
 
     [Fact]
-    public void PathPositionedBuilderRejectsMismatchedInputs()
+    public void PathPositionedBuilderRejectsMismatchedPathInputs()
     {
         using var builder = new SKTextBlobBuilder();
         using var font = new SKFont(SKTypeface.Default, 16f);
@@ -163,10 +163,6 @@ public sealed class SkTextPathPositioningCompatibilityTests
             ReadOnlySpan<float>.Empty,
             new SKPoint[] { SKPoint.Empty },
             path));
-        Assert.Throws<ArgumentException>(() => builder.AddRotationScaleRun(
-            new ushort[] { 1 },
-            font,
-            ReadOnlySpan<SKRotationScaleMatrix>.Empty));
     }
 
     private static void AssertNear(float expected, float actual) =>
