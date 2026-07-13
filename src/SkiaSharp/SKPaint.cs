@@ -381,7 +381,11 @@ public partial class SKPaint : SKObject
         destination = new SKPath();
         if (PathEffect is { IsDash: false } materializedEffect)
         {
-            var applied = materializedEffect.TryApply(source, resScale, out var effectedPath);
+            var applied = materializedEffect.TryApply(
+                source,
+                resScale,
+                out var effectedPath,
+                out var paintAdjustment);
             if (applied)
             {
                 destination.Dispose();
@@ -389,6 +393,7 @@ public partial class SKPaint : SKObject
                 using (var paint = Clone())
                 {
                     paint.PathEffect = null;
+                    paintAdjustment.Apply(paint);
                     return paint.TryCreateFillPath(effectedPath, resScale, out destination);
                 }
             }

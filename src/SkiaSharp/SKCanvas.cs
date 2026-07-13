@@ -3458,13 +3458,18 @@ public class SKCanvas : IDisposable
     {
         if (paint.PathEffect is { IsDash: false } pathEffect)
         {
-            var applied = pathEffect.TryApply(path, GetCurrentStrokeScale(), out var effectedPath);
+            var applied = pathEffect.TryApply(
+                path,
+                GetCurrentStrokeScale(),
+                out var effectedPath,
+                out var paintAdjustment);
             if (applied)
             {
                 using (effectedPath)
                 using (var effectedPaint = paint.Clone())
                 {
                     effectedPaint.PathEffect = null;
+                    paintAdjustment.Apply(effectedPaint);
                     DrawPath(effectedPath, effectedPaint);
                 }
                 return;

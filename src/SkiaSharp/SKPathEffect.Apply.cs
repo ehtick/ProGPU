@@ -12,11 +12,37 @@ public partial class SKPathEffect
     private const float EffectEpsilon = 0.00001f;
     private const int MaximumGeneratedElements = 1_000_000;
 
+    internal readonly record struct PaintAdjustment(SKPaintStyle? Style, float? StrokeWidth)
+    {
+        public void Apply(SKPaint paint)
+        {
+            if (Style is { } style)
+            {
+                paint.Style = style;
+            }
+            if (StrokeWidth is { } strokeWidth)
+            {
+                paint.StrokeWidth = strokeWidth;
+            }
+        }
+    }
+
     internal bool TryApply(SKPath source, float resScale, out SKPath result)
     {
         ArgumentNullException.ThrowIfNull(source);
         var normalizedScale = float.IsFinite(resScale) && resScale > 0f ? resScale : 1f;
         return TryApply(_data, source, normalizedScale, out result);
+    }
+
+    internal bool TryApply(
+        SKPath source,
+        float resScale,
+        out SKPath result,
+        out PaintAdjustment paintAdjustment)
+    {
+        var applied = TryApply(source, resScale, out result);
+        paintAdjustment = GetPaintAdjustment(_data);
+        return applied;
     }
 
     private static bool TryApply(EffectData data, SKPath source, float resScale, out SKPath result)
@@ -46,11 +72,36 @@ public partial class SKPathEffect
                 return TryApplyDiscrete(source, discrete, resScale, out result);
             case Path1DData path1D:
                 return TryApplyPath1D(source, path1D, resScale, out result);
+            case Line2DData line2D:
+                return TryApplyLine2D(source, line2D, resScale, out result);
+            case Path2DData path2D:
+                return TryApplyPath2D(source, path2D, out result);
             default:
                 result = new SKPath(source);
                 return false;
         }
     }
+
+    private static PaintAdjustment GetPaintAdjustment(EffectData data) => data switch
+    {
+        Line2DData line => new PaintAdjustment(SKPaintStyle.Stroke, line.Width),
+        Path2DData => new PaintAdjustment(SKPaintStyle.Fill, null),
+        PairData { Kind: EffectKind.Compose } compose =>
+            MergePaintAdjustments(GetPaintAdjustment(compose.Second), GetPaintAdjustment(compose.First)),
+        PairData { Kind: EffectKind.Sum } sum =>
+            IntersectPaintAdjustments(GetPaintAdjustment(sum.First), GetPaintAdjustment(sum.Second)),
+        _ => default,
+    };
+
+    private static PaintAdjustment MergePaintAdjustments(
+        PaintAdjustment inner,
+        PaintAdjustment outer) =>
+        new(outer.Style ?? inner.Style, outer.StrokeWidth ?? inner.StrokeWidth);
+
+    private static PaintAdjustment IntersectPaintAdjustments(
+        PaintAdjustment first,
+        PaintAdjustment second) =>
+        first == second ? first : default;
 
     private static bool TryApplyDash(
         SKPath source,
@@ -402,7 +453,14 @@ public partial class SKPathEffect
         do
         {
             var length = measure.Length;
-            var segmentCount = checked((int)MathF.Ceiling(length / discrete.SegmentLength));
+            var exactSegmentCount = MathF.Ceiling(length / discrete.SegmentLength);
+            if (!float.IsFinite(exactSegmentCount) || exactSegmentCount > MaximumGeneratedElements)
+            {
+                result.Dispose();
+                result = new SKPath(source);
+                return false;
+            }
+            var segmentCount = (int)exactSegmentCount;
             if (segmentCount <= 0)
             {
                 continue;
@@ -474,15 +532,16 @@ public partial class SKPathEffect
         do
         {
             var length = measure.Length;
-            var stampCount = length <= phase
-                ? 0
-                : checked((int)MathF.Floor((length - phase) / path1D.Advance) + 1);
-            if (stampCount > MaximumGeneratedElements)
+            var exactStampCount = length <= phase
+                ? 0f
+                : MathF.Floor((length - phase) / path1D.Advance) + 1f;
+            if (!float.IsFinite(exactStampCount) || exactStampCount > MaximumGeneratedElements)
             {
                 result.Dispose();
                 result = new SKPath(source);
                 return false;
             }
+            var stampCount = (int)exactStampCount;
 
             for (var index = 0; index < stampCount; index++)
             {
@@ -568,6 +627,215 @@ public partial class SKPathEffect
         }
         return new SKPoint(position.X - tangent.Y * local.Y, position.Y + tangent.X * local.Y);
     }
+
+    private static bool TryApplyLine2D(
+        SKPath source,
+        Line2DData line2D,
+        float resScale,
+        out SKPath result)
+    {
+        result = new SKPath { FillType = source.FillType };
+        if (!float.IsFinite(line2D.Width) || line2D.Width < 0f ||
+            HasPerspective(line2D.Matrix) ||
+            !line2D.Matrix.TryInvert(out var inverse) ||
+            !TryBuildLatticeContours(source, inverse, resScale, out var contours, out var minimum, out var maximum))
+        {
+            return false;
+        }
+
+        if (!TryGetLatticeRange(minimum.Y, maximum.Y, padding: 0, out var firstRow, out var lastRow))
+        {
+            return false;
+        }
+        if ((long)lastRow - firstRow + 1 > MaximumGeneratedElements)
+        {
+            return false;
+        }
+
+        var intersections = new List<float>();
+        var generated = 0;
+        for (var row = firstRow; row <= lastRow; row++)
+        {
+            intersections.Clear();
+            var y = (float)row;
+            foreach (var contour in contours)
+            {
+                for (var index = 1; index < contour.Length; index++)
+                {
+                    var first = contour[index - 1];
+                    var second = contour[index];
+                    if ((first.Y <= y && second.Y > y) || (second.Y <= y && first.Y > y))
+                    {
+                        var amount = (y - first.Y) / (second.Y - first.Y);
+                        intersections.Add(first.X + (second.X - first.X) * amount);
+                    }
+                }
+            }
+
+            intersections.Sort();
+            for (var index = 1; index < intersections.Count; index++)
+            {
+                var left = intersections[index - 1];
+                var right = intersections[index];
+                if (right - left <= EffectEpsilon)
+                {
+                    continue;
+                }
+
+                var midpoint = line2D.Matrix.MapPoint((left + right) * 0.5f, y);
+                if (!source.Contains(midpoint.X, midpoint.Y))
+                {
+                    continue;
+                }
+
+                var start = line2D.Matrix.MapPoint(left, y);
+                var stop = line2D.Matrix.MapPoint(right, y);
+                result.MoveTo(start);
+                result.LineTo(stop);
+                if (++generated > MaximumGeneratedElements)
+                {
+                    result.Dispose();
+                    result = new SKPath(source);
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    private static bool TryApplyPath2D(SKPath source, Path2DData path2D, out SKPath result)
+    {
+        result = new SKPath { FillType = path2D.Path.FillType };
+        if (HasPerspective(path2D.Matrix) || !path2D.Matrix.TryInvert(out var inverse))
+        {
+            return false;
+        }
+
+        var latticeBounds = inverse.MapRect(source.Bounds);
+        if (!IsFinite(latticeBounds))
+        {
+            return false;
+        }
+
+        if (!TryGetLatticeRange(latticeBounds.Left, latticeBounds.Right, padding: 1, out var firstColumn, out var lastColumn) ||
+            !TryGetLatticeRange(latticeBounds.Top, latticeBounds.Bottom, padding: 1, out var firstRow, out var lastRow))
+        {
+            return false;
+        }
+
+        var columnCount = (long)lastColumn - firstColumn + 1;
+        var rowCount = (long)lastRow - firstRow + 1;
+        if (columnCount > MaximumGeneratedElements || rowCount > MaximumGeneratedElements ||
+            columnCount * rowCount > MaximumGeneratedElements)
+        {
+            return false;
+        }
+
+        var generatedVerbs = 0L;
+        for (var row = firstRow; row <= lastRow; row++)
+        {
+            for (var column = firstColumn; column <= lastColumn; column++)
+            {
+                var origin = path2D.Matrix.MapPoint(column, row);
+                if (!source.Contains(origin.X, origin.Y))
+                {
+                    continue;
+                }
+
+                generatedVerbs += path2D.Path.VerbCount;
+                if (generatedVerbs > MaximumGeneratedElements)
+                {
+                    result.Dispose();
+                    result = new SKPath(source);
+                    return false;
+                }
+                result.AddPath(path2D.Path, origin.X, origin.Y);
+            }
+        }
+        return true;
+    }
+
+    private static bool TryBuildLatticeContours(
+        SKPath source,
+        SKMatrix inverse,
+        float resScale,
+        out List<Vector2[]> contours,
+        out Vector2 minimum,
+        out Vector2 maximum)
+    {
+        contours = new List<Vector2[]>();
+        minimum = new Vector2(float.PositiveInfinity, float.PositiveInfinity);
+        maximum = new Vector2(float.NegativeInfinity, float.NegativeInfinity);
+        var generated = 0;
+        using var measure = new SKPathMeasure(source, forceClosed: true, resScale);
+        do
+        {
+            var length = measure.Length;
+            if (length <= EffectEpsilon)
+            {
+                continue;
+            }
+
+            var exactSegmentCount = MathF.Ceiling(length * MathF.Max(1f, resScale) * 0.5f);
+            if (!float.IsFinite(exactSegmentCount) || exactSegmentCount > MaximumGeneratedElements)
+            {
+                return false;
+            }
+            var segmentCount = Math.Max(2, (int)exactSegmentCount);
+            generated = checked(generated + segmentCount + 1);
+            if (generated > MaximumGeneratedElements)
+            {
+                return false;
+            }
+
+            var contour = new Vector2[segmentCount + 1];
+            for (var index = 0; index <= segmentCount; index++)
+            {
+                var point = measure.GetPosition(length * index / segmentCount);
+                var lattice = inverse.MapPoint(point);
+                var value = new Vector2(lattice.X, lattice.Y);
+                contour[index] = value;
+                minimum = Vector2.Min(minimum, value);
+                maximum = Vector2.Max(maximum, value);
+            }
+            contours.Add(contour);
+        }
+        while (measure.NextContour());
+
+        return contours.Count > 0 &&
+            float.IsFinite(minimum.X) && float.IsFinite(minimum.Y) &&
+            float.IsFinite(maximum.X) && float.IsFinite(maximum.Y);
+    }
+
+    private static bool IsFinite(SKRect rect) =>
+        float.IsFinite(rect.Left) && float.IsFinite(rect.Top) &&
+        float.IsFinite(rect.Right) && float.IsFinite(rect.Bottom);
+
+    private static bool TryGetLatticeRange(
+        float minimum,
+        float maximum,
+        int padding,
+        out int first,
+        out int last)
+    {
+        first = 0;
+        last = -1;
+        var floor = MathF.Floor(minimum);
+        var ceiling = MathF.Ceiling(maximum);
+        if (!float.IsFinite(floor) || !float.IsFinite(ceiling) ||
+            floor < int.MinValue + padding || ceiling > int.MaxValue - padding)
+        {
+            return false;
+        }
+
+        first = (int)floor - padding;
+        last = (int)ceiling + padding;
+        return last >= first;
+    }
+
+    private static bool HasPerspective(SKMatrix matrix) =>
+        matrix.Persp0 != 0f || matrix.Persp1 != 0f || matrix.Persp2 != 1f;
 }
 
 public partial class SKPath

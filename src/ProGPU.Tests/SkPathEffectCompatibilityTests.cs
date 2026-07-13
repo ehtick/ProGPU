@@ -178,6 +178,48 @@ public sealed class SkPathEffectCompatibilityTests
         Assert.InRange(maximum.X, 74.99f, 75.01f);
     }
 
+    [Fact]
+    public void TwoDimensionalEffectsGenerateBoundedLatticeGeometryAndPaintModes()
+    {
+        using var source = new SKPath();
+        source.AddRect(new SKRect(0f, 0f, 30f, 30f));
+        var lattice = SKMatrix.CreateScale(10f, 10f);
+
+        using var lines = SKPathEffect.Create2DLine(2f, lattice);
+        Assert.True(lines.TryApply(source, 1f, out var linePath, out var lineAdjustment));
+        using (linePath)
+        {
+            Assert.False(linePath.IsEmpty);
+            Assert.Equal(SKPaintStyle.Stroke, lineAdjustment.Style);
+            Assert.Equal(2f, lineAdjustment.StrokeWidth);
+        }
+
+        using var stamp = new SKPath();
+        stamp.AddCircle(0f, 0f, 1f);
+        using var stamps = SKPathEffect.Create2DPath(lattice, stamp);
+        Assert.True(stamps.TryApply(source, 1f, out var stampPath, out var stampAdjustment));
+        using (stampPath)
+        {
+            Assert.True(stampPath.Geometry.Figures.Count >= 4);
+            Assert.Equal(SKPaintStyle.Fill, stampAdjustment.Style);
+            Assert.Null(stampAdjustment.StrokeWidth);
+        }
+
+        var context = new DrawingContext();
+        using var canvas = new SKCanvas(context, 30f, 30f);
+        using var paint = new SKPaint { PathEffect = lines };
+        canvas.DrawPath(source, paint);
+        var command = Assert.Single(context.Commands);
+        Assert.Null(command.Brush);
+        Assert.NotNull(command.Pen);
+        Assert.Equal(2f, command.Pen!.Thickness);
+
+        var tinyLattice = SKMatrix.CreateScale(0.000001f, 0.000001f);
+        using var guarded = SKPathEffect.Create2DPath(tinyLattice, stamp);
+        Assert.False(guarded.TryApply(source, 1f, out var guardedPath));
+        guardedPath.Dispose();
+    }
+
     private static void AssertParameters(string name, int count, params string[] expected)
     {
         var method = typeof(SKPathEffect).GetMethods(BindingFlags.Public | BindingFlags.Static)
