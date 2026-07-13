@@ -708,6 +708,15 @@ Skia-compatible lattice and nine-patch image draws use the same ordered texture 
 - `CompileTextureCommand` reserves one contiguous vertex/index range, emits four vertices and six indices per visible cell, and creates one `CompositorDrawCall`. Fixed-color cells use the same texture pipeline with a flat per-vertex discriminator, so they avoid texture sampling without causing a pipeline switch or an extra draw.
 - For X and Y div counts and C visible cells, layout costs `O(X + Y + C)` time and storage, compositor expansion costs `O(C)`, and GPU submission remains one draw call per lattice operation. This prevents a conventional 9-patch from becoming nine retained commands or nine GPU submissions.
 
+#### Retained vertex meshes
+
+`SKVertices` and `DrawingContext.DrawVertexMesh` provide the matching batched path for arbitrary colored triangle meshes:
+
+- Positions, optional texture coordinates, vertex colors, and 16-bit indices are copied once into an immutable `VertexMesh2D`. Triangle lists, strips, and fans retain their original topology instead of being converted into one retained path per face.
+- The compositor transforms each vertex once, normalizes valid faces into one contiguous index range, and leaves invalid indexed faces out of the final count. The entire mesh remains part of the surrounding vector batch and therefore does not add one draw call per triangle.
+- Vertex colors travel premultiplied and are combined with the paint brush by the vector shader. The WGSL path implements Skia's Porter-Duff, arithmetic, separable, and non-separable vertex-color blend modes before the ordinary mask and framebuffer blend stages.
+- GPU hit testing traverses the same normalized triangles. For V vertices, I input indices, and T output triangles, retained construction costs `O(V + I)` time and storage, compilation costs `O(V + T)`, and hit-index construction costs `O(T)`.
+
 ---
 
 ### 14. Zero-Allocation Vector Drawing & Skia-like GpuPicture Caching
@@ -983,6 +992,7 @@ ProGPU routes all graphics and compute tasks directly to the GPU using specializ
     $$d_{\text{shape}} = \text{abs}(\text{gridIndex}) - \text{strokeThickness} \cdot 0.5$$
     $$\alpha = 1.0 - \text{smoothstep}(-0.5, 0.5, d_{\text{shape}})$$
   - **Gradient Interpolation**: Evaluates Linear (`brushType == 1u`) and Radial (`brushType == 2u`) gradients dynamically for up to 4 stop colors by calculating projection coordinates and interpolating between bounds using stop offsets.
+  - **Batched vertex meshes (`sType == 18u`)**: Interpolates premultiplied vertex colors across triangle lists, strips, and fans, then combines that color with the evaluated paint brush using the requested Skia blend mode. One mesh contributes one retained command and one contiguous vector index range rather than one command per triangle.
 
 ### 2. TextureShader (Image, lattice, and sampling pipeline)
 - **Role**: Draws ordinary image quads and batched lattice/nine-patch cells through one indexed texture pipeline.
