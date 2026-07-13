@@ -10,6 +10,37 @@ namespace ProGPU.Tests;
 
 public sealed class BlendModeRenderTests
 {
+    [Theory]
+    [InlineData(VertexColorBlendMode.Src, 255, 0, 0, 255)]
+    [InlineData(VertexColorBlendMode.Dst, 0, 0, 255, 255)]
+    [InlineData(VertexColorBlendMode.Plus, 255, 0, 255, 255)]
+    [InlineData(VertexColorBlendMode.Modulate, 0, 0, 0, 255)]
+    public void VertexMeshColorBlendMatchesSkia(
+        VertexColorBlendMode mode,
+        byte red,
+        byte green,
+        byte blue,
+        byte alpha)
+    {
+        var window = HeadlessWindow.Shared;
+        window.Resize(32, 32);
+        window.Content = new VertexMeshVisual(mode);
+
+        try
+        {
+            window.Render();
+            var pixel = ReadPixel(window.ReadPixels(), window.Width, x: 8, y: 8);
+            Assert.InRange(pixel.R, Math.Max(0, red - 2), Math.Min(255, red + 2));
+            Assert.InRange(pixel.G, Math.Max(0, green - 2), Math.Min(255, green + 2));
+            Assert.InRange(pixel.B, Math.Max(0, blue - 2), Math.Min(255, blue + 2));
+            Assert.InRange(pixel.A, Math.Max(0, alpha - 2), Math.Min(255, alpha + 2));
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
     [Fact]
     public void ScreenBlendPremultipliesStraightVectorSource()
     {
@@ -99,6 +130,40 @@ public sealed class BlendModeRenderTests
     }
 
     private readonly record struct RgbaPixel(byte R, byte G, byte B, byte A);
+
+    private sealed class VertexMeshVisual : FrameworkElement
+    {
+        private readonly VertexColorBlendMode _mode;
+        private readonly VertexMesh2D _mesh = new(
+            VertexMeshTopology.Triangles,
+            new[]
+            {
+                new Vector2(0f, 0f),
+                new Vector2(32f, 0f),
+                new Vector2(0f, 32f),
+            },
+            colors: new[]
+            {
+                new Vector4(0f, 0f, 1f, 1f),
+                new Vector4(0f, 0f, 1f, 1f),
+                new Vector4(0f, 0f, 1f, 1f),
+            });
+
+        public VertexMeshVisual(VertexColorBlendMode mode)
+        {
+            _mode = mode;
+            Width = 32f;
+            Height = 32f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            context.DrawVertexMesh(
+                new SolidColorBrush(new Vector4(1f, 0f, 0f, 1f)),
+                _mesh,
+                _mode);
+        }
+    }
 
     private sealed class VectorBlendVisual : FrameworkElement
     {

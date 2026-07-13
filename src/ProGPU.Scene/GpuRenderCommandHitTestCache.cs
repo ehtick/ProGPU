@@ -139,6 +139,9 @@ public sealed class GpuRenderCommandHitTestCacheBuilder : IDisposable
                     primitiveId,
                     zIndex);
                 break;
+            case RenderCommandType.DrawVertexMesh:
+                AddVertexMesh(command, activeTransform, primitiveId, zIndex);
+                break;
             case RenderCommandType.FillQuad:
                 AddQuadFill(command, activeTransform, primitiveId, zIndex);
                 break;
@@ -638,6 +641,37 @@ public sealed class GpuRenderCommandHitTestCacheBuilder : IDisposable
             transform,
             id,
             zIndex + 0.125f);
+    }
+
+    private void AddVertexMesh(RenderCommand command, Matrix4x4 transform, int id, float zIndex)
+    {
+        if (command.Brush is null || command.VertexMesh is not { } mesh)
+        {
+            return;
+        }
+
+        var positions = mesh.PositionArray;
+        var triangleCount = mesh.GetTriangleCount();
+        for (var triangle = 0; triangle < triangleCount; triangle++)
+        {
+            mesh.GetTriangle(triangle, out var index0, out var index1, out var index2);
+            if ((uint)index0 >= (uint)positions.Length ||
+                (uint)index1 >= (uint)positions.Length ||
+                (uint)index2 >= (uint)positions.Length)
+            {
+                continue;
+            }
+
+            AddTriangleFill(
+                null,
+                positions[index0],
+                positions[index1],
+                positions[index2],
+                command.Brush,
+                transform,
+                id,
+                zIndex + triangle * 0.001f);
+        }
     }
 
     private void AddPolyline(

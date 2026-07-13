@@ -1,4 +1,4 @@
-// Algorithm: Expand and transform batched vector primitives, evaluate analytic curves and arcs, then shade fills, strokes, gradients, and anti-aliased edges.
+// Algorithm: Expand and transform batched vector primitives and meshes, evaluate analytic curves and arcs, then shade fills, strokes, gradients, vertex-color blends, and anti-aliased edges.
 // Time complexity: O(1) per vertex or fragment under the shader's fixed primitive and gradient limits.
 // Space complexity: O(1) local storage and a bounded number of uniform/storage reads.
 struct Brush {
@@ -691,8 +691,183 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vertexIndex: u32) -> Verte
     output.gridIndex = gridIndex;
     return output;
 }
+fn mesh_unpremultiply(color: vec4<f32>) -> vec4<f32> {
+    if (color.a <= 0.0) {
+        return vec4<f32>(0.0);
+    }
+    return vec4<f32>(color.rgb / color.a, color.a);
+}
 
+fn mesh_screen(backdrop: vec3<f32>, source: vec3<f32>) -> vec3<f32> {
+    return backdrop + source - backdrop * source;
+}
 
+fn mesh_hard_light_component(backdrop: f32, source: f32) -> f32 {
+    if (source <= 0.5) {
+        return backdrop * (2.0 * source);
+    }
+    return backdrop + (2.0 * source - 1.0) - backdrop * (2.0 * source - 1.0);
+}
+
+fn mesh_hard_light(backdrop: vec3<f32>, source: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        mesh_hard_light_component(backdrop.r, source.r),
+        mesh_hard_light_component(backdrop.g, source.g),
+        mesh_hard_light_component(backdrop.b, source.b));
+}
+
+fn mesh_color_dodge_component(backdrop: f32, source: f32) -> f32 {
+    if (backdrop <= 0.0) { return 0.0; }
+    if (source >= 1.0) { return 1.0; }
+    return min(1.0, backdrop / (1.0 - source));
+}
+
+fn mesh_color_dodge(backdrop: vec3<f32>, source: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        mesh_color_dodge_component(backdrop.r, source.r),
+        mesh_color_dodge_component(backdrop.g, source.g),
+        mesh_color_dodge_component(backdrop.b, source.b));
+}
+
+fn mesh_color_burn_component(backdrop: f32, source: f32) -> f32 {
+    if (backdrop >= 1.0) { return 1.0; }
+    if (source <= 0.0) { return 0.0; }
+    return 1.0 - min(1.0, (1.0 - backdrop) / source);
+}
+
+fn mesh_color_burn(backdrop: vec3<f32>, source: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        mesh_color_burn_component(backdrop.r, source.r),
+        mesh_color_burn_component(backdrop.g, source.g),
+        mesh_color_burn_component(backdrop.b, source.b));
+}
+
+fn mesh_soft_light_component(backdrop: f32, source: f32) -> f32 {
+    if (source <= 0.5) {
+        return backdrop - (1.0 - 2.0 * source) * backdrop * (1.0 - backdrop);
+    }
+    var curve = sqrt(backdrop);
+    if (backdrop <= 0.25) {
+        curve = ((16.0 * backdrop - 12.0) * backdrop + 4.0) * backdrop;
+    }
+    return backdrop + (2.0 * source - 1.0) * (curve - backdrop);
+}
+
+fn mesh_soft_light(backdrop: vec3<f32>, source: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        mesh_soft_light_component(backdrop.r, source.r),
+        mesh_soft_light_component(backdrop.g, source.g),
+        mesh_soft_light_component(backdrop.b, source.b));
+}
+
+fn mesh_luminosity(color: vec3<f32>) -> f32 {
+    return dot(color, vec3<f32>(0.3, 0.59, 0.11));
+}
+
+fn mesh_saturation(color: vec3<f32>) -> f32 {
+    return max(max(color.r, color.g), color.b) - min(min(color.r, color.g), color.b);
+}
+
+fn mesh_clip_color(input: vec3<f32>) -> vec3<f32> {
+    var color = input;
+    let lightness = mesh_luminosity(color);
+    let minimum = min(min(color.r, color.g), color.b);
+    let maximum = max(max(color.r, color.g), color.b);
+    if (minimum < 0.0 && lightness > minimum) {
+        color = vec3<f32>(lightness) +
+            (color - vec3<f32>(lightness)) * lightness / (lightness - minimum);
+    }
+    if (maximum > 1.0 && maximum > lightness) {
+        color = vec3<f32>(lightness) +
+            (color - vec3<f32>(lightness)) * (1.0 - lightness) / (maximum - lightness);
+    }
+    return color;
+}
+
+fn mesh_set_luminosity(color: vec3<f32>, lightness: f32) -> vec3<f32> {
+    return mesh_clip_color(color + vec3<f32>(lightness - mesh_luminosity(color)));
+}
+
+fn mesh_set_saturation(color: vec3<f32>, targetSaturation: f32) -> vec3<f32> {
+    let minimum = min(min(color.r, color.g), color.b);
+    let maximum = max(max(color.r, color.g), color.b);
+    if (maximum <= minimum) {
+        return vec3<f32>(0.0);
+    }
+    return (color - vec3<f32>(minimum)) * targetSaturation / (maximum - minimum);
+}
+
+fn mesh_advanced_blend(backdrop: vec3<f32>, source: vec3<f32>, mode: u32) -> vec3<f32> {
+    switch mode {
+        case 14u: { return mesh_screen(backdrop, source); }
+        case 15u: { return mesh_hard_light(source, backdrop); }
+        case 16u: { return min(backdrop, source); }
+        case 17u: { return max(backdrop, source); }
+        case 18u: { return mesh_color_dodge(backdrop, source); }
+        case 19u: { return mesh_color_burn(backdrop, source); }
+        case 20u: { return mesh_hard_light(backdrop, source); }
+        case 21u: { return mesh_soft_light(backdrop, source); }
+        case 22u: { return abs(backdrop - source); }
+        case 23u: { return backdrop + source - 2.0 * backdrop * source; }
+        case 24u: { return backdrop * source; }
+        case 25u: {
+            return mesh_set_luminosity(
+                mesh_set_saturation(source, mesh_saturation(backdrop)),
+                mesh_luminosity(backdrop));
+        }
+        case 26u: {
+            return mesh_set_luminosity(
+                mesh_set_saturation(backdrop, mesh_saturation(source)),
+                mesh_luminosity(backdrop));
+        }
+        case 27u: { return mesh_set_luminosity(source, mesh_luminosity(backdrop)); }
+        case 28u: { return mesh_set_luminosity(backdrop, mesh_luminosity(source)); }
+        default: { return source; }
+    }
+}
+
+fn blend_mesh_colors(source: vec4<f32>, destinationPremultiplied: vec4<f32>, mode: u32) -> vec4<f32> {
+    let sourcePremultiplied = vec4<f32>(source.rgb * source.a, source.a);
+    let destination = mesh_unpremultiply(destinationPremultiplied);
+    var result = vec4<f32>(0.0);
+    switch mode {
+        case 0u: { result = vec4<f32>(0.0); }
+        case 1u: { result = sourcePremultiplied; }
+        case 2u: { result = destinationPremultiplied; }
+        case 3u: { result = sourcePremultiplied + destinationPremultiplied * (1.0 - source.a); }
+        case 4u: { result = destinationPremultiplied + sourcePremultiplied * (1.0 - destination.a); }
+        case 5u: { result = sourcePremultiplied * destination.a; }
+        case 6u: { result = destinationPremultiplied * source.a; }
+        case 7u: { result = sourcePremultiplied * (1.0 - destination.a); }
+        case 8u: { result = destinationPremultiplied * (1.0 - source.a); }
+        case 9u: {
+            result = sourcePremultiplied * destination.a +
+                destinationPremultiplied * (1.0 - source.a);
+        }
+        case 10u: {
+            result = destinationPremultiplied * source.a +
+                sourcePremultiplied * (1.0 - destination.a);
+        }
+        case 11u: {
+            result = sourcePremultiplied * (1.0 - destination.a) +
+                destinationPremultiplied * (1.0 - source.a);
+        }
+        case 12u: { result = min(sourcePremultiplied + destinationPremultiplied, vec4<f32>(1.0)); }
+        case 13u: { result = sourcePremultiplied * destinationPremultiplied; }
+        default: {
+            let mixed = clamp(
+                mesh_advanced_blend(destination.rgb, source.rgb, mode),
+                vec3<f32>(0.0),
+                vec3<f32>(1.0));
+            result = vec4<f32>(
+                sourcePremultiplied.rgb * (1.0 - destination.a) +
+                    destinationPremultiplied.rgb * (1.0 - source.a) +
+                    mixed * source.a * destination.a,
+                source.a + destination.a - source.a * destination.a);
+        }
+    }
+    return mesh_unpremultiply(clamp(result, vec4<f32>(0.0), vec4<f32>(1.0)));
+}
 
 fn vector_fs_main(input: VertexOutput) -> vec4<f32> {
     var encodedShapeType = input.shapeType;
@@ -964,7 +1139,7 @@ fn vector_fs_main(input: VertexOutput) -> vec4<f32> {
 
     var finalColor = input.color;
     if (brush.brushType == 0u) {
-        if (sType == 5u || sType == 6u || (sType >= 12u && sType <= 17u)) {
+        if (sType == 5u || sType == 6u || (sType >= 12u && sType <= 18u)) {
             finalColor = vec4<f32>(brush.stopColors0.rgb, brush.stopColors0.a * brush.opacity);
         } else {
             finalColor = vec4<f32>(input.color.rgb, input.color.a * brush.opacity);
@@ -1032,6 +1207,10 @@ fn vector_fs_main(input: VertexOutput) -> vec4<f32> {
             let gradColor = sample_gradient_color(brush, t);
             finalColor = vec4<f32>(gradColor.rgb, gradColor.a * brush.opacity);
         }
+    }
+
+    if (sType == 18u) {
+        finalColor = blend_mesh_colors(finalColor, input.color, u32(round(input.cornerRadius)));
     }
 
     let screen_uv = input.position.xy / uniforms.canvasSize;

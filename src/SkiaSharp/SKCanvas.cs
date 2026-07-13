@@ -2468,6 +2468,72 @@ public class SKCanvas : IDisposable
         }
     }
 
+    public void DrawVertices(
+        SKVertexMode vmode,
+        SKPoint[] vertices,
+        SKColor[] colors,
+        SKPaint paint)
+    {
+        using var copy = SKVertices.CreateCopy(vmode, vertices, colors);
+        DrawVertices(copy, SKBlendMode.Modulate, paint);
+    }
+
+    public void DrawVertices(
+        SKVertexMode vmode,
+        SKPoint[] vertices,
+        SKPoint[] texs,
+        SKColor[] colors,
+        SKPaint paint)
+    {
+        using var copy = SKVertices.CreateCopy(vmode, vertices, texs, colors);
+        DrawVertices(copy, SKBlendMode.Modulate, paint);
+    }
+
+    public void DrawVertices(
+        SKVertexMode vmode,
+        SKPoint[] vertices,
+        SKPoint[] texs,
+        SKColor[] colors,
+        ushort[] indices,
+        SKPaint paint)
+    {
+        using var copy = SKVertices.CreateCopy(vmode, vertices, texs, colors, indices);
+        DrawVertices(copy, SKBlendMode.Modulate, paint);
+    }
+
+    public void DrawVertices(
+        SKVertexMode vmode,
+        SKPoint[] vertices,
+        SKPoint[] texs,
+        SKColor[] colors,
+        SKBlendMode mode,
+        ushort[] indices,
+        SKPaint paint)
+    {
+        using var copy = SKVertices.CreateCopy(vmode, vertices, texs, colors, indices);
+        DrawVertices(copy, mode, paint);
+    }
+
+    public void DrawVertices(SKVertices vertices, SKBlendMode mode, SKPaint paint)
+    {
+        ArgumentNullException.ThrowIfNull(vertices);
+        ArgumentNullException.ThrowIfNull(paint);
+        var pushedBlendMode = PushPaintBlendMode(paint);
+        try
+        {
+            _context.DrawVertexMesh(
+                paint.ToFillBrush(),
+                vertices.Mesh,
+                (VertexColorBlendMode)mode,
+                _currentMatrix.ToMatrix4x4(),
+                !paint.IsAntialias);
+        }
+        finally
+        {
+            PopPaintBlendMode(pushedBlendMode);
+        }
+    }
+
     private void AddDrawPathCommand(
         PathGeometry path,
         Brush? brush,

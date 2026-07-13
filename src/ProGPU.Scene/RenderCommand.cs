@@ -44,7 +44,132 @@ public enum RenderCommandType
     PopOpacityMask,
     PushBlendMode,
     PopBlendMode,
-    DrawGlyphRun
+    DrawGlyphRun,
+    DrawVertexMesh
+}
+
+public enum VertexMeshTopology
+{
+    Triangles,
+    TriangleStrip,
+    TriangleFan
+}
+
+public enum VertexColorBlendMode
+{
+    Clear,
+    Src,
+    Dst,
+    SrcOver,
+    DstOver,
+    SrcIn,
+    DstIn,
+    SrcOut,
+    DstOut,
+    SrcATop,
+    DstATop,
+    Xor,
+    Plus,
+    Modulate,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    ColorDodge,
+    ColorBurn,
+    HardLight,
+    SoftLight,
+    Difference,
+    Exclusion,
+    Multiply,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity
+}
+
+public sealed class VertexMesh2D
+{
+    internal Vector2[] PositionArray { get; }
+    internal Vector2[] TextureCoordinateArray { get; }
+    internal Vector4[] ColorArray { get; }
+    internal ushort[] IndexArray { get; }
+
+    public VertexMeshTopology Topology { get; }
+    public ReadOnlyMemory<Vector2> Positions => PositionArray;
+    public ReadOnlyMemory<Vector2> TextureCoordinates => TextureCoordinateArray;
+    public ReadOnlyMemory<Vector4> Colors => ColorArray;
+    public ReadOnlyMemory<ushort> Indices => IndexArray;
+
+    public VertexMesh2D(
+        VertexMeshTopology topology,
+        ReadOnlySpan<Vector2> positions,
+        ReadOnlySpan<Vector2> textureCoordinates = default,
+        ReadOnlySpan<Vector4> colors = default,
+        ReadOnlySpan<ushort> indices = default)
+    {
+        if (!textureCoordinates.IsEmpty && textureCoordinates.Length != positions.Length)
+        {
+            throw new ArgumentException(
+                "The number of texture coordinates must match the number of vertices.",
+                nameof(textureCoordinates));
+        }
+
+        if (!colors.IsEmpty && colors.Length != positions.Length)
+        {
+            throw new ArgumentException(
+                "The number of colors must match the number of vertices.",
+                nameof(colors));
+        }
+
+        Topology = topology;
+        PositionArray = positions.ToArray();
+        TextureCoordinateArray = textureCoordinates.ToArray();
+        ColorArray = colors.ToArray();
+        IndexArray = indices.ToArray();
+    }
+
+    internal int GetTriangleCount()
+    {
+        var elementCount = IndexArray.Length > 0 ? IndexArray.Length : PositionArray.Length;
+        return Topology == VertexMeshTopology.Triangles
+            ? elementCount / 3
+            : Math.Max(0, elementCount - 2);
+    }
+
+    internal void GetTriangle(int triangleIndex, out int index0, out int index1, out int index2)
+    {
+        var indices = IndexArray;
+        int GetIndex(int index) => indices.Length > 0 ? indices[index] : index;
+
+        switch (Topology)
+        {
+            case VertexMeshTopology.TriangleStrip:
+                if ((triangleIndex & 1) == 0)
+                {
+                    index0 = GetIndex(triangleIndex);
+                    index1 = GetIndex(triangleIndex + 1);
+                }
+                else
+                {
+                    index0 = GetIndex(triangleIndex + 1);
+                    index1 = GetIndex(triangleIndex);
+                }
+                index2 = GetIndex(triangleIndex + 2);
+                break;
+            case VertexMeshTopology.TriangleFan:
+                index0 = GetIndex(0);
+                index1 = GetIndex(triangleIndex + 1);
+                index2 = GetIndex(triangleIndex + 2);
+                break;
+            default:
+                var offset = triangleIndex * 3;
+                index0 = GetIndex(offset);
+                index1 = GetIndex(offset + 1);
+                index2 = GetIndex(offset + 2);
+                break;
+        }
+    }
 }
 
 public enum TextureSamplingMode
@@ -464,6 +589,10 @@ public struct RenderCommand
     // Glyph run properties (Skia SKTextBlob compatibility)
     public ushort[]? GlyphIndices;
     public Vector2[]? GlyphPositions;
+
+    // Batched two-dimensional vertex mesh properties
+    public VertexMesh2D? VertexMesh;
+    public VertexColorBlendMode VertexColorBlendMode;
 
     // High performance custom drawing extension properties
     public int ExtensionId;
@@ -1417,6 +1546,26 @@ public class DrawingContext : IRenderDataProvider
         });
     }
 
+    public void DrawVertexMesh(
+        Brush brush,
+        VertexMesh2D mesh,
+        VertexColorBlendMode colorBlendMode = VertexColorBlendMode.Modulate,
+        Matrix4x4 transform = default,
+        bool isEdgeAliased = false)
+    {
+        ArgumentNullException.ThrowIfNull(brush);
+        ArgumentNullException.ThrowIfNull(mesh);
+        Commands.Add(new RenderCommand
+        {
+            Type = RenderCommandType.DrawVertexMesh,
+            Brush = brush,
+            VertexMesh = mesh,
+            VertexColorBlendMode = colorBlendMode,
+            Transform = transform,
+            IsEdgeAliased = isEdgeAliased
+        });
+    }
+
     public void DrawStaticDxf(object staticBuffer)
     {
         DrawExtension(CompositorBuiltInExtensions.StaticDxf, dataParam: staticBuffer);
@@ -1769,7 +1918,8 @@ public class DrawingContext : IRenderDataProvider
                     TranslateRectBackedCommand(ref adjustedCmd, translation);
                 }
                 else if (adjustedCmd.Type == RenderCommandType.PushGeometryClip ||
-                         adjustedCmd.Type == RenderCommandType.DrawPath)
+                         adjustedCmd.Type == RenderCommandType.DrawPath ||
+                         adjustedCmd.Type == RenderCommandType.DrawVertexMesh)
                 {
                     ComposeAppendTranslation(ref adjustedCmd, translation);
                 }

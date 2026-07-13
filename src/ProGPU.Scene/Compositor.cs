@@ -183,6 +183,7 @@ public unsafe class Compositor : IDisposable
     private const float QuadrilateralStripSdfShapeType = 15f;
     private const float QuadrilateralStripStartSdfShapeType = 16f;
     private const float QuadrilateralStripEndSdfShapeType = 17f;
+    private const float VertexMeshShapeType = 18f;
     private const float AffineStrokeArcMaxAngleRadians = MathF.PI / 24f;
     // Matches Skia grayscale edge weight for axis-aligned vector glyphs rasterized at 8x8 coverage.
     private const float SmallTextPathCoverageGamma = 0.72f;
@@ -2154,6 +2155,9 @@ public unsafe class Compositor : IDisposable
                         case RenderCommandType.FillTriangle:
                             CompileFillTriangleCommand(cmd, activeTransform);
                             break;
+                        case RenderCommandType.DrawVertexMesh:
+                            CompileVertexMeshCommand(cmd, activeTransform);
+                            break;
                         case RenderCommandType.FillQuad:
                             CompileFillQuadCommand(cmd, activeTransform);
                             break;
@@ -3599,6 +3603,9 @@ SceneStateUploadComplete:
                     case RenderCommandType.FillTriangle:
                         CompileFillTriangleCommand(cmd, activeTransform);
                         break;
+                    case RenderCommandType.DrawVertexMesh:
+                        CompileVertexMeshCommand(cmd, activeTransform);
+                        break;
                     case RenderCommandType.FillQuad:
                         CompileFillQuadCommand(cmd, activeTransform);
                         break;
@@ -3869,6 +3876,9 @@ SceneStateUploadComplete:
                     break;
                 case RenderCommandType.FillTriangle:
                     CompileFillTriangleCommand(cmd, activeTransform);
+                    break;
+                case RenderCommandType.DrawVertexMesh:
+                    CompileVertexMeshCommand(cmd, activeTransform);
                     break;
                 case RenderCommandType.FillQuad:
                     CompileFillQuadCommand(cmd, activeTransform);
@@ -6937,6 +6947,83 @@ SceneStateUploadComplete:
                 var v = vertices[i];
                 v.Position = ClampToClip(v.Position);
                 vertices[i] = v;
+            }
+        }
+    }
+
+    private void CompileVertexMeshCommand(RenderCommand cmd, Matrix4x4 transform)
+    {
+        if (cmd.Brush is null || cmd.VertexMesh is not { } mesh)
+        {
+            return;
+        }
+
+        var triangleCount = mesh.GetTriangleCount();
+        if (triangleCount == 0)
+        {
+            return;
+        }
+
+        SwitchBatch(BatchType.Vector);
+        var positions = mesh.PositionArray;
+        var textureCoordinates = mesh.TextureCoordinateArray;
+        var colors = mesh.ColorArray;
+        var brushIndex = RegisterBrush(cmd.Brush);
+        var shapeType = EncodeShapeType(cmd, VertexMeshShapeType);
+        var startVertex = _vectorVerticesList.Count;
+        var originalVertexCount = _vectorVerticesList.Count;
+        CollectionsMarshal.SetCount(_vectorVerticesList, checked(originalVertexCount + positions.Length));
+        var vertices = CollectionsMarshal.AsSpan(_vectorVerticesList).Slice(originalVertexCount, positions.Length);
+
+        for (var index = 0; index < positions.Length; index++)
+        {
+            var localPosition = positions[index];
+            var color = colors.Length > 0 ? colors[index] : Vector4.One;
+            color.X *= color.W;
+            color.Y *= color.W;
+            color.Z *= color.W;
+            vertices[index] = new VectorVertex(
+                Vector2.Transform(localPosition, transform),
+                color,
+                textureCoordinates.Length > 0 ? textureCoordinates[index] : localPosition,
+                brushIndex,
+                default,
+                (float)cmd.VertexColorBlendMode,
+                0f,
+                shapeType);
+        }
+
+        var originalIndexCount = _vectorIndicesList.Count;
+        CollectionsMarshal.SetCount(_vectorIndicesList, checked(originalIndexCount + triangleCount * 3));
+        var indices = CollectionsMarshal.AsSpan(_vectorIndicesList).Slice(originalIndexCount, triangleCount * 3);
+        var baseVertex = checked((uint)startVertex);
+        var writtenIndexCount = 0;
+        for (var triangle = 0; triangle < triangleCount; triangle++)
+        {
+            mesh.GetTriangle(triangle, out var index0, out var index1, out var index2);
+            if ((uint)index0 >= (uint)positions.Length ||
+                (uint)index1 >= (uint)positions.Length ||
+                (uint)index2 >= (uint)positions.Length)
+            {
+                continue;
+            }
+
+            var offset = writtenIndexCount;
+            indices[offset] = checked(baseVertex + (uint)index0);
+            indices[offset + 1] = checked(baseVertex + (uint)index1);
+            indices[offset + 2] = checked(baseVertex + (uint)index2);
+            writtenIndexCount += 3;
+        }
+
+        CollectionsMarshal.SetCount(_vectorIndicesList, originalIndexCount + writtenIndexCount);
+
+        if (_activeClipRect.HasValue)
+        {
+            for (var index = 0; index < vertices.Length; index++)
+            {
+                var vertex = vertices[index];
+                vertex.Position = ClampToClip(vertex.Position);
+                vertices[index] = vertex;
             }
         }
     }
@@ -10660,6 +10747,9 @@ SceneStateUploadComplete:
                     case RenderCommandType.FillTriangle:
                         CompileFillTriangleCommand(cmd, Matrix4x4.Identity);
                         break;
+                    case RenderCommandType.DrawVertexMesh:
+                        CompileVertexMeshCommand(cmd, Matrix4x4.Identity);
+                        break;
                     case RenderCommandType.FillQuad:
                         CompileFillQuadCommand(cmd, Matrix4x4.Identity);
                         break;
@@ -11085,6 +11175,9 @@ SceneStateUploadComplete:
                         break;
                     case RenderCommandType.FillTriangle:
                         CompileFillTriangleCommand(cmd, Matrix4x4.Identity);
+                        break;
+                    case RenderCommandType.DrawVertexMesh:
+                        CompileVertexMeshCommand(cmd, Matrix4x4.Identity);
                         break;
                     case RenderCommandType.FillQuad:
                         CompileFillQuadCommand(cmd, Matrix4x4.Identity);

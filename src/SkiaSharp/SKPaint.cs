@@ -106,6 +106,11 @@ public partial class SKPaint : SKObject
     {
         if (Style == SKPaintStyle.Stroke) return null;
 
+        return ToFillBrush();
+    }
+
+    internal Brush ToFillBrush()
+    {
         if (Shader != null)
         {
             return ApplyPaintAlphaToShaderBrush(
