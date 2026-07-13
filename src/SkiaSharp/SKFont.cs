@@ -40,14 +40,14 @@ public partial class SKFont : IDisposable
         SkewX = skewX;
     }
 
-    public SKPath? GetGlyphPath(ushort glyphId)
+    public SKPath? GetGlyphPath(ushort glyph)
     {
         if (Typeface.IsEmpty)
         {
             return null;
         }
 
-        var outline = Typeface.Font.GetFlippedGlyphOutline(glyphId);
+        var outline = Typeface.Font.GetFlippedGlyphOutline(glyph);
         if (outline == null) return null;
 
         var path = new SKPath();

@@ -68,6 +68,9 @@ public sealed class SKPictureRecorder : IDisposable
         return _canvas;
     }
 
+    public SKCanvas BeginRecording(SKRect cullRect, bool useRTree) =>
+        BeginRecording(cullRect);
+
     public SKPicture EndRecording()
     {
         var recorder = _recorder ?? throw new InvalidOperationException("No picture recording is active.");

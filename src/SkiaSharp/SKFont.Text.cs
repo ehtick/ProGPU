@@ -250,36 +250,36 @@ public partial class SKFont
         return positions;
     }
 
-    public void GetGlyphPositions(string text, Span<SKPoint> positions, SKPoint origin = default)
+    public void GetGlyphPositions(string text, Span<SKPoint> offsets, SKPoint origin = default)
     {
         ArgumentNullException.ThrowIfNull(text);
-        GetGlyphPositions(text.AsSpan(), positions, origin);
+        GetGlyphPositions(text.AsSpan(), offsets, origin);
     }
 
     public void GetGlyphPositions(
         ReadOnlySpan<char> text,
-        Span<SKPoint> positions,
+        Span<SKPoint> offsets,
         SKPoint origin = default) =>
         WriteEncodedGlyphPositions(
             MemoryMarshal.AsBytes(text),
             SKTextEncoding.Utf16,
-            positions,
+            offsets,
             origin);
 
     public void GetGlyphPositions(
         ReadOnlySpan<byte> text,
         SKTextEncoding encoding,
-        Span<SKPoint> positions,
+        Span<SKPoint> offsets,
         SKPoint origin = default) =>
-        WriteEncodedGlyphPositions(text, encoding, positions, origin);
+        WriteEncodedGlyphPositions(text, encoding, offsets, origin);
 
     public unsafe void GetGlyphPositions(
         IntPtr text,
         int length,
         SKTextEncoding encoding,
-        Span<SKPoint> positions,
+        Span<SKPoint> offsets,
         SKPoint origin = default) =>
-        WriteEncodedGlyphPositions(GetPointerBytes(text, length), encoding, positions, origin);
+        WriteEncodedGlyphPositions(GetPointerBytes(text, length), encoding, offsets, origin);
 
     public void GetGlyphPositions(
         ReadOnlySpan<ushort> glyphs,
