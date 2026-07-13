@@ -165,6 +165,8 @@ Surface draw overloads snapshot once, preserve legacy or explicit sampling, and 
 
 Path-positioned text blobs reproduce SkiaSharp's non-warped text-on-path algorithm. Glyph midpoint distances are aligned over a measured contour, clipped to its half-open length, sampled for position/tangent, shifted back by half advance, and offset along the path normal before becoming rotation-scale matrices. For `G` glyphs and path-measure setup cost `P`, time is `O(G + P)`, storage is `O(G)`, and drawing stays on the retained glyph-run path without per-glyph GPU submission or readback.
 
+Canvas text overloads preserve SkiaSharp's legacy alignment metadata while normalizing point and scalar coordinates into the canonical shaped-text path. Text-on-path selects outline morphing when `warpGlyphs` is true and tangent-positioned rotation-scale blobs otherwise. Wrapper cost is `O(1)`; shaping and path placement remain `O(G + P)` for G glyphs and path-measure setup P, and compositor glyph instances continue to batch without readback or quality reduction.
+
 | Package | Purpose | NuGet |
 | --- | --- | --- |
 | `ProGPU.SkiaSharp` | ProGPU-backed SkiaSharp API compatibility layer. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.SkiaSharp.svg)](https://www.nuget.org/packages/ProGPU.SkiaSharp/) |

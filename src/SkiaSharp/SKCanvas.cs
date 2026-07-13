@@ -3572,8 +3572,74 @@ public class SKCanvas : IDisposable
         DrawTextBlob(blob, x, y, paint);
     }
 
+    [Obsolete("Use DrawText(string text, SKPoint p, SKTextAlign textAlign, SKFont font, SKPaint paint) instead.", true)]
+    public void DrawText(string text, SKPoint point, SKPaint paint) =>
+        DrawText(text, point, paint.GetLegacyTextAlign(), paint.GetLegacyFont(), paint);
+
+    [Obsolete("Use DrawText(string text, float x, float y, SKTextAlign textAlign, SKFont font, SKPaint paint) instead.", true)]
+    public void DrawText(string text, float x, float y, SKPaint paint) =>
+        DrawText(text, x, y, paint.GetLegacyTextAlign(), paint.GetLegacyFont(), paint);
+
+    [Obsolete("Use DrawText(string text, SKPoint p, SKTextAlign textAlign, SKFont font, SKPaint paint) instead.")]
+    public void DrawText(string text, SKPoint point, SKFont font, SKPaint paint) =>
+        DrawText(text, point, paint.GetLegacyTextAlign(), font, paint);
+
+    public void DrawText(
+        string text,
+        SKPoint point,
+        SKTextAlign textAlign,
+        SKFont font,
+        SKPaint paint) =>
+        DrawText(text, point.X, point.Y, textAlign, font, paint);
+
+    [Obsolete("Use DrawText(string text, float x, float y, SKTextAlign textAlign, SKFont font, SKPaint paint) instead.")]
     public void DrawText(string text, float x, float y, SKFont font, SKPaint paint) =>
-        DrawText(text, x, y, SKTextAlign.Left, font, paint);
+        DrawText(text, x, y, paint.GetLegacyTextAlign(), font, paint);
+
+    [Obsolete("Use DrawTextOnPath(string text, SKPath path, float hOffset, float vOffset, SKTextAlign textAlign, SKFont font, SKPaint paint) instead.", true)]
+    public void DrawTextOnPath(string text, SKPath path, SKPoint offset, SKPaint paint) =>
+        DrawTextOnPath(text, path, offset, warpGlyphs: true, paint);
+
+    [Obsolete("Use DrawTextOnPath(string text, SKPath path, float hOffset, float vOffset, SKTextAlign textAlign, SKFont font, SKPaint paint) instead.", true)]
+    public void DrawTextOnPath(string text, SKPath path, float hOffset, float vOffset, SKPaint paint) =>
+        DrawTextOnPath(text, path, new SKPoint(hOffset, vOffset), warpGlyphs: true, paint);
+
+    [Obsolete("Use DrawTextOnPath(string text, SKPath path, SKPoint offset, bool warpGlyphs, SKTextAlign textAlign, SKFont font, SKPaint paint) instead.", true)]
+    public void DrawTextOnPath(
+        string text,
+        SKPath path,
+        SKPoint offset,
+        bool warpGlyphs,
+        SKPaint paint) =>
+        DrawTextOnPath(text, path, offset, warpGlyphs, paint.GetLegacyFont(), paint);
+
+    [Obsolete("Use the overload with SKTextAlign parameter instead.")]
+    public void DrawTextOnPath(
+        string text,
+        SKPath path,
+        SKPoint offset,
+        SKFont font,
+        SKPaint paint) =>
+        DrawTextOnPath(text, path, offset, warpGlyphs: true, paint.GetLegacyTextAlign(), font, paint);
+
+    public void DrawTextOnPath(
+        string text,
+        SKPath path,
+        SKPoint offset,
+        SKTextAlign textAlign,
+        SKFont font,
+        SKPaint paint) =>
+        DrawTextOnPath(text, path, offset, warpGlyphs: true, textAlign, font, paint);
+
+    [Obsolete("Use the overload with SKTextAlign parameter instead.")]
+    public void DrawTextOnPath(
+        string text,
+        SKPath path,
+        float hOffset,
+        float vOffset,
+        SKFont font,
+        SKPaint paint) =>
+        DrawTextOnPath(text, path, new SKPoint(hOffset, vOffset), warpGlyphs: true, paint.GetLegacyTextAlign(), font, paint);
 
     public void DrawTextOnPath(
         string text,
@@ -3582,11 +3648,51 @@ public class SKCanvas : IDisposable
         float vOffset,
         SKTextAlign textAlign,
         SKFont font,
+        SKPaint paint) =>
+        DrawTextOnPath(
+            text,
+            path,
+            new SKPoint(hOffset, vOffset),
+            warpGlyphs: true,
+            textAlign,
+            font,
+            paint);
+
+    [Obsolete("Use the overload with SKTextAlign parameter instead.")]
+    public void DrawTextOnPath(
+        string text,
+        SKPath path,
+        SKPoint offset,
+        bool warpGlyphs,
+        SKFont font,
+        SKPaint paint) =>
+        DrawTextOnPath(text, path, offset, warpGlyphs, paint.GetLegacyTextAlign(), font, paint);
+
+    public void DrawTextOnPath(
+        string text,
+        SKPath path,
+        SKPoint offset,
+        bool warpGlyphs,
+        SKTextAlign textAlign,
+        SKFont font,
         SKPaint paint)
     {
+        ArgumentNullException.ThrowIfNull(text);
         ArgumentNullException.ThrowIfNull(path);
-        using var textPath = font.GetTextPathOnPath(text, path, textAlign, new SKPoint(hOffset, vOffset));
-        DrawPath(textPath, paint);
+        ArgumentNullException.ThrowIfNull(font);
+        ArgumentNullException.ThrowIfNull(paint);
+        if (warpGlyphs)
+        {
+            using var textPath = font.GetTextPathOnPath(text, path, textAlign, offset);
+            DrawPath(textPath, paint);
+            return;
+        }
+
+        using var textBlob = SKTextBlob.CreatePathPositioned(text, font, path, textAlign, offset);
+        if (textBlob != null)
+        {
+            DrawText(textBlob, 0f, 0f, paint);
+        }
     }
 
     public void Flush()
