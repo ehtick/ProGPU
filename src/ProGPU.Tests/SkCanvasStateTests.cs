@@ -1274,10 +1274,11 @@ public sealed class SkCanvasStateTests
         path.LineTo(140f, 60f);
 
         surface.Canvas.Clear(SKColors.Transparent);
-        surface.Canvas.SetMatrix(new SKMatrix(
+        var matrix = new SKMatrix(
             1f, -1f, 100f,
             0f, 1f, 0f,
-            0f, 0f, 1f));
+            0f, 0f, 1f);
+        surface.Canvas.SetMatrix(in matrix);
         surface.Canvas.DrawPath(path, paint);
         surface.Flush();
 
@@ -1310,7 +1311,8 @@ public sealed class SkCanvasStateTests
         path.CubicTo(20f, 20f, 20f, 40f, 20f, 50f);
 
         surface.Canvas.Clear(SKColors.Transparent);
-        surface.Canvas.SetMatrix(SKMatrix.CreateScale(1f, 2f));
+        var matrix = SKMatrix.CreateScale(1f, 2f);
+        surface.Canvas.SetMatrix(in matrix);
         surface.Canvas.DrawPath(path, paint);
         surface.Flush();
 
@@ -1348,7 +1350,8 @@ public sealed class SkCanvasStateTests
             40f);
 
         surface.Canvas.Clear(SKColors.Transparent);
-        surface.Canvas.SetMatrix(SKMatrix.CreateScale(1f, 2f));
+        var matrix = SKMatrix.CreateScale(1f, 2f);
+        surface.Canvas.SetMatrix(in matrix);
         surface.Canvas.DrawPath(path, paint);
         surface.Flush();
 
@@ -1456,7 +1459,8 @@ public sealed class SkCanvasStateTests
         surface.Canvas.DrawRect(new SKRect(0f, 0f, 20f, 20f), red);
         var maskRestoreCount = surface.Canvas.SaveLayer(maskPaint);
         surface.Canvas.Save();
-        surface.Canvas.SetMatrix(SKMatrix.CreateScale(20f, 20f));
+        var matrix = SKMatrix.CreateScale(20f, 20f);
+        surface.Canvas.SetMatrix(in matrix);
         surface.Canvas.ClipRect(new SKRect(0.24999999f, 0f, 0.74999994f, 0.99999994f));
         using var maskPath = new SKPath();
         maskPath.AddRect(new SKRect(0f, 0f, 1f, 1f));
@@ -1938,7 +1942,7 @@ public sealed class SkCanvasStateTests
 
         path.MoveTo(0f, 0f);
         path.LineTo(10f, 0f);
-        canvas.SetMatrix(matrix);
+        canvas.SetMatrix(in matrix);
         canvas.DrawPath(path, paint);
 
         var command = Assert.Single(context.Commands);
@@ -1988,7 +1992,7 @@ public sealed class SkCanvasStateTests
             Persp2 = 1f
         };
 
-        canvas.SetMatrix(matrix);
+        canvas.SetMatrix(in matrix);
         canvas.ClipPath(path);
 
         var command = Assert.Single(context.Commands);
@@ -2476,7 +2480,7 @@ public sealed class SkCanvasStateTests
     {
         var context = new DrawingContext();
         using var canvas = new SKCanvas(context, 100f, 100f);
-        canvas.SetMatrix(new SKMatrix
+        var initialMatrix = new SKMatrix
         {
             ScaleX = 2f,
             SkewX = 3f,
@@ -2485,7 +2489,8 @@ public sealed class SkCanvasStateTests
             TransX = 11f,
             TransY = 13f,
             Persp2 = 1f
-        });
+        };
+        canvas.SetMatrix(in initialMatrix);
 
         canvas.Translate(17f, 19f);
 
@@ -2499,7 +2504,7 @@ public sealed class SkCanvasStateTests
     {
         var context = new DrawingContext();
         using var canvas = new SKCanvas(context, 100f, 100f);
-        canvas.SetMatrix(new SKMatrix
+        var initialMatrix = new SKMatrix
         {
             ScaleX = 2f,
             SkewX = 3f,
@@ -2508,7 +2513,8 @@ public sealed class SkCanvasStateTests
             TransX = 11f,
             TransY = 13f,
             Persp2 = 1f
-        });
+        };
+        canvas.SetMatrix(in initialMatrix);
 
         canvas.Scale(17f, 19f);
 

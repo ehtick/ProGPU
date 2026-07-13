@@ -233,14 +233,15 @@ public sealed class StrokeJoinRenderTests
         const float scale = 400f / 56f;
         using var recorder = new SKPictureRecorder();
         var recordingCanvas = recorder.BeginRecording(new SKRect(0f, 0f, 400f, 400f));
-        recordingCanvas.SetMatrix(new SKMatrix
+        var matrix = new SKMatrix
         {
             ScaleX = scale,
             ScaleY = scale,
             TransX = -22f * scale,
             TransY = -22f * scale,
             Persp2 = 1f
-        });
+        };
+        recordingCanvas.SetMatrix(in matrix);
         using var path = new SKPath();
         path.AddRect(new SKRect(50f, 25f, 75f, 50f));
         path.AddRect(new SKRect(25f, 50f, 50f, 75f));

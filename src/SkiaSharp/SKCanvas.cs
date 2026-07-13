@@ -82,11 +82,7 @@ public class SKCanvas : IDisposable
         public RenderCommand[] ActiveClipPushes { get; }
     }
 
-    public SKMatrix TotalMatrix
-    {
-        get => _currentMatrix;
-        set => SetMatrix(value);
-    }
+    public SKMatrix TotalMatrix => _currentMatrix;
 
     public int SaveCount => _stateStack.Count + 1;
 
@@ -1638,24 +1634,134 @@ public class SKCanvas : IDisposable
 
     public void Translate(float dx, float dy)
     {
-        _currentMatrix.TransX += dx * _currentMatrix.ScaleX + dy * _currentMatrix.SkewX;
-        _currentMatrix.TransY += dx * _currentMatrix.SkewY + dy * _currentMatrix.ScaleY;
+        if (dx == 0f && dy == 0f)
+        {
+            return;
+        }
+
+        var translation = SKMatrix.CreateTranslation(dx, dy);
+        Concat(in translation);
     }
+
+    public void Translate(SKPoint point)
+    {
+        if (!point.IsEmpty)
+        {
+            Translate(point.X, point.Y);
+        }
+    }
+
+    public void Scale(float s) => Scale(s, s);
 
     public void Scale(float sx, float sy)
     {
-        _currentMatrix.ScaleX *= sx;
-        _currentMatrix.SkewY *= sx;
-        _currentMatrix.SkewX *= sy;
-        _currentMatrix.ScaleY *= sy;
+        if (sx == 1f && sy == 1f)
+        {
+            return;
+        }
+
+        var scale = SKMatrix.CreateScale(sx, sy);
+        Concat(in scale);
     }
 
-    public void SetMatrix(SKMatrix matrix)
+    public void Scale(SKPoint size)
+    {
+        if (!size.IsEmpty)
+        {
+            Scale(size.X, size.Y);
+        }
+    }
+
+    public void Scale(float sx, float sy, float px, float py)
+    {
+        if (sx == 1f && sy == 1f)
+        {
+            return;
+        }
+
+        Translate(px, py);
+        Scale(sx, sy);
+        Translate(-px, -py);
+    }
+
+    public void RotateDegrees(float degrees)
+    {
+        if ((double)degrees % 360d == 0d)
+        {
+            return;
+        }
+
+        var rotation = SKMatrix.CreateRotationDegrees(degrees);
+        Concat(in rotation);
+    }
+
+    public void RotateRadians(float radians)
+    {
+        if ((double)radians % (Math.PI * 2d) == 0d)
+        {
+            return;
+        }
+
+        var rotation = SKMatrix.FromMatrix4x4(Matrix4x4.CreateRotationZ(radians));
+        Concat(in rotation);
+    }
+
+    public void RotateDegrees(float degrees, float px, float py)
+    {
+        if ((double)degrees % 360d == 0d)
+        {
+            return;
+        }
+
+        Translate(px, py);
+        RotateDegrees(degrees);
+        Translate(-px, -py);
+    }
+
+    public void RotateRadians(float radians, float px, float py)
+    {
+        if ((double)radians % (Math.PI * 2d) == 0d)
+        {
+            return;
+        }
+
+        Translate(px, py);
+        RotateRadians(radians);
+        Translate(-px, -py);
+    }
+
+    public void Skew(float sx, float sy)
+    {
+        if (sx == 0f && sy == 0f)
+        {
+            return;
+        }
+
+        var skew = SKMatrix.Identity;
+        skew.SkewX = sx;
+        skew.SkewY = sy;
+        Concat(in skew);
+    }
+
+    public void Skew(SKPoint skew)
+    {
+        if (!skew.IsEmpty)
+        {
+            Skew(skew.X, skew.Y);
+        }
+    }
+
+    public void SetMatrix(in SKMatrix matrix)
     {
         _currentMatrix = matrix;
     }
 
-    public void SetMatrix(SKMatrix44 matrix)
+    public void SetMatrix(SKMatrix matrix)
+    {
+        SetMatrix(in matrix);
+    }
+
+    public void SetMatrix(in SKMatrix44 matrix)
     {
         ArgumentNullException.ThrowIfNull(matrix);
         _currentMatrix = SKMatrix.FromMatrix4x4(matrix.ToMatrix4x4());
@@ -1666,9 +1772,16 @@ public class SKCanvas : IDisposable
         _currentMatrix = SKMatrix.Identity;
     }
 
-    public void Concat(in SKMatrix matrix)
+    public void Concat(in SKMatrix m)
     {
-        _currentMatrix = SKMatrix.Concat(_currentMatrix, matrix);
+        _currentMatrix = SKMatrix.Concat(_currentMatrix, m);
+    }
+
+    public void Concat(in SKMatrix44 m)
+    {
+        ArgumentNullException.ThrowIfNull(m);
+        var matrix = SKMatrix.FromMatrix4x4(m.ToMatrix4x4());
+        Concat(in matrix);
     }
 
     public bool QuickReject(SKRect rect)
@@ -2050,8 +2163,8 @@ public class SKCanvas : IDisposable
         }
     }
 
-    public void DrawLine(SKPoint point0, SKPoint point1, SKPaint paint) =>
-        DrawLine(point0.X, point0.Y, point1.X, point1.Y, paint);
+    public void DrawLine(SKPoint p0, SKPoint p1, SKPaint paint) =>
+        DrawLine(p0.X, p0.Y, p1.X, p1.Y, paint);
 
     public void DrawRect(float x, float y, float w, float h, SKPaint paint)
     {
@@ -2135,6 +2248,19 @@ public class SKCanvas : IDisposable
         DrawRoundRect(new SKRoundRect(rect, rx, ry), paint);
     }
 
+    public void DrawRoundRect(
+        float x,
+        float y,
+        float w,
+        float h,
+        float rx,
+        float ry,
+        SKPaint paint) =>
+        DrawRoundRect(SKRect.Create(x, y, w, h), rx, ry, paint);
+
+    public void DrawRoundRect(SKRect rect, SKSize r, SKPaint paint) =>
+        DrawRoundRect(rect, r.Width, r.Height, paint);
+
     private static bool TryGetUniformRadii(SKRoundRect rect, out float radiusX, out float radiusY)
     {
         radiusX = rect.CornerRadii[0].X;
@@ -2150,6 +2276,12 @@ public class SKCanvas : IDisposable
 
         return true;
     }
+
+    public void DrawOval(float cx, float cy, float rx, float ry, SKPaint paint) =>
+        DrawOval(new SKRect(cx - rx, cy - ry, cx + rx, cy + ry), paint);
+
+    public void DrawOval(SKPoint c, SKSize r, SKPaint paint) =>
+        DrawOval(c.X, c.Y, r.Width, r.Height, paint);
 
     public void DrawOval(SKRect rect, SKPaint paint)
     {
@@ -2260,8 +2392,8 @@ public class SKCanvas : IDisposable
         }
     }
 
-    public void DrawCircle(SKPoint center, float radius, SKPaint paint) =>
-        DrawCircle(center.X, center.Y, radius, paint);
+    public void DrawCircle(SKPoint c, float radius, SKPaint paint) =>
+        DrawCircle(c.X, c.Y, radius, paint);
 
     public void DrawRoundRectDifference(SKRoundRect outer, SKRoundRect inner, SKPaint paint)
     {

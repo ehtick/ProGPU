@@ -165,7 +165,7 @@ public class SKImage : IDisposable
             SKColorType.Rgba8888,
             SKAlphaType.Premul));
         surface.Canvas.Clear(SKColors.Transparent);
-        surface.Canvas.SetMatrix(matrix);
+        surface.Canvas.SetMatrix(in matrix);
         surface.Canvas.DrawPicture(picture);
         return surface.Snapshot();
     }
