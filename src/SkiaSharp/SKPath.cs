@@ -1254,6 +1254,12 @@ public class SKPath : IDisposable
 
     public void MoveTo(float x, float y)
     {
+        if (_currentFigure != null && _currentFigure.Segments.Count == 0)
+        {
+            _currentFigure.StartPoint = new Vector2(x, y);
+            return;
+        }
+
         _currentFigure = new PathFigure(new Vector2(x, y));
         Geometry.Figures.Add(_currentFigure);
     }
@@ -1347,6 +1353,94 @@ public class SKPath : IDisposable
         _currentFigure!.Segments.Add(new ArcSegment(new Vector2(x, y), new Vector2(rx, ry), xAxisRotation, largeArc == SKPathArcSize.Large, sd));
     }
 
+    public void ArcTo(
+        SKPoint radius,
+        float xAxisRotation,
+        SKPathArcSize largeArc,
+        SKPathDirection sweep,
+        SKPoint end) =>
+        ArcTo(
+            radius.X,
+            radius.Y,
+            xAxisRotation,
+            largeArc,
+            sweep,
+            end.X,
+            end.Y);
+
+    public void ArcTo(SKPoint point1, SKPoint point2, float radius) =>
+        ArcTo(point1.X, point1.Y, point2.X, point2.Y, radius);
+
+    public void ArcTo(float x1, float y1, float x2, float y2, float radius)
+    {
+        var current = GetCurrentCommandPoint();
+        var corner = new Vector2(x1, y1);
+        var next = new Vector2(x2, y2);
+        var incoming = current - corner;
+        var outgoing = next - corner;
+        var incomingLength = incoming.Length();
+        var outgoingLength = outgoing.Length();
+        if (!float.IsFinite(radius) ||
+            radius <= 0f ||
+            incomingLength <= 1e-6f ||
+            outgoingLength <= 1e-6f)
+        {
+            LineTo(x1, y1);
+            return;
+        }
+
+        incoming /= incomingLength;
+        outgoing /= outgoingLength;
+        var dot = Math.Clamp(Vector2.Dot(incoming, outgoing), -1f, 1f);
+        var cross = incoming.X * outgoing.Y - incoming.Y * outgoing.X;
+        var halfAngle = MathF.Acos(dot) * 0.5f;
+        var tangent = MathF.Tan(halfAngle);
+        if (MathF.Abs(cross) <= 1e-6f ||
+            !float.IsFinite(tangent) ||
+            MathF.Abs(tangent) <= 1e-6f)
+        {
+            LineTo(x1, y1);
+            return;
+        }
+
+        var tangentDistance = radius / tangent;
+        var arcStart = corner + incoming * tangentDistance;
+        var arcEnd = corner + outgoing * tangentDistance;
+        LineTo(arcStart.X, arcStart.Y);
+        ArcTo(
+            radius,
+            radius,
+            0f,
+            SKPathArcSize.Small,
+            cross < 0f ? SKPathDirection.Clockwise : SKPathDirection.CounterClockwise,
+            arcEnd.X,
+            arcEnd.Y);
+    }
+
+    public void ArcTo(SKRect oval, float startAngle, float sweepAngle, bool forceMoveTo)
+    {
+        if (!TryGetOvalArc(oval, startAngle, sweepAngle, out var arc))
+        {
+            return;
+        }
+
+        if (forceMoveTo || IsEmpty)
+        {
+            MoveTo(arc.Start.X, arc.Start.Y);
+        }
+        else if (!NearlyEqual(GetCurrentCommandPoint(), arc.Start))
+        {
+            LineTo(arc.Start.X, arc.Start.Y);
+        }
+
+        if (MathF.Abs(sweepAngle) >= 360f)
+        {
+            return;
+        }
+
+        AppendOvalArc(arc);
+    }
+
     public void RArcTo(
         float rx,
         float ry,
@@ -1413,6 +1507,92 @@ public class SKPath : IDisposable
         Close();
     }
 
+    public void AddArc(SKRect oval, float startAngle, float sweepAngle)
+    {
+        if (!TryGetOvalArc(oval, startAngle, sweepAngle, out var arc))
+        {
+            return;
+        }
+
+        MoveTo(arc.Start.X, arc.Start.Y);
+        if (MathF.Abs(sweepAngle) >= 360f)
+        {
+            var signedHalfTurn = MathF.CopySign(180f, sweepAngle);
+            var middle = EvaluateOvalPoint(oval, startAngle + signedHalfTurn);
+            AppendEndpointArc(
+                oval,
+                middle,
+                signedHalfTurn,
+                isLargeArc: true);
+            AppendEndpointArc(
+                oval,
+                arc.Start,
+                signedHalfTurn,
+                isLargeArc: true);
+            Close();
+            return;
+        }
+
+        AppendOvalArc(arc);
+    }
+
+    private static bool TryGetOvalArc(
+        SKRect oval,
+        float startAngle,
+        float sweepAngle,
+        out OvalArc arc)
+    {
+        arc = default;
+        if (!float.IsFinite(startAngle) ||
+            !float.IsFinite(sweepAngle) ||
+            MathF.Abs(sweepAngle) <= 1e-6f ||
+            !float.IsFinite(oval.Width) ||
+            !float.IsFinite(oval.Height) ||
+            MathF.Abs(oval.Width) <= 1e-6f ||
+            MathF.Abs(oval.Height) <= 1e-6f)
+        {
+            return false;
+        }
+
+        var clampedSweep = Math.Clamp(sweepAngle, -360f, 360f);
+        arc = new OvalArc(
+            oval,
+            EvaluateOvalPoint(oval, startAngle),
+            EvaluateOvalPoint(oval, startAngle + clampedSweep),
+            clampedSweep);
+        return true;
+    }
+
+    private void AppendOvalArc(in OvalArc arc) =>
+        AppendEndpointArc(
+            arc.Oval,
+            arc.End,
+            arc.SweepAngle,
+            MathF.Abs(arc.SweepAngle) >= 180f);
+
+    private void AppendEndpointArc(
+        SKRect oval,
+        Vector2 end,
+        float sweepAngle,
+        bool isLargeArc)
+    {
+        EnsureFigure();
+        _currentFigure!.Segments.Add(new ArcSegment(
+            end,
+            new Vector2(MathF.Abs(oval.Width) * 0.5f, MathF.Abs(oval.Height) * 0.5f),
+            0f,
+            isLargeArc,
+            sweepAngle >= 0f ? SweepDirection.Clockwise : SweepDirection.Counterclockwise));
+    }
+
+    private static Vector2 EvaluateOvalPoint(SKRect oval, float angleDegrees)
+    {
+        var angle = angleDegrees * (MathF.PI / 180f);
+        return new Vector2(
+            oval.MidX + oval.Width * 0.5f * SnapUnitTrigonometricValue(MathF.Cos(angle)),
+            oval.MidY + oval.Height * 0.5f * SnapUnitTrigonometricValue(MathF.Sin(angle)));
+    }
+
     public void ConicTo(SKPoint control, SKPoint end, float weight)
     {
         EnsureFigure();
@@ -1466,54 +1646,115 @@ public class SKPath : IDisposable
         return new Iterator(this, forceClose);
     }
 
-    public void AddRect(SKRect rect, SKPathDirection direction = SKPathDirection.Clockwise)
+    public void AddRect(SKRect rect, SKPathDirection direction = SKPathDirection.Clockwise) =>
+        AddRect(rect, direction, 0);
+
+    public void AddRect(SKRect rect, SKPathDirection direction, uint startIndex)
     {
-        if (direction == SKPathDirection.Clockwise)
+        if (startIndex > 3)
         {
-            MoveTo(rect.Left, rect.Top);
-            LineTo(rect.Right, rect.Top);
-            LineTo(rect.Right, rect.Bottom);
-            LineTo(rect.Left, rect.Bottom);
+            throw new ArgumentOutOfRangeException(
+                nameof(startIndex),
+                "Starting index must be in the range of 0..3 (inclusive).");
         }
-        else
+
+        Span<Vector2> corners =
+        [
+            new Vector2(rect.Left, rect.Top),
+            new Vector2(rect.Right, rect.Top),
+            new Vector2(rect.Right, rect.Bottom),
+            new Vector2(rect.Left, rect.Bottom),
+        ];
+        var index = (int)startIndex;
+        MoveTo(corners[index].X, corners[index].Y);
+        var step = direction == SKPathDirection.Clockwise ? 1 : -1;
+        for (var point = 1; point < 4; point++)
         {
-            MoveTo(rect.Left, rect.Top);
-            LineTo(rect.Left, rect.Bottom);
-            LineTo(rect.Right, rect.Bottom);
-            LineTo(rect.Right, rect.Top);
+            index = (index + step + 4) % 4;
+            LineTo(corners[index].X, corners[index].Y);
         }
+
         Close();
     }
 
-    public void AddRoundRect(SKRoundRect rect, SKPathDirection direction = SKPathDirection.Clockwise)
+    public void AddRoundRect(
+        SKRoundRect rect,
+        SKPathDirection direction = SKPathDirection.Clockwise) =>
+        AddRoundRect(
+            rect,
+            direction,
+            direction == SKPathDirection.Clockwise ? 0u : 7u);
+
+    public void AddRoundRect(
+        SKRoundRect rect,
+        SKPathDirection direction,
+        uint startIndex)
     {
+        ArgumentNullException.ThrowIfNull(rect);
+        if (startIndex > 7)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(startIndex),
+                "Starting index must be in the range of 0..7 (inclusive).");
+        }
+
         var r = rect.Rect;
         var radii = rect.CornerRadii;
+        Span<Vector2> points =
+        [
+            new Vector2(r.Left + radii[0].X, r.Top),
+            new Vector2(r.Right - radii[1].X, r.Top),
+            new Vector2(r.Right, r.Top + radii[1].Y),
+            new Vector2(r.Right, r.Bottom - radii[2].Y),
+            new Vector2(r.Right - radii[2].X, r.Bottom),
+            new Vector2(r.Left + radii[3].X, r.Bottom),
+            new Vector2(r.Left, r.Bottom - radii[3].Y),
+            new Vector2(r.Left, r.Top + radii[0].Y),
+        ];
 
-        if (direction == SKPathDirection.Clockwise)
+        var index = (int)startIndex;
+        MoveTo(points[index].X, points[index].Y);
+        var clockwise = direction == SKPathDirection.Clockwise;
+        var step = clockwise ? 1 : -1;
+        for (var edge = 1; edge <= 8; edge++)
         {
-            MoveTo(r.Left + radii[0].X, r.Top);
-            LineTo(r.Right - radii[1].X, r.Top);
-            ArcTo(radii[1].X, radii[1].Y, 0f, SKPathArcSize.Small, SKPathDirection.Clockwise, r.Right, r.Top + radii[1].Y);
-            LineTo(r.Right, r.Bottom - radii[2].Y);
-            ArcTo(radii[2].X, radii[2].Y, 0f, SKPathArcSize.Small, SKPathDirection.Clockwise, r.Right - radii[2].X, r.Bottom);
-            LineTo(r.Left + radii[3].X, r.Bottom);
-            ArcTo(radii[3].X, radii[3].Y, 0f, SKPathArcSize.Small, SKPathDirection.Clockwise, r.Left, r.Bottom - radii[3].Y);
-            LineTo(r.Left, r.Top + radii[0].Y);
-            ArcTo(radii[0].X, radii[0].Y, 0f, SKPathArcSize.Small, SKPathDirection.Clockwise, r.Left + radii[0].X, r.Top);
+            var next = (index + step + 8) % 8;
+            var isArc = clockwise ? (index & 1) != 0 : (index & 1) == 0;
+            if (edge == 8 && !isArc)
+            {
+                break;
+            }
+
+            if (isArc)
+            {
+                var corner = clockwise
+                    ? ((index + 1) / 2) & 3
+                    : (index / 2) & 3;
+                var radius = radii[corner];
+                if (radius.X > 0f && radius.Y > 0f)
+                {
+                    ArcTo(
+                        radius.X,
+                        radius.Y,
+                        0f,
+                        SKPathArcSize.Small,
+                        direction,
+                        points[next].X,
+                        points[next].Y);
+                }
+                else
+                {
+                    LineTo(points[next].X, points[next].Y);
+                }
+            }
+            else
+            {
+                LineTo(points[next].X, points[next].Y);
+            }
+
+            index = next;
         }
-        else
-        {
-            MoveTo(r.Left, r.Top + radii[0].Y);
-            LineTo(r.Left, r.Bottom - radii[3].Y);
-            ArcTo(radii[3].X, radii[3].Y, 0f, SKPathArcSize.Small, SKPathDirection.CounterClockwise, r.Left + radii[3].X, r.Bottom);
-            LineTo(r.Right - radii[2].X, r.Bottom);
-            ArcTo(radii[2].X, radii[2].Y, 0f, SKPathArcSize.Small, SKPathDirection.CounterClockwise, r.Right, r.Bottom - radii[2].Y);
-            LineTo(r.Right, r.Top + radii[1].Y);
-            ArcTo(radii[1].X, radii[1].Y, 0f, SKPathArcSize.Small, SKPathDirection.CounterClockwise, r.Right - radii[1].X, r.Top);
-            LineTo(r.Left + radii[0].X, r.Top);
-            ArcTo(radii[0].X, radii[0].Y, 0f, SKPathArcSize.Small, SKPathDirection.CounterClockwise, r.Left, r.Top + radii[0].Y);
-        }
+
         Close();
     }
 
@@ -1563,6 +1804,98 @@ public class SKPath : IDisposable
         using var copy = new SKPath(other);
         copy.Transform(matrix);
         AddPath(copy, mode);
+    }
+
+    public void AddPathReverse(SKPath other)
+    {
+        ArgumentNullException.ThrowIfNull(other);
+        if (ReferenceEquals(this, other))
+        {
+            using var copy = new SKPath(other);
+            AddPathReverseCore(copy);
+            return;
+        }
+
+        AddPathReverseCore(other);
+    }
+
+    private void AddPathReverseCore(SKPath source)
+    {
+        for (var figureIndex = source.Geometry.Figures.Count - 1;
+             figureIndex >= 0;
+             figureIndex--)
+        {
+            var figure = source.Geometry.Figures[figureIndex];
+            var starts = new Vector2[figure.Segments.Count];
+            var current = figure.StartPoint;
+            for (var segmentIndex = 0; segmentIndex < figure.Segments.Count; segmentIndex++)
+            {
+                starts[segmentIndex] = current;
+                current = GetSegmentEndPoint(figure.Segments[segmentIndex], current);
+            }
+
+            MoveTo(current.X, current.Y);
+            for (var segmentIndex = figure.Segments.Count - 1;
+                 segmentIndex >= 0;
+                 segmentIndex--)
+            {
+                var segment = figure.Segments[segmentIndex];
+                var end = starts[segmentIndex];
+                switch (segment)
+                {
+                    case LineSegment:
+                        LineTo(end.X, end.Y);
+                        break;
+
+                    case QuadraticBezierSegment quadratic:
+                        if (TryGetConicWeight(quadratic, out var conicWeight))
+                        {
+                            ConicTo(
+                                new SKPoint(quadratic.ControlPoint.X, quadratic.ControlPoint.Y),
+                                new SKPoint(end.X, end.Y),
+                                conicWeight);
+                        }
+                        else
+                        {
+                            QuadTo(
+                                quadratic.ControlPoint.X,
+                                quadratic.ControlPoint.Y,
+                                end.X,
+                                end.Y);
+                        }
+                        break;
+
+                    case CubicBezierSegment cubic:
+                        CubicTo(
+                            cubic.ControlPoint2.X,
+                            cubic.ControlPoint2.Y,
+                            cubic.ControlPoint1.X,
+                            cubic.ControlPoint1.Y,
+                            end.X,
+                            end.Y);
+                        break;
+
+                    case ArcSegment arc:
+                        EnsureFigure();
+                        _currentFigure!.Segments.Add(new ArcSegment(
+                            end,
+                            arc.Size,
+                            arc.RotationAngle,
+                            arc.IsLargeArc,
+                            arc.SweepDirection == SweepDirection.Clockwise
+                                ? SweepDirection.Counterclockwise
+                                : SweepDirection.Clockwise,
+                            arc.IsSmoothJoin,
+                            arc.IsStroked));
+                        break;
+                }
+            }
+
+            if (figure.IsClosed)
+            {
+                Close();
+            }
+        }
     }
 
     public void AddPoly(ReadOnlySpan<SKPoint> points, bool close = true)
@@ -2124,6 +2457,12 @@ public class SKPath : IDisposable
 
         public float Value { get; }
     }
+
+    private readonly record struct OvalArc(
+        SKRect Oval,
+        Vector2 Start,
+        Vector2 End,
+        float SweepAngle);
 
     private readonly record struct PathIteratorOperation(
         SKPathVerb Verb,
