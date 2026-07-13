@@ -244,6 +244,9 @@ public unsafe class PathAtlas : IDisposable
     private const int MaxCompiledFillPathCount = 4096;
     private const int MaxCompiledHitTestPathCount = 4096;
     private const int RasterizationStorageOffsetAlignment = 256;
+    private const int ExactRecoveryPathLimit = 10;
+    private const int ExactRecoveryNodeBudget = 25_000;
+    private const int ExactRecoveryCandidateBudget = 250_000;
 
     private readonly WgpuContext _context;
     private readonly GpuTexture _atlasTexture;
@@ -253,6 +256,7 @@ public unsafe class PathAtlas : IDisposable
     private uint _currentY = 2;
     private uint _currentRowHeight = 0;
     private uint _frameNumber = 0;
+    private List<AtlasFreeRectangle>? _recoveryFreeRectangles;
 
     public struct PathInfo
     {
@@ -280,6 +284,77 @@ public unsafe class PathAtlas : IDisposable
     private readonly List<GpuBuffer> _tempBuffers = new();
     private readonly List<PathInfo> _pendingPaths = new();
 
+    // MaxRects state exists only after a capacity-triggered retry. The fragmented
+    // free list intentionally remains active until the next reset because the
+    // monotonic shelf cursors cannot safely resume inside a MaxRects layout.
+    private readonly record struct AtlasFreeRectangle(
+        uint X,
+        uint Y,
+        uint Width,
+        uint Height)
+    {
+        public uint Right => X + Width;
+        public uint Bottom => Y + Height;
+    }
+
+    private readonly record struct RetryPath(
+        PathInfo Info,
+        int XStart,
+        int YStart,
+        uint Width,
+        uint Height);
+
+    private readonly record struct RetryPlacement(
+        RetryPath Path,
+        AtlasFreeRectangle Rectangle);
+
+    private struct ExactRecoverySearchState
+    {
+        public int NodeCount;
+        public int CandidateCount;
+        public bool BudgetExceeded;
+
+        public bool TryEnterNode()
+        {
+            if (NodeCount >= ExactRecoveryNodeBudget)
+            {
+                BudgetExceeded = true;
+                return false;
+            }
+
+            NodeCount++;
+            return true;
+        }
+
+        public bool TryVisitCandidate()
+        {
+            if (CandidateCount >= ExactRecoveryCandidateBudget)
+            {
+                BudgetExceeded = true;
+                return false;
+            }
+
+            CandidateCount++;
+            return true;
+        }
+    }
+
+    private enum RetryPathOrdering
+    {
+        AreaDescending,
+        WidthDescending,
+        HeightDescending,
+        MaxSideDescending
+    }
+
+    private enum RecoveryPlacementHeuristic
+    {
+        BestShortSideFit,
+        BestAreaFit,
+        BottomLeft,
+        ExactBranchAndBound
+    }
+
     private readonly RenderPipelineCache _pipelineCache;
     private readonly BindGroupLayout* _computeBindGroupLayout;
     private readonly PipelineLayout* _computePipelineLayout;
@@ -292,6 +367,9 @@ public unsafe class PathAtlas : IDisposable
     public int CachedHitTestPathCount => _compiledHitTestPaths.Count;
     public ulong Generation { get; private set; }
     public bool CapacityExceeded { get; private set; }
+    public int LastExactRecoveryNodeCount { get; private set; }
+    public int LastExactRecoveryCandidateCount { get; private set; }
+    public bool LastExactRecoveryBudgetExceeded { get; private set; }
 
     public PathAtlas(WgpuContext context, uint atlasSize = 2048)
     {
@@ -976,6 +1054,7 @@ public unsafe class PathAtlas : IDisposable
         _currentX = 2;
         _currentY = 2;
         _currentRowHeight = 0;
+        _recoveryFreeRectangles = null;
         CapacityExceeded = false;
         ClearAtlasTexture();
     }
@@ -993,7 +1072,778 @@ public unsafe class PathAtlas : IDisposable
 
     public void ResetForRenderRetry()
     {
+        // Algorithm: try four stable rectangle orderings against three deterministic
+        // MaxRects placement heuristics, splitting and pruning F free regions after
+        // every placement. Recovery costs O(S * (P log P + P * F^2)) time and
+        // O(P + F) space for S=12 strategies. A final exact search for at most ten
+        // paths is capped at 25,000 nodes and 250,000 candidate placements, so an
+        // adversarial set cannot stall the render thread. Normal insertion remains
+        // the allocation-free O(1) shelf path. Recovery may allocate so a live
+        // frame is not rejected merely because one command order or heuristic
+        // fragmented otherwise usable atlas space.
+        List<RetryPath> livePaths = CollectCurrentFramePathsForRetry();
         ResetCachedPaths();
+
+        if (!TryPackRecoveryPaths(
+                livePaths,
+                out List<RetryPlacement> placements,
+                out List<AtlasFreeRectangle> freeRectangles,
+                out RetryPathOrdering ordering,
+                out RecoveryPlacementHeuristic heuristic))
+        {
+            for (int diagnosticIndex = 0; diagnosticIndex < livePaths.Count; diagnosticIndex++)
+            {
+                RetryPath diagnosticPath = livePaths[diagnosticIndex];
+                ProGpuVectorDiagnostics.WriteLine(
+                    $"[PathAtlas] Retry rectangle {diagnosticIndex}: {diagnosticPath.Width}x{diagnosticPath.Height}.");
+            }
+            string exactSearchStatus = LastExactRecoveryBudgetExceeded
+                ? $"; exact recovery exhausted its deterministic work budget after " +
+                    $"{LastExactRecoveryNodeCount} nodes and {LastExactRecoveryCandidateCount} candidates"
+                : string.Empty;
+            throw new InvalidOperationException(
+                $"PathAtlas could not deterministically pack the live path set in the configured " +
+                $"{_atlasSize}x{_atlasSize} atlas after multi-strategy retry packing " +
+                $"({livePaths.Count} live paths{exactSearchStatus}).");
+        }
+
+        for (int index = 0; index < placements.Count; index++)
+        {
+            RetryPlacement retryPlacement = placements[index];
+            RetryPath retryPath = retryPlacement.Path;
+            PathInfo info = retryPath.Info;
+            if (retryPath.Width == 0 || retryPath.Height == 0)
+            {
+                info.LastUsedFrame = _frameNumber;
+                _paths[info.Key] = info;
+                continue;
+            }
+
+            info = CreatePlacedPathInfo(
+                info,
+                retryPath.XStart,
+                retryPath.YStart,
+                retryPath.Width,
+                retryPath.Height,
+                retryPlacement.Rectangle.X,
+                retryPlacement.Rectangle.Y);
+            _paths[info.Key] = info;
+            _pendingPaths.Add(info);
+        }
+
+        _recoveryFreeRectangles = freeRectangles;
+        ProGpuVectorDiagnostics.WriteLine(
+            $"[PathAtlas] Deterministically packed {livePaths.Count} live paths for render retry " +
+            $"using {ordering}/{heuristic}, with {freeRectangles.Count} free rectangles remaining.");
+    }
+
+    private bool TryPackRecoveryPaths(
+        List<RetryPath> livePaths,
+        out List<RetryPlacement> placements,
+        out List<AtlasFreeRectangle> freeRectangles,
+        out RetryPathOrdering successfulOrdering,
+        out RecoveryPlacementHeuristic successfulHeuristic)
+    {
+        LastExactRecoveryNodeCount = 0;
+        LastExactRecoveryCandidateCount = 0;
+        LastExactRecoveryBudgetExceeded = false;
+        uint availableSize = _atlasSize > 2 ? _atlasSize - 2 : 0;
+        RetryPathOrdering[] orderings = Enum.GetValues<RetryPathOrdering>();
+        RecoveryPlacementHeuristic[] heuristics = Enum.GetValues<RecoveryPlacementHeuristic>();
+
+        for (int orderingIndex = 0; orderingIndex < orderings.Length; orderingIndex++)
+        {
+            RetryPathOrdering ordering = orderings[orderingIndex];
+            var orderedPaths = new List<RetryPath>(livePaths);
+            orderedPaths.Sort((left, right) => CompareRetryPaths(left, right, ordering));
+
+            for (int heuristicIndex = 0; heuristicIndex < heuristics.Length - 1; heuristicIndex++)
+            {
+                RecoveryPlacementHeuristic heuristic = heuristics[heuristicIndex];
+                var trialFreeRectangles = new List<AtlasFreeRectangle>(Math.Max(4, livePaths.Count * 2))
+                {
+                    new AtlasFreeRectangle(2, 2, availableSize, availableSize)
+                };
+                var trialPlacements = new List<RetryPlacement>(livePaths.Count);
+                bool succeeded = true;
+
+                for (int pathIndex = 0; pathIndex < orderedPaths.Count; pathIndex++)
+                {
+                    RetryPath retryPath = orderedPaths[pathIndex];
+                    if (retryPath.Width == 0 || retryPath.Height == 0)
+                    {
+                        trialPlacements.Add(new RetryPlacement(retryPath, default));
+                        continue;
+                    }
+
+                    if (!TryPlaceRecoveryRectangle(
+                            trialFreeRectangles,
+                            checked(retryPath.Width + 2),
+                            checked(retryPath.Height + 2),
+                            heuristic,
+                            out AtlasFreeRectangle rectangle))
+                    {
+                        succeeded = false;
+                        break;
+                    }
+
+                    trialPlacements.Add(new RetryPlacement(retryPath, rectangle));
+                }
+
+                if (succeeded)
+                {
+                    placements = trialPlacements;
+                    freeRectangles = trialFreeRectangles;
+                    successfulOrdering = ordering;
+                    successfulHeuristic = heuristic;
+                    return true;
+                }
+            }
+        }
+
+        if (TryPackRecoveryPathsExactly(livePaths, out placements, out freeRectangles))
+        {
+            successfulOrdering = RetryPathOrdering.AreaDescending;
+            successfulHeuristic = RecoveryPlacementHeuristic.ExactBranchAndBound;
+            return true;
+        }
+
+        placements = new List<RetryPlacement>();
+        freeRectangles = new List<AtlasFreeRectangle>();
+        successfulOrdering = default;
+        successfulHeuristic = default;
+        return false;
+    }
+
+    private bool TryPackRecoveryPathsExactly(
+        List<RetryPath> livePaths,
+        out List<RetryPlacement> placements,
+        out List<AtlasFreeRectangle> freeRectangles)
+    {
+        uint availableSize = _atlasSize > 2 ? _atlasSize - 2 : 0;
+        var orderedPaths = new List<RetryPath>(livePaths.Count);
+        var emptyPaths = new List<RetryPath>();
+        ulong packedArea = 0;
+        for (int pathIndex = 0; pathIndex < livePaths.Count; pathIndex++)
+        {
+            RetryPath path = livePaths[pathIndex];
+            if (path.Width == 0 || path.Height == 0)
+            {
+                emptyPaths.Add(path);
+                continue;
+            }
+
+            uint packedWidth = checked(path.Width + 2);
+            uint packedHeight = checked(path.Height + 2);
+            if (packedWidth > availableSize || packedHeight > availableSize)
+            {
+                placements = new List<RetryPlacement>();
+                freeRectangles = new List<AtlasFreeRectangle>();
+                return false;
+            }
+
+            packedArea += (ulong)packedWidth * packedHeight;
+            orderedPaths.Add(path);
+        }
+
+        if (orderedPaths.Count > ExactRecoveryPathLimit ||
+            packedArea > (ulong)availableSize * availableSize)
+        {
+            placements = new List<RetryPlacement>();
+            freeRectangles = new List<AtlasFreeRectangle>();
+            return false;
+        }
+
+        if (ExceedsExactRecoveryIncompatibilityBound(orderedPaths, availableSize, useWidths: true) ||
+            ExceedsExactRecoveryIncompatibilityBound(orderedPaths, availableSize, useWidths: false))
+        {
+            placements = new List<RetryPlacement>();
+            freeRectangles = new List<AtlasFreeRectangle>();
+            return false;
+        }
+
+        orderedPaths.Sort(static (left, right) =>
+            CompareRetryPaths(left, right, RetryPathOrdering.AreaDescending));
+        uint[] xCoordinates = BuildExactRecoveryCoordinates(orderedPaths, availableSize, useWidth: true);
+        uint[] yCoordinates = BuildExactRecoveryCoordinates(orderedPaths, availableSize, useWidth: false);
+        var placedRectangles = new AtlasFreeRectangle[orderedPaths.Count];
+
+        // Algorithm: every integral orthogonal packing can be translated into a
+        // bottom-left-stable packing. Each stable x/y origin is therefore a sum
+        // of a chain of rectangle widths/heights ending at the corresponding
+        // atlas edge. Enumerating those finite subset-sum coordinates and
+        // backtracking over non-overlapping placements is exact for this bounded
+        // recovery set. Time is O(P * X * Y * B) in each search node with an
+        // exponential O((X*Y)^P) theoretical worst case, but the deterministic
+        // node/candidate budgets cap actual work; space is O(P + X + Y), P <= 10.
+        var searchState = new ExactRecoverySearchState();
+        bool packed = TryPlaceExactRecoveryPath(
+                orderedPaths,
+                xCoordinates,
+                yCoordinates,
+                availableSize,
+                placedRectangles,
+                pathIndex: 0,
+                ref searchState);
+        LastExactRecoveryNodeCount = searchState.NodeCount;
+        LastExactRecoveryCandidateCount = searchState.CandidateCount;
+        LastExactRecoveryBudgetExceeded = searchState.BudgetExceeded;
+        if (!packed)
+        {
+            placements = new List<RetryPlacement>();
+            freeRectangles = new List<AtlasFreeRectangle>();
+            return false;
+        }
+
+        placements = new List<RetryPlacement>(livePaths.Count);
+        freeRectangles = new List<AtlasFreeRectangle>(Math.Max(4, orderedPaths.Count * 2))
+        {
+            new AtlasFreeRectangle(2, 2, availableSize, availableSize)
+        };
+        for (int pathIndex = 0; pathIndex < orderedPaths.Count; pathIndex++)
+        {
+            AtlasFreeRectangle local = placedRectangles[pathIndex];
+            var atlasRectangle = new AtlasFreeRectangle(
+                checked(local.X + 2),
+                checked(local.Y + 2),
+                local.Width,
+                local.Height);
+            placements.Add(new RetryPlacement(orderedPaths[pathIndex], atlasRectangle));
+            SplitRecoveryFreeRectangles(freeRectangles, atlasRectangle);
+        }
+
+        for (int pathIndex = 0; pathIndex < emptyPaths.Count; pathIndex++)
+        {
+            placements.Add(new RetryPlacement(emptyPaths[pathIndex], default));
+        }
+
+        return true;
+    }
+
+    private static bool ExceedsExactRecoveryIncompatibilityBound(
+        List<RetryPath> paths,
+        uint extent,
+        bool useWidths)
+    {
+        int subsetCount = 1 << paths.Count;
+        for (int subset = 3; subset < subsetCount; subset++)
+        {
+            ulong perpendicularExtent = 0;
+            bool pairwiseIncompatible = true;
+            for (int leftIndex = 0; leftIndex < paths.Count && pairwiseIncompatible; leftIndex++)
+            {
+                if ((subset & (1 << leftIndex)) == 0)
+                {
+                    continue;
+                }
+
+                RetryPath left = paths[leftIndex];
+                perpendicularExtent += (useWidths ? left.Height : left.Width) + 2UL;
+                ulong leftDimension = (useWidths ? left.Width : left.Height) + 2UL;
+                for (int rightIndex = leftIndex + 1; rightIndex < paths.Count; rightIndex++)
+                {
+                    if ((subset & (1 << rightIndex)) == 0)
+                    {
+                        continue;
+                    }
+
+                    RetryPath right = paths[rightIndex];
+                    ulong rightDimension = (useWidths ? right.Width : right.Height) + 2UL;
+                    if (leftDimension + rightDimension <= extent)
+                    {
+                        pairwiseIncompatible = false;
+                        break;
+                    }
+                }
+            }
+
+            if (pairwiseIncompatible && perpendicularExtent > extent)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static uint[] BuildExactRecoveryCoordinates(
+        List<RetryPath> paths,
+        uint extent,
+        bool useWidth)
+    {
+        var coordinates = new HashSet<uint> { 0 };
+        for (int pathIndex = 0; pathIndex < paths.Count; pathIndex++)
+        {
+            uint dimension = checked((useWidth ? paths[pathIndex].Width : paths[pathIndex].Height) + 2);
+            var existing = new uint[coordinates.Count];
+            coordinates.CopyTo(existing);
+            for (int coordinateIndex = 0; coordinateIndex < existing.Length; coordinateIndex++)
+            {
+                uint coordinate = existing[coordinateIndex];
+                if (coordinate <= extent - dimension)
+                {
+                    coordinates.Add(coordinate + dimension);
+                }
+            }
+        }
+
+        var result = new uint[coordinates.Count];
+        coordinates.CopyTo(result);
+        Array.Sort(result);
+        return result;
+    }
+
+    private static bool TryPlaceExactRecoveryPath(
+        List<RetryPath> paths,
+        uint[] xCoordinates,
+        uint[] yCoordinates,
+        uint extent,
+        AtlasFreeRectangle[] placedRectangles,
+        int pathIndex,
+        ref ExactRecoverySearchState searchState)
+    {
+        if (!searchState.TryEnterNode())
+        {
+            return false;
+        }
+
+        if (pathIndex >= paths.Count)
+        {
+            return true;
+        }
+
+        RetryPath path = paths[pathIndex];
+        uint width = checked(path.Width + 2);
+        uint height = checked(path.Height + 2);
+        for (int yIndex = 0; yIndex < yCoordinates.Length; yIndex++)
+        {
+            uint y = yCoordinates[yIndex];
+            if (y > extent - height)
+            {
+                break;
+            }
+
+            for (int xIndex = 0; xIndex < xCoordinates.Length; xIndex++)
+            {
+                if (!searchState.TryVisitCandidate())
+                {
+                    return false;
+                }
+
+                uint x = xCoordinates[xIndex];
+                if (x > extent - width)
+                {
+                    break;
+                }
+
+                var candidate = new AtlasFreeRectangle(x, y, width, height);
+                if (OverlapsExactRecoveryPlacement(candidate, placedRectangles, pathIndex))
+                {
+                    continue;
+                }
+
+                placedRectangles[pathIndex] = candidate;
+                if (TryPlaceExactRecoveryPath(
+                        paths,
+                        xCoordinates,
+                        yCoordinates,
+                        extent,
+                        placedRectangles,
+                        pathIndex + 1,
+                        ref searchState))
+                {
+                    return true;
+                }
+
+                if (searchState.BudgetExceeded)
+                {
+                    return false;
+                }
+            }
+        }
+
+        placedRectangles[pathIndex] = default;
+        return false;
+    }
+
+    private static bool OverlapsExactRecoveryPlacement(
+        AtlasFreeRectangle candidate,
+        AtlasFreeRectangle[] placedRectangles,
+        int placedCount)
+    {
+        for (int placedIndex = 0; placedIndex < placedCount; placedIndex++)
+        {
+            AtlasFreeRectangle placed = placedRectangles[placedIndex];
+            if (candidate.X < placed.Right && candidate.Right > placed.X &&
+                candidate.Y < placed.Bottom && candidate.Bottom > placed.Y)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private List<RetryPath> CollectCurrentFramePathsForRetry()
+    {
+        var livePaths = new List<RetryPath>(_paths.Count);
+        foreach (PathInfo info in _paths.Values)
+        {
+            if (info.LastUsedFrame != _frameNumber)
+            {
+                continue;
+            }
+
+            if (TryResolveRasterRectangle(
+                    info,
+                    out int xStart,
+                    out int yStart,
+                    out uint width,
+                    out uint height))
+            {
+                livePaths.Add(new RetryPath(info, xStart, yStart, width, height));
+            }
+            else
+            {
+                livePaths.Add(new RetryPath(info, 0, 0, 0, 0));
+            }
+        }
+
+        return livePaths;
+    }
+
+    private bool TryResolveRasterRectangle(
+        PathInfo info,
+        out int xStart,
+        out int yStart,
+        out uint width,
+        out uint height)
+    {
+        if (info.Width > 0 && info.Height > 0)
+        {
+            xStart = checked((int)info.MinX);
+            yStart = checked((int)info.MinY);
+            width = info.Width;
+            height = info.Height;
+            return true;
+        }
+
+        if (!TryGetCompiledFillPath(
+                info.Geometry,
+                out _,
+                out GpuPathSegment[] segments,
+                out float unscaledMinX,
+                out float unscaledMinY,
+                out float unscaledMaxX,
+                out float unscaledMaxY) ||
+            segments.Length == 0)
+        {
+            xStart = 0;
+            yStart = 0;
+            width = 0;
+            height = 0;
+            return false;
+        }
+
+        float minX = unscaledMinX * info.Key.ScaleX;
+        float minY = unscaledMinY * info.Key.ScaleY;
+        float maxX = unscaledMaxX * info.Key.ScaleX;
+        float maxY = unscaledMaxY * info.Key.ScaleY;
+        const int padding = 4;
+        xStart = checked((int)Math.Floor(minX) - padding);
+        int xEnd = checked((int)Math.Ceiling(maxX) + padding);
+        yStart = checked((int)Math.Floor(minY) - padding);
+        int yEnd = checked((int)Math.Ceiling(maxY) + padding);
+        int resolvedWidth = xEnd - xStart;
+        int resolvedHeight = yEnd - yStart;
+        if (resolvedWidth <= 0 || resolvedHeight <= 0)
+        {
+            width = 0;
+            height = 0;
+            return false;
+        }
+
+        width = checked((uint)resolvedWidth);
+        height = checked((uint)resolvedHeight);
+        return true;
+    }
+
+    private PathInfo CreatePlacedPathInfo(
+        PathInfo source,
+        int xStart,
+        int yStart,
+        uint width,
+        uint height,
+        uint atlasX,
+        uint atlasY)
+    {
+        float texelSize = 1.0f / _atlasSize;
+        source.X = atlasX;
+        source.Y = atlasY;
+        source.Width = width;
+        source.Height = height;
+        source.TexCoordMin = new Vector2(
+            (atlasX + source.Key.SubpixelX) * texelSize,
+            (atlasY + source.Key.SubpixelY) * texelSize);
+        source.TexCoordMax = new Vector2(
+            (atlasX + width + source.Key.SubpixelX) * texelSize,
+            (atlasY + height + source.Key.SubpixelY) * texelSize);
+        source.MinX = xStart;
+        source.MinY = yStart;
+        source.LastUsedFrame = _frameNumber;
+        return source;
+    }
+
+    private static int CompareRetryPaths(
+        RetryPath left,
+        RetryPath right,
+        RetryPathOrdering ordering)
+    {
+        ulong leftArea = (ulong)(left.Width + 2) * (left.Height + 2);
+        ulong rightArea = (ulong)(right.Width + 2) * (right.Height + 2);
+        uint leftMaxSide = Math.Max(left.Width, left.Height);
+        uint rightMaxSide = Math.Max(right.Width, right.Height);
+        int comparison = ordering switch
+        {
+            RetryPathOrdering.WidthDescending => right.Width.CompareTo(left.Width),
+            RetryPathOrdering.HeightDescending => right.Height.CompareTo(left.Height),
+            RetryPathOrdering.MaxSideDescending => rightMaxSide.CompareTo(leftMaxSide),
+            _ => rightArea.CompareTo(leftArea)
+        };
+        if (comparison != 0)
+        {
+            return comparison;
+        }
+
+        comparison = rightArea.CompareTo(leftArea);
+        if (comparison != 0)
+        {
+            return comparison;
+        }
+
+        comparison = rightMaxSide.CompareTo(leftMaxSide);
+        if (comparison != 0)
+        {
+            return comparison;
+        }
+
+        comparison = right.Height.CompareTo(left.Height);
+        if (comparison != 0)
+        {
+            return comparison;
+        }
+
+        comparison = right.Width.CompareTo(left.Width);
+        if (comparison != 0)
+        {
+            return comparison;
+        }
+
+        return CompareRetryPathKeys(left.Info.Key, right.Info.Key);
+    }
+
+    private static int CompareRetryPathKeys(PathCacheKey left, PathCacheKey right)
+    {
+        // PathCacheKey equality covers content, both scales, both phases, and the
+        // sample grid. Comparing every field therefore gives a total order for
+        // the distinct keys held by _paths, even when rectangles have equal size.
+        int comparison = left.ContentHash.CompareTo(right.ContentHash);
+        if (comparison != 0)
+        {
+            return comparison;
+        }
+
+        comparison = BitConverter.SingleToInt32Bits(left.ScaleX)
+            .CompareTo(BitConverter.SingleToInt32Bits(right.ScaleX));
+        if (comparison != 0)
+        {
+            return comparison;
+        }
+
+        comparison = BitConverter.SingleToInt32Bits(left.ScaleY)
+            .CompareTo(BitConverter.SingleToInt32Bits(right.ScaleY));
+        if (comparison != 0)
+        {
+            return comparison;
+        }
+
+        comparison = BitConverter.SingleToInt32Bits(left.SubpixelX)
+            .CompareTo(BitConverter.SingleToInt32Bits(right.SubpixelX));
+        if (comparison != 0)
+        {
+            return comparison;
+        }
+
+        comparison = BitConverter.SingleToInt32Bits(left.SubpixelY)
+            .CompareTo(BitConverter.SingleToInt32Bits(right.SubpixelY));
+        return comparison != 0
+            ? comparison
+            : left.SampleGrid.CompareTo(right.SampleGrid);
+    }
+
+    private static bool TryPlaceRecoveryRectangle(
+        List<AtlasFreeRectangle> freeRectangles,
+        uint width,
+        uint height,
+        out AtlasFreeRectangle placement) =>
+        TryPlaceRecoveryRectangle(
+            freeRectangles,
+            width,
+            height,
+            RecoveryPlacementHeuristic.BestShortSideFit,
+            out placement);
+
+    private static bool TryPlaceRecoveryRectangle(
+        List<AtlasFreeRectangle> freeRectangles,
+        uint width,
+        uint height,
+        RecoveryPlacementHeuristic heuristic,
+        out AtlasFreeRectangle placement)
+    {
+        int bestIndex = -1;
+        ulong bestPrimary = ulong.MaxValue;
+        ulong bestSecondary = ulong.MaxValue;
+        ulong bestTertiary = ulong.MaxValue;
+        ulong bestQuaternary = ulong.MaxValue;
+        ulong bestQuinary = ulong.MaxValue;
+
+        for (int index = 0; index < freeRectangles.Count; index++)
+        {
+            AtlasFreeRectangle free = freeRectangles[index];
+            if (width > free.Width || height > free.Height)
+            {
+                continue;
+            }
+
+            ulong remainingWidth = free.Width - width;
+            ulong remainingHeight = free.Height - height;
+            ulong shortSide = Math.Min(remainingWidth, remainingHeight);
+            ulong longSide = Math.Max(remainingWidth, remainingHeight);
+            ulong areaWaste = (ulong)free.Width * free.Height - (ulong)width * height;
+            ulong primary;
+            ulong secondary;
+            ulong tertiary;
+            ulong quaternary;
+            ulong quinary;
+            switch (heuristic)
+            {
+                case RecoveryPlacementHeuristic.BestAreaFit:
+                    primary = areaWaste;
+                    secondary = shortSide;
+                    tertiary = longSide;
+                    quaternary = free.Y;
+                    quinary = free.X;
+                    break;
+                case RecoveryPlacementHeuristic.BottomLeft:
+                    primary = (ulong)free.Y + height;
+                    secondary = free.X;
+                    tertiary = shortSide;
+                    quaternary = longSide;
+                    quinary = areaWaste;
+                    break;
+                default:
+                    primary = shortSide;
+                    secondary = longSide;
+                    tertiary = areaWaste;
+                    quaternary = free.Y;
+                    quinary = free.X;
+                    break;
+            }
+
+            if (primary < bestPrimary ||
+                (primary == bestPrimary && secondary < bestSecondary) ||
+                (primary == bestPrimary && secondary == bestSecondary && tertiary < bestTertiary) ||
+                (primary == bestPrimary && secondary == bestSecondary && tertiary == bestTertiary && quaternary < bestQuaternary) ||
+                (primary == bestPrimary && secondary == bestSecondary && tertiary == bestTertiary && quaternary == bestQuaternary && quinary < bestQuinary))
+            {
+                bestIndex = index;
+                bestPrimary = primary;
+                bestSecondary = secondary;
+                bestTertiary = tertiary;
+                bestQuaternary = quaternary;
+                bestQuinary = quinary;
+            }
+        }
+
+        if (bestIndex < 0)
+        {
+            placement = default;
+            return false;
+        }
+
+        AtlasFreeRectangle selected = freeRectangles[bestIndex];
+        placement = new AtlasFreeRectangle(selected.X, selected.Y, width, height);
+        SplitRecoveryFreeRectangles(freeRectangles, placement);
+        return true;
+    }
+
+    private static void SplitRecoveryFreeRectangles(
+        List<AtlasFreeRectangle> freeRectangles,
+        AtlasFreeRectangle used)
+    {
+        for (int index = freeRectangles.Count - 1; index >= 0; index--)
+        {
+            AtlasFreeRectangle free = freeRectangles[index];
+            if (used.X >= free.Right || used.Right <= free.X ||
+                used.Y >= free.Bottom || used.Bottom <= free.Y)
+            {
+                continue;
+            }
+
+            freeRectangles.RemoveAt(index);
+            if (used.X > free.X)
+            {
+                freeRectangles.Add(new AtlasFreeRectangle(
+                    free.X,
+                    free.Y,
+                    used.X - free.X,
+                    free.Height));
+            }
+            if (used.Right < free.Right)
+            {
+                freeRectangles.Add(new AtlasFreeRectangle(
+                    used.Right,
+                    free.Y,
+                    free.Right - used.Right,
+                    free.Height));
+            }
+            if (used.Y > free.Y)
+            {
+                freeRectangles.Add(new AtlasFreeRectangle(
+                    free.X,
+                    free.Y,
+                    free.Width,
+                    used.Y - free.Y));
+            }
+            if (used.Bottom < free.Bottom)
+            {
+                freeRectangles.Add(new AtlasFreeRectangle(
+                    free.X,
+                    used.Bottom,
+                    free.Width,
+                    free.Bottom - used.Bottom));
+            }
+        }
+
+        for (int outer = freeRectangles.Count - 1; outer >= 0; outer--)
+        {
+            AtlasFreeRectangle candidate = freeRectangles[outer];
+            for (int inner = 0; inner < freeRectangles.Count; inner++)
+            {
+                if (outer == inner)
+                {
+                    continue;
+                }
+
+                AtlasFreeRectangle container = freeRectangles[inner];
+                if (candidate.X >= container.X && candidate.Y >= container.Y &&
+                    candidate.Right <= container.Right && candidate.Bottom <= container.Bottom)
+                {
+                    freeRectangles.RemoveAt(outer);
+                    break;
+                }
+            }
+        }
     }
 
     private bool HasPathsUsedInCurrentFrame()
@@ -1177,6 +2027,44 @@ public unsafe class PathAtlas : IDisposable
 
         uint gW = (uint)width;
         uint gH = (uint)height;
+
+        if (_recoveryFreeRectangles != null)
+        {
+            info = new PathInfo
+            {
+                Key = key,
+                Geometry = path,
+                UnscaledMinX = unscaledMinX,
+                UnscaledMinY = unscaledMinY,
+                UnscaledMaxX = unscaledMaxX,
+                UnscaledMaxY = unscaledMaxY,
+                LastUsedFrame = _frameNumber
+            };
+            if (!TryPlaceRecoveryRectangle(
+                    _recoveryFreeRectangles,
+                    checked(gW + 2),
+                    checked(gH + 2),
+                    out AtlasFreeRectangle placement))
+            {
+                ProGpuVectorDiagnostics.WriteLine(
+                    "[PathAtlas] Warning: The recovery-packed atlas cannot fit a new current-frame path; preserving existing path coordinates.");
+                CapacityExceeded = true;
+                _paths[key] = info;
+                return info;
+            }
+
+            info = CreatePlacedPathInfo(
+                info,
+                xStart,
+                yStart,
+                gW,
+                gH,
+                placement.X,
+                placement.Y);
+            _paths[key] = info;
+            _pendingPaths.Add(info);
+            return info;
+        }
 
         if (_currentX + gW + 2 > _atlasSize)
         {
