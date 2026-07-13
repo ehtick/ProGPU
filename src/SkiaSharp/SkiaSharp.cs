@@ -2205,28 +2205,59 @@ public struct SKColorSpaceXyz : IEquatable<SKColorSpaceXyz>
     }
 }
 
-public struct SKMatrix
+public struct SKMatrix : IEquatable<SKMatrix>
 {
-    public static readonly SKMatrix Empty;
-    public float ScaleX;
-    public float SkewX;
-    public float TransX;
-    public float SkewY;
-    public float ScaleY;
-    public float TransY;
-    public float Persp0;
-    public float Persp1;
-    public float Persp2;
+    private const int ValueCount = 9;
 
+    public static readonly SKMatrix Empty;
     public static readonly SKMatrix Identity = new()
     {
-        ScaleX = 1f, ScaleY = 1f, Persp2 = 1f
+        ScaleX = 1f,
+        ScaleY = 1f,
+        Persp2 = 1f,
     };
 
-    public readonly bool IsIdentity =>
-        ScaleX == 1f && SkewX == 0f && TransX == 0f &&
-        SkewY == 0f && ScaleY == 1f && TransY == 0f &&
-        Persp0 == 0f && Persp1 == 0f && Persp2 == 1f;
+    public float ScaleX { readonly get; set; }
+    public float SkewX { readonly get; set; }
+    public float TransX { readonly get; set; }
+    public float SkewY { readonly get; set; }
+    public float ScaleY { readonly get; set; }
+    public float TransY { readonly get; set; }
+    public float Persp0 { readonly get; set; }
+    public float Persp1 { readonly get; set; }
+    public float Persp2 { readonly get; set; }
+
+    public readonly bool IsIdentity => Equals(Identity);
+
+    public readonly bool IsInvertible => TryInvert(out _);
+
+    public float[] Values
+    {
+        readonly get =>
+        [
+            ScaleX,
+            SkewX,
+            TransX,
+            SkewY,
+            ScaleY,
+            TransY,
+            Persp0,
+            Persp1,
+            Persp2,
+        ];
+        set
+        {
+            ValidateValues(value, nameof(Values));
+            SetValues(value);
+        }
+    }
+
+    public SKMatrix(float[] values)
+    {
+        ValidateValues(values, nameof(values));
+        this = default;
+        SetValues(values);
+    }
 
     public SKMatrix(
         float scaleX,
@@ -2250,90 +2281,372 @@ public struct SKMatrix
         Persp2 = persp2;
     }
 
-    public Matrix4x4 ToMatrix4x4()
+    public readonly void GetValues(float[] values)
     {
-        return new Matrix4x4(
-            ScaleX, SkewY, 0f, 0f,
-            SkewX, ScaleY, 0f, 0f,
-            0f, 0f, 1f, 0f,
-            TransX, TransY, 0f, 1f
-        );
+        ValidateValues(values, nameof(values));
+        values[0] = ScaleX;
+        values[1] = SkewX;
+        values[2] = TransX;
+        values[3] = SkewY;
+        values[4] = ScaleY;
+        values[5] = TransY;
+        values[6] = Persp0;
+        values[7] = Persp1;
+        values[8] = Persp2;
     }
+
+    public readonly Matrix4x4 ToMatrix4x4() => new(
+        ScaleX, SkewY, 0f, Persp0,
+        SkewX, ScaleY, 0f, Persp1,
+        0f, 0f, 1f, 0f,
+        TransX, TransY, 0f, Persp2);
 
     public static SKMatrix CreateIdentity() => Identity;
 
     public static SKMatrix CreateTranslation(float x, float y)
     {
-        var matrix = Identity;
-        matrix.TransX = x;
-        matrix.TransY = y;
-        return matrix;
+        if (x == 0f && y == 0f)
+        {
+            return Identity;
+        }
+
+        return new SKMatrix(1f, 0f, x, 0f, 1f, y, 0f, 0f, 1f);
     }
 
     public static SKMatrix CreateScale(float x, float y)
     {
-        var matrix = Identity;
-        matrix.ScaleX = x;
-        matrix.ScaleY = y;
-        return matrix;
+        if (x == 1f && y == 1f)
+        {
+            return Identity;
+        }
+
+        return new SKMatrix(x, 0f, 0f, 0f, y, 0f, 0f, 0f, 1f);
     }
 
     public static SKMatrix CreateScale(float x, float y, float pivotX, float pivotY)
     {
-        return FromMatrix4x4(
-            Matrix4x4.CreateTranslation(-pivotX, -pivotY, 0f)
-            * Matrix4x4.CreateScale(x, y, 1f)
-            * Matrix4x4.CreateTranslation(pivotX, pivotY, 0f));
-    }
-
-    public static SKMatrix CreateRotationDegrees(float degrees)
-    {
-        return CreateRotationDegrees(degrees, 0f, 0f);
-    }
-
-    public static SKMatrix CreateRotationDegrees(float degrees, float pivotX, float pivotY)
-    {
-        var radians = degrees * MathF.PI / 180f;
-        return FromMatrix4x4(
-            Matrix4x4.CreateTranslation(-pivotX, -pivotY, 0f)
-            * Matrix4x4.CreateRotationZ(radians)
-            * Matrix4x4.CreateTranslation(pivotX, pivotY, 0f));
-    }
-
-    public SKMatrix PreConcat(SKMatrix matrix)
-    {
-        return FromMatrix4x4(matrix.ToMatrix4x4() * ToMatrix4x4());
-    }
-
-    public SKMatrix PostConcat(SKMatrix matrix)
-    {
-        return FromMatrix4x4(ToMatrix4x4() * matrix.ToMatrix4x4());
-    }
-
-    public static SKMatrix Concat(SKMatrix first, SKMatrix second)
-    {
-        return FromMatrix4x4(second.ToMatrix4x4() * first.ToMatrix4x4());
-    }
-
-    public static void Concat(ref SKMatrix result, SKMatrix first, SKMatrix second)
-    {
-        result = Concat(first, second);
-    }
-
-    internal static SKMatrix FromMatrix4x4(Matrix4x4 matrix)
-    {
-        return new SKMatrix
+        if (x == 1f && y == 1f)
         {
-            ScaleX = matrix.M11,
-            SkewX = matrix.M21,
-            TransX = matrix.M41,
-            SkewY = matrix.M12,
-            ScaleY = matrix.M22,
-            TransY = matrix.M42,
-            Persp0 = matrix.M14,
-            Persp1 = matrix.M24,
-            Persp2 = matrix.M44
-        };
+            return Identity;
+        }
+
+        return new SKMatrix(
+            x,
+            0f,
+            pivotX - x * pivotX,
+            0f,
+            y,
+            pivotY - y * pivotY,
+            0f,
+            0f,
+            1f);
+    }
+
+    public static SKMatrix CreateRotation(float radians) =>
+        CreateRotation(radians, 0f, 0f);
+
+    public static SKMatrix CreateRotation(float radians, float pivotX, float pivotY)
+    {
+        if (radians == 0f)
+        {
+            return Identity;
+        }
+
+        var sin = (float)Math.Sin(radians);
+        var cos = (float)Math.Cos(radians);
+        var oneMinusCos = 1f - cos;
+        return new SKMatrix(
+            cos,
+            -sin,
+            sin * pivotY + oneMinusCos * pivotX,
+            sin,
+            cos,
+            -sin * pivotX + oneMinusCos * pivotY,
+            0f,
+            0f,
+            1f);
+    }
+
+    public static SKMatrix CreateRotationDegrees(float degrees) =>
+        CreateRotation(degrees * (MathF.PI / 180f));
+
+    public static SKMatrix CreateRotationDegrees(float degrees, float pivotX, float pivotY) =>
+        CreateRotation(degrees * (MathF.PI / 180f), pivotX, pivotY);
+
+    public static SKMatrix CreateSkew(float x, float y)
+    {
+        if (x == 0f && y == 0f)
+        {
+            return Identity;
+        }
+
+        return new SKMatrix(1f, x, 0f, y, 1f, 0f, 0f, 0f, 1f);
+    }
+
+    public static SKMatrix CreateScaleTranslation(float sx, float sy, float tx, float ty)
+    {
+        if ((sx == 0f && sy == 0f && tx == 0f && ty == 0f) ||
+            (sx == 1f && sy == 1f && tx == 0f && ty == 0f))
+        {
+            return Identity;
+        }
+
+        return new SKMatrix(sx, 0f, tx, 0f, sy, ty, 0f, 0f, 1f);
+    }
+
+    public readonly bool TryInvert(out SKMatrix inverse)
+    {
+        var a = (double)ScaleX;
+        var b = (double)SkewX;
+        var c = (double)TransX;
+        var d = (double)SkewY;
+        var e = (double)ScaleY;
+        var f = (double)TransY;
+        var g = (double)Persp0;
+        var h = (double)Persp1;
+        var i = (double)Persp2;
+        var determinant = a * (e * i - f * h) -
+            b * (d * i - f * g) +
+            c * (d * h - e * g);
+        if (determinant == 0d || !double.IsFinite(determinant))
+        {
+            inverse = Empty;
+            return false;
+        }
+
+        var reciprocal = 1d / determinant;
+        inverse = new SKMatrix(
+            (float)((e * i - f * h) * reciprocal),
+            (float)((c * h - b * i) * reciprocal),
+            (float)((b * f - c * e) * reciprocal),
+            (float)((f * g - d * i) * reciprocal),
+            (float)((a * i - c * g) * reciprocal),
+            (float)((c * d - a * f) * reciprocal),
+            (float)((d * h - e * g) * reciprocal),
+            (float)((b * g - a * h) * reciprocal),
+            (float)((a * e - b * d) * reciprocal));
+        if (!IsFinite(inverse))
+        {
+            inverse = Empty;
+            return false;
+        }
+
+        return true;
+    }
+
+    public readonly SKMatrix Invert() => TryInvert(out var inverse) ? inverse : Empty;
+
+    public readonly SKMatrix PreConcat(SKMatrix matrix) =>
+        FromMatrix4x4(matrix.ToMatrix4x4() * ToMatrix4x4());
+
+    public readonly SKMatrix PostConcat(SKMatrix matrix) =>
+        FromMatrix4x4(ToMatrix4x4() * matrix.ToMatrix4x4());
+
+    public static SKMatrix Concat(SKMatrix first, SKMatrix second) =>
+        FromMatrix4x4(second.ToMatrix4x4() * first.ToMatrix4x4());
+
+    public static void Concat(ref SKMatrix target, SKMatrix first, SKMatrix second) =>
+        target = Concat(first, second);
+
+    public readonly SKRect MapRect(SKRect source)
+    {
+        Span<SKPoint> points =
+        [
+            new SKPoint(source.Left, source.Top),
+            new SKPoint(source.Right, source.Top),
+            new SKPoint(source.Right, source.Bottom),
+            new SKPoint(source.Left, source.Bottom),
+        ];
+        MapPoints(points, points);
+        var left = points[0].X;
+        var top = points[0].Y;
+        var right = left;
+        var bottom = top;
+        for (var index = 1; index < points.Length; index++)
+        {
+            left = MathF.Min(left, points[index].X);
+            top = MathF.Min(top, points[index].Y);
+            right = MathF.Max(right, points[index].X);
+            bottom = MathF.Max(bottom, points[index].Y);
+        }
+
+        return new SKRect(left, top, right, bottom);
+    }
+
+    public readonly SKPoint MapPoint(SKPoint point) => MapPoint(point.X, point.Y);
+
+    public readonly SKPoint MapPoint(float x, float y)
+    {
+        var denominator = Persp0 * x + Persp1 * y + Persp2;
+        if (denominator == 0f)
+        {
+            return SKPoint.Empty;
+        }
+
+        var mappedX = ScaleX * x + SkewX * y + TransX;
+        var mappedY = SkewY * x + ScaleY * y + TransY;
+        if (denominator != 1f)
+        {
+            var reciprocal = 1f / denominator;
+            mappedX *= reciprocal;
+            mappedY *= reciprocal;
+        }
+
+        return new SKPoint(mappedX, mappedY);
+    }
+
+    public readonly void MapPoints(Span<SKPoint> result, ReadOnlySpan<SKPoint> points)
+    {
+        if (result.Length != points.Length)
+        {
+            throw new ArgumentException("Buffers must be the same size.");
+        }
+
+        for (var index = 0; index < result.Length; index++)
+        {
+            result[index] = MapPoint(points[index]);
+        }
+    }
+
+    public readonly void MapPoints(SKPoint[] result, SKPoint[] points)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        ArgumentNullException.ThrowIfNull(points);
+        MapPoints(result.AsSpan(), points.AsSpan());
+    }
+
+    public readonly SKPoint[] MapPoints(SKPoint[] points)
+    {
+        ArgumentNullException.ThrowIfNull(points);
+        var result = new SKPoint[points.Length];
+        MapPoints(result, points);
+        return result;
+    }
+
+    public readonly SKPoint MapVector(SKPoint vector) => MapVector(vector.X, vector.Y);
+
+    public readonly SKPoint MapVector(float x, float y)
+    {
+        var origin = MapPoint(0f, 0f);
+        var point = MapPoint(x, y);
+        return new SKPoint(point.X - origin.X, point.Y - origin.Y);
+    }
+
+    public readonly void MapVectors(Span<SKPoint> result, ReadOnlySpan<SKPoint> vectors)
+    {
+        if (result.Length != vectors.Length)
+        {
+            throw new ArgumentException("Buffers must be the same size.");
+        }
+
+        var origin = MapPoint(0f, 0f);
+        for (var index = 0; index < result.Length; index++)
+        {
+            var point = MapPoint(vectors[index]);
+            result[index] = new SKPoint(point.X - origin.X, point.Y - origin.Y);
+        }
+    }
+
+    public readonly void MapVectors(SKPoint[] result, SKPoint[] vectors)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        ArgumentNullException.ThrowIfNull(vectors);
+        MapVectors(result.AsSpan(), vectors.AsSpan());
+    }
+
+    public readonly SKPoint[] MapVectors(SKPoint[] vectors)
+    {
+        ArgumentNullException.ThrowIfNull(vectors);
+        var result = new SKPoint[vectors.Length];
+        MapVectors(result, vectors);
+        return result;
+    }
+
+    public readonly float MapRadius(float radius)
+    {
+        var x = MapVector(radius, 0f);
+        var y = MapVector(0f, radius);
+        var xLength = MathF.Sqrt(x.X * x.X + x.Y * x.Y);
+        var yLength = MathF.Sqrt(y.X * y.X + y.Y * y.Y);
+        return MathF.Sqrt(xLength * yLength);
+    }
+
+    public readonly bool Equals(SKMatrix obj) =>
+        ScaleX == obj.ScaleX &&
+        SkewX == obj.SkewX &&
+        TransX == obj.TransX &&
+        SkewY == obj.SkewY &&
+        ScaleY == obj.ScaleY &&
+        TransY == obj.TransY &&
+        Persp0 == obj.Persp0 &&
+        Persp1 == obj.Persp1 &&
+        Persp2 == obj.Persp2;
+
+    public override readonly bool Equals(object? obj) => obj is SKMatrix matrix && Equals(matrix);
+
+    public static bool operator ==(SKMatrix left, SKMatrix right) => left.Equals(right);
+
+    public static bool operator !=(SKMatrix left, SKMatrix right) => !left.Equals(right);
+
+    public override readonly int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.Add(ScaleX);
+        hash.Add(SkewX);
+        hash.Add(TransX);
+        hash.Add(SkewY);
+        hash.Add(ScaleY);
+        hash.Add(TransY);
+        hash.Add(Persp0);
+        hash.Add(Persp1);
+        hash.Add(Persp2);
+        return hash.ToHashCode();
+    }
+
+    internal static SKMatrix FromMatrix4x4(Matrix4x4 matrix) => new(
+        matrix.M11,
+        matrix.M21,
+        matrix.M41,
+        matrix.M12,
+        matrix.M22,
+        matrix.M42,
+        matrix.M14,
+        matrix.M24,
+        matrix.M44);
+
+    private static void ValidateValues(float[]? values, string parameterName)
+    {
+        ArgumentNullException.ThrowIfNull(values, parameterName);
+        if (values.Length != ValueCount)
+        {
+            throw new ArgumentException(
+                $"The matrix array must have a length of {ValueCount}.",
+                parameterName);
+        }
+    }
+
+    private static bool IsFinite(SKMatrix matrix) =>
+        float.IsFinite(matrix.ScaleX) &&
+        float.IsFinite(matrix.SkewX) &&
+        float.IsFinite(matrix.TransX) &&
+        float.IsFinite(matrix.SkewY) &&
+        float.IsFinite(matrix.ScaleY) &&
+        float.IsFinite(matrix.TransY) &&
+        float.IsFinite(matrix.Persp0) &&
+        float.IsFinite(matrix.Persp1) &&
+        float.IsFinite(matrix.Persp2);
+
+    private void SetValues(float[] values)
+    {
+        ScaleX = values[0];
+        SkewX = values[1];
+        TransX = values[2];
+        SkewY = values[3];
+        ScaleY = values[4];
+        TransY = values[5];
+        Persp0 = values[6];
+        Persp1 = values[7];
+        Persp2 = values[8];
     }
 }
 
