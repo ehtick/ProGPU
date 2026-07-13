@@ -170,7 +170,7 @@ dotnet test src/ProGPU.Tests/ProGPU.Tests.csproj -c Release
 dotnet test src/ProGPU.Tests.Headless/ProGPU.Tests.Headless.csproj -c Release
 ```
 
-The current baseline is 1,581 renderer tests and 149 headless tests. Update these counts only when tests are intentionally added or removed.
+The current baseline is 1,708 renderer tests and 149 headless tests. Update these counts only when tests are intentionally added or removed.
 
 Build once, then measure the exact final binaries:
 
@@ -190,7 +190,7 @@ PROGPU_SAMPLE_BENCHMARK_VSYNC=false \
 dotnet run --project src/ProGPU.Samples/ProGPU.Samples.csproj -c Release --no-build
 ```
 
-On the current 120 Hz reference machine, the protected targets are about 120 FPS and 12,000 LOL/s with VSync, and at least 36,000 LOL/s uncapped. The current measured values are 12,001 and 40,429 LOL/s. Compare on the same machine and window state; investigate a repeatable drop greater than 10% before merging.
+On the current 120 Hz reference machine, the protected targets are about 120 FPS and 12,000 LOL/s with VSync, and at least 36,000 LOL/s uncapped. The current measured values are 11,899 and 42,527 LOL/s. Compare on the same machine and window state; investigate a repeatable drop greater than 10% before merging.
 
 Also run `Markdown Playground` and `DXF CAD Viewer` uncapped. Stable pages should miss once and then report nearly all `sceneCacheHits`; animated pages and LOL/s should report a useful miss reason rather than a false hit.
 
@@ -206,7 +206,7 @@ dotnet test tests/Svg.Skia.UnitTests/Svg.Skia.UnitTests.csproj -f net10.0 -c Rel
   --filter 'FullyQualifiedName!~W3CTestSuiteTests&FullyQualifiedName!~resvgTests'
 ```
 
-The current shim baseline is 927 resvg passes with 37 explicit inventory skips and 1,147 remaining passes. The macOS CI W3C image lane has 48 established threshold differences, 482 passes, and 3 skips versus native SkiaSharp's 530 passes and 3 skips. Performance-only work must not add a fixture, increase an image error, or change a previously matching result. Compare the exact fixture/error list against the parent commit; intentional parity improvements should reduce the difference set and include their own image-focused review.
+The current shim baseline is 927 resvg passes with 37 explicit inventory skips and 1,147 remaining passes. The macOS CI W3C image lane has 46 established threshold differences, 484 passes, and 3 skips versus native SkiaSharp's 530 passes and 3 skips. Performance-only work must not add a fixture, increase an image error, or change a previously matching result. Compare the exact fixture/error list against the parent commit; intentional parity improvements should reduce the difference set and include their own image-focused review.
 
 The `Svg.Skia parity` workflow is mandatory for changes under `src/SkiaSharp`, `ProGPU.Scene`, `ProGPU.Text`, or `ProGPU.Vector`. Keep its Svg.Skia commit pinned, run native and ProGPU checkouts separately, and preserve the TRX/PNG artifacts. `eng/progpu-verify-svg-skia-results.ps1` must compare the exact W3C fixture inventory in `eng/svg-skia-w3c-known-differences.txt`; never weaken it to count-only validation or make the image lane silently `continue-on-error`. A resolved difference requires image review and an intentional baseline/count update in the same commit, while any added difference blocks integration.
 

@@ -350,14 +350,14 @@ The WinUI host sets `EnableGpuHitTesting = false` because `InputSystem` already 
 
 ### Reference Performance
 
-The opt-in sample harness reports wall-clock FPS, per-phase timings, allocation rate, scene-cache decisions, draw counts, and workload throughput. A macOS 120 Hz reference run of the current architecture produced the following results; hardware, window size, and page state affect absolute values.
+The opt-in sample harness reports wall-clock FPS, per-phase timings, allocation rate, scene-cache decisions, draw counts, and workload throughput. A July 2026 macOS 120 Hz reference run of the current architecture produced the following results; hardware, window size, and page state affect absolute values.
 
 | Workload | VSync | Wall FPS | Workload throughput | Scene cache |
 | --- | ---: | ---: | ---: | ---: |
-| LOL/s Benchmark | On | 120.26 | 12,001 LOL/s | Dynamic, 0/480 hits |
-| LOL/s Benchmark | Off | 202.48 | 40,429 LOL/s | Dynamic, 0/600 hits |
-| Markdown Playground | Off | 519.43 | Static after warmup | 299/300 hits |
-| DXF CAD Viewer | Off | 484.09 | Static after warmup | 299/300 hits |
+| LOL/s Benchmark | On | 119.99 | 11,899 LOL/s | Dynamic, 3/480 hits |
+| LOL/s Benchmark | Off | 212.99 | 42,527 LOL/s | Dynamic, 0/600 hits |
+| Markdown Playground | Off | 240.14 | Static after warmup | 298/300 hits |
+| DXF CAD Viewer | Off | 241.54 | Static after warmup | 298/300 hits |
 
 Run the same deterministic workload from the repository root:
 

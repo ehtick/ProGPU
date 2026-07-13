@@ -1,6 +1,5 @@
 # Svg.Skia commit 03f64b67badfca9fca216dc25896d0c0ee04e7b7.
 # Keep sorted. Remove a row only with native/ProGPU image review and updated totals.
-animate-elem-03-t
 animate-elem-27-t
 animate-elem-30-t
 animate-elem-53-t
@@ -38,7 +37,6 @@ text-fonts-03-t
 text-fonts-04-t
 text-fonts-05-f
 text-intro-01-t
-text-intro-04-t
 text-intro-11-t
 text-text-01-b
 text-text-10-t
