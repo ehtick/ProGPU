@@ -8,6 +8,8 @@ public static class ComputeShaders
 
     public static readonly string MatrixConvolution = ShaderResource.Load(typeof(ComputeShaders), "MatrixConvolution.wgsl");
 
+    public static readonly string Magnifier = ShaderResource.Load(typeof(ComputeShaders), "Magnifier.wgsl");
+
     public static readonly string DisplacementMap = ShaderResource.Load(typeof(ComputeShaders), "DisplacementMap.wgsl");
 
     public static readonly string ArithmeticComposite = ShaderResource.Load(typeof(ComputeShaders), "ArithmeticComposite.wgsl");

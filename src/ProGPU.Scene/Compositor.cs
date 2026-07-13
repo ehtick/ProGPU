@@ -1263,6 +1263,30 @@ public unsafe class Compositor : IDisposable
         }
     }
 
+    public void ApplyMagnifier(
+        GpuTexture source,
+        GpuTexture destination,
+        Vector4 lensBounds,
+        Vector4 outputBounds,
+        Vector4 zoomTransform,
+        Vector2 inverseInset,
+        uint samplingMode,
+        Vector2 cubic)
+    {
+        lock (_context.RenderLock)
+        {
+            _compute.ApplyMagnifier(
+                source,
+                destination,
+                lensBounds,
+                outputBounds,
+                zoomTransform,
+                inverseInset,
+                samplingMode,
+                cubic);
+        }
+    }
+
     public void ApplyArithmeticComposite(
         GpuTexture background,
         GpuTexture foreground,

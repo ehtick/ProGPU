@@ -46,6 +46,21 @@ public class ShaderResourceTests
     }
 
     [Fact]
+    public void MagnifierShaderPreservesSkiaLensWeightingAndSamplingQuality()
+    {
+        Assert.Contains(
+            "2.0 - length(vec2<f32>(2.0) - edgeInset)",
+            ComputeShaders.Magnifier,
+            StringComparison.Ordinal);
+        Assert.Contains("weight *= weight", ComputeShaders.Magnifier, StringComparison.Ordinal);
+        Assert.Contains("let outputBounds = params.outputBounds", ComputeShaders.Magnifier, StringComparison.Ordinal);
+        Assert.Contains("fn sample_linear", ComputeShaders.Magnifier, StringComparison.Ordinal);
+        Assert.Contains("fn sample_cubic", ComputeShaders.Magnifier, StringComparison.Ordinal);
+        Assert.Contains("for (var y = -1; y <= 2", ComputeShaders.Magnifier, StringComparison.Ordinal);
+        Assert.Contains("for (var x = -1; x <= 2", ComputeShaders.Magnifier, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void EveryShaderSourceIsEmbeddedAndDocumentsItsCostModel()
     {
         DirectoryInfo root = FindRepositoryRoot();

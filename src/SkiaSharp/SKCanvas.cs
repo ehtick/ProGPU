@@ -27,6 +27,7 @@ public class SKCanvas : IDisposable
     }
 
     private readonly record struct ImageFilterCacheKey(
+        GpuTexture Source,
         SKImageFilter Filter,
         bool PreserveSourceColorSpace);
 
@@ -570,9 +571,15 @@ public class SKCanvas : IDisposable
     private static bool HasLinearImageFilterSource(SKImageFilter filter)
     {
         var visited = new HashSet<SKImageFilter>();
-        SKImageFilter? current = filter;
-        while (current != null && visited.Add(current))
+        var pending = new Stack<SKImageFilter>();
+        pending.Push(filter);
+        while (pending.TryPop(out var current))
         {
+            if (!visited.Add(current))
+            {
+                continue;
+            }
+
             if (current.Kind == SKImageFilter.FilterKind.Image &&
                 current.Parameters is SKImageFilter.ImageData imageData)
             {
@@ -586,10 +593,46 @@ public class SKCanvas : IDisposable
                 return pictureColorSpace.IsLinear;
             }
 
-            current = current.Input;
+            if (current.Input != null)
+            {
+                pending.Push(current.Input);
+            }
+
+            switch (current.Parameters)
+            {
+                case SKImageFilter.ComposeData compose:
+                    pending.Push(compose.Outer);
+                    pending.Push(compose.Inner);
+                    break;
+                case SKImageFilter.ArithmeticData arithmetic:
+                    PushOptional(pending, arithmetic.Background);
+                    PushOptional(pending, arithmetic.Foreground);
+                    break;
+                case SKImageFilter.BlendModeData blend:
+                    PushOptional(pending, blend.Background);
+                    PushOptional(pending, blend.Foreground);
+                    break;
+                case SKImageFilter.DisplacementData displacement:
+                    pending.Push(displacement.Displacement);
+                    break;
+                case SKImageFilter[] merge:
+                    foreach (var input in merge)
+                    {
+                        PushOptional(pending, input);
+                    }
+                    break;
+            }
         }
 
         return false;
+
+        static void PushOptional(Stack<SKImageFilter> pending, SKImageFilter? filter)
+        {
+            if (filter != null)
+            {
+                pending.Push(filter);
+            }
+        }
     }
 
     private static bool TryGetPictureImageColorSpace(
@@ -699,7 +742,7 @@ public class SKCanvas : IDisposable
         Matrix4x4 filterTransform,
         bool preserveSourceColorSpace = false)
     {
-        var cacheKey = new ImageFilterCacheKey(filter, preserveSourceColorSpace);
+        var cacheKey = new ImageFilterCacheKey(sourceTexture, filter, preserveSourceColorSpace);
         if (cache.TryGetValue(cacheKey, out var cached))
         {
             return cached;
@@ -716,6 +759,23 @@ public class SKCanvas : IDisposable
                     input,
                     blur.SigmaX * GetAxisScale(filterTransform, Vector2.UnitX),
                     blur.SigmaY * GetAxisScale(filterTransform, Vector2.UnitY));
+                break;
+            }
+            case SKImageFilter.FilterKind.Compose:
+            {
+                var compose = (SKImageFilter.ComposeData)filter.Parameters!;
+                var inner = EvaluateImageFilter(
+                    sourceTexture,
+                    compose.Inner,
+                    cache,
+                    filterTransform,
+                    preserveSourceColorSpace);
+                result = EvaluateImageFilter(
+                    inner,
+                    compose.Outer,
+                    cache,
+                    filterTransform,
+                    preserveSourceColorSpace);
                 break;
             }
             case SKImageFilter.FilterKind.DropShadow:
@@ -833,6 +893,26 @@ public class SKCanvas : IDisposable
                     (SKImageFilter.MatrixConvolutionData)filter.Parameters!,
                     filter.CropRect,
                     filterTransform);
+                break;
+            }
+            case SKImageFilter.FilterKind.MatrixTransform:
+            {
+                var input = EvaluateOptionalInput(sourceTexture, filter.Input, cache, filterTransform, preserveSourceColorSpace);
+                result = RenderMatrixTransform(
+                    input,
+                    (SKImageFilter.MatrixTransformData)filter.Parameters!,
+                    filterTransform);
+                break;
+            }
+            case SKImageFilter.FilterKind.Magnifier:
+            {
+                var input = EvaluateOptionalInput(sourceTexture, filter.Input, cache, filterTransform, preserveSourceColorSpace);
+                input = ApplyFilterCrop(input, filter.CropRect, filterTransform);
+                result = RenderMagnifier(
+                    input,
+                    (SKImageFilter.MagnifierData)filter.Parameters!,
+                    filterTransform,
+                    filter.CropRect);
                 break;
             }
             case SKImageFilter.FilterKind.DistantLitDiffuse:
@@ -956,7 +1036,10 @@ public class SKCanvas : IDisposable
                 break;
         }
 
-        result = ApplyFilterCrop(result, filter.CropRect, filterTransform);
+        if (filter.Kind != SKImageFilter.FilterKind.Magnifier)
+        {
+            result = ApplyFilterCrop(result, filter.CropRect, filterTransform);
+        }
         cache[cacheKey] = result;
         return result;
     }
@@ -1217,6 +1300,205 @@ public class SKCanvas : IDisposable
             tileHeight);
         return destination;
     }
+
+    private GpuTexture RenderMatrixTransform(
+        GpuTexture input,
+        SKImageFilter.MatrixTransformData matrixTransform,
+        Matrix4x4 filterTransform)
+    {
+        if (matrixTransform.Matrix.IsIdentity)
+        {
+            return input;
+        }
+
+        if (!TryCreateImageFilterDeviceTransform(
+                matrixTransform.Matrix,
+                filterTransform,
+                out var deviceTransform))
+        {
+            return RenderFilterPass(
+                "SKImageFilter Matrix Transform Empty",
+                input.Width,
+                input.Height,
+                static _ => { });
+        }
+
+        return RenderFilterPass(
+            "SKImageFilter Matrix Transform",
+            input.Width,
+            input.Height,
+            context => context.DrawTexture(
+                input,
+                new Rect(0f, 0f, input.Width, input.Height),
+                new Rect(0f, 0f, input.Width, input.Height),
+                deviceTransform,
+                MapSampling(matrixTransform.Sampling),
+                MapCubicSampling(matrixTransform.Sampling)));
+    }
+
+    internal static bool TryCreateImageFilterDeviceTransform(
+        SKMatrix matrix,
+        Matrix4x4 filterTransform,
+        out Matrix4x4 deviceTransform)
+    {
+        var layerTransform = filterTransform == default
+            ? Matrix4x4.Identity
+            : filterTransform;
+        if (!Matrix4x4.Invert(layerTransform, out var inverseLayerTransform))
+        {
+            deviceTransform = default;
+            return false;
+        }
+
+        deviceTransform = inverseLayerTransform *
+            matrix.ToMatrix4x4() *
+            layerTransform;
+        return IsFinite(deviceTransform);
+    }
+
+    private GpuTexture RenderMagnifier(
+        GpuTexture input,
+        SKImageFilter.MagnifierData magnifier,
+        Matrix4x4 filterTransform,
+        SKRect? inputCropRect)
+    {
+        if (magnifier.ZoomAmount <= 1f)
+        {
+            return input;
+        }
+
+        var layerTransform = filterTransform == default
+            ? Matrix4x4.Identity
+            : filterTransform;
+        var lensBounds = MapRectToBounds(magnifier.LensBounds, layerTransform);
+        if (!IsValidLayerBounds(lensBounds))
+        {
+            return RenderFilterPass(
+                "SKImageFilter Magnifier Empty",
+                input.Width,
+                input.Height,
+                static _ => { });
+        }
+
+        var textureBounds = new SKRect(0f, 0f, input.Width, input.Height);
+        var visibleLensBounds = Intersect(lensBounds, textureBounds);
+        var availableInputBounds = inputCropRect is { } cropRect && IsValidLayerBounds(cropRect)
+            ? Intersect(MapRectToBounds(cropRect, layerTransform), textureBounds)
+            : textureBounds;
+        var outputBounds = Intersect(visibleLensBounds, availableInputBounds);
+        if (!IsValidLayerBounds(visibleLensBounds) ||
+            !IsValidLayerBounds(availableInputBounds) ||
+            !IsValidLayerBounds(outputBounds))
+        {
+            return RenderFilterPass(
+                "SKImageFilter Magnifier Empty",
+                input.Width,
+                input.Height,
+                static _ => { });
+        }
+
+        var zoomTransform = CreateMagnifierZoomTransform(
+            lensBounds,
+            visibleLensBounds,
+            availableInputBounds,
+            magnifier.ZoomAmount);
+
+        var insetX = magnifier.Inset * GetAxisScale(layerTransform, Vector2.UnitX);
+        var insetY = magnifier.Inset * GetAxisScale(layerTransform, Vector2.UnitY);
+        var inverseInset = new Vector2(
+            insetX > 0f && float.IsFinite(insetX) ? 1f / insetX : 0f,
+            insetY > 0f && float.IsFinite(insetY) ? 1f / insetY : 0f);
+        var samplingMode = magnifier.Sampling.UseCubic
+            ? 2u
+            : magnifier.Sampling.Filter == SKFilterMode.Nearest &&
+              !magnifier.Sampling.IsAniso &&
+              magnifier.Sampling.Mipmap == SKMipmapMode.None
+                ? 0u
+                : 1u;
+        var cubic = MapCubicSampling(magnifier.Sampling) ?? Vector2.Zero;
+
+        var context = GetGpuContext();
+        var destination = CreateOwnedFilterTexture(
+            context,
+            "SKImageFilter Magnifier Destination",
+            storage: true,
+            input.Width,
+            input.Height);
+        GetCompositorForContext(context).ApplyMagnifier(
+            input,
+            destination,
+            new Vector4(
+                lensBounds.Left,
+                lensBounds.Top,
+                lensBounds.Right,
+                lensBounds.Bottom),
+            new Vector4(
+                outputBounds.Left,
+                outputBounds.Top,
+                outputBounds.Right,
+                outputBounds.Bottom),
+            zoomTransform,
+            inverseInset,
+            samplingMode,
+            cubic);
+        return destination;
+    }
+
+    internal static Vector4 CreateMagnifierZoomTransform(
+        SKRect lensBounds,
+        SKRect visibleLensBounds,
+        SKRect availableInputBounds,
+        float zoomAmount)
+    {
+        var inverseZoom = 1f / zoomAmount;
+        var centerX = Math.Clamp(
+            (lensBounds.Left + lensBounds.Right) * 0.5f,
+            availableInputBounds.Left,
+            availableInputBounds.Right);
+        var centerY = Math.Clamp(
+            (lensBounds.Top + lensBounds.Bottom) * 0.5f,
+            availableInputBounds.Top,
+            availableInputBounds.Bottom);
+        var translateX = centerX * (1f - inverseZoom);
+        var translateY = centerY * (1f - inverseZoom);
+        if (!Contains(availableInputBounds, visibleLensBounds))
+        {
+            var visibleSourceBounds = new SKRect(
+                translateX + inverseZoom * visibleLensBounds.Left,
+                translateY + inverseZoom * visibleLensBounds.Top,
+                translateX + inverseZoom * visibleLensBounds.Right,
+                translateY + inverseZoom * visibleLensBounds.Bottom);
+            if (availableInputBounds.Width >= visibleSourceBounds.Width &&
+                availableInputBounds.Height >= visibleSourceBounds.Height)
+            {
+                var fittedLeft = visibleSourceBounds.Left < availableInputBounds.Left
+                    ? availableInputBounds.Left
+                    : Math.Min(visibleSourceBounds.Right, availableInputBounds.Right) -
+                      visibleSourceBounds.Width;
+                var fittedTop = visibleSourceBounds.Top < availableInputBounds.Top
+                    ? availableInputBounds.Top
+                    : Math.Min(visibleSourceBounds.Bottom, availableInputBounds.Bottom) -
+                      visibleSourceBounds.Height;
+                translateX = fittedLeft - inverseZoom * visibleLensBounds.Left;
+                translateY = fittedTop - inverseZoom * visibleLensBounds.Top;
+            }
+        }
+
+        return new Vector4(translateX, translateY, inverseZoom, inverseZoom);
+    }
+
+    private static SKRect Intersect(SKRect first, SKRect second) =>
+        new(
+            Math.Max(first.Left, second.Left),
+            Math.Max(first.Top, second.Top),
+            Math.Min(first.Right, second.Right),
+            Math.Min(first.Bottom, second.Bottom));
+
+    private static bool Contains(SKRect outer, SKRect inner) =>
+        outer.Left <= inner.Left &&
+        outer.Top <= inner.Top &&
+        outer.Right >= inner.Right &&
+        outer.Bottom >= inner.Bottom;
 
     private static bool TryGetFilterCropPixelBounds(
         SKRect? cropRect,
@@ -3600,6 +3882,16 @@ public class SKCanvas : IDisposable
         var scale = transformed.Length();
         return float.IsFinite(scale) && scale > 0f ? scale : 1f;
     }
+
+    private static bool IsFinite(Matrix4x4 matrix) =>
+        float.IsFinite(matrix.M11) && float.IsFinite(matrix.M12) &&
+        float.IsFinite(matrix.M13) && float.IsFinite(matrix.M14) &&
+        float.IsFinite(matrix.M21) && float.IsFinite(matrix.M22) &&
+        float.IsFinite(matrix.M23) && float.IsFinite(matrix.M24) &&
+        float.IsFinite(matrix.M31) && float.IsFinite(matrix.M32) &&
+        float.IsFinite(matrix.M33) && float.IsFinite(matrix.M34) &&
+        float.IsFinite(matrix.M41) && float.IsFinite(matrix.M42) &&
+        float.IsFinite(matrix.M43) && float.IsFinite(matrix.M44);
 
     private static Vector2 TransformFilterVector(Vector2 vector, Matrix4x4 transform)
     {

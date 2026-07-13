@@ -2138,6 +2138,7 @@ public partial class SKImageFilter : SKObject
     internal enum FilterKind
     {
         Blur,
+        Compose,
         DropShadow,
         Arithmetic,
         BlendMode,
@@ -2148,6 +2149,8 @@ public partial class SKImageFilter : SKObject
         DistantLitSpecular,
         Erode,
         Image,
+        Magnifier,
+        MatrixTransform,
         MatrixConvolution,
         Merge,
         Offset,
@@ -2462,6 +2465,7 @@ public partial class SKImageFilter : SKObject
         new(FilterKind.Merge, new SKImageFilter?[] { first, second }, null, cropRect);
 
     internal sealed record BlurData(float SigmaX, float SigmaY, SKShaderTileMode TileMode);
+    internal sealed record ComposeData(SKImageFilter Outer, SKImageFilter Inner);
     internal sealed record DropShadowData(float Dx, float Dy, float SigmaX, float SigmaY, SKColor Color, bool ShadowOnly);
     internal sealed record ArithmeticData(float K1, float K2, float K3, float K4, bool EnforcePremultipliedColor, SKImageFilter? Background, SKImageFilter? Foreground);
     internal sealed record BlendModeData(SKBlendMode? Mode, SKBlender? Blender, SKImageFilter? Background, SKImageFilter? Foreground);
@@ -2469,6 +2473,8 @@ public partial class SKImageFilter : SKObject
     internal sealed record DisplacementData(SKColorChannel XChannel, SKColorChannel YChannel, float Scale, SKImageFilter Displacement);
     internal sealed record DistantLightData(SKPoint3 Direction, SKColor Color, float SurfaceScale, float Constant, float Shininess);
     internal sealed record ImageData(SKImage Image, SKRect Source, SKRect Destination, SKSamplingOptions Sampling);
+    internal sealed record MagnifierData(SKRect LensBounds, float ZoomAmount, float Inset, SKSamplingOptions Sampling);
+    internal sealed record MatrixTransformData(SKMatrix Matrix, SKSamplingOptions Sampling);
     internal sealed record MatrixConvolutionData(SKSizeI KernelSize, float[] Kernel, float Gain, float Bias, SKPointI KernelOffset, SKShaderTileMode TileMode, bool ConvolveAlpha);
     internal sealed record OffsetData(float Dx, float Dy);
     internal sealed record ShaderData(SKShader? Shader, bool Dither);

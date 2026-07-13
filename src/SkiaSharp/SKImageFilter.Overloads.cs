@@ -135,6 +135,17 @@ public partial class SKImageFilter
         SKRect cropRect) =>
         CreateColorFilter(cf, input, (SKRect?)cropRect);
 
+    public static SKImageFilter CreateCompose(SKImageFilter outer, SKImageFilter inner)
+    {
+        ArgumentNullException.ThrowIfNull(outer);
+        ArgumentNullException.ThrowIfNull(inner);
+        return new SKImageFilter(
+            FilterKind.Compose,
+            new ComposeData(outer, inner),
+            null,
+            null);
+    }
+
     public static SKImageFilter CreateDilate(float radiusX, float radiusY) =>
         CreateDilate(radiusX, radiusY, null, null);
 
@@ -330,6 +341,88 @@ public partial class SKImageFilter
         SKRect dst,
         SKFilterQuality filterQuality) =>
         CreateImage(image, src, dst, ToSamplingOptions((int)filterQuality));
+
+    public static SKImageFilter CreateMagnifier(
+        SKRect lensBounds,
+        float zoomAmount,
+        float inset,
+        SKSamplingOptions sampling) =>
+        CreateMagnifierCore(lensBounds, zoomAmount, inset, sampling, null, null);
+
+    public static SKImageFilter CreateMagnifier(
+        SKRect lensBounds,
+        float zoomAmount,
+        float inset,
+        SKSamplingOptions sampling,
+        SKImageFilter? input) =>
+        CreateMagnifierCore(lensBounds, zoomAmount, inset, sampling, input, null);
+
+    public static SKImageFilter CreateMagnifier(
+        SKRect lensBounds,
+        float zoomAmount,
+        float inset,
+        SKSamplingOptions sampling,
+        SKImageFilter? input,
+        SKRect cropRect) =>
+        CreateMagnifierCore(lensBounds, zoomAmount, inset, sampling, input, cropRect);
+
+    private static SKImageFilter CreateMagnifierCore(
+        SKRect lensBounds,
+        float zoomAmount,
+        float inset,
+        SKSamplingOptions sampling,
+        SKImageFilter? input,
+        SKRect? cropRect)
+    {
+        if (!IsFiniteNonEmpty(lensBounds) ||
+            !float.IsFinite(zoomAmount) ||
+            zoomAmount <= 0f ||
+            !float.IsFinite(inset) ||
+            inset < 0f)
+        {
+            return null!;
+        }
+
+        if (zoomAmount <= 1f && cropRect == null)
+        {
+            return input!;
+        }
+
+        return new SKImageFilter(
+            FilterKind.Magnifier,
+            new MagnifierData(lensBounds, zoomAmount, inset, sampling),
+            input,
+            cropRect);
+    }
+
+    [Obsolete("Use SetMatrix(in SKMatrix) instead.", true)]
+    public static SKImageFilter CreateMatrix(SKMatrix matrix) =>
+        CreateMatrix(in matrix);
+
+    [Obsolete("Use SetMatrix(in SKMatrix, SKSamplingOptions, SKImageFilter) instead.", true)]
+    public static SKImageFilter CreateMatrix(
+        SKMatrix matrix,
+        SKFilterQuality quality,
+        SKImageFilter? input) =>
+        CreateMatrix(in matrix, ToSamplingOptions((int)quality), input);
+
+    public static SKImageFilter CreateMatrix(in SKMatrix matrix) =>
+        CreateMatrix(in matrix, SKSamplingOptions.Default, null);
+
+    public static SKImageFilter CreateMatrix(
+        in SKMatrix matrix,
+        SKSamplingOptions sampling) =>
+        CreateMatrix(in matrix, sampling, null);
+
+    public static SKImageFilter CreateMatrix(
+        in SKMatrix matrix,
+        SKSamplingOptions sampling,
+        SKImageFilter? input) =>
+        new(
+            FilterKind.MatrixTransform,
+            new MatrixTransformData(matrix, sampling),
+            input,
+            null);
 
     public static SKImageFilter CreateMatrixConvolution(
         SKSizeI kernelSize,
@@ -656,4 +749,12 @@ public partial class SKImageFilter
         3 => new SKSamplingOptions(SKCubicResampler.Mitchell),
         _ => throw new ArgumentOutOfRangeException(nameof(quality)),
     };
+
+    private static bool IsFiniteNonEmpty(SKRect rect) =>
+        float.IsFinite(rect.Left) &&
+        float.IsFinite(rect.Top) &&
+        float.IsFinite(rect.Right) &&
+        float.IsFinite(rect.Bottom) &&
+        rect.Right > rect.Left &&
+        rect.Bottom > rect.Top;
 }

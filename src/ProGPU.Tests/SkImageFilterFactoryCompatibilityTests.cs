@@ -1,3 +1,6 @@
+using System.Numerics;
+using System.Runtime.InteropServices;
+using ProGPU.Compute;
 using SkiaSharp;
 using Xunit;
 
@@ -192,5 +195,147 @@ public sealed class SkImageFilterFactoryCompatibilityTests
         {
             Assert.Equal(crop, filter.CropRect);
         }
+    }
+
+    [Fact]
+    public void ComposeRequiresBothChildrenAndRetainsEvaluationOrder()
+    {
+        using var outer = SKImageFilter.CreateBlur(1f, 2f);
+        using var inner = SKImageFilter.CreateOffset(3f, 4f);
+        using var compose = SKImageFilter.CreateCompose(outer, inner);
+
+        var data = Assert.IsType<SKImageFilter.ComposeData>(compose.Parameters);
+        Assert.Same(outer, data.Outer);
+        Assert.Same(inner, data.Inner);
+        Assert.Equal(
+            "outer",
+            Assert.Throws<ArgumentNullException>(
+                () => SKImageFilter.CreateCompose(null!, inner)).ParamName);
+        Assert.Equal(
+            "inner",
+            Assert.Throws<ArgumentNullException>(
+                () => SKImageFilter.CreateCompose(outer, null!)).ParamName);
+    }
+
+    [Fact]
+    public void MatrixFactoriesRetainTransformSamplingAndSourceFallback()
+    {
+        var matrix = SKMatrix.CreateScaleTranslation(2f, 3f, 4f, 5f);
+        var sampling = new SKSamplingOptions(SKCubicResampler.CatmullRom);
+        using var input = SKImageFilter.CreateBlur(1f, 1f);
+        using var filter = SKImageFilter.CreateMatrix(in matrix, sampling, input);
+
+        var data = Assert.IsType<SKImageFilter.MatrixTransformData>(filter.Parameters);
+        Assert.Equal(matrix, data.Matrix);
+        Assert.Equal(sampling, data.Sampling);
+        Assert.Same(input, filter.Input);
+    }
+
+    [Fact]
+    public void MatrixFilterConjugatesLocalTransformIntoLayerSpace()
+    {
+        var local = SKMatrix.CreateTranslation(3f, 4f);
+        var layer = Matrix4x4.CreateScale(2f, 5f, 1f);
+
+        Assert.True(SKCanvas.TryCreateImageFilterDeviceTransform(local, layer, out var device));
+        Assert.Equal(6f, device.M41, 4);
+        Assert.Equal(20f, device.M42, 4);
+        Assert.Equal(1f, device.M11, 4);
+        Assert.Equal(1f, device.M22, 4);
+
+        Assert.False(SKCanvas.TryCreateImageFilterDeviceTransform(
+            local,
+            Matrix4x4.CreateScale(0f, 1f, 1f),
+            out _));
+    }
+
+    [Fact]
+    public void MagnifierMatchesNativeValidationAndIdentityFactories()
+    {
+        var lens = new SKRect(2f, 3f, 20f, 30f);
+        var crop = new SKRect(4f, 5f, 18f, 24f);
+        var sampling = new SKSamplingOptions(SKCubicResampler.Mitchell);
+        using var input = SKImageFilter.CreateOffset(1f, 2f);
+
+        Assert.Null(SKImageFilter.CreateMagnifier(SKRect.Empty, 2f, 1f, sampling));
+        Assert.Null(SKImageFilter.CreateMagnifier(lens, 0f, 1f, sampling));
+        Assert.Null(SKImageFilter.CreateMagnifier(lens, float.NaN, 1f, sampling));
+        Assert.Null(SKImageFilter.CreateMagnifier(lens, 2f, -1f, sampling));
+        Assert.Null(SKImageFilter.CreateMagnifier(lens, 1f, 1f, sampling));
+        Assert.Same(input, SKImageFilter.CreateMagnifier(lens, 1f, 1f, sampling, input));
+
+        using var croppedIdentity = SKImageFilter.CreateMagnifier(
+            lens,
+            1f,
+            1f,
+            sampling,
+            input,
+            crop);
+        using var magnifier = SKImageFilter.CreateMagnifier(
+            lens,
+            3f,
+            2f,
+            sampling,
+            input,
+            crop);
+
+        Assert.Equal(crop, croppedIdentity.CropRect);
+        var data = Assert.IsType<SKImageFilter.MagnifierData>(magnifier.Parameters);
+        Assert.Equal(lens, data.LensBounds);
+        Assert.Equal(3f, data.ZoomAmount);
+        Assert.Equal(2f, data.Inset);
+        Assert.Equal(sampling, data.Sampling);
+        Assert.Same(input, magnifier.Input);
+        Assert.Equal(crop, magnifier.CropRect);
+    }
+
+    [Fact]
+    public void MagnifierUniformsMatchWgslLayoutAndNormalizeInvalidValues()
+    {
+        var parameters = new ComputeAccelerator.MagnifierParams(
+            new Vector4(1f, 2f, 3f, 4f),
+            new Vector4(5f, 6f, 7f, 8f),
+            new Vector4(9f, 10f, 11f, 12f),
+            new Vector2(13f, 14f),
+            samplingMode: 1u,
+            new Vector2(1f / 3f, 1f / 3f));
+
+        Assert.Equal(80, Marshal.SizeOf<ComputeAccelerator.MagnifierParams>());
+        Assert.Equal(new Vector4(5f, 6f, 7f, 8f), parameters.OutputBounds);
+        Assert.Equal(new Vector2(13f, 14f), parameters.InverseInset);
+        Assert.Equal(1u, parameters.SamplingMode);
+
+        var invalid = new ComputeAccelerator.MagnifierParams(
+            new Vector4(float.NaN),
+            new Vector4(float.PositiveInfinity),
+            new Vector4(float.NegativeInfinity),
+            new Vector2(float.NaN, -1f),
+            samplingMode: 99u,
+            new Vector2(float.NaN));
+        Assert.Equal(Vector4.Zero, invalid.LensBounds);
+        Assert.Equal(Vector4.Zero, invalid.OutputBounds);
+        Assert.Equal(Vector4.Zero, invalid.ZoomTransform);
+        Assert.Equal(Vector2.Zero, invalid.InverseInset);
+        Assert.Equal(2u, invalid.SamplingMode);
+        Assert.Equal(Vector2.Zero, invalid.Cubic);
+    }
+
+    [Fact]
+    public void MagnifierZoomTransformFitsVisibleSourceInsideCroppedInput()
+    {
+        var lens = new SKRect(0f, 0f, 100f, 100f);
+        var available = new SKRect(40f, 40f, 100f, 100f);
+
+        var transform = SKCanvas.CreateMagnifierZoomTransform(
+            lens,
+            lens,
+            available,
+            zoomAmount: 2f);
+
+        Assert.Equal(new Vector4(40f, 40f, 0.5f, 0.5f), transform);
+        Assert.InRange(transform.X + transform.Z * lens.Left, available.Left, available.Right);
+        Assert.InRange(transform.Y + transform.W * lens.Top, available.Top, available.Bottom);
+        Assert.InRange(transform.X + transform.Z * lens.Right, available.Left, available.Right);
+        Assert.InRange(transform.Y + transform.W * lens.Bottom, available.Top, available.Bottom);
     }
 }

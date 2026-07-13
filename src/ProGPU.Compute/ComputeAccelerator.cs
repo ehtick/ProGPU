@@ -22,6 +22,7 @@ public unsafe class ComputeAccelerator : IDisposable
     private ComputePipeline* _colorTablePipeline;
     private ComputePipeline* _arithmeticCompositePipeline;
     private ComputePipeline* _displacementMapPipeline;
+    private ComputePipeline* _magnifierPipeline;
     private ComputePipeline* _matrixConvolutionPipeline;
     private ComputePipeline* _imageLightingPipeline;
 
@@ -156,6 +157,46 @@ public unsafe class ComputeAccelerator : IDisposable
             float.IsFinite(value.Y) &&
             float.IsFinite(value.Z) &&
             float.IsFinite(value.W);
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = 80)]
+    public struct MagnifierParams
+    {
+        [FieldOffset(0)] public Vector4 LensBounds;
+        [FieldOffset(16)] public Vector4 OutputBounds;
+        [FieldOffset(32)] public Vector4 ZoomTransform;
+        [FieldOffset(48)] public Vector2 InverseInset;
+        [FieldOffset(56)] public uint SamplingMode;
+        [FieldOffset(60)] private uint _padding0;
+        [FieldOffset(64)] public Vector2 Cubic;
+        [FieldOffset(72)] private Vector2 _padding1;
+
+        public MagnifierParams(
+            Vector4 lensBounds,
+            Vector4 outputBounds,
+            Vector4 zoomTransform,
+            Vector2 inverseInset,
+            uint samplingMode,
+            Vector2 cubic)
+        {
+            LensBounds = IsFinite(lensBounds) ? lensBounds : Vector4.Zero;
+            OutputBounds = IsFinite(outputBounds) ? outputBounds : Vector4.Zero;
+            ZoomTransform = IsFinite(zoomTransform) ? zoomTransform : Vector4.Zero;
+            InverseInset = IsFinite(inverseInset)
+                ? Vector2.Max(inverseInset, Vector2.Zero)
+                : Vector2.Zero;
+            SamplingMode = Math.Min(samplingMode, 2u);
+            _padding0 = 0u;
+            Cubic = IsFinite(cubic) ? cubic : Vector2.Zero;
+            _padding1 = Vector2.Zero;
+        }
+
+        private static bool IsFinite(Vector2 value) =>
+            float.IsFinite(value.X) && float.IsFinite(value.Y);
+
+        private static bool IsFinite(Vector4 value) =>
+            float.IsFinite(value.X) && float.IsFinite(value.Y) &&
+            float.IsFinite(value.Z) && float.IsFinite(value.W);
     }
 
     [StructLayout(LayoutKind.Explicit, Size = 48)]
@@ -767,6 +808,101 @@ public unsafe class ComputeAccelerator : IDisposable
         _context.Wgpu.CommandEncoderRelease(encoder);
         _context.Wgpu.BindGroupRelease(bindGroup);
         _context.Wgpu.BindGroupLayoutRelease(layout);
+    }
+
+    public void ApplyMagnifier(
+        GpuTexture source,
+        GpuTexture destination,
+        Vector4 lensBounds,
+        Vector4 outputBounds,
+        Vector4 zoomTransform,
+        Vector2 inverseInset,
+        uint samplingMode,
+        Vector2 cubic)
+    {
+        if (_isDisposed) throw new ObjectDisposedException(nameof(ComputeAccelerator));
+        var pipeline = GetOrCreateMagnifierPipeline();
+        var width = source.Width;
+        var height = source.Height;
+        destination.Resize(width, height);
+        using var paramsBuffer = new GpuBuffer(
+            _context,
+            (uint)Marshal.SizeOf<MagnifierParams>(),
+            BufferUsage.Uniform | BufferUsage.CopyDst,
+            "Magnifier Params");
+        paramsBuffer.WriteSingle(new MagnifierParams(
+            lensBounds,
+            outputBounds,
+            zoomTransform,
+            inverseInset,
+            samplingMode,
+            cubic));
+
+        var encoderDescriptor = new CommandEncoderDescriptor
+        {
+            Label = (byte*)SilkMarshal.StringToPtr("Compute Magnifier Encoder")
+        };
+        var encoder = _context.Wgpu.DeviceCreateCommandEncoder(_context.Device, &encoderDescriptor);
+        SilkMarshal.Free((nint)encoderDescriptor.Label);
+        var layout = _context.Wgpu.ComputePipelineGetBindGroupLayout(pipeline, 0);
+
+        var entries = stackalloc BindGroupEntry[3];
+        entries[0] = new BindGroupEntry { Binding = 0, TextureView = source.ViewPtr };
+        entries[1] = new BindGroupEntry { Binding = 1, TextureView = destination.ViewPtr };
+        entries[2] = new BindGroupEntry
+        {
+            Binding = 2,
+            Buffer = paramsBuffer.BufferPtr,
+            Offset = 0,
+            Size = paramsBuffer.Size
+        };
+        var bindGroupDescriptor = new BindGroupDescriptor
+        {
+            Layout = layout,
+            EntryCount = 3,
+            Entries = entries
+        };
+        var bindGroup = _context.Wgpu.DeviceCreateBindGroup(_context.Device, &bindGroupDescriptor);
+
+        var passDescriptor = new ComputePassDescriptor();
+        var pass = _context.Wgpu.CommandEncoderBeginComputePass(encoder, &passDescriptor);
+        _context.Wgpu.ComputePassEncoderSetPipeline(pass, pipeline);
+        _context.Wgpu.ComputePassEncoderSetBindGroup(pass, 0, bindGroup, 0, null);
+        _context.Wgpu.ComputePassEncoderDispatchWorkgroups(
+            pass,
+            (width + 15) / 16,
+            (height + 15) / 16,
+            1);
+        _context.Wgpu.ComputePassEncoderEnd(pass);
+        _context.Wgpu.ComputePassEncoderRelease(pass);
+
+        var commandDescriptor = new CommandBufferDescriptor
+        {
+            Label = (byte*)SilkMarshal.StringToPtr("Compute Magnifier Buffer")
+        };
+        var commandBuffer = _context.Wgpu.CommandEncoderFinish(encoder, &commandDescriptor);
+        SilkMarshal.Free((nint)commandDescriptor.Label);
+        _context.Wgpu.QueueSubmit(_context.Queue, 1, &commandBuffer);
+
+        _context.Wgpu.CommandBufferRelease(commandBuffer);
+        _context.Wgpu.CommandEncoderRelease(encoder);
+        _context.Wgpu.BindGroupRelease(bindGroup);
+        _context.Wgpu.BindGroupLayoutRelease(layout);
+    }
+
+    private ComputePipeline* GetOrCreateMagnifierPipeline()
+    {
+        if (_magnifierPipeline != null)
+        {
+            return _magnifierPipeline;
+        }
+
+        var shader = _cache.GetOrCreateShader(
+            "Magnifier",
+            ComputeShaders.Magnifier,
+            "MagnifierShader");
+        _magnifierPipeline = _cache.GetOrCreateComputePipeline("Magnifier", shader);
+        return _magnifierPipeline;
     }
 
     public void ApplyArithmeticComposite(
