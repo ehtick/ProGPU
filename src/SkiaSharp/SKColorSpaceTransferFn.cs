@@ -198,10 +198,10 @@ public struct SKColorSpaceTransferFn : IEquatable<SKColorSpaceTransferFn>
         return inverse.Classify() == TransferFunctionKind.Srgb ? inverse : Empty;
     }
 
-    public readonly float Transform(float value)
+    public readonly float Transform(float x)
     {
-        var sign = value < 0f ? -1f : 1f;
-        value *= sign;
+        var sign = x < 0f ? -1f : 1f;
+        var value = x * sign;
         switch (Classify())
         {
             case TransferFunctionKind.HlgNamed:
@@ -252,14 +252,14 @@ public struct SKColorSpaceTransferFn : IEquatable<SKColorSpaceTransferFn>
         }
     }
 
-    public readonly bool Equals(SKColorSpaceTransferFn other) =>
-        _g == other._g &&
-        _a == other._a &&
-        _b == other._b &&
-        _c == other._c &&
-        _d == other._d &&
-        _e == other._e &&
-        _f == other._f;
+    public readonly bool Equals(SKColorSpaceTransferFn obj) =>
+        _g == obj._g &&
+        _a == obj._a &&
+        _b == obj._b &&
+        _c == obj._c &&
+        _d == obj._d &&
+        _e == obj._e &&
+        _f == obj._f;
 
     public override readonly bool Equals(object? obj) => obj is SKColorSpaceTransferFn other && Equals(other);
 

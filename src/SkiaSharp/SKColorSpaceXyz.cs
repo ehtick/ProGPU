@@ -215,16 +215,16 @@ public struct SKColorSpaceXyz : IEquatable<SKColorSpaceXyz>
         a._m20 * b._m01 + a._m21 * b._m11 + a._m22 * b._m21,
         a._m20 * b._m02 + a._m21 * b._m12 + a._m22 * b._m22);
 
-    public readonly bool Equals(SKColorSpaceXyz other) =>
-        _m00 == other._m00 &&
-        _m01 == other._m01 &&
-        _m02 == other._m02 &&
-        _m10 == other._m10 &&
-        _m11 == other._m11 &&
-        _m12 == other._m12 &&
-        _m20 == other._m20 &&
-        _m21 == other._m21 &&
-        _m22 == other._m22;
+    public readonly bool Equals(SKColorSpaceXyz obj) =>
+        _m00 == obj._m00 &&
+        _m01 == obj._m01 &&
+        _m02 == obj._m02 &&
+        _m10 == obj._m10 &&
+        _m11 == obj._m11 &&
+        _m12 == obj._m12 &&
+        _m20 == obj._m20 &&
+        _m21 == obj._m21 &&
+        _m22 == obj._m22;
 
     public override readonly bool Equals(object? obj) => obj is SKColorSpaceXyz other && Equals(other);
 
