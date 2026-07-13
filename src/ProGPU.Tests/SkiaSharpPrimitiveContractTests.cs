@@ -91,8 +91,9 @@ public sealed class SkiaSharpPrimitiveContractTests
         var fingerprint = Convert.ToHexString(
             SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\n', rows))));
 
-        Assert.Equal(142, rows.Length);
-        Assert.Equal("8637BF92DE0388C4FC891C45A150CB1CE91F73CAA4F9BC5455643DC395EB1BF0", fingerprint);
+        Assert.Equal(141, rows.Length);
+        Assert.Equal("54D75F019C40233762AF617B48E8E7660EBCB9FC5A2A3118AA41DA3BB672C730", fingerprint);
+        Assert.NotNull(typeof(SKColors).GetProperty(nameof(SKColors.Empty)));
     }
 
     [Fact]
