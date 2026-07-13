@@ -9,17 +9,17 @@ public partial class SKTextBlob
     private const double InterceptRootEpsilon = 1e-12;
 
     public float[] GetIntercepts(
-        float lowerLimit,
-        float upperLimit,
+        float upperBounds,
+        float lowerBounds,
         SKPaint? paint = null)
     {
-        if (!IsValidInterceptBand(lowerLimit, upperLimit))
+        if (!IsValidInterceptBand(upperBounds, lowerBounds))
         {
             return Array.Empty<float>();
         }
 
         var intervals = new float[GlyphIndices.Length * 2];
-        var count = ComputeIntercepts(lowerLimit, upperLimit, intervals, paint);
+        var count = ComputeIntercepts(upperBounds, lowerBounds, intervals, paint);
         if (count != intervals.Length)
         {
             Array.Resize(ref intervals, count);
@@ -29,17 +29,17 @@ public partial class SKTextBlob
     }
 
     public void GetIntercepts(
-        float lowerLimit,
-        float upperLimit,
+        float upperBounds,
+        float lowerBounds,
         Span<float> intervals,
         SKPaint? paint = null) =>
-        ComputeIntercepts(lowerLimit, upperLimit, intervals, paint);
+        ComputeIntercepts(upperBounds, lowerBounds, intervals, paint);
 
     public int CountIntercepts(
-        float lowerLimit,
-        float upperLimit,
+        float upperBounds,
+        float lowerBounds,
         SKPaint? paint = null) =>
-        ComputeIntercepts(lowerLimit, upperLimit, Span<float>.Empty, paint);
+        ComputeIntercepts(upperBounds, lowerBounds, Span<float>.Empty, paint);
 
     private int ComputeIntercepts(
         float lowerLimit,

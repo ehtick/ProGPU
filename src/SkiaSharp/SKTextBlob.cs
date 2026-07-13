@@ -1,6 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.Text;
+using System.Threading;
 
 namespace SkiaSharp;
 
@@ -31,11 +31,16 @@ public sealed class SKTextBlobRun
 
 public partial class SKTextBlob : IDisposable
 {
+    private static int s_nextUniqueId;
+    private SKRect? _bounds;
+
     public IntPtr Handle { get; } = SKObjectHandle.Create();
     public SKTextBlobRun[] Runs { get; }
     public SKFont Font => Runs[0].Font;
     public ushort[] GlyphIndices { get; }
     public SKPoint[] GlyphPositions { get; }
+    public SKRect Bounds => _bounds ??= ComputeBounds();
+    public uint UniqueId { get; } = unchecked((uint)Interlocked.Increment(ref s_nextUniqueId));
     internal bool HasEmboldenedRuns { get; }
 
     public SKTextBlob(SKFont font, ushort[] glyphIndices, SKPoint[] glyphPositions)
@@ -71,25 +76,122 @@ public partial class SKTextBlob : IDisposable
         }
     }
 
+    public static SKTextBlob? Create(
+        string text,
+        SKFont font,
+        SKPoint origin = default) =>
+        Create(text.AsSpan(), font, origin);
+
+    public static SKTextBlob? Create(
+        ReadOnlySpan<char> text,
+        SKFont font,
+        SKPoint origin = default)
+    {
+        ArgumentNullException.ThrowIfNull(font);
+        return CreatePositionedCore(font.GetGlyphs(text), font, font.GetGlyphPositions(text, origin));
+    }
+
+    public static SKTextBlob? Create(
+        IntPtr text,
+        int length,
+        SKTextEncoding encoding,
+        SKFont font,
+        SKPoint origin = default)
+    {
+        ArgumentNullException.ThrowIfNull(font);
+        return CreatePositionedCore(
+            font.GetGlyphs(text, length, encoding),
+            font,
+            font.GetGlyphPositions(text, length, encoding, origin));
+    }
+
+    public static SKTextBlob? Create(
+        ReadOnlySpan<byte> text,
+        SKTextEncoding encoding,
+        SKFont font,
+        SKPoint origin = default)
+    {
+        ArgumentNullException.ThrowIfNull(font);
+        return CreatePositionedCore(
+            font.GetGlyphs(text, encoding),
+            font,
+            font.GetGlyphPositions(text, encoding, origin));
+    }
+
+    public static SKTextBlob? CreateHorizontal(
+        string text,
+        SKFont font,
+        ReadOnlySpan<float> positions,
+        float y) =>
+        CreateHorizontal(text.AsSpan(), font, positions, y);
+
+    public static SKTextBlob? CreateHorizontal(
+        ReadOnlySpan<char> text,
+        SKFont font,
+        ReadOnlySpan<float> positions,
+        float y)
+    {
+        ArgumentNullException.ThrowIfNull(font);
+        return CreateHorizontalCore(font.GetGlyphs(text), font, positions, y);
+    }
+
+    public static SKTextBlob? CreateHorizontal(
+        IntPtr text,
+        int length,
+        SKTextEncoding encoding,
+        SKFont font,
+        ReadOnlySpan<float> positions,
+        float y)
+    {
+        ArgumentNullException.ThrowIfNull(font);
+        return CreateHorizontalCore(font.GetGlyphs(text, length, encoding), font, positions, y);
+    }
+
+    public static SKTextBlob? CreateHorizontal(
+        ReadOnlySpan<byte> text,
+        SKTextEncoding encoding,
+        SKFont font,
+        ReadOnlySpan<float> positions,
+        float y)
+    {
+        ArgumentNullException.ThrowIfNull(font);
+        return CreateHorizontalCore(font.GetGlyphs(text, encoding), font, positions, y);
+    }
+
     public static SKTextBlob? CreatePositioned(
         string text,
         SKFont font,
+        ReadOnlySpan<SKPoint> positions) =>
+        CreatePositioned(text.AsSpan(), font, positions);
+
+    public static SKTextBlob? CreatePositioned(
+        ReadOnlySpan<char> text,
+        SKFont font,
         ReadOnlySpan<SKPoint> positions)
     {
-        ArgumentNullException.ThrowIfNull(text);
         ArgumentNullException.ThrowIfNull(font);
-        var glyphs = new List<ushort>(text.Length);
-        foreach (var rune in text.EnumerateRunes())
-        {
-            glyphs.Add(font.Typeface.Font.GetGlyphIndex((uint)rune.Value));
-        }
+        return CreatePositionedCore(font.GetGlyphs(text), font, positions);
+    }
 
-        if (glyphs.Count == 0 || glyphs.Count != positions.Length)
-        {
-            return null;
-        }
+    public static SKTextBlob? CreatePositioned(
+        IntPtr text,
+        int length,
+        SKTextEncoding encoding,
+        SKFont font,
+        ReadOnlySpan<SKPoint> positions)
+    {
+        ArgumentNullException.ThrowIfNull(font);
+        return CreatePositionedCore(font.GetGlyphs(text, length, encoding), font, positions);
+    }
 
-        return new SKTextBlob(font, glyphs.ToArray(), positions.ToArray());
+    public static SKTextBlob? CreatePositioned(
+        ReadOnlySpan<byte> text,
+        SKTextEncoding encoding,
+        SKFont font,
+        ReadOnlySpan<SKPoint> positions)
+    {
+        ArgumentNullException.ThrowIfNull(font);
+        return CreatePositionedCore(font.GetGlyphs(text, encoding), font, positions);
     }
 
     public static SKTextBlob? CreateRotationScale(
@@ -98,28 +200,7 @@ public partial class SKTextBlob : IDisposable
         ReadOnlySpan<SKRotationScaleMatrix> positions)
     {
         ArgumentNullException.ThrowIfNull(font);
-        var glyphs = new List<ushort>(text.Length);
-        foreach (var rune in text.EnumerateRunes())
-        {
-            glyphs.Add(font.Typeface.Font.GetGlyphIndex((uint)rune.Value));
-        }
-
-        if (glyphs.Count == 0 || glyphs.Count != positions.Length)
-        {
-            return null;
-        }
-
-        var matrices = positions.ToArray();
-        var points = new SKPoint[matrices.Length];
-        for (var i = 0; i < matrices.Length; i++)
-        {
-            points[i] = new SKPoint(matrices[i].TX, matrices[i].TY);
-        }
-
-        return new SKTextBlob(new[]
-        {
-            new SKTextBlobRun(font, glyphs.ToArray(), points, matrices),
-        });
+        return CreateRotationScaleCore(font.GetGlyphs(text), font, positions);
     }
 
     public static SKTextBlob? CreateRotationScale(
@@ -127,8 +208,28 @@ public partial class SKTextBlob : IDisposable
         SKFont font,
         ReadOnlySpan<SKRotationScaleMatrix> positions)
     {
-        ArgumentNullException.ThrowIfNull(text);
         return CreateRotationScale(text.AsSpan(), font, positions);
+    }
+
+    public static SKTextBlob? CreateRotationScale(
+        IntPtr text,
+        int length,
+        SKTextEncoding encoding,
+        SKFont font,
+        ReadOnlySpan<SKRotationScaleMatrix> positions)
+    {
+        ArgumentNullException.ThrowIfNull(font);
+        return CreateRotationScaleCore(font.GetGlyphs(text, length, encoding), font, positions);
+    }
+
+    public static SKTextBlob? CreateRotationScale(
+        ReadOnlySpan<byte> text,
+        SKTextEncoding encoding,
+        SKFont font,
+        ReadOnlySpan<SKRotationScaleMatrix> positions)
+    {
+        ArgumentNullException.ThrowIfNull(font);
+        return CreateRotationScaleCore(font.GetGlyphs(text, encoding), font, positions);
     }
 
     public static SKTextBlob? CreatePathPositioned(
@@ -207,6 +308,111 @@ public partial class SKTextBlob : IDisposable
         using var builder = new SKTextBlobBuilder();
         builder.AddPathPositionedRun(glyphs, font, widths, offsets, path, textAlign);
         return builder.Build();
+    }
+
+    private static SKTextBlob? CreateHorizontalCore(
+        ushort[] glyphs,
+        SKFont font,
+        ReadOnlySpan<float> positions,
+        float y)
+    {
+        if (glyphs.Length == 0)
+        {
+            return null;
+        }
+
+        var horizontalPositions = new float[glyphs.Length];
+        positions.CopyTo(horizontalPositions);
+        var points = new SKPoint[glyphs.Length];
+        for (var index = 0; index < points.Length; index++)
+        {
+            points[index] = new SKPoint(horizontalPositions[index], y);
+        }
+
+        return new SKTextBlob(font, glyphs, points);
+    }
+
+    private static SKTextBlob? CreatePositionedCore(
+        ushort[] glyphs,
+        SKFont font,
+        ReadOnlySpan<SKPoint> positions)
+    {
+        if (glyphs.Length == 0)
+        {
+            return null;
+        }
+
+        var points = new SKPoint[glyphs.Length];
+        positions.CopyTo(points);
+        return new SKTextBlob(font, glyphs, points);
+    }
+
+    private static SKTextBlob? CreateRotationScaleCore(
+        ushort[] glyphs,
+        SKFont font,
+        ReadOnlySpan<SKRotationScaleMatrix> positions)
+    {
+        if (glyphs.Length == 0)
+        {
+            return null;
+        }
+
+        var matrices = new SKRotationScaleMatrix[glyphs.Length];
+        positions.CopyTo(matrices);
+        var points = new SKPoint[matrices.Length];
+        for (var index = 0; index < matrices.Length; index++)
+        {
+            points[index] = new SKPoint(matrices[index].TX, matrices[index].TY);
+        }
+
+        return new SKTextBlob(new[]
+        {
+            new SKTextBlobRun(font, glyphs, points, matrices),
+        });
+    }
+
+    private SKRect ComputeBounds()
+    {
+        var bounds = SKRect.Empty;
+        var hasBounds = false;
+        foreach (var run in Runs)
+        {
+            var glyphCount = Math.Min(run.GlyphIndices.Length, run.GlyphPositions.Length);
+            for (var index = 0; index < glyphCount; index++)
+            {
+                using var glyphPath = run.Font.GetGlyphPath(run.GlyphIndices[index]);
+                if (glyphPath is null || glyphPath.IsEmpty)
+                {
+                    continue;
+                }
+
+                SKRect glyphBounds;
+                if (run.RotationScaleMatrices is { } matrices && index < matrices.Length)
+                {
+                    using var transformed = new SKPath(glyphPath);
+                    transformed.Transform(matrices[index].ToMatrix());
+                    glyphBounds = transformed.Bounds;
+                }
+                else
+                {
+                    var position = run.GlyphPositions[index];
+                    glyphBounds = glyphPath.Bounds;
+                    glyphBounds.Offset(position.X, position.Y);
+                }
+
+                if (!hasBounds)
+                {
+                    bounds = glyphBounds;
+                    hasBounds = true;
+                }
+                else
+                {
+                    bounds.Union(glyphBounds);
+                }
+            }
+        }
+
+        return hasBounds ? bounds : SKRect.Empty;
     }
 
     public void Dispose() { }
