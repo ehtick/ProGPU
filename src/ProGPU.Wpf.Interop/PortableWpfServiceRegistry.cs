@@ -585,6 +585,7 @@ public static class PortableWpfServiceRegistry
     private static readonly Dictionary<PortableWpfServiceKey, IPortableColorDialogServiceRegistrar> ColorDialogServices = new();
     private static readonly Dictionary<PortableWpfServiceKey, IPortableFontDialogServiceRegistrar> FontDialogServices = new();
     private static readonly Dictionary<PortableWpfServiceKey, IPortablePopupServiceRegistrar> PopupServices = new();
+    private static readonly Dictionary<PortableWpfServiceKey, IPortableSystemThemeSource> SystemThemeSources = new();
 
     public static event Action<IPortableClipboardServiceRegistrar>? ClipboardServiceRegistered;
 
@@ -595,6 +596,12 @@ public static class PortableWpfServiceRegistry
     public static event Action<IPortableColorDialogServiceRegistrar>? ColorDialogServiceRegistered;
 
     public static event Action<IPortableFontDialogServiceRegistrar>? FontDialogServiceRegistered;
+
+    /// <summary>
+    /// Raised when a registered platform theme source reports a state change,
+    /// or when the active source for a service key is replaced or removed.
+    /// </summary>
+    public static event EventHandler? SystemThemeChanged;
 
     public static IDisposable RegisterWindowActivationService(IPortableWindowActivationServiceRegistrar service)
     {
@@ -801,6 +808,44 @@ public static class PortableWpfServiceRegistry
         }
     }
 
+    public static IDisposable RegisterSystemThemeSource(IPortableSystemThemeSource source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ValidateServiceKey(source.ServiceKey, nameof(source));
+
+        IPortableSystemThemeSource? replacedSource = null;
+        lock (SyncRoot)
+        {
+            if (SystemThemeSources.TryGetValue(source.ServiceKey, out replacedSource))
+            {
+                replacedSource.SystemThemeChanged -= OnSystemThemeSourceChanged;
+            }
+
+            SystemThemeSources[source.ServiceKey] = source;
+            source.SystemThemeChanged += OnSystemThemeSourceChanged;
+        }
+
+        SystemThemeChanged?.Invoke(source, EventArgs.Empty);
+        return new SystemThemeSourceRegistration(source);
+    }
+
+    public static bool TryGetSystemThemeSource(
+        PortableWpfServiceKey serviceKey,
+        out IPortableSystemThemeSource source)
+    {
+        ValidateServiceKey(serviceKey, nameof(serviceKey));
+
+        lock (SyncRoot)
+        {
+            return SystemThemeSources.TryGetValue(serviceKey, out source!);
+        }
+    }
+
+    private static void OnSystemThemeSourceChanged(object? sender, EventArgs e)
+    {
+        SystemThemeChanged?.Invoke(sender, e);
+    }
+
     private static void ValidateServiceKey(PortableWpfServiceKey serviceKey, string parameterName)
     {
         if (string.IsNullOrWhiteSpace(serviceKey.Name))
@@ -856,6 +901,42 @@ public static class PortableWpfServiceRegistry
                 IPortablePopupServiceRegistrar popupService => popupService.ServiceKey,
                 _ => throw new InvalidOperationException("Unsupported portable WPF service registrar.")
             };
+        }
+    }
+
+    private sealed class SystemThemeSourceRegistration : IDisposable
+    {
+        private IPortableSystemThemeSource? _source;
+
+        public SystemThemeSourceRegistration(IPortableSystemThemeSource source)
+        {
+            _source = source;
+        }
+
+        public void Dispose()
+        {
+            IPortableSystemThemeSource? source = Interlocked.Exchange(ref _source, null);
+            if (source is null)
+            {
+                return;
+            }
+
+            bool removed = false;
+            lock (SyncRoot)
+            {
+                if (SystemThemeSources.TryGetValue(source.ServiceKey, out IPortableSystemThemeSource? current) &&
+                    ReferenceEquals(current, source))
+                {
+                    source.SystemThemeChanged -= OnSystemThemeSourceChanged;
+                    SystemThemeSources.Remove(source.ServiceKey);
+                    removed = true;
+                }
+            }
+
+            if (removed)
+            {
+                SystemThemeChanged?.Invoke(source, EventArgs.Empty);
+            }
         }
     }
 }
