@@ -8,7 +8,7 @@ using ProGPU.Vector;
 
 namespace SkiaSharp;
 
-public class SKPath : IDisposable
+public partial class SKPath : IDisposable
 {
     private static readonly ConditionalWeakTable<QuadraticBezierSegment, ConicWeight> s_conicWeights = new();
 
