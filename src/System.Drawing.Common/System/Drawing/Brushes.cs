@@ -13,4 +13,8 @@ public static class Brushes
     public static Brush DarkGray { get; } = new SolidBrush(Color.DarkGray);
     public static Brush LightGray { get; } = new SolidBrush(Color.LightGray);
     public static Brush Violet { get; } = new SolidBrush(Color.FromArgb(255, 238, 130, 238));
+    public static Brush DarkBlue { get; } = new SolidBrush(Color.DarkBlue);
+    public static Brush LightYellow { get; } = new SolidBrush(Color.LightYellow);
+    public static Brush DarkGoldenrod { get; } = new SolidBrush(Color.DarkGoldenrod);
+    public static Brush Gold { get; } = new SolidBrush(Color.Gold);
 }

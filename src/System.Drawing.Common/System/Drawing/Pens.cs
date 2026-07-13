@@ -13,4 +13,7 @@ public static class Pens
     public static Pen DarkGray { get; } = new Pen(Color.DarkGray);
     public static Pen LightGray { get; } = new Pen(Color.LightGray);
     public static Pen DarkGreen { get; } = new Pen(Color.FromArgb(255, 0, 100, 0));
+    public static Pen SteelBlue { get; } = new Pen(Color.SteelBlue);
+    public static Pen Olive { get; } = new Pen(Color.Olive);
+    public static Pen DarkBlue { get; } = new Pen(Color.DarkBlue);
 }
