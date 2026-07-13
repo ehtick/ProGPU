@@ -3258,8 +3258,8 @@ public class SKCanvas : IDisposable
                     sourcePath.Geometry.Figures.Add(figure);
                 }
 
-                using var fillPath = new SKPath();
-                if (paint.GetFillPath(sourcePath, fillPath))
+                using var fillPath = paint.GetFillPath(sourcePath);
+                if (fillPath != null)
                 {
                     DrawShaderLayer(shader, fillPath.Geometry, fillPath.Bounds, paint, drawAsFill: true);
                 }

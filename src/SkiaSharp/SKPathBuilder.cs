@@ -25,6 +25,14 @@ public class SKPathBuilder : SKObject
 
     internal bool IsEmpty => _path.IsEmpty;
 
+    internal void ReplaceWith(SKPath path)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        var previous = _path;
+        _path = path;
+        previous.Dispose();
+    }
+
     public SKPath Detach()
     {
         var path = _path;

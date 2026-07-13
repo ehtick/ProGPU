@@ -2567,7 +2567,6 @@ public sealed class SkCanvasStateTests
         using var source = new SKPath();
         source.MoveTo(0f, 0f);
         source.LineTo(100f, 0f);
-        using var destination = new SKPath();
         using var paint = new SKPaint
         {
             Style = SKPaintStyle.Stroke,
@@ -2575,7 +2574,7 @@ public sealed class SkCanvasStateTests
             PathEffect = SKPathEffect.CreateDash(new[] { 10f, 10f }, 0f)
         };
 
-        Assert.True(paint.GetFillPath(source, destination));
+        using var destination = Assert.IsType<SKPath>(paint.GetFillPath(source));
         Assert.Equal(5, destination.Geometry.Figures.Count);
     }
 

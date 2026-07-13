@@ -48,11 +48,12 @@ public sealed class SkiaSharpZeroLengthStrokeTests
             StrokeCap = cap
         };
         using var source = new SKPath();
-        using var destination = new SKPath();
+        using var builder = new SKPathBuilder();
         source.MoveTo(10f, 10f);
         source.LineTo(10f, 10f);
 
-        Assert.Equal(hasFill, paint.GetFillPath(source, destination));
+        Assert.True(paint.GetFillPath(source, builder));
+        using var destination = builder.Snapshot();
         Assert.Equal(hasFill, !destination.IsEmpty);
         if (hasFill)
         {

@@ -68,14 +68,13 @@ public sealed class PathShimCompatibilityTests
     {
         using var source = new SKPath();
         source.AddOval(new SKRect(0f, 0f, 200f, 200f));
-        using var widened = new SKPath();
         using var paint = new SKPaint
         {
             Style = SKPaintStyle.Stroke,
             StrokeWidth = 10f
         };
 
-        Assert.True(paint.GetFillPath(source, widened));
+        using var widened = Assert.IsType<SKPath>(paint.GetFillPath(source));
 
         AssertNear(-5f, widened.TightBounds.Left);
         AssertNear(-5f, widened.TightBounds.Top);
@@ -90,7 +89,6 @@ public sealed class PathShimCompatibilityTests
     {
         using var source = new SKPath();
         source.AddRect(new SKRect(35f, 110f, 445f, 150f));
-        using var widened = new SKPath();
         using var paint = new SKPaint
         {
             Style = SKPaintStyle.Stroke,
@@ -99,7 +97,7 @@ public sealed class PathShimCompatibilityTests
             StrokeMiter = 4f
         };
 
-        Assert.True(paint.GetFillPath(source, widened));
+        using var widened = Assert.IsType<SKPath>(paint.GetFillPath(source));
         Assert.True(widened.Contains(25.5f, 100.5f));
         Assert.True(widened.Contains(454.5f, 159.5f));
         Assert.False(widened.Contains(24.5f, 100.5f));
@@ -121,7 +119,6 @@ public sealed class PathShimCompatibilityTests
         source.LineTo(30f, 20f);
         source.LineTo(30f, 20f);
         source.LineTo(50f, 40f);
-        using var widened = new SKPath();
         using var paint = new SKPaint
         {
             Style = SKPaintStyle.Stroke,
@@ -130,7 +127,7 @@ public sealed class PathShimCompatibilityTests
             StrokeMiter = 4f
         };
 
-        Assert.True(paint.GetFillPath(source, widened));
+        using var widened = Assert.IsType<SKPath>(paint.GetFillPath(source));
         Assert.Equal(expected, widened.Contains(sampleX, sampleY));
     }
 
@@ -145,7 +142,6 @@ public sealed class PathShimCompatibilityTests
         using var source = new SKPath();
         source.MoveTo(10f, 20f);
         source.LineTo(50f, 20f);
-        using var widened = new SKPath();
         using var paint = new SKPaint
         {
             Style = SKPaintStyle.Stroke,
@@ -153,7 +149,7 @@ public sealed class PathShimCompatibilityTests
             StrokeCap = strokeCap
         };
 
-        Assert.True(paint.GetFillPath(source, widened));
+        using var widened = Assert.IsType<SKPath>(paint.GetFillPath(source));
         Assert.True(widened.Contains(sampleX, sampleY));
         Assert.False(widened.Contains(4.5f, 20f));
     }
@@ -166,7 +162,6 @@ public sealed class PathShimCompatibilityTests
         using var source = new SKPath();
         source.MoveTo(10f, 20f);
         source.LineTo(50f, 20f);
-        using var widened = new SKPath();
         using var paint = new SKPaint
         {
             Style = SKPaintStyle.Stroke,
@@ -174,7 +169,7 @@ public sealed class PathShimCompatibilityTests
             StrokeCap = SKStrokeCap.Butt
         };
 
-        Assert.True(paint.GetFillPath(source, widened));
+        using var widened = Assert.IsType<SKPath>(paint.GetFillPath(source));
         AssertNear(10f, widened.Bounds.Left);
         AssertNear(20f - strokeWidth * 0.5f, widened.Bounds.Top);
         AssertNear(50f, widened.Bounds.Right);
@@ -187,15 +182,13 @@ public sealed class PathShimCompatibilityTests
         using var source = new SKPath();
         source.MoveTo(10f, 20f);
         source.LineTo(50f, 20f);
-        using var widened = new SKPath();
         using var paint = new SKPaint
         {
             Style = SKPaintStyle.Stroke,
             StrokeWidth = 0f
         };
 
-        Assert.False(paint.GetFillPath(source, widened));
-        Assert.True(widened.IsEmpty);
+        Assert.Null(paint.GetFillPath(source));
     }
 
     [Fact]

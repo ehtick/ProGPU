@@ -1069,8 +1069,8 @@ public partial class SKFont
             return false;
         }
 
-        using var fillPath = new SKPath();
-        if (!paint.GetFillPath(glyphPath, fillPath) || fillPath.IsEmpty)
+        using var fillPath = paint.GetFillPath(glyphPath);
+        if (fillPath == null || fillPath.IsEmpty)
         {
             bounds = SKRect.Empty;
             return false;

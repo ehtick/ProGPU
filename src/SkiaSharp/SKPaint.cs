@@ -17,6 +17,7 @@ public partial class SKPaint : SKObject
 {
     private const float HairlineStrokeWidth = 1f;
     private SKShader? _shader;
+    private float _strokeWidth;
 
     public SKPaintStyle Style { get; set; } = SKPaintStyle.Fill;
     public SKColor Color { get; set; } = SKColors.Black;
@@ -34,7 +35,11 @@ public partial class SKPaint : SKObject
         get => Style != SKPaintStyle.Fill;
         set => Style = value ? SKPaintStyle.Stroke : SKPaintStyle.Fill;
     }
-    public float StrokeWidth { get; set; }
+    public float StrokeWidth
+    {
+        get => _strokeWidth;
+        set => _strokeWidth = value >= 0f ? value : 0f;
+    }
     public float StrokeMiter { get; set; } = 4f;
     public SKStrokeCap StrokeCap { get; set; } = SKStrokeCap.Butt;
     public SKStrokeJoin StrokeJoin { get; set; } = SKStrokeJoin.Miter;
@@ -242,13 +247,110 @@ public partial class SKPaint : SKObject
         base.Dispose(disposing);
     }
 
-    public bool GetFillPath(SKPath source, SKPath destination)
+    public SKPath? GetFillPath(SKPath src) => GetFillPath(src, 1f);
+
+    public SKPath? GetFillPath(SKPath src, float resScale)
     {
-        ArgumentNullException.ThrowIfNull(source);
-        ArgumentNullException.ThrowIfNull(destination);
-        destination.Reset();
+        ArgumentNullException.ThrowIfNull(src);
+        if (TryCreateFillPath(src, NormalizeResolutionScale(resScale), out var result))
+        {
+            return result;
+        }
+
+        result.Dispose();
+        return null;
+    }
+
+    public SKPath? GetFillPath(SKPath src, SKRect cullRect) =>
+        GetFillPath(src, cullRect, 1f);
+
+    public SKPath? GetFillPath(SKPath src, SKRect cullRect, float resScale) =>
+        GetFillPath(src, resScale);
+
+    public SKPath? GetFillPath(SKPath src, SKMatrix matrix) =>
+        GetFillPath(src, GetResolutionScale(matrix));
+
+    public SKPath? GetFillPath(SKPath src, SKRect cullRect, SKMatrix matrix) =>
+        GetFillPath(src, GetResolutionScale(matrix));
+
+    [Obsolete("Use the SKPathBuilder overload instead.")]
+    public bool GetFillPath(SKPath src, SKPath dst) => GetFillPath(src, dst, 1f);
+
+    [Obsolete("Use the SKPathBuilder overload instead.")]
+    public bool GetFillPath(SKPath src, SKPath dst, float resScale)
+    {
+        ArgumentNullException.ThrowIfNull(src);
+        ArgumentNullException.ThrowIfNull(dst);
+        if (!TryCreateFillPath(src, NormalizeResolutionScale(resScale), out var result))
+        {
+            result.Dispose();
+            return false;
+        }
+
+        using (result)
+        {
+            dst.Reset();
+            dst.FillType = result.FillType;
+            dst.AddPath(result);
+        }
+
+        return true;
+    }
+
+    [Obsolete("Use the SKPathBuilder overload instead.")]
+    public bool GetFillPath(SKPath src, SKPath dst, SKRect cullRect) =>
+        GetFillPath(src, dst, 1f);
+
+    [Obsolete("Use the SKPathBuilder overload instead.")]
+    public bool GetFillPath(SKPath src, SKPath dst, SKRect cullRect, float resScale) =>
+        GetFillPath(src, dst, resScale);
+
+    [Obsolete("Use the SKPathBuilder overload instead.")]
+    public bool GetFillPath(SKPath src, SKPath dst, SKMatrix matrix) =>
+        GetFillPath(src, dst, GetResolutionScale(matrix));
+
+    [Obsolete("Use the SKPathBuilder overload instead.")]
+    public bool GetFillPath(SKPath src, SKPath dst, SKRect cullRect, SKMatrix matrix) =>
+        GetFillPath(src, dst, GetResolutionScale(matrix));
+
+    public bool GetFillPath(SKPath src, SKPathBuilder dst) => GetFillPath(src, dst, 1f);
+
+    public bool GetFillPath(SKPath src, SKPathBuilder dst, float resScale)
+    {
+        ArgumentNullException.ThrowIfNull(src);
+        ArgumentNullException.ThrowIfNull(dst);
+
+        // Skia's builder overload starts from a source snapshot. If a device-dependent
+        // hairline cannot be materialized, that snapshot is the observable fallback.
+        dst.ReplaceWith(new SKPath(src));
+        if (!TryCreateFillPath(src, NormalizeResolutionScale(resScale), out var result))
+        {
+            result.Dispose();
+            return false;
+        }
+
+        dst.ReplaceWith(result);
+        return true;
+    }
+
+    public bool GetFillPath(SKPath src, SKPathBuilder dst, SKRect cullRect) =>
+        GetFillPath(src, dst, 1f);
+
+    public bool GetFillPath(SKPath src, SKPathBuilder dst, SKRect cullRect, float resScale) =>
+        GetFillPath(src, dst, resScale);
+
+    public bool GetFillPath(SKPath src, SKPathBuilder dst, SKMatrix matrix) =>
+        GetFillPath(src, dst, GetResolutionScale(matrix));
+
+    public bool GetFillPath(SKPath src, SKPathBuilder dst, SKRect cullRect, SKMatrix matrix) =>
+        GetFillPath(src, dst, GetResolutionScale(matrix));
+
+    private bool TryCreateFillPath(SKPath source, float resScale, out SKPath destination)
+    {
+        destination = new SKPath();
         if (Style == SKPaintStyle.Fill)
         {
+            destination.FillType = source.FillType;
             destination.AddPath(source);
             return true;
         }
@@ -258,9 +360,14 @@ public partial class SKPaint : SKObject
             destination.AddPath(source);
         }
 
-        if (!float.IsFinite(StrokeWidth) || StrokeWidth <= 0f)
+        if (StrokeWidth == 0f)
         {
-            return !destination.IsEmpty;
+            return Style == SKPaintStyle.StrokeAndFill;
+        }
+
+        if (!float.IsFinite(StrokeWidth))
+        {
+            return true;
         }
 
         var halfWidth = StrokeWidth / 2f;
@@ -271,7 +378,7 @@ public partial class SKPaint : SKObject
                 continue;
             }
 
-            var points = FlattenFigure(figure);
+            var points = FlattenFigure(figure, resScale);
             RemoveConsecutiveDuplicatePoints(points);
             if (figure.IsClosed &&
                 points.Count > 1 &&
@@ -321,8 +428,14 @@ public partial class SKPaint : SKObject
             }
         }
 
-        return !destination.IsEmpty;
+        return true;
     }
+
+    private static float NormalizeResolutionScale(float resScale) =>
+        float.IsFinite(resScale) && resScale > 1f ? resScale : 1f;
+
+    private static float GetResolutionScale(SKMatrix matrix) =>
+        NormalizeResolutionScale(TransformMetrics.GetStrokeScale(matrix.ToMatrix4x4()));
 
     internal static void NormalizeStrokeWinding(SKPath source, SKPath stroke)
     {
@@ -737,9 +850,15 @@ public partial class SKPaint : SKObject
         }
     }
 
-    private static List<Vector2> FlattenFigure(PathFigure figure)
+    private static List<Vector2> FlattenFigure(PathFigure figure, float resScale = 1f)
     {
-        const int curveSegments = 24;
+        // Skia increases stroker precision with the device resolution. The square-root
+        // schedule preserves sub-pixel quality without making large transforms linear
+        // in scale; the cap keeps adversarial matrices bounded.
+        var curveSegments = Math.Clamp(
+            (int)MathF.Ceiling(24f * MathF.Sqrt(NormalizeResolutionScale(resScale))),
+            24,
+            192);
         var result = new List<Vector2> { figure.StartPoint };
         var current = figure.StartPoint;
         foreach (var segment in figure.Segments)

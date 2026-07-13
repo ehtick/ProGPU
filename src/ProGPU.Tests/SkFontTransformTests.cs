@@ -83,7 +83,6 @@ public sealed class SkFontTransformTests
         };
         using var normalPath = normal.GetTextPath("H");
         using var emboldenedPath = emboldened.GetTextPath("H");
-        using var expectedPath = new SKPath();
         using var fakeBoldPaint = new SKPaint
         {
             Style = SKPaintStyle.StrokeAndFill,
@@ -92,7 +91,7 @@ public sealed class SkFontTransformTests
             StrokeMiter = 4f
         };
 
-        Assert.True(fakeBoldPaint.GetFillPath(normalPath, expectedPath));
+        using var expectedPath = Assert.IsType<SKPath>(fakeBoldPaint.GetFillPath(normalPath));
         Assert.Equal(expectedPath.Bounds, emboldenedPath.Bounds);
         AssertNear(normal.MeasureText("H"), emboldened.MeasureText("H"));
     }
