@@ -2102,10 +2102,10 @@ public sealed class SkCanvasStateTests
         var figure = Assert.Single(command.Path!.Figures);
         var arcs = figure.Segments.OfType<ArcSegment>().ToArray();
         Assert.Equal(4, arcs.Length);
-        Assert.Equal(new Vector2(4f, 3f), arcs[0].Size);
-        Assert.Equal(new Vector2(4f, 5f), arcs[1].Size);
-        Assert.Equal(new Vector2(2f, 5f), arcs[2].Size);
-        Assert.Equal(new Vector2(2f, 3f), arcs[3].Size);
+        Assert.Equal(new Vector2(2f, 3f), arcs[0].Size);
+        Assert.Equal(new Vector2(4f, 3f), arcs[1].Size);
+        Assert.Equal(new Vector2(4f, 5f), arcs[2].Size);
+        Assert.Equal(new Vector2(2f, 5f), arcs[3].Size);
     }
 
     [Fact]

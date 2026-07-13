@@ -102,6 +102,9 @@ jobs:
           }
 
           dotnet @testArgs
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
           dotnet test `
             src/ProGPU.Tests.Headless/ProGPU.Tests.Headless.csproj `
