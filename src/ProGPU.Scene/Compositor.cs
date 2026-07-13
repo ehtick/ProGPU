@@ -8411,7 +8411,11 @@ SceneStateUploadComplete:
                 color,
                 patchKind: 0f,
                 cubicCoefficients,
-                transform);
+                transform,
+                default,
+                hasDestinationTransform: false,
+                colorBlendMode: 0f,
+                patchOpacity: 1f);
         }
         else
         {
@@ -8435,7 +8439,34 @@ SceneStateUploadComplete:
                         fixedColor,
                         isPremultiplied ? 2f : 1f,
                         cubicCoefficients,
-                        transform);
+                        transform,
+                        default,
+                        hasDestinationTransform: false,
+                        colorBlendMode: 0f,
+                        patchOpacity: 1f);
+                }
+                else if (patch.Kind == TexturePatchKind.AtlasColor)
+                {
+                    var alpha = patch.Color.W;
+                    var atlasColor = new Vector4(
+                        patch.Color.X * alpha,
+                        patch.Color.Y * alpha,
+                        patch.Color.Z * alpha,
+                        alpha);
+                    AppendTextureQuad(
+                        cmd.Texture,
+                        patch.Source,
+                        patch.Destination,
+                        atlasColor,
+                        isPremultiplied ? 4f : 3f,
+                        cubicCoefficients,
+                        transform,
+                        patch.DestinationTransform,
+                        patch.HasDestinationTransform,
+                        (float)patch.ColorBlendMode,
+                        cmd.TextureSamplingMode == TextureSamplingMode.Cubic
+                            ? -_activeOpacity
+                            : _activeOpacity);
                 }
                 else
                 {
@@ -8446,7 +8477,11 @@ SceneStateUploadComplete:
                         color,
                         patchKind: 0f,
                         cubicCoefficients,
-                        transform);
+                        transform,
+                        patch.DestinationTransform,
+                        patch.HasDestinationTransform,
+                        colorBlendMode: 0f,
+                        patchOpacity: 1f);
                 }
             }
         }
@@ -8479,17 +8514,32 @@ SceneStateUploadComplete:
         Vector4 color,
         float patchKind,
         Vector2 cubicCoefficients,
-        Matrix4x4 transform)
+        Matrix4x4 transform,
+        Matrix3x2 destinationTransform,
+        bool hasDestinationTransform,
+        float colorBlendMode,
+        float patchOpacity)
     {
         var r = destination;
+        var v0 = new Vector2(r.X, r.Y);
+        var v1 = new Vector2(r.X + r.Width, r.Y);
+        var v2 = new Vector2(r.X + r.Width, r.Y + r.Height);
+        var v3 = new Vector2(r.X, r.Y + r.Height);
+        if (hasDestinationTransform)
+        {
+            v0 = Vector2.Transform(v0, destinationTransform);
+            v1 = Vector2.Transform(v1, destinationTransform);
+            v2 = Vector2.Transform(v2, destinationTransform);
+            v3 = Vector2.Transform(v3, destinationTransform);
+        }
 
-        var v0 = Vector2.Transform(new Vector2(r.X, r.Y), transform);
-        var v1 = Vector2.Transform(new Vector2(r.X + r.Width, r.Y), transform);
-        var v2 = Vector2.Transform(new Vector2(r.X + r.Width, r.Y + r.Height), transform);
-        var v3 = Vector2.Transform(new Vector2(r.X, r.Y + r.Height), transform);
+        v0 = Vector2.Transform(v0, transform);
+        v1 = Vector2.Transform(v1, transform);
+        v2 = Vector2.Transform(v2, transform);
+        v3 = Vector2.Transform(v3, transform);
 
         Vector2 uv0, uv1, uv2, uv3;
-        if (patchKind == 0f && source.Width > 0f && source.Height > 0f)
+        if ((patchKind == 0f || patchKind >= 3f) && source.Width > 0f && source.Height > 0f)
         {
             float texW = texture.Width;
             float texH = texture.Height;
@@ -8548,10 +8598,14 @@ SceneStateUploadComplete:
         CollectionsMarshal.SetCount(_textureVerticesList, originalVertexCount + 4);
         var vertexSpan = CollectionsMarshal.AsSpan(_textureVerticesList).Slice(originalVertexCount, 4);
 
-        vertexSpan[0] = new VectorVertex(v0, color, uv0, patchKind, cubicCoefficients);
-        vertexSpan[1] = new VectorVertex(v1, color, uv1, patchKind, cubicCoefficients);
-        vertexSpan[2] = new VectorVertex(v2, color, uv2, patchKind, cubicCoefficients);
-        vertexSpan[3] = new VectorVertex(v3, color, uv3, patchKind, cubicCoefficients);
+        vertexSpan[0] = new VectorVertex(
+            v0, color, uv0, patchKind, cubicCoefficients, colorBlendMode, patchOpacity);
+        vertexSpan[1] = new VectorVertex(
+            v1, color, uv1, patchKind, cubicCoefficients, colorBlendMode, patchOpacity);
+        vertexSpan[2] = new VectorVertex(
+            v2, color, uv2, patchKind, cubicCoefficients, colorBlendMode, patchOpacity);
+        vertexSpan[3] = new VectorVertex(
+            v3, color, uv3, patchKind, cubicCoefficients, colorBlendMode, patchOpacity);
 
         int originalIndexCount = _textureIndicesList.Count;
         CollectionsMarshal.SetCount(_textureIndicesList, originalIndexCount + 6);

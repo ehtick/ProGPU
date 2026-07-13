@@ -27,8 +27,22 @@ public class ShaderResourceTests
     {
         Assert.Contains("@location(3) patchKind: f32", Shaders.TextureShader, StringComparison.Ordinal);
         Assert.Contains("@interpolate(flat) patchKind", Shaders.TextureShader, StringComparison.Ordinal);
-        Assert.Contains("if (input.patchKind > 0.5)", Shaders.TextureShader, StringComparison.Ordinal);
+        Assert.Contains(
+            "if (input.patchKind > 0.5 && input.patchKind < 2.5)",
+            Shaders.TextureShader,
+            StringComparison.Ordinal);
         Assert.Contains("if (input.patchKind > 1.5)", Shaders.TextureShader, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TextureShaderSupportsBatchedAtlasTransformsAndColorBlending()
+    {
+        Assert.Contains("@location(5) colorBlendMode: f32", Shaders.TextureShader, StringComparison.Ordinal);
+        Assert.Contains("@location(6) patchOpacity: f32", Shaders.TextureShader, StringComparison.Ordinal);
+        Assert.Contains("fn blend_atlas_color(", Shaders.TextureShader, StringComparison.Ordinal);
+        Assert.Contains("Sprite is the blend source", Shaders.TextureShader, StringComparison.Ordinal);
+        Assert.Contains("if (input.patchKind > 2.5)", Shaders.TextureShader, StringComparison.Ordinal);
+        Assert.Contains("u32(round(input.colorBlendMode))", Shaders.TextureShader, StringComparison.Ordinal);
     }
 
     [Fact]

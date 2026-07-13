@@ -717,6 +717,15 @@ Skia-compatible lattice and nine-patch image draws use the same ordered texture 
 - Vertex colors travel premultiplied and are combined with the paint brush by the vector shader. The WGSL path implements Skia's Porter-Duff, arithmetic, separable, and non-separable vertex-color blend modes before the ordinary mask and framebuffer blend stages.
 - GPU hit testing traverses the same normalized triangles. For V vertices, I input indices, and T output triangles, retained construction costs `O(V + I)` time and storage, compilation costs `O(V + T)`, and hit-index construction costs `O(T)`.
 
+#### Transformed sprite atlases
+
+`SKCanvas.DrawAtlas` reuses the retained texture-patch batch for sprite-heavy scenes:
+
+- Each non-empty source rectangle becomes one patch with an `SKRotationScaleMatrix` converted to a sprite-local scale/rotation/translation. Bounds are accumulated from the four transformed corners; an optional caller cull rectangle remains a conservative quick-reject/hit bound and does not clip individual sprites.
+- The whole atlas call retains one patch array, one copied texture resource, one sampler choice, and one indexed texture draw. Nearest, linear, mipmapped, custom cubic, and anisotropic sampling metadata stays uniform across the sprite batch.
+- Optional sprite colors are premultiplied once in vertex data. The texture shader treats the sampled sprite as source and the color as destination, implements all Skia blend modes, and then applies paint opacity, masks, the selected texture alpha representation, and the framebuffer blend mode.
+- For S visible sprites, layout, bounds, and vertex/index generation cost `O(S)` time and storage. GPU submission remains one draw rather than S texture draws and does not create per-sprite bind groups.
+
 ---
 
 ### 14. Zero-Allocation Vector Drawing & Skia-like GpuPicture Caching
@@ -995,11 +1004,12 @@ ProGPU routes all graphics and compute tasks directly to the GPU using specializ
   - **Batched vertex meshes (`sType == 18u`)**: Interpolates premultiplied vertex colors across triangle lists, strips, and fans, then combines that color with the evaluated paint brush using the requested Skia blend mode. One mesh contributes one retained command and one contiguous vector index range rather than one command per triangle.
 
 ### 2. TextureShader (Image, lattice, and sampling pipeline)
-- **Role**: Draws ordinary image quads and batched lattice/nine-patch cells through one indexed texture pipeline.
-- **Why It is Used**: Preserves image Z-order while keeping each retained image or lattice operation to one GPU draw, regardless of visible lattice-cell count.
+- **Role**: Draws ordinary image quads, batched lattice/nine-patch cells, and transformed sprite atlases through one indexed texture pipeline.
+- **Why It is Used**: Preserves image Z-order while keeping each retained image, lattice, or atlas operation to one GPU draw, regardless of patch or sprite count.
 - **Implementation Mechanics**:
   - Normal cells interpolate source UVs and use nearest, linear, mipmapped, or a bounded 4x4 Mitchell-Netravali cubic sample footprint.
   - Lattice fixed-color cells carry a flat `patchKind` discriminator and return their vertex RGBA directly, performing no image sample. Separate straight and premultiplied encodings preserve blend correctness for both texture alpha modes.
+  - Atlas cells carry a flat color-blend mode and paint-opacity value. Sampled sprite color is the source and premultiplied per-sprite color is the destination; bounded Porter-Duff, separable, and non-separable functions match Skia's atlas blend ordering.
   - Every fragment samples the active opacity mask once. Premultiplied image and fixed-color paths scale RGB with coverage; straight-alpha paths retain straight RGB and scale alpha.
   - CPU layout and vertex generation are `O(C)` for C visible cells, fragment work is `O(1)`, and one indexed draw stores four vertices and six indices per cell.
 

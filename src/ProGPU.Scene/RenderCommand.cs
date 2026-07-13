@@ -183,7 +183,8 @@ public enum TextureSamplingMode
 public enum TexturePatchKind : byte
 {
     Texture,
-    FixedColor
+    FixedColor,
+    AtlasColor
 }
 
 public readonly struct TexturePatch
@@ -194,6 +195,9 @@ public readonly struct TexturePatch
         Destination = destination;
         Color = default;
         Kind = TexturePatchKind.Texture;
+        DestinationTransform = default;
+        HasDestinationTransform = false;
+        ColorBlendMode = default;
     }
 
     public TexturePatch(Rect destination, Vector4 color)
@@ -202,12 +206,34 @@ public readonly struct TexturePatch
         Destination = destination;
         Color = color;
         Kind = TexturePatchKind.FixedColor;
+        DestinationTransform = default;
+        HasDestinationTransform = false;
+        ColorBlendMode = default;
+    }
+
+    public TexturePatch(
+        Rect source,
+        Rect destination,
+        Matrix3x2 destinationTransform,
+        Vector4? color = null,
+        VertexColorBlendMode colorBlendMode = VertexColorBlendMode.Dst)
+    {
+        Source = source;
+        Destination = destination;
+        Color = color.GetValueOrDefault();
+        Kind = color.HasValue ? TexturePatchKind.AtlasColor : TexturePatchKind.Texture;
+        DestinationTransform = destinationTransform;
+        HasDestinationTransform = true;
+        ColorBlendMode = colorBlendMode;
     }
 
     public Rect Source { get; }
     public Rect Destination { get; }
     public Vector4 Color { get; }
     public TexturePatchKind Kind { get; }
+    public Matrix3x2 DestinationTransform { get; }
+    public bool HasDestinationTransform { get; }
+    public VertexColorBlendMode ColorBlendMode { get; }
 }
 
 public enum TextRenderingMode

@@ -3315,14 +3315,18 @@ public class SKCanvas : IDisposable
         TexturePatch[] patches,
         SKRect destination,
         TextureSamplingMode samplingMode,
-        SKPaint? paint)
+        SKPaint? paint,
+        Vector2? cubicCoefficients = null,
+        byte maxAnisotropy = 1)
     {
         if (patches.Length == 0)
         {
             return;
         }
 
-        var retainedTexture = RetainImageTexture(image);
+        var retainedTexture = RetainImageTexture(
+            image,
+            samplingMode == TextureSamplingMode.LinearMipmap);
         if (!_isPictureRecording)
         {
             retainedTexture = ConvertImageTextureToSrgb(retainedTexture, image.ColorSpace);
@@ -3356,6 +3360,9 @@ public class SKCanvas : IDisposable
                 Rect = ToRect(destination),
                 Transform = _currentMatrix.ToMatrix4x4(),
                 TextureSamplingMode = samplingMode,
+                TextureMaxAnisotropy = maxAnisotropy,
+                TextureCubicCoefficients = cubicCoefficients.GetValueOrDefault(),
+                HasTextureCubicCoefficients = cubicCoefficients.HasValue,
                 IsEdgeAliased = paint is { IsAntialias: false }
             });
         }
@@ -3441,6 +3448,139 @@ public class SKCanvas : IDisposable
             new SKRect(0f, 0f, image.Width, image.Height),
             destination,
             paint);
+    }
+
+    [Obsolete("Use the overload with SKSamplingOptions instead.")]
+    public void DrawAtlas(
+        SKImage atlas,
+        SKRect[] sprites,
+        SKRotationScaleMatrix[] transforms,
+        SKPaint? paint = null) =>
+        DrawAtlasCore(
+            atlas,
+            sprites,
+            transforms,
+            colors: null,
+            SKBlendMode.Dst,
+            paint?.GetLegacyFilterQualitySampling() ?? SKSamplingOptions.Default,
+            cullRect: null,
+            paint);
+
+    public void DrawAtlas(
+        SKImage atlas,
+        SKRect[] sprites,
+        SKRotationScaleMatrix[] transforms,
+        SKSamplingOptions sampling,
+        SKPaint? paint = null) =>
+        DrawAtlasCore(
+            atlas,
+            sprites,
+            transforms,
+            colors: null,
+            SKBlendMode.Dst,
+            sampling,
+            cullRect: null,
+            paint);
+
+    [Obsolete("Use the overload with SKSamplingOptions instead.")]
+    public void DrawAtlas(
+        SKImage atlas,
+        SKRect[] sprites,
+        SKRotationScaleMatrix[] transforms,
+        SKColor[]? colors,
+        SKBlendMode mode,
+        SKPaint? paint = null) =>
+        DrawAtlasCore(
+            atlas,
+            sprites,
+            transforms,
+            colors,
+            mode,
+            paint?.GetLegacyFilterQualitySampling() ?? SKSamplingOptions.Default,
+            cullRect: null,
+            paint);
+
+    public void DrawAtlas(
+        SKImage atlas,
+        SKRect[] sprites,
+        SKRotationScaleMatrix[] transforms,
+        SKColor[]? colors,
+        SKBlendMode mode,
+        SKSamplingOptions sampling,
+        SKPaint? paint = null) =>
+        DrawAtlasCore(atlas, sprites, transforms, colors, mode, sampling, cullRect: null, paint);
+
+    [Obsolete("Use the overload with SKSamplingOptions instead.")]
+    public void DrawAtlas(
+        SKImage atlas,
+        SKRect[] sprites,
+        SKRotationScaleMatrix[] transforms,
+        SKColor[]? colors,
+        SKBlendMode mode,
+        SKRect cullRect,
+        SKPaint? paint = null) =>
+        DrawAtlasCore(
+            atlas,
+            sprites,
+            transforms,
+            colors,
+            mode,
+            paint?.GetLegacyFilterQualitySampling() ?? SKSamplingOptions.Default,
+            cullRect,
+            paint);
+
+    public void DrawAtlas(
+        SKImage atlas,
+        SKRect[] sprites,
+        SKRotationScaleMatrix[] transforms,
+        SKColor[]? colors,
+        SKBlendMode mode,
+        SKSamplingOptions sampling,
+        SKRect cullRect,
+        SKPaint? paint = null) =>
+        DrawAtlasCore(atlas, sprites, transforms, colors, mode, sampling, cullRect, paint);
+
+    private void DrawAtlasCore(
+        SKImage atlas,
+        SKRect[] sprites,
+        SKRotationScaleMatrix[] transforms,
+        SKColor[]? colors,
+        SKBlendMode mode,
+        SKSamplingOptions sampling,
+        SKRect? cullRect,
+        SKPaint? paint)
+    {
+        ArgumentNullException.ThrowIfNull(atlas);
+        ArgumentNullException.ThrowIfNull(sprites);
+        ArgumentNullException.ThrowIfNull(transforms);
+        if (transforms.Length != sprites.Length)
+        {
+            throw new ArgumentException(
+                "The number of transforms must match the number of sprites.",
+                nameof(transforms));
+        }
+        if (colors != null && colors.Length != sprites.Length)
+        {
+            throw new ArgumentException(
+                "The number of colors must match the number of sprites.",
+                nameof(colors));
+        }
+
+        var patches = SKAtlasLayout.CreatePatches(
+            sprites,
+            transforms,
+            colors,
+            mode,
+            paint?.ColorFilter,
+            out var computedBounds);
+        DrawImagePatchesCore(
+            atlas,
+            patches,
+            cullRect ?? computedBounds,
+            MapSampling(sampling),
+            paint,
+            MapCubicSampling(sampling),
+            MapMaxAnisotropy(sampling));
     }
 
     public void DrawBitmapNinePatch(
