@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Text;
 using ProGPU.Vector;
 
 namespace SkiaSharp;
@@ -226,6 +228,199 @@ public class SKPath : IDisposable
             var figure = Geometry.Figures[^1];
             var point = GetFigureEndPoint(figure);
             return new SKPoint(point.X, point.Y);
+        }
+    }
+
+    public static SKPoint[] ConvertConicToQuads(
+        SKPoint p0,
+        SKPoint p1,
+        SKPoint p2,
+        float weight,
+        int pow2)
+    {
+        var pointCount = GetConicQuadPointCount(pow2);
+        var points = new SKPoint[pointCount];
+        ConvertConicToQuadsCore(p0, p1, p2, weight, points, pow2);
+        return points;
+    }
+
+    public static int ConvertConicToQuads(
+        SKPoint p0,
+        SKPoint p1,
+        SKPoint p2,
+        float weight,
+        SKPoint[] points,
+        int pow2)
+    {
+        ArgumentNullException.ThrowIfNull(points);
+        var pointCount = GetConicQuadPointCount(pow2);
+        if (points.Length < pointCount)
+        {
+            throw new ArgumentException(
+                $"The destination requires at least {pointCount} points.",
+                nameof(points));
+        }
+
+        ConvertConicToQuadsCore(p0, p1, p2, weight, points, pow2);
+        return 1 << pow2;
+    }
+
+    public static int ConvertConicToQuads(
+        SKPoint p0,
+        SKPoint p1,
+        SKPoint p2,
+        float weight,
+        out SKPoint[] points,
+        int pow2)
+    {
+        points = ConvertConicToQuads(p0, p1, p2, weight, pow2);
+        return 1 << pow2;
+    }
+
+    private static int GetConicQuadPointCount(int pow2)
+    {
+        if ((uint)pow2 > 20u)
+        {
+            throw new ArgumentOutOfRangeException(nameof(pow2));
+        }
+
+        return checked((1 << pow2) * 2 + 1);
+    }
+
+    private static void ConvertConicToQuadsCore(
+        SKPoint p0,
+        SKPoint p1,
+        SKPoint p2,
+        float weight,
+        Span<SKPoint> points,
+        int pow2)
+    {
+        var pointIndex = 0;
+        Subdivide(
+            new Vector2(p0.X, p0.Y),
+            new Vector2(p1.X, p1.Y),
+            new Vector2(p2.X, p2.Y),
+            weight,
+            pow2,
+            writeStart: true,
+            points,
+            ref pointIndex);
+
+        static void Subdivide(
+            Vector2 start,
+            Vector2 control,
+            Vector2 end,
+            float weight,
+            int depth,
+            bool writeStart,
+            Span<SKPoint> output,
+            ref int outputIndex)
+        {
+            if (depth == 0)
+            {
+                if (writeStart)
+                {
+                    output[outputIndex++] = ToSkPoint(start);
+                }
+                output[outputIndex++] = ToSkPoint(control);
+                output[outputIndex++] = ToSkPoint(end);
+                return;
+            }
+
+            var inverseWeightSum = 1f / (1f + weight);
+            var leftControl = (start + control * weight) * inverseWeightSum;
+            var rightControl = (control * weight + end) * inverseWeightSum;
+            var middle = (start + control * (2f * weight) + end) *
+                (inverseWeightSum * 0.5f);
+            var childWeight = MathF.Sqrt((1f + weight) * 0.5f);
+            Subdivide(
+                start,
+                leftControl,
+                middle,
+                childWeight,
+                depth - 1,
+                writeStart,
+                output,
+                ref outputIndex);
+            Subdivide(
+                middle,
+                rightControl,
+                end,
+                childWeight,
+                depth - 1,
+                writeStart: false,
+                output,
+                ref outputIndex);
+        }
+
+        static SKPoint ToSkPoint(Vector2 point) => new(point.X, point.Y);
+    }
+
+    public string ToSvgPathData()
+    {
+        if (IsEmpty)
+        {
+            return string.Empty;
+        }
+
+        var builder = new StringBuilder(Math.Max(32, VerbCount * 16));
+        using var iterator = CreateIterator(forceClose: false);
+        Span<SKPoint> points = stackalloc SKPoint[4];
+        while (true)
+        {
+            var verb = iterator.Next(points);
+            switch (verb)
+            {
+                case SKPathVerb.Move:
+                    AppendPoint(builder, 'M', points[0]);
+                    break;
+                case SKPathVerb.Line:
+                    AppendPoint(builder, 'L', points[1]);
+                    break;
+                case SKPathVerb.Quad:
+                case SKPathVerb.Conic:
+                    builder.Append('Q');
+                    AppendCoordinates(builder, points[1]);
+                    builder.Append(' ');
+                    AppendCoordinates(builder, points[2]);
+                    break;
+                case SKPathVerb.Cubic:
+                    builder.Append('C');
+                    AppendCoordinates(builder, points[1]);
+                    builder.Append(' ');
+                    AppendCoordinates(builder, points[2]);
+                    builder.Append(' ');
+                    AppendCoordinates(builder, points[3]);
+                    break;
+                case SKPathVerb.Close:
+                    builder.Append('Z');
+                    break;
+                case SKPathVerb.Done:
+                    return builder.ToString();
+            }
+        }
+
+        static void AppendPoint(StringBuilder builder, char verb, SKPoint point)
+        {
+            builder.Append(verb);
+            AppendCoordinates(builder, point);
+        }
+
+        static void AppendCoordinates(StringBuilder builder, SKPoint point)
+        {
+            AppendScalar(builder, point.X);
+            builder.Append(' ');
+            AppendScalar(builder, point.Y);
+        }
+
+        static void AppendScalar(StringBuilder builder, float value)
+        {
+            if (value == 0f)
+            {
+                value = 0f;
+            }
+
+            builder.Append(value.ToString("G9", CultureInfo.InvariantCulture));
         }
     }
 
