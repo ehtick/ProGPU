@@ -375,6 +375,259 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     }
 
     [Fact]
+    public void PathAtlasRetryDeterministicallyPacksGalleryShapedLiveSet()
+    {
+        using var atlas = new PathAtlas(HeadlessWindow.Shared.Context, atlasSize: 2048);
+        PathGeometry[] paths =
+        [
+            PrimitivePathGeometry.CreateRectangle(0f, 0f, 1018f, 756f),
+            PrimitivePathGeometry.CreateRectangle(3f, 5f, 1018f, 756f),
+            PrimitivePathGeometry.CreateRectangle(7f, 11f, 992f, 592f),
+            PrimitivePathGeometry.CreateRectangle(13f, 17f, 992f, 592f)
+        ];
+
+        var first = atlas.GetOrCreatePath(paths[0], scale: 1f);
+        var second = atlas.GetOrCreatePath(paths[1], scale: 1f);
+        var third = atlas.GetOrCreatePath(paths[2], scale: 1f);
+        var preservedCoordinates = new[]
+        {
+            (first.X, first.Y),
+            (second.X, second.Y),
+            (third.X, third.Y)
+        };
+        var missing = atlas.GetOrCreatePath(paths[3], scale: 1f);
+
+        Assert.True(atlas.CapacityExceeded);
+        Assert.Equal(0u, missing.Width);
+        Assert.Equal(preservedCoordinates[0], (first.X, first.Y));
+        Assert.Equal(preservedCoordinates[1], (second.X, second.Y));
+        Assert.Equal(preservedCoordinates[2], (third.X, third.Y));
+
+        ulong generation = atlas.Generation;
+        atlas.ResetForRenderRetry();
+        PathAtlas.PathInfo[] recovered = paths
+            .Select(path => atlas.GetOrCreatePath(path, scale: 1f))
+            .ToArray();
+
+        Assert.False(atlas.CapacityExceeded);
+        Assert.True(atlas.Generation > generation);
+        Assert.Equal(new uint[] { 1026, 1026, 1000, 1000 }, recovered.Select(static info => info.Width));
+        Assert.Equal(new uint[] { 764, 764, 600, 600 }, recovered.Select(static info => info.Height));
+        AssertAtlasRectanglesDoNotOverlap(recovered, atlas.AtlasSize);
+
+        var firstPacking = recovered.Select(static info => (info.X, info.Y)).ToArray();
+        atlas.ResetForRenderRetry();
+        PathAtlas.PathInfo[] repeated = paths
+            .Select(path => atlas.GetOrCreatePath(path, scale: 1f))
+            .ToArray();
+        Assert.Equal(firstPacking, repeated.Select(static info => (info.X, info.Y)).ToArray());
+    }
+
+    [Fact]
+    public void PathAtlasRetryUsesAlternativeDeterministicStrategyForFeasibleSet()
+    {
+        using var atlas = new PathAtlas(HeadlessWindow.Shared.Context, atlasSize: 122);
+        PathGeometry[] paths =
+        [
+            PrimitivePathGeometry.CreateRectangle(0f, 0f, 90f, 50f),
+            PrimitivePathGeometry.CreateRectangle(3f, 5f, 110f, 30f),
+            PrimitivePathGeometry.CreateRectangle(7f, 11f, 10f, 30f),
+            PrimitivePathGeometry.CreateRectangle(13f, 17f, 10f, 30f)
+        ];
+
+        foreach (PathGeometry path in paths)
+        {
+            _ = atlas.GetOrCreatePath(path, scale: 1f);
+        }
+
+        Assert.True(atlas.CapacityExceeded);
+        atlas.ResetForRenderRetry();
+        PathAtlas.PathInfo[] recovered = paths
+            .Select(path => atlas.GetOrCreatePath(path, scale: 1f))
+            .ToArray();
+
+        Assert.False(atlas.CapacityExceeded);
+        Assert.Equal(new uint[] { 98, 118, 18, 18 }, recovered.Select(static info => info.Width));
+        Assert.Equal(new uint[] { 58, 38, 38, 38 }, recovered.Select(static info => info.Height));
+        Assert.Equal((2u, 2u), (recovered[1].X, recovered[1].Y));
+        AssertAtlasRectanglesDoNotOverlap(recovered, atlas.AtlasSize);
+
+        var firstPacking = recovered.Select(static info => (info.X, info.Y)).ToArray();
+        atlas.ResetForRenderRetry();
+        PathAtlas.PathInfo[] repeated = paths
+            .Select(path => atlas.GetOrCreatePath(path, scale: 1f))
+            .ToArray();
+        Assert.Equal(firstPacking, repeated.Select(static info => (info.X, info.Y)).ToArray());
+    }
+
+    [Fact]
+    public void PathAtlasRetryRejectsMathematicallyUnfitTypographyLiveSet()
+    {
+        using var atlas = new PathAtlas(HeadlessWindow.Shared.Context, atlasSize: 2048);
+        PathGeometry[] paths =
+        [
+            PrimitivePathGeometry.CreateRectangle(0f, 0f, 1018f, 756f),
+            PrimitivePathGeometry.CreateRectangle(3f, 5f, 1016f, 754f),
+            PrimitivePathGeometry.CreateRectangle(7f, 11f, 1116f, 491f),
+            PrimitivePathGeometry.CreateRectangle(13f, 17f, 1114f, 490f),
+            PrimitivePathGeometry.CreateRectangle(19f, 23f, 250f, 1f),
+            PrimitivePathGeometry.CreateRectangle(29f, 31f, 2f, 205f),
+            PrimitivePathGeometry.CreateRectangle(37f, 41f, 4f, 24f),
+            PrimitivePathGeometry.CreateRectangle(43f, 47f, 3f, 16f)
+        ];
+
+        PathAtlas.PathInfo[] initial = paths
+            .Select(path => atlas.GetOrCreatePath(path, scale: 1f))
+            .ToArray();
+
+        Assert.True(atlas.CapacityExceeded);
+        // The fourth and sixth insertions are the shelf misses. During retry
+        // their geometry resolves the exact captured Gallery raster set:
+        // 1026x764, 1024x762, 1124x499, 1122x498, 258x9, 10x213,
+        // 12x32, and 11x24 (before each rectangle's 2px atlas gutter).
+        Assert.Equal(1026u, initial[0].Width);
+        Assert.Equal(1024u, initial[1].Width);
+        Assert.Equal(1124u, initial[2].Width);
+        Assert.Equal(0u, initial[3].Width);
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(atlas.ResetForRenderRetry);
+        Assert.Contains("8 live paths", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("2048x2048", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PartialRoundedRectangleBorderFillBypassesPathAtlas()
+    {
+        using var window = new HeadlessWindow(
+            128,
+            96,
+            CompositorOptions.Default with { PathAtlasSize = 64 });
+        window.Content = new PartialRoundedBorderVisual();
+
+        window.Render();
+
+        Assert.False(window.Compositor.PathAtlas.CapacityExceeded);
+        Assert.Equal(0, window.Compositor.PathAtlas.CachedPathCount);
+        Assert.True(
+            window.Compositor.VectorVertices.Count(vertex => MathF.Abs(vertex.ShapeType - 13f) < 0.01f) > 0,
+            "Expected direct triangle-SDF vertices for the partial rounded border.");
+
+        byte[] pixels = window.ReadPixels();
+        int redPixels = 0;
+        for (int offset = 0; offset < pixels.Length; offset += 4)
+        {
+            if (pixels[offset] > 140 && pixels[offset + 2] < 100)
+            {
+                redPixels++;
+            }
+        }
+
+        Assert.True(redPixels > 100, $"Expected a visible red border, found {redPixels} red pixels.");
+        int centerOffset = (48 * 128 + 64) * 4;
+        Assert.True(pixels[centerOffset + 2] > 180, "The even-odd inner hole should preserve the blue background.");
+    }
+
+    [Fact]
+    public void NonCanonicalRoundedBoundaryWalkUsesPathAtlas()
+    {
+        using var window = new HeadlessWindow(
+            128,
+            64,
+            CompositorOptions.Default with { PathAtlasSize = 256 });
+        window.Content = new NonCanonicalRoundedPathVisual();
+
+        window.Render();
+
+        Assert.Equal(1, window.Compositor.PathAtlas.CachedPathCount);
+        Assert.DoesNotContain(
+            window.Compositor.VectorVertices,
+            vertex => MathF.Abs(vertex.ShapeType - 13f) < 0.01f);
+    }
+
+    [Fact]
+    public void LargeScaledPartialRoundedFillUsesDeviceBoundedTessellation()
+    {
+        using var window = new HeadlessWindow(
+            128,
+            96,
+            CompositorOptions.Default with { PathAtlasSize = 64 });
+        window.Content = new LargeScaledPartialRoundedPathVisual();
+
+        window.Render();
+
+        VectorVertex[] directVertices = window.Compositor.VectorVertices
+            .Where(vertex => MathF.Abs(vertex.ShapeType - 13f) < 0.01f)
+            .ToArray();
+        int directTriangleVertexCount = directVertices.Length;
+        Assert.True(
+            directTriangleVertexCount > 300,
+            $"Expected device-error-bounded tessellation beyond the fixed eight-segment contour, found {directTriangleVertexCount} vertices.");
+        Assert.Equal(0, directTriangleVertexCount % 4);
+        float triangleAabbArea = 0f;
+        for (int vertexIndex = 0; vertexIndex < directVertices.Length; vertexIndex += 4)
+        {
+            VectorVertex vertex = directVertices[vertexIndex];
+            Vector2 point0 = new(vertex.Color.X, vertex.Color.Y);
+            Vector2 point1 = new(vertex.Color.Z, vertex.Color.W);
+            Vector2 point2 = vertex.ShapeSize;
+            Vector2 minimum = Vector2.Min(point0, Vector2.Min(point1, point2));
+            Vector2 maximum = Vector2.Max(point0, Vector2.Max(point1, point2));
+            triangleAabbArea += (maximum.X - minimum.X) * (maximum.Y - minimum.Y);
+        }
+
+        const float contourBoundsArea = 1_000f * 1_000f;
+        Assert.True(
+            triangleAabbArea < contourBoundsArea * 3.1f,
+            $"Balanced triangulation should bound aggregate triangle AABB work; measured {triangleAabbArea / contourBoundsArea:F3}x contour area.");
+        Assert.Equal(0, window.Compositor.PathAtlas.CachedPathCount);
+        byte[] pixels = window.ReadPixels();
+        Assert.True(pixels[(64 * 128 + 64) * 4] > 180, "Balanced direct triangles should cover the rounded fill interior.");
+    }
+
+    [Fact]
+    public void CrossingCanonicalRoundedRingFallsBackToPathAtlas()
+    {
+        using var window = new HeadlessWindow(
+            112,
+            112,
+            CompositorOptions.Default with { PathAtlasSize = 256 });
+        window.Content = new CrossingRoundedRingVisual();
+
+        window.Render();
+
+        Assert.Equal(1, window.Compositor.PathAtlas.CachedPathCount);
+        Assert.DoesNotContain(
+            window.Compositor.VectorVertices,
+            vertex => MathF.Abs(vertex.ShapeType - 13f) < 0.01f);
+        byte[] pixels = window.ReadPixels();
+        Assert.True(pixels[(5 * 112 + 5) * 4 + 2] > 180, "The excluded rounded outer corner should remain blue.");
+        Assert.True(pixels[(50 * 112 + 99) * 4] > 180, "The non-crossing right border should render red.");
+        Assert.True(pixels[(50 * 112 + 50) * 4 + 2] > 180, "The even-odd inner hole should remain blue.");
+    }
+
+    private static void AssertAtlasRectanglesDoNotOverlap(
+        IReadOnlyList<PathAtlas.PathInfo> paths,
+        uint atlasSize)
+    {
+        for (int index = 0; index < paths.Count; index++)
+        {
+            PathAtlas.PathInfo current = paths[index];
+            Assert.True(current.X + current.Width + 2 <= atlasSize);
+            Assert.True(current.Y + current.Height + 2 <= atlasSize);
+            for (int otherIndex = index + 1; otherIndex < paths.Count; otherIndex++)
+            {
+                PathAtlas.PathInfo other = paths[otherIndex];
+                Assert.True(
+                    current.X + current.Width + 2 <= other.X ||
+                    other.X + other.Width + 2 <= current.X ||
+                    current.Y + current.Height + 2 <= other.Y ||
+                    other.Y + other.Height + 2 <= current.Y,
+                    $"Atlas rectangles {index} and {otherIndex} overlap.");
+            }
+        }
+    }
+
+    [Fact]
     public void CompositorRetriesFrameAfterRecoverablePathAtlasCapacityFailure()
     {
         const int pathCount = 24;
@@ -4713,6 +4966,161 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
                     path,
                     Matrix4x4.CreateTranslation(pathIndex * 24f + 4f, 24f, 0f));
             }
+        }
+    }
+
+    private sealed class PartialRoundedBorderVisual : FrameworkElement
+    {
+        public PartialRoundedBorderVisual()
+        {
+            Width = 128f;
+            Height = 96f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            context.DrawRectangle(
+                new SolidColorBrush(new Vector4(0f, 0f, 1f, 1f)),
+                null,
+                new Rect(0f, 0f, 128f, 96f));
+            context.DrawPath(
+                new SolidColorBrush(new Vector4(1f, 0f, 0f, 1f)),
+                null,
+                CreatePartialRoundedBorderPath());
+        }
+
+        private static PathGeometry CreatePartialRoundedBorderPath()
+        {
+            var path = new PathGeometry { FillRule = FillRule.EvenOdd };
+            path.Figures.Add(CreateContour(8f, 8f, 120f, 88f, 9f, 9f));
+            path.Figures.Add(CreateContour(9f, 9f, 119f, 88f, 8f, 8f));
+            return path;
+        }
+
+        private static PathFigure CreateContour(
+            float left,
+            float top,
+            float right,
+            float bottom,
+            float topLeftRadius,
+            float topRightRadius)
+        {
+            var figure = new PathFigure(new Vector2(left + topLeftRadius, top), isClosed: true);
+            figure.Segments.Add(new LineSegment(new Vector2(right - topRightRadius, top)));
+            figure.Segments.Add(new ArcSegment(
+                new Vector2(right, top + topRightRadius),
+                new Vector2(topRightRadius),
+                rotationAngle: 0f,
+                isLargeArc: false,
+                SweepDirection.Clockwise));
+            figure.Segments.Add(new LineSegment(new Vector2(right, bottom)));
+            figure.Segments.Add(new LineSegment(new Vector2(left, bottom)));
+            figure.Segments.Add(new LineSegment(new Vector2(left, top + topLeftRadius)));
+            figure.Segments.Add(new ArcSegment(
+                new Vector2(left + topLeftRadius, top),
+                new Vector2(topLeftRadius),
+                rotationAngle: 0f,
+                isLargeArc: false,
+                SweepDirection.Clockwise));
+            return figure;
+        }
+    }
+
+    private sealed class NonCanonicalRoundedPathVisual : FrameworkElement
+    {
+        public override void OnRender(DrawingContext context)
+        {
+            var figure = new PathFigure(new Vector2(10f, 0f), isClosed: true);
+            figure.Segments.Add(new LineSegment(new Vector2(100f, 0f)));
+            figure.Segments.Add(new LineSegment(new Vector2(10f, 0f)));
+            figure.Segments.Add(new LineSegment(new Vector2(0f, 0f)));
+            figure.Segments.Add(new LineSegment(new Vector2(0f, 10f)));
+            figure.Segments.Add(new ArcSegment(
+                new Vector2(10f, 0f),
+                new Vector2(10f),
+                rotationAngle: 0f,
+                isLargeArc: false,
+                SweepDirection.Clockwise));
+            var path = new PathGeometry();
+            path.Figures.Add(figure);
+            context.DrawPath(new SolidColorBrush(Vector4.One), null, path);
+        }
+    }
+
+    private sealed class LargeScaledPartialRoundedPathVisual : FrameworkElement
+    {
+        public override void OnRender(DrawingContext context)
+        {
+            var figure = new PathFigure(new Vector2(500f, 0f), isClosed: true);
+            figure.Segments.Add(new LineSegment(new Vector2(500f, 0f)));
+            figure.Segments.Add(new ArcSegment(
+                new Vector2(1_000f, 500f),
+                new Vector2(500f),
+                rotationAngle: 0f,
+                isLargeArc: false,
+                SweepDirection.Clockwise));
+            figure.Segments.Add(new LineSegment(new Vector2(1_000f, 500f)));
+            figure.Segments.Add(new ArcSegment(
+                new Vector2(500f, 1_000f),
+                new Vector2(500f),
+                rotationAngle: 0f,
+                isLargeArc: false,
+                SweepDirection.Clockwise));
+            figure.Segments.Add(new LineSegment(new Vector2(0f, 1_000f)));
+            figure.Segments.Add(new LineSegment(new Vector2(0f, 500f)));
+            figure.Segments.Add(new ArcSegment(
+                new Vector2(500f, 0f),
+                new Vector2(500f),
+                rotationAngle: 0f,
+                isLargeArc: false,
+                SweepDirection.Clockwise));
+            var path = new PathGeometry();
+            path.Figures.Add(figure);
+            context.DrawPath(
+                new SolidColorBrush(Vector4.One),
+                null,
+                path,
+                Matrix4x4.CreateScale(2f) * Matrix4x4.CreateTranslation(-900f, -900f, 0f));
+        }
+    }
+
+    private sealed class CrossingRoundedRingVisual : FrameworkElement
+    {
+        public override void OnRender(DrawingContext context)
+        {
+            context.DrawRectangle(
+                new SolidColorBrush(new Vector4(0f, 0f, 1f, 1f)),
+                null,
+                new Rect(0f, 0f, 112f, 112f));
+            var path = new PathGeometry { FillRule = FillRule.EvenOdd };
+            path.Figures.Add(CreateContour(6f, 6f, 106f, 106f, 40f));
+            path.Figures.Add(CreateContour(7f, 7f, 95f, 95f, 0f));
+            context.DrawPath(new SolidColorBrush(new Vector4(1f, 0f, 0f, 1f)), null, path);
+        }
+
+        private static PathFigure CreateContour(
+            float left,
+            float top,
+            float right,
+            float bottom,
+            float topLeftRadius)
+        {
+            var figure = new PathFigure(new Vector2(left + topLeftRadius, top), isClosed: true);
+            figure.Segments.Add(new LineSegment(new Vector2(right, top)));
+            figure.Segments.Add(new LineSegment(new Vector2(right, bottom)));
+            figure.Segments.Add(new LineSegment(new Vector2(left, bottom)));
+            figure.Segments.Add(new LineSegment(new Vector2(left, top + topLeftRadius)));
+            if (topLeftRadius > 0f)
+            {
+                figure.Segments.Add(new ArcSegment(
+                    new Vector2(left + topLeftRadius, top),
+                    new Vector2(topLeftRadius),
+                    rotationAngle: 0f,
+                    isLargeArc: false,
+                    SweepDirection.Clockwise));
+            }
+
+            return figure;
         }
     }
 

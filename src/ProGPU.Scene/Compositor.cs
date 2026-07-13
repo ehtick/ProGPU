@@ -197,6 +197,9 @@ public unsafe class Compositor : IDisposable
     private const float VertexMeshShapeType = 18f;
     private const float SquarePointHairlineShapeType = 19f;
     private const float RoundPointHairlineShapeType = 20f;
+    private const int DirectRoundedMinimumCornerSegmentCount = 8;
+    private const int DirectRoundedMaximumCornerSegmentCount = 128;
+    private const float DirectRoundedMaximumDeviceChordError = 0.25f;
     private const float AffineStrokeArcMaxAngleRadians = MathF.PI / 24f;
     // Matches Skia grayscale edge weight for axis-aligned vector glyphs rasterized at 8x8 coverage.
     private const float SmallTextPathCoverageGamma = 0.72f;
@@ -207,6 +210,17 @@ public unsafe class Compositor : IDisposable
     // Baked local phases retain Skia-compatible coverage; device phases bound moving-text churn.
     private const float VectorGlyphSubpixelPhaseGrid = 128f;
     private const uint VectorGlyphDeviceSubpixelPhaseGrid = 4;
+
+    private readonly record struct DirectRoundedRectangleContour(
+        float Left,
+        float Top,
+        float Right,
+        float Bottom,
+        Vector4 CornerRadii)
+    {
+        public float Width => Right - Left;
+        public float Height => Bottom - Top;
+    }
 
     private readonly record struct VectorGlyphPathCacheKey(
         PathGeometry Outline,
@@ -4330,6 +4344,785 @@ SceneStateUploadComplete:
         return quantized >= 1f ? 0f : quantized;
     }
 
+    private bool TryCompileDirectRoundedRectanglePathFill(
+        RenderCommand command,
+        Matrix4x4 transform)
+    {
+        if (command.Path == null || command.Brush == null || command.UseVectorGlyphRendering ||
+            !IsAxisAlignedClipTransform(transform) ||
+            !TryReadDirectRoundedRectanglePath(
+                command.Path,
+                out DirectRoundedRectangleContour outer,
+                out DirectRoundedRectangleContour inner,
+                out bool hasInner))
+        {
+            return false;
+        }
+
+        // Algorithm: recognize the typed line/arc topology of a partial-corner
+        // rounded rectangle, sample each quarter arc to a bounded device-space
+        // chord error, then emit a balanced convex triangulation or an outer/inner
+        // triangle band. Each triangle uses the existing analytic edge-distance
+        // shader with deterministic ownership for shared edges, so page-sized
+        // Border geometry does not reserve or rasterize a PathAtlas tile. Time
+        // and temporary space are O(C), where C is the bounded contour size.
+        int cornerSegmentCount = GetDirectRoundedCornerSegmentCount(outer, inner, hasInner, transform);
+        int contourPointCount = 4 * (cornerSegmentCount + 1);
+        Span<Vector2> outerPoints = stackalloc Vector2[contourPointCount];
+        BuildDirectRoundedRectangleContour(outer, outerPoints, cornerSegmentCount);
+        Span<Vector2> innerPoints = stackalloc Vector2[contourPointCount];
+        if (hasInner)
+        {
+            BuildDirectRoundedRectangleContour(inner, innerPoints, cornerSegmentCount);
+        }
+
+        int outerPointCount = hasInner
+            ? contourPointCount
+            : CompactDirectRoundedContour(outerPoints);
+
+        int triangleCapacity = hasInner
+            ? contourPointCount * 2
+            : Math.Max(0, outerPointCount - 2);
+        int vertexStart = _vectorVerticesList.Count;
+        int indexStart = _vectorIndicesList.Count;
+        CollectionsMarshal.SetCount(_vectorVerticesList, vertexStart + triangleCapacity * 4);
+        CollectionsMarshal.SetCount(_vectorIndicesList, indexStart + triangleCapacity * 6);
+        Span<VectorVertex> vertices = CollectionsMarshal.AsSpan(_vectorVerticesList);
+        Span<uint> indices = CollectionsMarshal.AsSpan(_vectorIndicesList);
+        int currentVertexCount = vertexStart;
+        int currentIndexCount = indexStart;
+        float brushIndex = RegisterBrush(command.Brush);
+
+        if (hasInner)
+        {
+            for (int pointIndex = 0; pointIndex < contourPointCount; pointIndex++)
+            {
+                int nextIndex = (pointIndex + 1) % contourPointCount;
+                Vector2 outerStart = outerPoints[pointIndex];
+                Vector2 outerEnd = outerPoints[nextIndex];
+                Vector2 innerStart = innerPoints[pointIndex];
+                Vector2 innerEnd = innerPoints[nextIndex];
+
+                AppendDirectFillTriangleVertices(
+                    vertices,
+                    indices,
+                    ref currentVertexCount,
+                    ref currentIndexCount,
+                    brushIndex,
+                    outerStart,
+                    outerEnd,
+                    innerEnd,
+                    exteriorEdgeMask: 1u,
+                    ownedInternalEdgeMask: 4u,
+                    transform,
+                    command.IsEdgeAliased);
+                AppendDirectFillTriangleVertices(
+                    vertices,
+                    indices,
+                    ref currentVertexCount,
+                    ref currentIndexCount,
+                    brushIndex,
+                    outerStart,
+                    innerEnd,
+                    innerStart,
+                    exteriorEdgeMask: 2u,
+                    ownedInternalEdgeMask: 4u,
+                    transform,
+                    command.IsEdgeAliased);
+            }
+        }
+        else
+        {
+            AppendBalancedDirectFillTriangles(
+                outerPoints[..outerPointCount],
+                startIndex: 0,
+                endIndex: outerPointCount - 1,
+                vertices,
+                indices,
+                ref currentVertexCount,
+                ref currentIndexCount,
+                brushIndex,
+                transform,
+                command.IsEdgeAliased);
+        }
+
+        CollectionsMarshal.SetCount(_vectorVerticesList, currentVertexCount);
+        CollectionsMarshal.SetCount(_vectorIndicesList, currentIndexCount);
+        return currentVertexCount > vertexStart;
+    }
+
+    private static int CompactDirectRoundedContour(Span<Vector2> points)
+    {
+        int outputCount = 0;
+        for (int inputIndex = 0; inputIndex < points.Length; inputIndex++)
+        {
+            Vector2 point = points[inputIndex];
+            if (outputCount > 0 &&
+                Vector2.DistanceSquared(points[outputCount - 1], point) <= StrokeEpsilon * StrokeEpsilon)
+            {
+                continue;
+            }
+
+            points[outputCount++] = point;
+        }
+
+        if (outputCount > 1 &&
+            Vector2.DistanceSquared(points[0], points[outputCount - 1]) <= StrokeEpsilon * StrokeEpsilon)
+        {
+            outputCount--;
+        }
+
+        return outputCount;
+    }
+
+    private static void AppendBalancedDirectFillTriangles(
+        ReadOnlySpan<Vector2> contourPoints,
+        int startIndex,
+        int endIndex,
+        Span<VectorVertex> vertices,
+        Span<uint> indices,
+        ref int currentVertexCount,
+        ref int currentIndexCount,
+        float brushIndex,
+        Matrix4x4 transform,
+        bool isEdgeAliased)
+    {
+        if (endIndex - startIndex < 2)
+        {
+            return;
+        }
+
+        // Algorithm: recursively split the convex contour at its midpoint. This
+        // produces N-2 non-overlapping triangles with logarithmic diagonal depth,
+        // avoiding the center fan's N large center-to-arc AABBs. Boundary edges
+        // retain analytic AA; exactly one directed copy owns every internal edge.
+        // Time is O(N), recursion space is O(log N), and output space is O(N).
+        int middleIndex = startIndex + (endIndex - startIndex) / 2;
+        GetDirectFillTriangleEdgeMasks(
+            startIndex,
+            middleIndex,
+            endIndex,
+            contourPoints.Length,
+            out uint exteriorEdgeMask,
+            out uint ownedInternalEdgeMask);
+        AppendDirectFillTriangleVertices(
+            vertices,
+            indices,
+            ref currentVertexCount,
+            ref currentIndexCount,
+            brushIndex,
+            contourPoints[startIndex],
+            contourPoints[middleIndex],
+            contourPoints[endIndex],
+            exteriorEdgeMask,
+            ownedInternalEdgeMask,
+            transform,
+            isEdgeAliased);
+
+        AppendBalancedDirectFillTriangles(
+            contourPoints,
+            startIndex,
+            middleIndex,
+            vertices,
+            indices,
+            ref currentVertexCount,
+            ref currentIndexCount,
+            brushIndex,
+            transform,
+            isEdgeAliased);
+        AppendBalancedDirectFillTriangles(
+            contourPoints,
+            middleIndex,
+            endIndex,
+            vertices,
+            indices,
+            ref currentVertexCount,
+            ref currentIndexCount,
+            brushIndex,
+            transform,
+            isEdgeAliased);
+    }
+
+    private static void GetDirectFillTriangleEdgeMasks(
+        int point0,
+        int point1,
+        int point2,
+        int contourPointCount,
+        out uint exteriorEdgeMask,
+        out uint ownedInternalEdgeMask)
+    {
+        uint exterior = 0;
+        uint ownedInternal = 0;
+        ClassifyEdge(point0, point1, 1u);
+        ClassifyEdge(point1, point2, 2u);
+        ClassifyEdge(point2, point0, 4u);
+        exteriorEdgeMask = exterior;
+        ownedInternalEdgeMask = ownedInternal;
+
+        void ClassifyEdge(int start, int end, uint bit)
+        {
+            bool isBoundary = (start + 1) % contourPointCount == end ||
+                (end + 1) % contourPointCount == start;
+            if (isBoundary)
+            {
+                exterior |= bit;
+            }
+            else if (start < end)
+            {
+                ownedInternal |= bit;
+            }
+        }
+    }
+
+    private static void AppendDirectFillTriangleVertices(
+        Span<VectorVertex> vertices,
+        Span<uint> indices,
+        ref int currentVertexCount,
+        ref int currentIndexCount,
+        float brushIndex,
+        Vector2 p0,
+        Vector2 p1,
+        Vector2 p2,
+        uint exteriorEdgeMask,
+        uint ownedInternalEdgeMask,
+        Matrix4x4 transform,
+        bool isEdgeAliased)
+    {
+        Vector2 edge0 = p1 - p0;
+        Vector2 edge1 = p2 - p0;
+        float area = edge0.X * edge1.Y - edge0.Y * edge1.X;
+        if (!float.IsFinite(area) || MathF.Abs(area) <= StrokeEpsilon)
+        {
+            return;
+        }
+
+        float scaleX = new Vector2(transform.M11, transform.M12).Length();
+        float scaleY = new Vector2(transform.M21, transform.M22).Length();
+        float minimumScale = MathF.Min(scaleX, scaleY);
+        if (!float.IsFinite(minimumScale) || minimumScale <= StrokeEpsilon)
+        {
+            return;
+        }
+
+        float padding = 1.5f / minimumScale;
+        Vector2 min = Vector2.Min(p0, Vector2.Min(p1, p2)) - new Vector2(padding);
+        Vector2 max = Vector2.Max(p0, Vector2.Max(p1, p2)) + new Vector2(padding);
+        if (!IsFinite(min) || !IsFinite(max))
+        {
+            return;
+        }
+
+        Vector2 position0 = Vector2.Transform(new Vector2(min.X, min.Y), transform);
+        Vector2 position1 = Vector2.Transform(new Vector2(max.X, min.Y), transform);
+        Vector2 position2 = Vector2.Transform(new Vector2(max.X, max.Y), transform);
+        Vector2 position3 = Vector2.Transform(new Vector2(min.X, max.Y), transform);
+        var firstPoints = new Vector4(p0.X, p0.Y, p1.X, p1.Y);
+        float shapeType = EncodeShapeType(isEdgeAliased, TriangleSdfShapeType);
+        uint vertexIndex = (uint)currentVertexCount;
+
+        vertices[currentVertexCount++] = new VectorVertex(
+            position0, firstPoints, new Vector2(min.X, min.Y), brushIndex, p2, exteriorEdgeMask, ownedInternalEdgeMask, shapeType);
+        vertices[currentVertexCount++] = new VectorVertex(
+            position1, firstPoints, new Vector2(max.X, min.Y), brushIndex, p2, exteriorEdgeMask, ownedInternalEdgeMask, shapeType);
+        vertices[currentVertexCount++] = new VectorVertex(
+            position2, firstPoints, new Vector2(max.X, max.Y), brushIndex, p2, exteriorEdgeMask, ownedInternalEdgeMask, shapeType);
+        vertices[currentVertexCount++] = new VectorVertex(
+            position3, firstPoints, new Vector2(min.X, max.Y), brushIndex, p2, exteriorEdgeMask, ownedInternalEdgeMask, shapeType);
+
+        indices[currentIndexCount++] = vertexIndex;
+        indices[currentIndexCount++] = vertexIndex + 1;
+        indices[currentIndexCount++] = vertexIndex + 2;
+        indices[currentIndexCount++] = vertexIndex;
+        indices[currentIndexCount++] = vertexIndex + 2;
+        indices[currentIndexCount++] = vertexIndex + 3;
+    }
+
+    private static void BuildDirectRoundedRectangleContour(
+        DirectRoundedRectangleContour contour,
+        Span<Vector2> points,
+        int cornerSegmentCount)
+    {
+        int pointIndex = 0;
+        AppendDirectRoundedCorner(
+            points, ref pointIndex,
+            contour.Left + contour.CornerRadii.X,
+            contour.Top + contour.CornerRadii.X,
+            contour.CornerRadii.X,
+            MathF.PI,
+            MathF.PI * 1.5f,
+            cornerSegmentCount);
+        AppendDirectRoundedCorner(
+            points, ref pointIndex,
+            contour.Right - contour.CornerRadii.Y,
+            contour.Top + contour.CornerRadii.Y,
+            contour.CornerRadii.Y,
+            MathF.PI * 1.5f,
+            MathF.PI * 2f,
+            cornerSegmentCount);
+        AppendDirectRoundedCorner(
+            points, ref pointIndex,
+            contour.Right - contour.CornerRadii.Z,
+            contour.Bottom - contour.CornerRadii.Z,
+            contour.CornerRadii.Z,
+            0f,
+            MathF.PI * 0.5f,
+            cornerSegmentCount);
+        AppendDirectRoundedCorner(
+            points, ref pointIndex,
+            contour.Left + contour.CornerRadii.W,
+            contour.Bottom - contour.CornerRadii.W,
+            contour.CornerRadii.W,
+            MathF.PI * 0.5f,
+            MathF.PI,
+            cornerSegmentCount);
+    }
+
+    private static void AppendDirectRoundedCorner(
+        Span<Vector2> points,
+        ref int pointIndex,
+        float centerX,
+        float centerY,
+        float radius,
+        float startAngle,
+        float endAngle,
+        int cornerSegmentCount)
+    {
+        for (int segmentIndex = 0; segmentIndex <= cornerSegmentCount; segmentIndex++)
+        {
+            float t = segmentIndex / (float)cornerSegmentCount;
+            float angle = startAngle + (endAngle - startAngle) * t;
+            points[pointIndex++] = new Vector2(
+                centerX + MathF.Cos(angle) * radius,
+                centerY + MathF.Sin(angle) * radius);
+        }
+    }
+
+    private static int GetDirectRoundedCornerSegmentCount(
+        DirectRoundedRectangleContour outer,
+        DirectRoundedRectangleContour inner,
+        bool hasInner,
+        Matrix4x4 transform)
+    {
+        float maximumRadius = MathF.Max(
+            MathF.Max(outer.CornerRadii.X, outer.CornerRadii.Y),
+            MathF.Max(outer.CornerRadii.Z, outer.CornerRadii.W));
+        if (hasInner)
+        {
+            maximumRadius = MathF.Max(
+                maximumRadius,
+                MathF.Max(
+                    MathF.Max(inner.CornerRadii.X, inner.CornerRadii.Y),
+                    MathF.Max(inner.CornerRadii.Z, inner.CornerRadii.W)));
+        }
+
+        float deviceScale = MathF.Max(
+            new Vector2(transform.M11, transform.M12).Length(),
+            new Vector2(transform.M21, transform.M22).Length());
+        float deviceRadius = maximumRadius * deviceScale;
+        if (!float.IsFinite(deviceRadius) || deviceRadius <= DirectRoundedMaximumDeviceChordError)
+        {
+            return DirectRoundedMinimumCornerSegmentCount;
+        }
+
+        float cosine = 1f - DirectRoundedMaximumDeviceChordError / deviceRadius;
+        float halfAngle = MathF.Acos(Math.Clamp(cosine, -1f, 1f));
+        if (!float.IsFinite(halfAngle) || halfAngle <= StrokeEpsilon)
+        {
+            return DirectRoundedMaximumCornerSegmentCount;
+        }
+
+        int segmentCount = (int)MathF.Ceiling(MathF.PI / (4f * halfAngle));
+        return Math.Clamp(
+            segmentCount,
+            DirectRoundedMinimumCornerSegmentCount,
+            DirectRoundedMaximumCornerSegmentCount);
+    }
+
+    private static bool TryReadDirectRoundedRectanglePath(
+        PathGeometry path,
+        out DirectRoundedRectangleContour outer,
+        out DirectRoundedRectangleContour inner,
+        out bool hasInner)
+    {
+        outer = default;
+        inner = default;
+        hasInner = false;
+        if (path.IsCombined || path.Figures.Count is < 1 or > 2 ||
+            !TryReadDirectRoundedRectangleContour(path.Figures[0], out DirectRoundedRectangleContour first))
+        {
+            return false;
+        }
+
+        if (path.Figures.Count == 1)
+        {
+            if (!HasPartialRoundedCorners(first))
+            {
+                return false;
+            }
+
+            outer = first;
+            return true;
+        }
+
+        if (path.FillRule != FillRule.EvenOdd ||
+            !TryReadDirectRoundedRectangleContour(path.Figures[1], out DirectRoundedRectangleContour second))
+        {
+            return false;
+        }
+
+        float firstArea = first.Width * first.Height;
+        float secondArea = second.Width * second.Height;
+        outer = firstArea >= secondArea ? first : second;
+        inner = firstArea >= secondArea ? second : first;
+        float tolerance = GetDirectRoundedTolerance(outer.Width, outer.Height);
+        if (!HasPartialRoundedCorners(outer) ||
+            inner.Left < outer.Left - tolerance ||
+            inner.Top < outer.Top - tolerance ||
+            inner.Right > outer.Right + tolerance ||
+            inner.Bottom > outer.Bottom + tolerance ||
+            inner.Width <= tolerance || inner.Height <= tolerance ||
+            inner.Width >= outer.Width - tolerance && inner.Height >= outer.Height - tolerance ||
+            !DirectRoundedRectangleContainsContour(outer, inner, tolerance))
+        {
+            return false;
+        }
+
+        hasInner = true;
+        return true;
+    }
+
+    private static bool DirectRoundedRectangleContainsContour(
+        DirectRoundedRectangleContour outer,
+        DirectRoundedRectangleContour inner,
+        float tolerance)
+    {
+        // A rounded rectangle is the intersection of its bounding box and the
+        // tangent half-planes of its four circular corner arcs. For each outer
+        // arc normal, the matching inner corner supplies the exact support point.
+        // Comparing the two support functions over each normal quadrant proves
+        // full convex-contour containment without sampling.
+        return IsCornerSupportContained(
+                new Vector2(outer.Left + outer.CornerRadii.X, outer.Top + outer.CornerRadii.X),
+                outer.CornerRadii.X,
+                new Vector2(inner.Left + inner.CornerRadii.X, inner.Top + inner.CornerRadii.X),
+                inner.CornerRadii.X,
+                -1f,
+                -1f,
+                tolerance) &&
+            IsCornerSupportContained(
+                new Vector2(outer.Right - outer.CornerRadii.Y, outer.Top + outer.CornerRadii.Y),
+                outer.CornerRadii.Y,
+                new Vector2(inner.Right - inner.CornerRadii.Y, inner.Top + inner.CornerRadii.Y),
+                inner.CornerRadii.Y,
+                1f,
+                -1f,
+                tolerance) &&
+            IsCornerSupportContained(
+                new Vector2(outer.Right - outer.CornerRadii.Z, outer.Bottom - outer.CornerRadii.Z),
+                outer.CornerRadii.Z,
+                new Vector2(inner.Right - inner.CornerRadii.Z, inner.Bottom - inner.CornerRadii.Z),
+                inner.CornerRadii.Z,
+                1f,
+                1f,
+                tolerance) &&
+            IsCornerSupportContained(
+                new Vector2(outer.Left + outer.CornerRadii.W, outer.Bottom - outer.CornerRadii.W),
+                outer.CornerRadii.W,
+                new Vector2(inner.Left + inner.CornerRadii.W, inner.Bottom - inner.CornerRadii.W),
+                inner.CornerRadii.W,
+                -1f,
+                1f,
+                tolerance);
+    }
+
+    private static bool IsCornerSupportContained(
+        Vector2 outerCenter,
+        float outerRadius,
+        Vector2 innerCenter,
+        float innerRadius,
+        float normalXSign,
+        float normalYSign,
+        float tolerance)
+    {
+        if (outerRadius <= tolerance)
+        {
+            return true;
+        }
+
+        Vector2 centerDelta = innerCenter - outerCenter;
+        float xSupport = normalXSign * centerDelta.X;
+        float ySupport = normalYSign * centerDelta.Y;
+        float maximumCenterSupport;
+        if (xSupport > 0f && ySupport > 0f)
+        {
+            maximumCenterSupport = MathF.Sqrt(xSupport * xSupport + ySupport * ySupport);
+        }
+        else
+        {
+            maximumCenterSupport = MathF.Max(xSupport, ySupport);
+        }
+
+        return maximumCenterSupport + innerRadius <= outerRadius + tolerance;
+    }
+
+    private static bool TryReadDirectRoundedRectangleContour(
+        PathFigure figure,
+        out DirectRoundedRectangleContour contour)
+    {
+        contour = default;
+        if (!figure.IsClosed || !figure.IsFilled || figure.Segments.Count is < 4 or > 12 ||
+            !IsFinite(figure.StartPoint))
+        {
+            return false;
+        }
+
+        float left = figure.StartPoint.X;
+        float top = figure.StartPoint.Y;
+        float right = figure.StartPoint.X;
+        float bottom = figure.StartPoint.Y;
+        Vector2 current = figure.StartPoint;
+        List<PathSegment> segments = figure.Segments;
+        for (int segmentIndex = 0; segmentIndex < segments.Count; segmentIndex++)
+        {
+            if (!TryGetPathSegmentEndPoint(segments[segmentIndex], out Vector2 end) || !IsFinite(end))
+            {
+                return false;
+            }
+
+            left = MathF.Min(left, end.X);
+            top = MathF.Min(top, end.Y);
+            right = MathF.Max(right, end.X);
+            bottom = MathF.Max(bottom, end.Y);
+            current = end;
+        }
+
+        float width = right - left;
+        float height = bottom - top;
+        float tolerance = GetDirectRoundedTolerance(width, height);
+        if (!float.IsFinite(width) || !float.IsFinite(height) ||
+            width <= tolerance || height <= tolerance)
+        {
+            return false;
+        }
+
+        var radii = Vector4.Zero;
+        uint cornerMask = 0;
+        current = figure.StartPoint;
+        for (int segmentIndex = 0; segmentIndex < segments.Count; segmentIndex++)
+        {
+            PathSegment segment = segments[segmentIndex];
+            _ = TryGetPathSegmentEndPoint(segment, out Vector2 end);
+            switch (segment)
+            {
+                case LineSegment:
+                    if (!IsDirectRoundedBoundaryLine(current, end, left, top, right, bottom, tolerance))
+                    {
+                        return false;
+                    }
+                    break;
+                case ArcSegment arc:
+                    if (!TryClassifyDirectRoundedCornerArc(
+                            current,
+                            end,
+                            arc,
+                            left,
+                            top,
+                            right,
+                            bottom,
+                            tolerance,
+                            out int cornerIndex,
+                            out float radius) ||
+                        (cornerMask & (1u << cornerIndex)) != 0)
+                    {
+                        return false;
+                    }
+
+                    cornerMask |= 1u << cornerIndex;
+                    switch (cornerIndex)
+                    {
+                        case 0: radii.X = radius; break;
+                        case 1: radii.Y = radius; break;
+                        case 2: radii.Z = radius; break;
+                        default: radii.W = radius; break;
+                    }
+                    break;
+                default:
+                    return false;
+            }
+
+            current = end;
+        }
+
+        if (!DirectRoundedPointsEqual(current, figure.StartPoint, tolerance) &&
+            !IsDirectRoundedBoundaryLine(current, figure.StartPoint, left, top, right, bottom, tolerance))
+        {
+            return false;
+        }
+
+        if (radii.X + radii.Y > width + tolerance ||
+            radii.W + radii.Z > width + tolerance ||
+            radii.X + radii.W > height + tolerance ||
+            radii.Y + radii.Z > height + tolerance ||
+            !MatchesDirectRoundedCanonicalTopology(
+                figure,
+                left,
+                top,
+                right,
+                bottom,
+                radii,
+                tolerance))
+        {
+            return false;
+        }
+
+        contour = new DirectRoundedRectangleContour(left, top, right, bottom, radii);
+        return true;
+    }
+
+    private static bool MatchesDirectRoundedCanonicalTopology(
+        PathFigure figure,
+        float left,
+        float top,
+        float right,
+        float bottom,
+        Vector4 radii,
+        float tolerance)
+    {
+        if (!DirectRoundedPointsEqual(
+                figure.StartPoint,
+                new Vector2(left + radii.X, top),
+                tolerance))
+        {
+            return false;
+        }
+
+        List<PathSegment> segments = figure.Segments;
+        int segmentIndex = 0;
+        return MatchLine(new Vector2(right - radii.Y, top)) &&
+            MatchOptionalArc(radii.Y, new Vector2(right, top + radii.Y)) &&
+            MatchLine(new Vector2(right, bottom - radii.Z)) &&
+            MatchOptionalArc(radii.Z, new Vector2(right - radii.Z, bottom)) &&
+            MatchLine(new Vector2(left + radii.W, bottom)) &&
+            MatchOptionalArc(radii.W, new Vector2(left, bottom - radii.W)) &&
+            MatchLine(new Vector2(left, top + radii.X)) &&
+            MatchOptionalArc(radii.X, figure.StartPoint) &&
+            segmentIndex == segments.Count;
+
+        bool MatchLine(Vector2 expectedEnd)
+        {
+            if (segmentIndex >= segments.Count ||
+                segments[segmentIndex++] is not LineSegment line)
+            {
+                return false;
+            }
+
+            return DirectRoundedPointsEqual(line.Point, expectedEnd, tolerance);
+        }
+
+        bool MatchOptionalArc(float radius, Vector2 expectedEnd)
+        {
+            if (radius <= tolerance)
+            {
+                return true;
+            }
+
+            if (segmentIndex >= segments.Count ||
+                segments[segmentIndex++] is not ArcSegment arc)
+            {
+                return false;
+            }
+
+            return DirectRoundedPointsEqual(arc.Point, expectedEnd, tolerance);
+        }
+    }
+
+    private static bool TryClassifyDirectRoundedCornerArc(
+        Vector2 start,
+        Vector2 end,
+        ArcSegment arc,
+        float left,
+        float top,
+        float right,
+        float bottom,
+        float tolerance,
+        out int cornerIndex,
+        out float radius)
+    {
+        cornerIndex = -1;
+        radius = arc.Size.X;
+        if (!float.IsFinite(radius) || radius <= tolerance ||
+            !float.IsFinite(arc.Size.Y) || MathF.Abs(arc.Size.Y - radius) > tolerance ||
+            !float.IsFinite(arc.RotationAngle) || MathF.Abs(arc.RotationAngle) > tolerance ||
+            arc.IsLargeArc || arc.SweepDirection != SweepDirection.Clockwise)
+        {
+            return false;
+        }
+
+        if (DirectRoundedPointsEqual(start, new Vector2(left, top + radius), tolerance) &&
+            DirectRoundedPointsEqual(end, new Vector2(left + radius, top), tolerance))
+        {
+            cornerIndex = 0;
+        }
+        else if (DirectRoundedPointsEqual(start, new Vector2(right - radius, top), tolerance) &&
+            DirectRoundedPointsEqual(end, new Vector2(right, top + radius), tolerance))
+        {
+            cornerIndex = 1;
+        }
+        else if (DirectRoundedPointsEqual(start, new Vector2(right, bottom - radius), tolerance) &&
+            DirectRoundedPointsEqual(end, new Vector2(right - radius, bottom), tolerance))
+        {
+            cornerIndex = 2;
+        }
+        else if (DirectRoundedPointsEqual(start, new Vector2(left + radius, bottom), tolerance) &&
+            DirectRoundedPointsEqual(end, new Vector2(left, bottom - radius), tolerance))
+        {
+            cornerIndex = 3;
+        }
+
+        return cornerIndex >= 0;
+    }
+
+    private static bool IsDirectRoundedBoundaryLine(
+        Vector2 start,
+        Vector2 end,
+        float left,
+        float top,
+        float right,
+        float bottom,
+        float tolerance)
+    {
+        if (DirectRoundedPointsEqual(start, end, tolerance))
+        {
+            return true;
+        }
+
+        bool horizontal = MathF.Abs(start.Y - end.Y) <= tolerance &&
+            (MathF.Abs(start.Y - top) <= tolerance || MathF.Abs(start.Y - bottom) <= tolerance) &&
+            start.X >= left - tolerance && start.X <= right + tolerance &&
+            end.X >= left - tolerance && end.X <= right + tolerance;
+        bool vertical = MathF.Abs(start.X - end.X) <= tolerance &&
+            (MathF.Abs(start.X - left) <= tolerance || MathF.Abs(start.X - right) <= tolerance) &&
+            start.Y >= top - tolerance && start.Y <= bottom + tolerance &&
+            end.Y >= top - tolerance && end.Y <= bottom + tolerance;
+        return horizontal || vertical;
+    }
+
+    private static bool DirectRoundedPointsEqual(Vector2 left, Vector2 right, float tolerance) =>
+        MathF.Abs(left.X - right.X) <= tolerance && MathF.Abs(left.Y - right.Y) <= tolerance;
+
+    private static float GetDirectRoundedTolerance(float width, float height) =>
+        MathF.Max(0.0001f, MathF.Max(MathF.Abs(width), MathF.Abs(height)) * 0.00001f);
+
+    private static bool HasPartialRoundedCorners(DirectRoundedRectangleContour contour)
+    {
+        int roundedCornerCount = 0;
+        if (contour.CornerRadii.X > 0f) roundedCornerCount++;
+        if (contour.CornerRadii.Y > 0f) roundedCornerCount++;
+        if (contour.CornerRadii.Z > 0f) roundedCornerCount++;
+        if (contour.CornerRadii.W > 0f) roundedCornerCount++;
+        return roundedCornerCount is > 0 and < 4;
+    }
+
     private void CompilePathCommand(
         RenderCommand cmd,
         Matrix4x4 transform,
@@ -4370,7 +5163,9 @@ SceneStateUploadComplete:
             EnsurePathHitTestCompilation(cmd.Path);
         }
 
-        if (cmd.Brush != null)
+        bool compiledDirectRoundedFill = cmd.Brush != null &&
+            TryCompileDirectRoundedRectanglePathFill(cmd, transform);
+        if (cmd.Brush != null && !compiledDirectRoundedFill)
         {
             float bIdx = RegisterBrush(cmd.Brush);
             var brush = cmd.Brush as SolidColorBrush;
