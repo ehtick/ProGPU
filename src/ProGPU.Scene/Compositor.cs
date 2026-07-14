@@ -10807,12 +10807,12 @@ SceneStateUploadComplete:
 
         if (hasClip)
         {
-            PushHitTestClip(visual.ClipBounds.Value, globalTransform);
+            PushHitTestClip(visual.ClipBounds.GetValueOrDefault(), globalTransform);
         }
 
         if (hasOuterClip)
         {
-            PushHitTestClip(visual.OuterClipBounds.Value, parentTransform);
+            PushHitTestClip(visual.OuterClipBounds.GetValueOrDefault(), parentTransform);
         }
 
         if (hasGeometryClip)
