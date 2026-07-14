@@ -19,7 +19,7 @@ public enum ShaderModuleVerificationStatus
 
 public unsafe class WgpuContext : IDisposable
 {
-    private bool _ownsDeviceResources = true;
+    private SharedDeviceLifetime? _sharedDeviceLifetime;
     public WebGPU Wgpu { get; private set; } = null!;
     public Instance* Instance { get; private set; } = null;
     public Adapter* Adapter { get; private set; } = null;
@@ -594,6 +594,7 @@ public unsafe class WgpuContext : IDisposable
         // 5. Retrieve Default Queue
         SafeLog("[WGPUCONTEXT] Getting Default Queue\n");
         Queue = Wgpu.DeviceGetQueue(Device);
+        _sharedDeviceLifetime = new SharedDeviceLifetime(Wgpu, Instance, Adapter, Device, Queue);
 
         // 6. Hook up validation error callback
         _errorCallback = PfnErrorCallback.From((type, msg, _) =>
@@ -625,7 +626,8 @@ public unsafe class WgpuContext : IDisposable
 
     /// <summary>
     /// Creates an additional presentation surface while reusing an initialized context's
-    /// instance, adapter, device, and queue. The owner context must outlive this surface context.
+    /// instance, adapter, device, and queue. The shared device remains alive until every surface
+    /// context has been disposed, regardless of owner disposal order.
     /// Surface creation and configuration are O(1); GPU pipelines, atlases, and device heaps stay
     /// shared instead of being duplicated for transient popup or tool windows.
     /// </summary>
@@ -652,6 +654,9 @@ public unsafe class WgpuContext : IDisposable
             throw new InvalidOperationException("Cannot create a WebGPU surface before the native window source is loaded.");
         }
 
+        SharedDeviceLifetime sharedDeviceLifetime = deviceOwner._sharedDeviceLifetime?.Acquire()
+            ?? throw new InvalidOperationException("The shared WebGPU device lifetime is unavailable.");
+
         _window = window;
         Wgpu = deviceOwner.Wgpu;
         Instance = deviceOwner.Instance;
@@ -662,11 +667,13 @@ public unsafe class WgpuContext : IDisposable
         MaxSamplersPerShaderStage = deviceOwner.MaxSamplersPerShaderStage;
         MaxBindGroups = deviceOwner.MaxBindGroups;
         SupportsReadOnlyAndReadWriteStorageTextures = deviceOwner.SupportsReadOnlyAndReadWriteStorageTextures;
-        _ownsDeviceResources = false;
+        _sharedDeviceLifetime = sharedDeviceLifetime;
 
         Surface = window.CreateWebGPUSurface(Wgpu, Instance);
         if (Surface == null)
         {
+            _sharedDeviceLifetime.Release();
+            _sharedDeviceLifetime = null;
             ClearSharedDeviceReferences();
             throw new InvalidOperationException("Failed to create the shared-device WebGPU surface.");
         }
@@ -958,34 +965,9 @@ public unsafe class WgpuContext : IDisposable
                 Surface = null;
             }
 
-            if (_ownsDeviceResources)
-            {
-                if (Queue != null)
-                {
-                    Wgpu.QueueRelease(Queue);
-                    Queue = null;
-                }
-                if (Device != null)
-                {
-                    Wgpu.DeviceDestroy(Device);
-                    Wgpu.DeviceRelease(Device);
-                    Device = null;
-                }
-                if (Adapter != null)
-                {
-                    Wgpu.AdapterRelease(Adapter);
-                    Adapter = null;
-                }
-                if (Instance != null)
-                {
-                    Wgpu.InstanceRelease(Instance);
-                    Instance = null;
-                }
-            }
-            else
-            {
-                ClearSharedDeviceReferences();
-            }
+            _sharedDeviceLifetime?.Release();
+            _sharedDeviceLifetime = null;
+            ClearSharedDeviceReferences();
             
             _isDisposed = true;
         }
@@ -999,6 +981,91 @@ public unsafe class WgpuContext : IDisposable
         Device = null;
         Adapter = null;
         Instance = null;
+    }
+
+    private sealed class SharedDeviceLifetime
+    {
+        private readonly object _sync = new();
+        private WebGPU? _wgpu;
+        private Instance* _instance;
+        private Adapter* _adapter;
+        private Device* _device;
+        private Queue* _queue;
+        private int _referenceCount = 1;
+
+        public SharedDeviceLifetime(
+            WebGPU wgpu,
+            Instance* instance,
+            Adapter* adapter,
+            Device* device,
+            Queue* queue)
+        {
+            _wgpu = wgpu;
+            _instance = instance;
+            _adapter = adapter;
+            _device = device;
+            _queue = queue;
+        }
+
+        public SharedDeviceLifetime Acquire()
+        {
+            lock (_sync)
+            {
+                ObjectDisposedException.ThrowIf(_referenceCount == 0, this);
+                _referenceCount++;
+                return this;
+            }
+        }
+
+        public void Release()
+        {
+            WebGPU? wgpu;
+            Instance* instance;
+            Adapter* adapter;
+            Device* device;
+            Queue* queue;
+            lock (_sync)
+            {
+                if (_referenceCount == 0 || --_referenceCount != 0)
+                {
+                    return;
+                }
+
+                wgpu = _wgpu;
+                instance = _instance;
+                adapter = _adapter;
+                device = _device;
+                queue = _queue;
+                _wgpu = null;
+                _instance = null;
+                _adapter = null;
+                _device = null;
+                _queue = null;
+            }
+
+            if (wgpu == null)
+            {
+                return;
+            }
+
+            if (queue != null)
+            {
+                wgpu.QueueRelease(queue);
+            }
+            if (device != null)
+            {
+                wgpu.DeviceDestroy(device);
+                wgpu.DeviceRelease(device);
+            }
+            if (adapter != null)
+            {
+                wgpu.AdapterRelease(adapter);
+            }
+            if (instance != null)
+            {
+                wgpu.InstanceRelease(instance);
+            }
+        }
     }
 
     ~WgpuContext()
