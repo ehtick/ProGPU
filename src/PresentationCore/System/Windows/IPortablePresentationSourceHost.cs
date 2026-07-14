@@ -47,9 +47,11 @@ public interface IPortablePresentationSourceHost : IDisposable
     void SetClientSize(double width, double height);
 
     /// <summary>
-    /// Sets this source's origin in the owning portable host's device-pixel coordinate space.
-    /// The main presentation source uses (0, 0); composited popup sources use their retained
-    /// popup position so client/screen conversions remain correct for nested popups.
+    /// Sets this source's client origin in absolute screen-device coordinates.
+    /// Main presentation sources use the native owner's client-screen origin; composited popup
+    /// sources use their absolute popup-screen position so client/screen conversions remain
+    /// correct after owner moves and for nested popups. A compositor that renders a popup into
+    /// its owner surface subtracts the owner's client-screen origin from the popup position.
     /// </summary>
     void SetClientOrigin(double x, double y)
     {
