@@ -237,6 +237,39 @@ public class SfntFontFaceTests
     }
 
     [Fact]
+    public void FallbackFontLoadsOnlyRequestedSbixGlyphData()
+    {
+        byte[] sourceSbix = BuildSbixTable();
+        var oversizedSbix = new byte[32 * 1024 * 1024];
+        sourceSbix.CopyTo(oversizedSbix, 0);
+        byte[] sourceFont = BuildSfntWithTables(
+            ("head", BuildHeadTable()),
+            ("maxp", BuildMaxpTable(3)),
+            ("cmap", BuildCmapFormat4Table()),
+            ("sbix", oversizedSbix));
+        string file = Path.Combine(Path.GetTempPath(), $"progpu-sbix-{Guid.NewGuid():N}.ttf");
+        File.WriteAllBytes(file, sourceFont);
+
+        try
+        {
+            long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+
+            TtfFont font = TtfFont.LoadGlyphResidentFile(file, 0, 1);
+
+            long allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+            Assert.True(font.FontData.Length < 1024 * 1024, $"Resident font is {font.FontData.Length:N0} bytes.");
+            Assert.True(allocatedBytes < 2 * 1024 * 1024, $"Allocated {allocatedBytes:N0} bytes.");
+            Assert.True(font.TryGetBitmapGlyph(1, 35, out BitmapGlyphData glyph));
+            Assert.Equal(new byte[] { 40, 41, 42 }, glyph.Data.ToArray());
+            Assert.False(font.TryGetBitmapGlyph(2, 35, out _));
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Fact]
     public void GlyphAtlasUploadsSbixAsIntrinsicColorBitmap()
     {
         byte[] fontData = BuildSfntWithTables(

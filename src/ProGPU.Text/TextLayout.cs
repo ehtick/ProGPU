@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Numerics;
+using System.Threading;
 
 namespace ProGPU.Text;
 
@@ -44,8 +46,10 @@ public class TextLayout
         "/System/Library/Fonts/Apple Color Emoji.ttc"
     };
 
-    private static readonly List<TtfFont> _fallbackFonts = new();
-    private static bool _fallbacksInitialized = false;
+    private static readonly Lazy<IReadOnlyList<FontInfo>> FallbackFontInfos = new(
+        CreateFallbackFontInfos,
+        LazyThreadSafetyMode.ExecutionAndPublication);
+    private static readonly ConcurrentDictionary<(string Path, int FaceIndex, ushort GlyphIndex), Lazy<TtfFont?>> FallbackFonts = new();
 
     private static int EstimateGlyphCapacity(string text)
     {
@@ -90,26 +94,70 @@ public class TextLayout
         }
     }
 
-    private static void InitializeFallbacks()
+    private static IReadOnlyList<FontInfo> CreateFallbackFontInfos()
     {
-        if (_fallbacksInitialized) return;
-        _fallbacksInitialized = true;
+        var fallbackFontInfos = new List<FontInfo>();
 
         for (int pathIndex = 0; pathIndex < FallbackFontPaths.Length; pathIndex++)
         {
             var path = FallbackFontPaths[pathIndex];
             if (System.IO.File.Exists(path))
             {
-                try
+                List<FontInfo> fileFaces = FontApi.ParseFontInfos(path);
+                for (int faceIndex = 0; faceIndex < fileFaces.Count; faceIndex++)
                 {
-                    _fallbackFonts.Add(new TtfFont(path));
-                    ProGpuTextDiagnostics.WriteLine($"[TextLayout] Loaded system fallback font: {path}");
-                }
-                catch (Exception ex)
-                {
-                    ProGpuTextDiagnostics.WriteLine($"[TextLayout] Warning: Failed to load fallback font '{path}': {ex.Message}");
+                    fallbackFontInfos.Add(fileFaces[faceIndex]);
                 }
             }
+        }
+
+        return fallbackFontInfos;
+    }
+
+    private static bool TryResolveFallback(uint codePoint, out TtfFont? font, out ushort glyphIndex)
+    {
+        IReadOnlyList<FontInfo> fallbackFontInfos = FallbackFontInfos.Value;
+        for (int fallbackIndex = 0; fallbackIndex < fallbackFontInfos.Count; fallbackIndex++)
+        {
+            FontInfo info = fallbackFontInfos[fallbackIndex];
+            if (!FontApi.TryGetGlyphIndex(info, codePoint, out ushort metadataGlyphIndex))
+            {
+                continue;
+            }
+
+            var key = (info.FilePath, info.FaceIndex, metadataGlyphIndex);
+            font = FallbackFonts.GetOrAdd(
+                key,
+                static value => new Lazy<TtfFont?>(
+                    () => LoadFallbackFont(value.Path, value.FaceIndex, value.GlyphIndex),
+                    LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+            if (font is not null)
+            {
+                glyphIndex = font.GetGlyphIndex(codePoint);
+                if (glyphIndex != 0)
+                {
+                    return true;
+                }
+            }
+        }
+
+        font = null;
+        glyphIndex = 0;
+        return false;
+    }
+
+    private static TtfFont? LoadFallbackFont(string path, int faceIndex, ushort glyphIndex)
+    {
+        try
+        {
+            var font = TtfFont.LoadGlyphResidentFile(path, faceIndex, glyphIndex);
+            ProGpuTextDiagnostics.WriteLine($"[TextLayout] Loaded system fallback font face {faceIndex}: {path}");
+            return font;
+        }
+        catch (Exception ex)
+        {
+            ProGpuTextDiagnostics.WriteLine($"[TextLayout] Warning: Failed to load fallback font face {faceIndex} from '{path}': {ex.Message}");
+            return null;
         }
     }
 
@@ -195,17 +243,11 @@ public class TextLayout
             // If the character is not supported in the primary font, try system fallback fonts (e.g. CJK or Emojis)
             if (glyphIdx == 0 && codePoint != ' ' && codePoint != '\t' && codePoint != '\n')
             {
-                InitializeFallbacks();
-                for (int fallbackIndex = 0; fallbackIndex < _fallbackFonts.Count; fallbackIndex++)
+                if (TryResolveFallback(codePoint, out TtfFont? fallbackFont, out ushort fallbackGlyphIndex) &&
+                    fallbackFont is not null)
                 {
-                    var fbFont = _fallbackFonts[fallbackIndex];
-                    ushort fbIdx = fbFont.GetGlyphIndex(codePoint);
-                    if (fbIdx != 0)
-                    {
-                        glyphIdx = fbIdx;
-                        resolvedFont = fbFont;
-                        break;
-                    }
+                    glyphIdx = fallbackGlyphIndex;
+                    resolvedFont = fallbackFont;
                 }
             }
 

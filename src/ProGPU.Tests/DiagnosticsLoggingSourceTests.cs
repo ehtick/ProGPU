@@ -255,8 +255,12 @@ public class DiagnosticsLoggingSourceTests
         Assert.Contains("int currentLineStart = 0;", source, StringComparison.Ordinal);
         Assert.Contains("for (int pathIndex = 0; pathIndex < FallbackFontPaths.Length; pathIndex++)", source, StringComparison.Ordinal);
         Assert.Contains("var path = FallbackFontPaths[pathIndex];", source, StringComparison.Ordinal);
-        Assert.Contains("for (int fallbackIndex = 0; fallbackIndex < _fallbackFonts.Count; fallbackIndex++)", source, StringComparison.Ordinal);
-        Assert.Contains("var fbFont = _fallbackFonts[fallbackIndex];", source, StringComparison.Ordinal);
+        Assert.Contains("private static readonly Lazy<IReadOnlyList<FontInfo>> FallbackFontInfos", source, StringComparison.Ordinal);
+        Assert.Contains("private static readonly ConcurrentDictionary<(string Path, int FaceIndex, ushort GlyphIndex), Lazy<TtfFont?>> FallbackFonts", source, StringComparison.Ordinal);
+        Assert.Contains("if (!FontApi.TryGetGlyphIndex(info, codePoint, out ushort metadataGlyphIndex))", source, StringComparison.Ordinal);
+        Assert.Contains("() => LoadFallbackFont(value.Path, value.FaceIndex, value.GlyphIndex)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("_fallbackFonts.Add(new TtfFont(path))", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("private static readonly List<TtfFont> _fallbackFonts", source, StringComparison.Ordinal);
         Assert.Contains("lastWordStartIndex = Glyphs.Count;", source, StringComparison.Ordinal);
         Assert.Contains("if (lastWordStartIndex > currentLineStart)", source, StringComparison.Ordinal);
         Assert.Contains("int wrapStartIndex = lastWordStartIndex;", source, StringComparison.Ordinal);

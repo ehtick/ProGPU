@@ -2,6 +2,7 @@ using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 
 namespace ProGPU.Text;
 
@@ -14,6 +15,7 @@ internal static class SfntFontMetadataReader
     private const int MaxFaceCount = 4096;
     private const int MaxTableCount = 4096;
     private const int MaxCharacterMapSize = 64 * 1024 * 1024;
+    private const int MaxSbixStrikeCount = 4096;
 
     public static bool TryReadFontInfos(string file, out List<FontInfo> infos)
     {
@@ -68,6 +70,78 @@ internal static class SfntFontMetadataReader
         }
     }
 
+    public static bool TryCreateGlyphResidentFont(
+        string file,
+        int faceIndex,
+        ushort glyphIndex,
+        out byte[] fontData)
+    {
+        ArgumentNullException.ThrowIfNull(file);
+        ArgumentOutOfRangeException.ThrowIfNegative(faceIndex);
+
+        try
+        {
+            using var stream = new FileStream(
+                file,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                bufferSize: 4096,
+                FileOptions.RandomAccess);
+            uint[] faceOffsets = ReadFaceOffsets(stream);
+            if ((uint)faceIndex >= (uint)faceOffsets.Length)
+            {
+                fontData = Array.Empty<byte>();
+                return false;
+            }
+
+            List<SourceTable> tables = ReadSourceTables(stream, faceOffsets[faceIndex], out uint sfntVersion);
+            int sbixIndex = tables.FindIndex(static table => table.Tag == "sbix");
+            int maxpIndex = tables.FindIndex(static table => table.Tag == "maxp");
+            if (sbixIndex < 0 || maxpIndex < 0 || tables[sbixIndex].Length < 8)
+            {
+                fontData = Array.Empty<byte>();
+                return false;
+            }
+
+            byte[] maxp = ReadTable(stream, tables[maxpIndex]);
+            if (maxp.Length < 6)
+            {
+                fontData = Array.Empty<byte>();
+                return false;
+            }
+
+            ushort glyphCount = ReadUShort(maxp, 4);
+            if (glyphIndex >= glyphCount ||
+                !TryBuildGlyphSbix(stream, tables[sbixIndex], glyphCount, glyphIndex, out byte[] sbix))
+            {
+                fontData = Array.Empty<byte>();
+                return false;
+            }
+
+            var residentTables = new List<ResidentTable>(tables.Count);
+            for (var tableIndex = 0; tableIndex < tables.Count; tableIndex++)
+            {
+                SourceTable table = tables[tableIndex];
+                byte[] data = tableIndex == sbixIndex
+                    ? sbix
+                    : tableIndex == maxpIndex
+                        ? maxp
+                        : ReadTable(stream, table);
+                residentTables.Add(new ResidentTable(table.Tag, table.Checksum, data));
+            }
+
+            fontData = BuildSfnt(sfntVersion, residentTables);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FormatException or
+                                   ArgumentException or OverflowException)
+        {
+            fontData = Array.Empty<byte>();
+            return false;
+        }
+    }
+
     private static List<FontInfo> ReadFontInfos(Stream stream, string file)
     {
         uint[] faceOffsets = ReadFaceOffsets(stream);
@@ -116,6 +190,278 @@ internal static class SfntFontMetadataReader
         }
 
         return offsets;
+    }
+
+    private static List<SourceTable> ReadSourceTables(Stream stream, uint faceOffset, out uint sfntVersion)
+    {
+        Span<byte> header = stackalloc byte[SfntHeaderSize];
+        ReadExactly(stream, faceOffset, header);
+        sfntVersion = ReadUInt(header, 0);
+        ushort tableCount = ReadUShort(header, 4);
+        if (tableCount == 0 || tableCount > MaxTableCount)
+        {
+            throw new FormatException("SFNT face has an invalid table count.");
+        }
+
+        var tables = new List<SourceTable>(tableCount);
+        Span<byte> record = stackalloc byte[TableRecordSize];
+        for (var tableIndex = 0; tableIndex < tableCount; tableIndex++)
+        {
+            ReadExactly(
+                stream,
+                checked((long)faceOffset + SfntHeaderSize + (long)tableIndex * TableRecordSize),
+                record);
+            string tag = Encoding.ASCII.GetString(record[..4]);
+            uint checksum = ReadUInt(record, 4);
+            uint offset = ReadUInt(record, 8);
+            uint length = ReadUInt(record, 12);
+            if (offset > stream.Length || length > stream.Length - offset)
+            {
+                throw new FormatException("SFNT table is outside the font file.");
+            }
+
+            tables.Add(new SourceTable(tag, checksum, offset, length));
+        }
+
+        return tables;
+    }
+
+    private static byte[] ReadTable(Stream stream, SourceTable table)
+    {
+        var data = GC.AllocateUninitializedArray<byte>(checked((int)table.Length));
+        ReadExactly(stream, table.Offset, data);
+        return data;
+    }
+
+    private static bool TryBuildGlyphSbix(
+        Stream stream,
+        SourceTable table,
+        ushort glyphCount,
+        ushort glyphIndex,
+        out byte[] sbix)
+    {
+        Span<byte> header = stackalloc byte[8];
+        ReadExactly(stream, table.Offset, header);
+        uint strikeCountValue = ReadUInt(header, 4);
+        if (ReadUShort(header, 0) != 1 || strikeCountValue == 0 ||
+            strikeCountValue > MaxSbixStrikeCount || 8L + strikeCountValue * 4L > table.Length)
+        {
+            sbix = Array.Empty<byte>();
+            return false;
+        }
+
+        int strikeCount = checked((int)strikeCountValue);
+        var sourceStrikeOffsets = new uint[strikeCount + 1];
+        Span<byte> offsetBytes = stackalloc byte[4];
+        for (var strikeIndex = 0; strikeIndex < strikeCount; strikeIndex++)
+        {
+            ReadExactly(stream, table.Offset + 8L + strikeIndex * 4L, offsetBytes);
+            sourceStrikeOffsets[strikeIndex] = ReadUInt(offsetBytes, 0);
+        }
+        sourceStrikeOffsets[strikeCount] = table.Length;
+
+        var strikes = new byte[strikeCount][];
+        for (var strikeIndex = 0; strikeIndex < strikeCount; strikeIndex++)
+        {
+            uint sourceStart = sourceStrikeOffsets[strikeIndex];
+            uint sourceEnd = sourceStrikeOffsets[strikeIndex + 1];
+            if (sourceStart >= sourceEnd || sourceEnd > table.Length)
+            {
+                sbix = Array.Empty<byte>();
+                return false;
+            }
+
+            Span<byte> strikeHeader = stackalloc byte[4];
+            ReadExactly(stream, table.Offset + sourceStart, strikeHeader);
+            byte[] record = TryReadSbixGlyphRecord(
+                stream,
+                table.Offset,
+                sourceStart,
+                sourceEnd,
+                glyphCount,
+                glyphIndex,
+                glyphIndex,
+                0,
+                out byte[] glyphRecord)
+                ? glyphRecord
+                : Array.Empty<byte>();
+            int glyphOffsetsLength = checked((glyphCount + 1) * 4);
+            int recordOffset = checked(4 + glyphOffsetsLength);
+            var strike = new byte[checked(recordOffset + record.Length)];
+            strikeHeader.CopyTo(strike);
+            for (var offsetIndex = 0; offsetIndex <= glyphCount; offsetIndex++)
+            {
+                uint offset = checked((uint)(offsetIndex <= glyphIndex ? recordOffset : strike.Length));
+                WriteUInt(strike, 4 + offsetIndex * 4, offset);
+            }
+            record.CopyTo(strike.AsSpan(recordOffset));
+            strikes[strikeIndex] = strike;
+        }
+
+        int headerLength = checked(8 + strikeCount * 4);
+        int totalLength = headerLength;
+        for (var strikeIndex = 0; strikeIndex < strikes.Length; strikeIndex++)
+        {
+            totalLength = checked(totalLength + strikes[strikeIndex].Length);
+        }
+
+        sbix = new byte[totalLength];
+        header.CopyTo(sbix);
+        int targetOffset = headerLength;
+        for (var strikeIndex = 0; strikeIndex < strikes.Length; strikeIndex++)
+        {
+            WriteUInt(sbix, 8 + strikeIndex * 4, checked((uint)targetOffset));
+            strikes[strikeIndex].CopyTo(sbix.AsSpan(targetOffset));
+            targetOffset += strikes[strikeIndex].Length;
+        }
+        return true;
+    }
+
+    private static bool TryReadSbixGlyphRecord(
+        Stream stream,
+        long tableOffset,
+        uint strikeOffset,
+        uint strikeEnd,
+        ushort glyphCount,
+        ushort glyphIndex,
+        ushort originalGlyphIndex,
+        int depth,
+        out byte[] record)
+    {
+        record = Array.Empty<byte>();
+        if (depth > 16 || glyphIndex >= glyphCount ||
+            strikeOffset + 4L + ((long)glyphCount + 1) * 4L > strikeEnd)
+        {
+            return false;
+        }
+
+        Span<byte> offsets = stackalloc byte[8];
+        ReadExactly(stream, tableOffset + strikeOffset + 4L + glyphIndex * 4L, offsets);
+        uint startRelative = ReadUInt(offsets, 0);
+        uint endRelative = ReadUInt(offsets, 4);
+        if (startRelative >= endRelative || strikeOffset + endRelative > strikeEnd ||
+            endRelative - startRelative < 8)
+        {
+            return false;
+        }
+
+        long sourceRecordOffset = tableOffset + strikeOffset + startRelative;
+        Span<byte> recordHeader = stackalloc byte[8];
+        ReadExactly(stream, sourceRecordOffset, recordHeader);
+        uint graphicType = ReadUInt(recordHeader, 4);
+        if (graphicType == 0x64757065) // "dupe"
+        {
+            if (endRelative - startRelative < 10)
+            {
+                return false;
+            }
+
+            Span<byte> duplicateBytes = stackalloc byte[2];
+            ReadExactly(stream, sourceRecordOffset + 8, duplicateBytes);
+            ushort duplicateGlyphIndex = ReadUShort(duplicateBytes, 0);
+            if (duplicateGlyphIndex == originalGlyphIndex ||
+                !TryReadSbixGlyphRecord(
+                    stream,
+                    tableOffset,
+                    strikeOffset,
+                    strikeEnd,
+                    glyphCount,
+                    duplicateGlyphIndex,
+                    originalGlyphIndex,
+                    depth + 1,
+                    out byte[] duplicate))
+            {
+                return false;
+            }
+
+            record = duplicate;
+            recordHeader[..4].CopyTo(record);
+            return true;
+        }
+
+        if (graphicType != TtfFont.PngBitmapGraphicType &&
+            graphicType != TtfFont.JpegBitmapGraphicType &&
+            graphicType != TtfFont.TiffBitmapGraphicType)
+        {
+            return false;
+        }
+
+        record = GC.AllocateUninitializedArray<byte>(checked((int)(endRelative - startRelative)));
+        ReadExactly(stream, sourceRecordOffset, record);
+        return true;
+    }
+
+    private static byte[] BuildSfnt(uint sfntVersion, List<ResidentTable> tables)
+    {
+        int directoryLength = checked(SfntHeaderSize + tables.Count * TableRecordSize);
+        int targetOffset = Align4(directoryLength);
+        int resultLength = targetOffset;
+        for (var tableIndex = 0; tableIndex < tables.Count; tableIndex++)
+        {
+            resultLength = Align4(checked(resultLength + tables[tableIndex].Data.Length));
+        }
+
+        var result = new byte[resultLength];
+        WriteUInt(result, 0, sfntVersion);
+        WriteUShort(result, 4, checked((ushort)tables.Count));
+        WriteSearchParameters(result, checked((ushort)tables.Count));
+        for (var tableIndex = 0; tableIndex < tables.Count; tableIndex++)
+        {
+            ResidentTable table = tables[tableIndex];
+            int recordOffset = SfntHeaderSize + tableIndex * TableRecordSize;
+            Encoding.ASCII.GetBytes(table.Tag, result.AsSpan(recordOffset, 4));
+            WriteUInt(result, recordOffset + 4, table.Tag == "sbix" ? CalculateChecksum(table.Data) : table.Checksum);
+            WriteUInt(result, recordOffset + 8, checked((uint)targetOffset));
+            WriteUInt(result, recordOffset + 12, checked((uint)table.Data.Length));
+            table.Data.CopyTo(result.AsSpan(targetOffset));
+            targetOffset = Align4(checked(targetOffset + table.Data.Length));
+        }
+
+        return result;
+    }
+
+    private static uint CalculateChecksum(ReadOnlySpan<byte> data)
+    {
+        uint checksum = 0;
+        for (var offset = 0; offset < data.Length; offset += 4)
+        {
+            uint value = (uint)data[offset] << 24;
+            if (offset + 1 < data.Length) value |= (uint)data[offset + 1] << 16;
+            if (offset + 2 < data.Length) value |= (uint)data[offset + 2] << 8;
+            if (offset + 3 < data.Length) value |= data[offset + 3];
+            checksum = unchecked(checksum + value);
+        }
+        return checksum;
+    }
+
+    private static int Align4(int value) => checked((value + 3) & ~3);
+
+    private static void WriteSearchParameters(Span<byte> data, ushort tableCount)
+    {
+        ushort maximumPowerOfTwo = 1;
+        ushort entrySelector = 0;
+        while (maximumPowerOfTwo <= tableCount / 2)
+        {
+            maximumPowerOfTwo *= 2;
+            entrySelector++;
+        }
+        WriteUShort(data, 6, checked((ushort)(maximumPowerOfTwo * TableRecordSize)));
+        WriteUShort(data, 8, entrySelector);
+        WriteUShort(data, 10, checked((ushort)(tableCount * TableRecordSize - maximumPowerOfTwo * TableRecordSize)));
+    }
+
+    private static void WriteUShort(Span<byte> data, int offset, ushort value)
+    {
+        data[offset] = (byte)(value >> 8);
+        data[offset + 1] = (byte)value;
+    }
+
+    private static void WriteUInt(Span<byte> data, int offset, uint value)
+    {
+        data[offset] = (byte)(value >> 24);
+        data[offset + 1] = (byte)(value >> 16);
+        data[offset + 2] = (byte)(value >> 8);
+        data[offset + 3] = (byte)value;
     }
 
     private static NameSelection ReadFaceNames(Stream stream, uint faceOffset)
@@ -323,4 +669,8 @@ internal static class SfntFontMetadataReader
             }
         }
     }
+
+    private readonly record struct SourceTable(string Tag, uint Checksum, uint Offset, uint Length);
+
+    private readonly record struct ResidentTable(string Tag, uint Checksum, byte[] Data);
 }

@@ -131,9 +131,15 @@ public static class FontApi
 
     public static bool ContainsGlyph(FontInfo font, uint codePoint)
     {
+        return TryGetGlyphIndex(font, codePoint, out _);
+    }
+
+    internal static bool TryGetGlyphIndex(FontInfo font, uint codePoint, out ushort glyphIndex)
+    {
         ArgumentNullException.ThrowIfNull(font);
         if (codePoint > 0x10FFFF || string.IsNullOrWhiteSpace(font.FilePath))
         {
+            glyphIndex = 0;
             return false;
         }
 
@@ -145,8 +151,9 @@ public static class FontApi
                     ? cmap
                     : null,
                 isThreadSafe: true)).Value;
+        glyphIndex = 0;
         return characterMap is not null &&
-               SfntFontFace.TryGetGlyphIndexFromCmap(characterMap, codePoint, out var glyphIndex) &&
+               SfntFontFace.TryGetGlyphIndexFromCmap(characterMap, codePoint, out glyphIndex) &&
                glyphIndex != 0;
     }
 

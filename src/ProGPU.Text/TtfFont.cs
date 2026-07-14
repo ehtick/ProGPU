@@ -238,6 +238,15 @@ public class TtfFont
     {
     }
 
+    internal static TtfFont LoadGlyphResidentFile(string filePath, int faceIndex, ushort glyphIndex)
+    {
+        ArgumentNullException.ThrowIfNull(filePath);
+        ArgumentOutOfRangeException.ThrowIfNegative(faceIndex);
+        return SfntFontMetadataReader.TryCreateGlyphResidentFont(filePath, faceIndex, glyphIndex, out byte[] fontData)
+            ? new TtfFont(fontData)
+            : new TtfFont(filePath, faceIndex);
+    }
+
     #region Big-Endian Readers
     private ushort ReadUShort(uint offset)
     {
