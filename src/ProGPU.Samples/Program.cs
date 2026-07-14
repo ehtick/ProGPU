@@ -23,7 +23,7 @@ public class App : Application
         window.Title = "ProGPU Substrate - High-Performance WinUI Gallery Dashboard";
         window.Width = 1280;
         window.Height = 800;
-        window.GlyphAtlasSize = 3072;
+        window.GlyphAtlasSize = 2560;
 
         window.Activated += (s, e) =>
         {
