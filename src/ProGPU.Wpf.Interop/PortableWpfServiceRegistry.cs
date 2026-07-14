@@ -339,8 +339,18 @@ public sealed class PortableFontDialogResult
     public string Unit { get; }
 }
 
+/// <summary>
+/// Describes a popup that a portable presentation host should composite into
+/// an owner surface.
+/// </summary>
 public sealed class PortablePopupCreateRequest
 {
+    /// <summary>
+    /// Creates a popup request using the legacy coordinate contract. The popup
+    /// coordinates are absolute screen-device coordinates and the owner client
+    /// origin defaults to the screen-device origin so existing consumers keep
+    /// their current positioning behavior.
+    /// </summary>
     public PortablePopupCreateRequest(
         object? placementTarget,
         object? ownerPresentationSource,
@@ -349,12 +359,41 @@ public sealed class PortablePopupCreateRequest
         int y,
         bool isTransparent,
         bool isChildPopup)
+        : this(
+            placementTarget,
+            ownerPresentationSource,
+            ownerHandle,
+            x,
+            y,
+            ownerClientScreenDeviceX: 0,
+            ownerClientScreenDeviceY: 0,
+            isTransparent,
+            isChildPopup)
+    {
+    }
+
+    /// <summary>
+    /// Creates a popup request with the popup position and owner client origin
+    /// expressed in the same absolute screen-device coordinate space.
+    /// </summary>
+    public PortablePopupCreateRequest(
+        object? placementTarget,
+        object? ownerPresentationSource,
+        IntPtr ownerHandle,
+        int popupScreenDeviceX,
+        int popupScreenDeviceY,
+        int ownerClientScreenDeviceX,
+        int ownerClientScreenDeviceY,
+        bool isTransparent,
+        bool isChildPopup)
     {
         PlacementTarget = placementTarget;
         OwnerPresentationSource = ownerPresentationSource;
         OwnerHandle = ownerHandle;
-        X = x;
-        Y = y;
+        PopupScreenDeviceX = popupScreenDeviceX;
+        PopupScreenDeviceY = popupScreenDeviceY;
+        OwnerClientScreenDeviceX = ownerClientScreenDeviceX;
+        OwnerClientScreenDeviceY = ownerClientScreenDeviceY;
         IsTransparent = isTransparent;
         IsChildPopup = isChildPopup;
     }
@@ -365,9 +404,39 @@ public sealed class PortablePopupCreateRequest
 
     public IntPtr OwnerHandle { get; }
 
-    public int X { get; }
+    /// <summary>
+    /// Gets the popup's absolute horizontal screen-device coordinate.
+    /// </summary>
+    public int PopupScreenDeviceX { get; }
 
-    public int Y { get; }
+    /// <summary>
+    /// Gets the popup's absolute vertical screen-device coordinate.
+    /// </summary>
+    public int PopupScreenDeviceY { get; }
+
+    /// <summary>
+    /// Gets the absolute horizontal screen-device coordinate of the owner
+    /// presentation source's client origin.
+    /// </summary>
+    public int OwnerClientScreenDeviceX { get; }
+
+    /// <summary>
+    /// Gets the absolute vertical screen-device coordinate of the owner
+    /// presentation source's client origin.
+    /// </summary>
+    public int OwnerClientScreenDeviceY { get; }
+
+    /// <summary>
+    /// Gets the popup's absolute horizontal screen-device coordinate.
+    /// This is the compatibility alias for <see cref="PopupScreenDeviceX"/>.
+    /// </summary>
+    public int X => PopupScreenDeviceX;
+
+    /// <summary>
+    /// Gets the popup's absolute vertical screen-device coordinate.
+    /// This is the compatibility alias for <see cref="PopupScreenDeviceY"/>.
+    /// </summary>
+    public int Y => PopupScreenDeviceY;
 
     public bool IsTransparent { get; }
 
