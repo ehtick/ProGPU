@@ -67,10 +67,12 @@ public class AppRunner<TApp> where TApp : Application, new()
         while (WindowManager.ActiveWindows.Count > 0)
         {
             var activeWindows = WindowManager.ActiveWindows;
+            var allWindowsUseVSync = true;
             foreach (var activeWindow in activeWindows)
             {
                 if (activeWindow.SilkWindow != null)
                 {
+                    allWindowsUseVSync &= activeWindow.SilkWindow.VSync;
                     if (!activeWindow.SilkWindow.IsInitialized)
                     {
                         activeWindow.SilkWindow.Initialize();
@@ -86,7 +88,14 @@ public class AppRunner<TApp> where TApp : Application, new()
                     }
                 }
             }
-            System.Threading.Thread.Sleep(1);
+
+            // Present blocks the loop for synchronized windows. An unconditional one
+            // millisecond sleep also throttled explicitly uncapped windows by hundreds
+            // of frames per second and amplified any scene-compilation regression.
+            if (allWindowsUseVSync)
+            {
+                System.Threading.Thread.Yield();
+            }
         }
     }
 }
