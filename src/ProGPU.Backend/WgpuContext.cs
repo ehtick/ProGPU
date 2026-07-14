@@ -19,6 +19,7 @@ public enum ShaderModuleVerificationStatus
 
 public unsafe class WgpuContext : IDisposable
 {
+    private bool _ownsDeviceResources = true;
     public WebGPU Wgpu { get; private set; } = null!;
     public Instance* Instance { get; private set; } = null;
     public Adapter* Adapter { get; private set; } = null;
@@ -622,6 +623,66 @@ public unsafe class WgpuContext : IDisposable
         Current = this;
     }
 
+    /// <summary>
+    /// Creates an additional presentation surface while reusing an initialized context's
+    /// instance, adapter, device, and queue. The owner context must outlive this surface context.
+    /// Surface creation and configuration are O(1); GPU pipelines, atlases, and device heaps stay
+    /// shared instead of being duplicated for transient popup or tool windows.
+    /// </summary>
+    public void InitializeSharedDevice(IWindow window, WgpuContext deviceOwner)
+    {
+        ArgumentNullException.ThrowIfNull(window);
+        ArgumentNullException.ThrowIfNull(deviceOwner);
+        if (_window != null || Instance != null || Surface != null || Device != null)
+        {
+            throw new InvalidOperationException("The WebGPU context is already initialized.");
+        }
+
+        if (deviceOwner._isDisposed ||
+            deviceOwner.Instance == null ||
+            deviceOwner.Adapter == null ||
+            deviceOwner.Device == null ||
+            deviceOwner.Queue == null)
+        {
+            throw new InvalidOperationException("The shared WebGPU device owner is not initialized.");
+        }
+
+        if (!CanCreateNativeSurface(window))
+        {
+            throw new InvalidOperationException("Cannot create a WebGPU surface before the native window source is loaded.");
+        }
+
+        _window = window;
+        Wgpu = deviceOwner.Wgpu;
+        Instance = deviceOwner.Instance;
+        Adapter = deviceOwner.Adapter;
+        Device = deviceOwner.Device;
+        Queue = deviceOwner.Queue;
+        MaxSampledTexturesPerShaderStage = deviceOwner.MaxSampledTexturesPerShaderStage;
+        MaxSamplersPerShaderStage = deviceOwner.MaxSamplersPerShaderStage;
+        MaxBindGroups = deviceOwner.MaxBindGroups;
+        SupportsReadOnlyAndReadWriteStorageTextures = deviceOwner.SupportsReadOnlyAndReadWriteStorageTextures;
+        _ownsDeviceResources = false;
+
+        Surface = window.CreateWebGPUSurface(Wgpu, Instance);
+        if (Surface == null)
+        {
+            ClearSharedDeviceReferences();
+            throw new InvalidOperationException("Failed to create the shared-device WebGPU surface.");
+        }
+
+        ConfigureSwapChain((uint)Math.Max(1, window.FramebufferSize.X), (uint)Math.Max(1, window.FramebufferSize.Y));
+        lock (_activeContexts)
+        {
+            if (!_activeContexts.Contains(this))
+            {
+                _activeContexts.Add(this);
+            }
+        }
+
+        Current = this;
+    }
+
     private static bool CanCreateNativeSurface(IWindow window)
     {
         if (window is not IView view || view.Handle == IntPtr.Zero)
@@ -891,37 +952,53 @@ public unsafe class WgpuContext : IDisposable
                 _activeContexts.Remove(this);
             }
             
-            if (Queue != null)
-            {
-                Wgpu.QueueRelease(Queue);
-                Queue = null;
-            }
-            if (Device != null)
-            {
-                Wgpu.DeviceDestroy(Device);
-                Wgpu.DeviceRelease(Device);
-                Device = null;
-            }
-            if (Adapter != null)
-            {
-                Wgpu.AdapterRelease(Adapter);
-                Adapter = null;
-            }
             if (Surface != null)
             {
                 Wgpu.SurfaceRelease(Surface);
                 Surface = null;
             }
-            if (Instance != null)
+
+            if (_ownsDeviceResources)
             {
-                Wgpu.InstanceRelease(Instance);
-                Instance = null;
+                if (Queue != null)
+                {
+                    Wgpu.QueueRelease(Queue);
+                    Queue = null;
+                }
+                if (Device != null)
+                {
+                    Wgpu.DeviceDestroy(Device);
+                    Wgpu.DeviceRelease(Device);
+                    Device = null;
+                }
+                if (Adapter != null)
+                {
+                    Wgpu.AdapterRelease(Adapter);
+                    Adapter = null;
+                }
+                if (Instance != null)
+                {
+                    Wgpu.InstanceRelease(Instance);
+                    Instance = null;
+                }
+            }
+            else
+            {
+                ClearSharedDeviceReferences();
             }
             
             _isDisposed = true;
         }
         
         GC.SuppressFinalize(this);
+    }
+
+    private void ClearSharedDeviceReferences()
+    {
+        Queue = null;
+        Device = null;
+        Adapter = null;
+        Instance = null;
     }
 
     ~WgpuContext()

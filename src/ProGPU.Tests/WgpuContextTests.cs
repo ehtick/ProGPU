@@ -1,6 +1,7 @@
 using ProGPU.Backend;
 using Silk.NET.Core.Native;
 using Silk.NET.WebGPU;
+using Silk.NET.Windowing;
 using System.Reflection;
 using Xunit;
 
@@ -8,6 +9,20 @@ namespace ProGPU.Tests;
 
 public sealed class WgpuContextTests
 {
+    [Fact]
+    public unsafe void SharedSurfaceRejectsUninitializedDeviceOwnerWithoutMutatingContext()
+    {
+        using var owner = new WgpuContext();
+        using var surface = new WgpuContext();
+        var window = DispatchProxy.Create<IWindow, DefaultDispatchProxy>();
+
+        Assert.Throws<InvalidOperationException>(() => surface.InitializeSharedDevice(window, owner));
+        Assert.True(surface.Instance == null);
+        Assert.True(surface.Adapter == null);
+        Assert.True(surface.Device == null);
+        Assert.True(surface.Queue == null);
+        Assert.True(surface.Surface == null);
+    }
     [Fact]
     public void VsyncOffUsesImmediateWhenSurfaceAdvertisesIt()
     {
@@ -135,6 +150,21 @@ public sealed class WgpuContextTests
 
         Assert.True(texture.IsDisposed);
         GC.SuppressFinalize(texture);
+    }
+
+    private class DefaultDispatchProxy : DispatchProxy
+    {
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+        {
+            if (targetMethod?.ReturnType == typeof(void))
+            {
+                return null;
+            }
+
+            return targetMethod?.ReturnType.IsValueType == true
+                ? Activator.CreateInstance(targetMethod.ReturnType)
+                : null;
+        }
     }
 
     [Fact]
