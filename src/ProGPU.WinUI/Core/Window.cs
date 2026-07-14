@@ -69,6 +69,13 @@ public class Window
     public bool IsUsingSystemBackdropFallback { get; private set; }
     public WindowFrameMetrics FrameMetrics { get; private set; }
 
+    /// <summary>
+    /// Configures the bounded glyph cache before activation. Font-inspection tools
+    /// that intentionally traverse thousands of unique glyphs can opt into a larger
+    /// atlas without increasing the default footprint of ordinary applications.
+    /// </summary>
+    public uint GlyphAtlasSize { get; set; } = CompositorOptions.Default.GlyphAtlasSize;
+
     public NativeWindowDecorations Decorations
     {
         get => _decorations;

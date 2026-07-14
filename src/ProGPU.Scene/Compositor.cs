@@ -342,6 +342,13 @@ public unsafe class Compositor : IDisposable
         var transformScale = TransformMetrics.GetStrokeScale(transform);
         var untransformedPhysicalFontSize = fontSize * dpiScale;
         var targetRasterFontSize = untransformedPhysicalFontSize * transformScale * staticZoom;
+        var rasterFontSize = QuantizeGlyphRasterSize(targetRasterFontSize);
+        var atlasToLogicalScale = untransformedPhysicalFontSize / MathF.Max(rasterFontSize, 0.0001f);
+        return (dpiScale * staticZoom, rasterFontSize, atlasToLogicalScale);
+    }
+
+    private static float QuantizeGlyphRasterSize(float targetRasterFontSize)
+    {
         var rasterFontSize = Math.Clamp(targetRasterFontSize, 4f, 64f);
         if (rasterFontSize <= 24f)
         {
@@ -352,8 +359,7 @@ public unsafe class Compositor : IDisposable
             rasterFontSize = MathF.Round(rasterFontSize / 2f) * 2f;
         }
 
-        var atlasToLogicalScale = untransformedPhysicalFontSize / MathF.Max(rasterFontSize, 0.0001f);
-        return (dpiScale * staticZoom, rasterFontSize, atlasToLogicalScale);
+        return rasterFontSize;
     }
 
     private readonly List<StaticTextRecord> _compiledTextRecords = new();
@@ -8797,6 +8803,13 @@ SceneStateUploadComplete:
             activeTransform,
             _currentDpiScale,
             staticZoom);
+        if (cmd.UseLogicalGlyphAtlasResolution)
+        {
+            var logicalTargetSize = cmd.FontSize *
+                TransformMetrics.GetStrokeScale(activeTransform) * staticZoom;
+            rasterFontSize = QuantizeGlyphRasterSize(logicalTargetSize);
+            atlasToLogicalScale = cmd.FontSize / MathF.Max(rasterFontSize, 0.0001f);
+        }
         var fontScaleX = cmd.HasFontTransform && float.IsFinite(cmd.FontTransform.X)
             ? cmd.FontTransform.X
             : 1f;
@@ -8903,7 +8916,12 @@ SceneStateUploadComplete:
                 isRotated,
                 cmd.TextHintingMode);
 
-            var info = _atlas.GetOrCreateGlyphByIndex(glyphFont, glyphIdx, rasterFontSize, subpixelX);
+            var info = _atlas.GetOrCreateGlyphByIndex(
+                glyphFont,
+                glyphIdx,
+                rasterFontSize,
+                subpixelX,
+                cmd.PreferGlyphAtlas);
             if (info.Width == 0 || info.Height == 0)
             {
                 CompileVectorGlyphFallback(
@@ -9003,6 +9021,13 @@ SceneStateUploadComplete:
             activeTransform,
             _currentDpiScale,
             staticZoom);
+        if (cmd.UseLogicalGlyphAtlasResolution)
+        {
+            var logicalTargetSize = cmd.FontSize *
+                TransformMetrics.GetStrokeScale(activeTransform) * staticZoom;
+            rasterFontSize = QuantizeGlyphRasterSize(logicalTargetSize);
+            atlasToLogicalScale = cmd.FontSize / MathF.Max(rasterFontSize, 0.0001f);
+        }
         var fontScaleX = cmd.HasFontTransform && float.IsFinite(cmd.FontTransform.X)
             ? cmd.FontTransform.X
             : 1f;
@@ -9082,7 +9107,9 @@ SceneStateUploadComplete:
             var hasBitmapGlyph = font.HasBitmapGlyphs &&
                 font.TryGetBitmapGlyph(glyphIdx, rasterFontSize, out _);
             if (!hasBitmapGlyph &&
-                (cmd.UseVectorGlyphRendering || font.HasCffOutlines || atlasUpscale > 1.0001f))
+                (cmd.UseVectorGlyphRendering ||
+                 (!cmd.PreferGlyphAtlas &&
+                  (font.HasCffOutlines || atlasUpscale > 1.0001f))))
             {
                 CompileVectorGlyphFallback(
                     font,
@@ -9109,7 +9136,12 @@ SceneStateUploadComplete:
                 isRotated,
                 cmd.TextHintingMode);
 
-            var info = _atlas.GetOrCreateGlyphByIndex(font, glyphIdx, rasterFontSize, subpixelX);
+            var info = _atlas.GetOrCreateGlyphByIndex(
+                font,
+                glyphIdx,
+                rasterFontSize,
+                subpixelX,
+                cmd.PreferGlyphAtlas);
             if (info.Width == 0 || info.Height == 0)
             {
                 CompileVectorGlyphFallback(

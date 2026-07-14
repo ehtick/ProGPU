@@ -42,7 +42,16 @@ public unsafe class GlyphAtlas : IDisposable
     private uint _currentY = 2;
     private uint _currentRowHeight = 0;
 
-    private readonly Dictionary<(TtfFont font, ushort glyphIndex, float size, byte subpixelX), GlyphInfo> _glyphs = new();
+    private readonly record struct GlyphKey(TtfFont Font, ushort GlyphIndex, float Size, byte SubpixelX);
+
+    private struct CachedGlyph
+    {
+        public GlyphInfo Info;
+        public ulong LastUsedFrame;
+        public bool IsCapacityFallback;
+    }
+
+    private readonly Dictionary<GlyphKey, CachedGlyph> _glyphs = new();
     private readonly Dictionary<TtfFont, (GpuBuffer RecordsBuffer, GpuBuffer SegmentsBuffer)> _fontGpuData = new();
     
     private readonly RenderPipelineCache _pipelineCache;
@@ -55,12 +64,15 @@ public unsafe class GlyphAtlas : IDisposable
 
     private readonly GpuBuffer _uniformRingBuffer;
     private uint _ringOffset;
+    private ulong _frameNumber;
 
     public void BeginBatch()
     {
         if (_isDisposed) return;
         _batchDepth++;
         if (_batchDepth > 1) return;
+
+        _frameNumber++;
 
         CreateBatchEncoder();
     }
@@ -125,9 +137,15 @@ public unsafe class GlyphAtlas : IDisposable
 
     public uint AtlasSize => _atlasSize;
 
+    public int CachedGlyphCount => _glyphs.Count;
+
     public ulong Generation { get; private set; }
 
     public bool CapacityExceeded { get; private set; }
+
+    public ulong EvictionCount { get; private set; }
+
+    public ulong ClearCount { get; private set; }
 
     public bool IsAlmostFull => (_currentY + _currentRowHeight) > (_atlasSize * 0.85f);
 
@@ -143,6 +161,7 @@ public unsafe class GlyphAtlas : IDisposable
 
         _atlasTexture.ClearRenderTarget();
         CapacityExceeded = false;
+        ClearCount++;
         Generation++;
     }
 
@@ -202,16 +221,37 @@ public unsafe class GlyphAtlas : IDisposable
         return GetOrCreateGlyphByIndex(font, glyphIdx, size, subpixelX);
     }
 
-    public GlyphInfo GetOrCreateGlyphByIndex(TtfFont font, ushort glyphIdx, float size, byte subpixelX = 0)
+    public GlyphInfo GetOrCreateGlyphByIndex(
+        TtfFont font,
+        ushort glyphIdx,
+        float size,
+        byte subpixelX = 0,
+        bool preferGlyphAtlas = false)
     {
         if (_isDisposed) throw new ObjectDisposedException(nameof(GlyphAtlas));
         
-        var key = (font, glyphIdx, size, subpixelX);
-        if (!_glyphs.TryGetValue(key, out var info))
+        var key = new GlyphKey(font, glyphIdx, size, subpixelX);
+        if (_glyphs.TryGetValue(key, out var cached))
         {
-            if (TryCreateColorBitmapGlyph(font, glyphIdx, size, out info))
+            // Capacity sentinels are retryable on a later frame. A newly visible glyph
+            // can then reuse a least-recently-used region instead of remaining on the
+            // slower vector fallback forever.
+            if (!cached.IsCapacityFallback ||
+                !preferGlyphAtlas || cached.LastUsedFrame == _frameNumber)
             {
-                _glyphs[key] = info;
+                cached.LastUsedFrame = _frameNumber;
+                _glyphs[key] = cached;
+                return cached.Info;
+            }
+
+            _glyphs.Remove(key);
+        }
+
+        GlyphInfo info;
+        {
+            if (TryCreateColorBitmapGlyph(font, glyphIdx, size, preferGlyphAtlas, out info))
+            {
+                CacheGlyph(key, info);
                 return info;
             }
             // Color vector glyphs are emitted as paths by the compositor.
@@ -323,9 +363,21 @@ public unsafe class GlyphAtlas : IDisposable
                             uint gW = (uint)width;
                             uint gH = (uint)height;
 
-                            if (!TryAllocateAtlasRegion(gW, gH, out uint posX, out uint posY))
+                            if (!TryAllocateAtlasRegion(
+                                    gW,
+                                    gH,
+                                    preferGlyphAtlas,
+                                    out uint posX,
+                                    out uint posY))
                             {
-                                return default;
+                                // Remember the bounded-atlas miss. Returning without caching
+                                // made every subsequent frame retry the same failed allocation,
+                                // emit another diagnostic, and rebuild the vector fallback.
+                                // A zero-sized cached entry deliberately routes rendering to the
+                                // compositor's retained vector fallback exactly once per key.
+                                info = CreateEmptyGlyphInfo(font, glyphIdx, size);
+                                CacheGlyph(key, info, isCapacityFallback: true);
+                                return info;
                             }
 
                             // Upload pre-compiled font segments and records once per font loading
@@ -498,16 +550,27 @@ public unsafe class GlyphAtlas : IDisposable
                     }
                 }
             }
-            _glyphs[key] = info;
+            CacheGlyph(key, info);
         }
 
         return info;
+    }
+
+    private void CacheGlyph(GlyphKey key, GlyphInfo info, bool isCapacityFallback = false)
+    {
+        _glyphs[key] = new CachedGlyph
+        {
+            Info = info,
+            LastUsedFrame = _frameNumber,
+            IsCapacityFallback = isCapacityFallback
+        };
     }
 
     private bool TryCreateColorBitmapGlyph(
         TtfFont font,
         ushort glyphIndex,
         float size,
+        bool preferGlyphAtlas,
         out GlyphInfo info)
     {
         info = default;
@@ -537,7 +600,7 @@ public unsafe class GlyphAtlas : IDisposable
 
         var width = checked((uint)decoded.Width);
         var height = checked((uint)decoded.Height);
-        if (!TryAllocateAtlasRegion(width, height, out var x, out var y))
+        if (!TryAllocateAtlasRegion(width, height, preferGlyphAtlas, out var x, out var y))
         {
             return false;
         }
@@ -587,7 +650,12 @@ public unsafe class GlyphAtlas : IDisposable
         return true;
     }
 
-    private bool TryAllocateAtlasRegion(uint width, uint height, out uint x, out uint y)
+    private bool TryAllocateAtlasRegion(
+        uint width,
+        uint height,
+        bool preferGlyphAtlas,
+        out uint x,
+        out uint y)
     {
         x = 0;
         y = 0;
@@ -616,6 +684,12 @@ public unsafe class GlyphAtlas : IDisposable
 
         if (nextY + height + 2 > _atlasSize)
         {
+            if (preferGlyphAtlas && TryReuseLeastRecentlyUsedRegion(width, height, out x, out y))
+            {
+                CapacityExceeded = false;
+                return true;
+            }
+
             CapacityExceeded = true;
             ProGpuTextDiagnostics.WriteLine(
                 "[GlyphAtlas] Atlas capacity exhausted; preserving existing UVs and using vector fallback for the new glyph.");
@@ -627,6 +701,51 @@ public unsafe class GlyphAtlas : IDisposable
         _currentX = nextX + width + 2;
         _currentY = nextY;
         _currentRowHeight = Math.Max(nextRowHeight, height);
+        return true;
+    }
+
+    private bool TryReuseLeastRecentlyUsedRegion(uint width, uint height, out uint x, out uint y)
+    {
+        x = 0;
+        y = 0;
+
+        GlyphKey candidateKey = default;
+        CachedGlyph candidate = default;
+        bool found = false;
+        ulong bestWaste = ulong.MaxValue;
+
+        foreach (var pair in _glyphs)
+        {
+            var entry = pair.Value;
+            var info = entry.Info;
+            if (entry.LastUsedFrame == _frameNumber ||
+                info.Width < width || info.Height < height ||
+                info.Width == 0 || info.Height == 0)
+            {
+                continue;
+            }
+
+            ulong waste = (ulong)info.Width * info.Height - (ulong)width * height;
+            if (!found || entry.LastUsedFrame < candidate.LastUsedFrame ||
+                (entry.LastUsedFrame == candidate.LastUsedFrame && waste < bestWaste))
+            {
+                found = true;
+                candidateKey = pair.Key;
+                candidate = entry;
+                bestWaste = waste;
+            }
+        }
+
+        if (!found)
+        {
+            return false;
+        }
+
+        _glyphs.Remove(candidateKey);
+        x = candidate.Info.X;
+        y = candidate.Info.Y;
+        EvictionCount++;
+        Generation++;
         return true;
     }
 

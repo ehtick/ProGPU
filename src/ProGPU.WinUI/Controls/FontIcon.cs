@@ -11,6 +11,9 @@ namespace Microsoft.UI.Xaml.Controls;
 
 public class FontIcon : IconElement
 {
+    private readonly ushort[] _singleGlyphIndex = new ushort[1];
+    private readonly Vector2[] _singleGlyphPosition = new Vector2[1];
+
     public static readonly DependencyProperty FontSizeProperty =
         DependencyProperty.Register(
             "FontSize",
@@ -62,6 +65,12 @@ public class FontIcon : IconElement
         set => SetValue(GlyphIndexProperty, value);
     }
 
+    /// <summary>
+    /// Uses the high-precision vector path lane instead of the bounded glyph atlas.
+    /// The atlas-backed default is intended for icon grids and other scrolling UI.
+    /// </summary>
+    public bool UseVectorGlyphRendering { get; set; }
+
     public FontIcon()
     {
         // Default bounds
@@ -93,18 +102,34 @@ public class FontIcon : IconElement
 
         if (GlyphIndex.HasValue)
         {
-            var rawOutline = activeFont.GetGlyphOutline(GlyphIndex.Value);
-            if (rawOutline != null)
-            {
-                float unitsPerEm = activeFont.UnitsPerEm > 0 ? activeFont.UnitsPerEm : 2048f;
-                float scaleVal = FontSize / unitsPerEm;
+            float unitsPerEm = activeFont.UnitsPerEm > 0 ? activeFont.UnitsPerEm : 2048f;
+            float scaleVal = FontSize / unitsPerEm;
+            float advance = activeFont.GetAdvanceWidth(GlyphIndex.Value, FontSize);
+            float offsetX = (Size.X - advance) / 2f;
+            float offsetY = activeFont.Ascender * scaleVal;
 
-                float advance = activeFont.GetAdvanceWidth(GlyphIndex.Value, FontSize);
-                float offsetX = (Size.X - advance) / 2f;
-                float offsetY = activeFont.Ascender * scaleVal;
-                var transform = Matrix4x4.CreateScale(scaleVal, -scaleVal, 1f) *
-                    Matrix4x4.CreateTranslation(offsetX, offsetY, 0f);
-                context.DrawPath(brush, null, rawOutline, transform);
+            if (!UseVectorGlyphRendering)
+            {
+                _singleGlyphIndex[0] = GlyphIndex.Value;
+                context.DrawGlyphRun(
+                    _singleGlyphIndex,
+                    _singleGlyphPosition,
+                    activeFont,
+                    FontSize,
+                    brush,
+                    new Vector2(offsetX, offsetY),
+                    preferGlyphAtlas: true,
+                    useLogicalGlyphAtlasResolution: true);
+            }
+            else
+            {
+                var rawOutline = activeFont.GetGlyphOutline(GlyphIndex.Value);
+                if (rawOutline != null)
+                {
+                    var transform = Matrix4x4.CreateScale(scaleVal, -scaleVal, 1f) *
+                        Matrix4x4.CreateTranslation(offsetX, offsetY, 0f);
+                    context.DrawPath(brush, null, rawOutline, transform);
+                }
             }
         }
         else if (!string.IsNullOrEmpty(Glyph))

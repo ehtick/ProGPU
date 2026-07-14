@@ -19,6 +19,141 @@ namespace ProGPU.Samples;
 
 public static class FontGlyphBrowserPage
 {
+    private sealed class GlyphBrowserItem : Border
+    {
+        private readonly FontIcon _icon;
+        private readonly RichTextBlock _label;
+        private readonly Run _indexRun;
+        private readonly Run _hexRun;
+        private bool _isSelected;
+        private bool _isHovered;
+
+        public GlyphBrowserItem()
+        {
+            CornerRadius = 6f;
+            Padding = new Thickness(6);
+            Background = new ThemeResourceBrush("PageBackground");
+            BorderBrush = new ThemeResourceBrush("ControlBorder");
+            BorderThickness = new Thickness(1f);
+            HorizontalAlignment = HorizontalAlignment.Center;
+            VerticalAlignment = VerticalAlignment.Center;
+            WidthConstraint = 84f;
+            HeightConstraint = 92f;
+
+            var itemStack = new StackPanel
+            {
+                Orientation = Orientation.Vertical,
+                HorizontalAlignment = HorizontalAlignment.Center
+            };
+            Child = itemStack;
+
+            _icon = new FontIcon
+            {
+                Name = "GlyphItemIcon",
+                FontSize = 36f,
+                WidthConstraint = 40f,
+                HeightConstraint = 40f,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Margin = new Thickness(0, 0, 0, 6)
+            };
+            itemStack.AddChild(_icon);
+
+            _label = new RichTextBlock
+            {
+                Name = "GlyphItemLabel",
+                FontSize = 9f,
+                HorizontalAlignment = HorizontalAlignment.Center
+            };
+            _indexRun = new Run();
+            _hexRun = new Run();
+            _label.Inlines.Add(_indexRun);
+            _label.Inlines.Add(new Bold(_hexRun)
+            {
+                Foreground = new ThemeResourceBrush("SystemAccentColor")
+            });
+            itemStack.AddChild(_label);
+
+            PointerPressed += OnItemClick;
+            PointerEntered += OnItemHover;
+            PointerExited += OnItemLeave;
+        }
+
+        public void Bind(TtfFont? font, int index, bool isSelected)
+        {
+            Tag = index;
+
+            if (!ReferenceEquals(_icon.Font, font))
+            {
+                _icon.Font = font;
+            }
+
+            var glyphIndex = (ushort)index;
+            if (_icon.GlyphIndex != glyphIndex)
+            {
+                _icon.GlyphIndex = glyphIndex;
+            }
+
+            _indexRun.Text = $"Idx: {index}\n";
+            _hexRun.Text = $"0x{index:X3}";
+            SetSelected(isSelected);
+        }
+
+        public void SetHovered(bool isHovered)
+        {
+            if (_isHovered == isHovered)
+            {
+                return;
+            }
+
+            _isHovered = isHovered;
+            UpdateChrome();
+        }
+
+        public int BoundGlyphIndex => Tag is int index ? index : -1;
+
+        public bool EmitsGlyphCommand()
+        {
+            var context = new DrawingContext();
+            _icon.OnRender(context);
+            return context.Commands.Exists(static command =>
+                command.Type == RenderCommandType.DrawGlyphRun &&
+                command.GlyphIndices is { Length: > 0 });
+        }
+
+        private void SetSelected(bool isSelected)
+        {
+            if (_isSelected == isSelected)
+            {
+                return;
+            }
+
+            _isSelected = isSelected;
+            UpdateChrome();
+        }
+
+        private void UpdateChrome()
+        {
+            if (_isSelected)
+            {
+                BorderBrush = new ThemeResourceBrush("SystemAccentColor");
+                BorderThickness = new Thickness(1.5f);
+                Background = new ThemeResourceBrush("ControlBackgroundHover");
+            }
+            else if (_isHovered)
+            {
+                BorderBrush = new ThemeResourceBrush("ControlBorderHover");
+                BorderThickness = new Thickness(1f);
+                Background = new ThemeResourceBrush("ControlBackgroundHover");
+            }
+            else
+            {
+                BorderBrush = new ThemeResourceBrush("ControlBorder");
+                BorderThickness = new Thickness(1f);
+                Background = new ThemeResourceBrush("PageBackground");
+            }
+        }
+    }
+
     private sealed class GlyphIndexList : IList
     {
         public GlyphIndexList(int count)
@@ -85,9 +220,73 @@ public static class FontGlyphBrowserPage
     private static UniformVirtualizingGridPanel? _virtualGrid;
     private static TextBox? _pathInput;
     private static RichTextBlock? _pathStatus;
+    private static float _benchmarkScrollDirection = 1f;
+
+    internal static void AdvanceBenchmarkScroll(float step)
+    {
+        if (_virtualGrid == null)
+        {
+            return;
+        }
+
+        float maxOffset = Math.Max(0f, _virtualGrid.TotalVirtualHeight - _virtualGrid.ViewportHeight);
+        if (maxOffset <= 0f)
+        {
+            return;
+        }
+
+        float nextOffset = _virtualGrid.ScrollOffset + _benchmarkScrollDirection * step;
+        if (nextOffset >= maxOffset)
+        {
+            nextOffset = maxOffset;
+            _benchmarkScrollDirection = -1f;
+        }
+        else if (nextOffset <= 0f)
+        {
+            nextOffset = 0f;
+            _benchmarkScrollDirection = 1f;
+        }
+
+        _virtualGrid.ScrollOffset = nextOffset;
+    }
+
+    internal static bool TryGetBenchmarkGlyphState(
+        out int realizedItems,
+        out int glyphCommandItems,
+        out int minimumGlyphIndex,
+        out int maximumGlyphIndex)
+    {
+        realizedItems = 0;
+        glyphCommandItems = 0;
+        minimumGlyphIndex = int.MaxValue;
+        maximumGlyphIndex = -1;
+        if (_virtualGrid == null)
+        {
+            return false;
+        }
+
+        foreach (var child in _virtualGrid.Children)
+        {
+            if (child is not GlyphBrowserItem item || item.BoundGlyphIndex < 0)
+            {
+                continue;
+            }
+
+            realizedItems++;
+            minimumGlyphIndex = Math.Min(minimumGlyphIndex, item.BoundGlyphIndex);
+            maximumGlyphIndex = Math.Max(maximumGlyphIndex, item.BoundGlyphIndex);
+            if (item.EmitsGlyphCommand())
+            {
+                glyphCommandItems++;
+            }
+        }
+
+        return realizedItems > 0;
+    }
 
     public static FrameworkElement Create()
     {
+        _benchmarkScrollDirection = 1f;
         // 1. Initial State Font Load
         _selectedFont = AppState._font ?? PopupService.DefaultFont;
         _systemFonts = new List<FontInfo>();
@@ -458,91 +657,11 @@ public static class FontGlyphBrowserPage
         _itemsControl.ItemsPanel = _virtualGrid;
 
         // Wire virtualized recycling delegates on ItemsControl
-        _itemsControl.ItemTemplate = () =>
-        {
-            var itemBorder = new Border
-            {
-                CornerRadius = 6f,
-                Padding = new Thickness(6),
-                Background = new ThemeResourceBrush("PageBackground"),
-                BorderBrush = new ThemeResourceBrush("ControlBorder"),
-                BorderThickness = new Thickness(1f),
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center,
-                WidthConstraint = 84f,
-                HeightConstraint = 92f
-            };
-
-            var itemStack = new StackPanel
-            {
-                Orientation = Orientation.Vertical,
-                HorizontalAlignment = HorizontalAlignment.Center
-            };
-            itemBorder.Child = itemStack;
-
-            var itemIcon = new FontIcon
-            {
-                Name = "GlyphItemIcon",
-                FontSize = 36f,
-                WidthConstraint = 40f,
-                HeightConstraint = 40f,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                Margin = new Thickness(0, 0, 0, 6)
-            };
-            itemStack.AddChild(itemIcon);
-
-            var itemLabel = new RichTextBlock
-            {
-                Name = "GlyphItemLabel",
-                FontSize = 9f,
-                HorizontalAlignment = HorizontalAlignment.Center
-            };
-            itemStack.AddChild(itemLabel);
-
-            return itemBorder;
-        };
+        _itemsControl.ItemTemplate = static () => new GlyphBrowserItem();
 
         _itemsControl.BindVisualCallback = (vis, itemObj, idx) =>
         {
-            var border = (Border)vis;
-            border.Tag = idx;
-
-            // Wire selection pointer click
-            border.PointerPressed -= OnItemClick;
-            border.PointerPressed += OnItemClick;
-
-            // Wire hover highlights
-            border.PointerEntered -= OnItemHover;
-            border.PointerEntered += OnItemHover;
-            border.PointerExited -= OnItemLeave;
-            border.PointerExited += OnItemLeave;
-
-            // Highlight border if active selection
-            if (idx == _selectedGlyphIndex)
-            {
-                border.BorderBrush = new ThemeResourceBrush("SystemAccentColor");
-                border.BorderThickness = new Thickness(1.5f);
-                border.Background = new ThemeResourceBrush("ControlBackgroundHover");
-            }
-            else
-            {
-                border.BorderBrush = new ThemeResourceBrush("ControlBorder");
-                border.BorderThickness = new Thickness(1f);
-                border.Background = new ThemeResourceBrush("PageBackground");
-            }
-
-            var itemStack = (StackPanel)border.Child!;
-            var icon = (FontIcon)itemStack.Children[0];
-            var label = (RichTextBlock)itemStack.Children[1];
-
-            icon.Font = _selectedFont;
-            icon.GlyphIndex = (ushort)idx;
-            icon.Invalidate();
-
-            label.Inlines.Clear();
-            label.Inlines.Add(new Run($"Idx: {idx}\n"));
-            label.Inlines.Add(new Bold(new Run($"0x{idx:X3}")) { Foreground = new ThemeResourceBrush("SystemAccentColor") });
-            label.Invalidate();
+            ((GlyphBrowserItem)vis).Bind(_selectedFont, idx, idx == _selectedGlyphIndex);
         };
 
         gridBorder.Child = _itemsControl;
@@ -558,26 +677,12 @@ public static class FontGlyphBrowserPage
 
     private static void OnItemHover(object? sender, PointerRoutedEventArgs e)
     {
-        if (sender is Border border && border.Tag is int idx)
-        {
-            if (idx != _selectedGlyphIndex)
-            {
-                border.Background = new ThemeResourceBrush("ControlBackgroundHover");
-                border.BorderBrush = new ThemeResourceBrush("ControlBorderHover");
-            }
-        }
+        (sender as GlyphBrowserItem)?.SetHovered(true);
     }
 
     private static void OnItemLeave(object? sender, PointerRoutedEventArgs e)
     {
-        if (sender is Border border && border.Tag is int idx)
-        {
-            if (idx != _selectedGlyphIndex)
-            {
-                border.Background = new ThemeResourceBrush("PageBackground");
-                border.BorderBrush = new ThemeResourceBrush("ControlBorder");
-            }
-        }
+        (sender as GlyphBrowserItem)?.SetHovered(false);
     }
 
     private static void OnItemClick(object? sender, PointerRoutedEventArgs e)

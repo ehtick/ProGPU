@@ -571,6 +571,8 @@ public struct RenderCommand
     public TextRenderingMode TextRenderingMode;
     public TextHintingMode TextHintingMode;
     public bool UseVectorGlyphRendering;
+    public bool PreferGlyphAtlas;
+    public bool UseLogicalGlyphAtlasResolution;
     public bool IsTextAliased
     {
         readonly get => TextRenderingMode == TextRenderingMode.Aliased;
@@ -1199,7 +1201,9 @@ public class DrawingContext : IRenderDataProvider
         bool isItalic = false,
         TextRenderingMode textRenderingMode = TextRenderingMode.Grayscale,
         TextHintingMode textHintingMode = TextHintingMode.Auto,
-        bool useVectorGlyphRendering = false)
+        bool useVectorGlyphRendering = false,
+        bool preferGlyphAtlas = false,
+        bool useLogicalGlyphAtlasResolution = false)
     {
         DrawTransformedGlyphRun(
             glyphIndices,
@@ -1214,6 +1218,8 @@ public class DrawingContext : IRenderDataProvider
             textRenderingMode,
             textHintingMode,
             useVectorGlyphRendering,
+            preferGlyphAtlas,
+            useLogicalGlyphAtlasResolution,
             fontScaleX: 1f,
             fontSkewX: 0f);
     }
@@ -1231,6 +1237,8 @@ public class DrawingContext : IRenderDataProvider
         TextRenderingMode textRenderingMode = TextRenderingMode.Grayscale,
         TextHintingMode textHintingMode = TextHintingMode.Auto,
         bool useVectorGlyphRendering = false,
+        bool preferGlyphAtlas = false,
+        bool useLogicalGlyphAtlasResolution = false,
         float fontScaleX = 1f,
         float fontSkewX = 0f)
     {
@@ -1250,7 +1258,9 @@ public class DrawingContext : IRenderDataProvider
             HasFontTransform = fontScaleX != 1f || fontSkewX != 0f,
             TextRenderingMode = textRenderingMode,
             TextHintingMode = textHintingMode,
-            UseVectorGlyphRendering = useVectorGlyphRendering
+            UseVectorGlyphRendering = useVectorGlyphRendering,
+            PreferGlyphAtlas = preferGlyphAtlas,
+            UseLogicalGlyphAtlasResolution = useLogicalGlyphAtlasResolution
         });
     }
 
