@@ -38,6 +38,7 @@ public unsafe class HeadlessWindow : IDisposable
     private GpuTexture? _offscreenTexture;
     private Buffer* _readbackBuffer;
     private uint _bufferSize;
+    private readonly TextureFormat _renderFormat;
     private uint _bytesPerRow;
 
     public WgpuContext Context => _context;
@@ -79,19 +80,21 @@ public unsafe class HeadlessWindow : IDisposable
     public HeadlessWindow(
         uint width = 1280,
         uint height = 800,
-        CompositorOptions? compositorOptions = null)
+        CompositorOptions? compositorOptions = null,
+        TextureFormat renderFormat = TextureFormat.Rgba8Unorm)
     {
         _width = width;
         _height = height;
+        _renderFormat = renderFormat;
 
         // 1. Initialize Headless WebGPU Context
         _context = new WgpuContext();
         _context.Initialize(null);
 
-        // 2. Use BGRA8 so headless rendering exercises the primary surface format.
+        // 2. Preserve RGBA as the default test contract while allowing format-specific lanes.
         _compositor = new Compositor(
             _context,
-            TextureFormat.Bgra8Unorm,
+            _renderFormat,
             compositorOptions ?? CompositorOptions.Default);
 
         // Setup Decoupled Hooks (similar to Window.cs)
@@ -118,7 +121,7 @@ public unsafe class HeadlessWindow : IDisposable
                 _context,
                 _width,
                 _height,
-                TextureFormat.Bgra8Unorm,
+                _renderFormat,
                 TextureUsage.RenderAttachment | TextureUsage.CopySrc,
                 "Headless Offscreen Target",
                 alphaMode: GpuTextureAlphaMode.Premultiplied
@@ -276,10 +279,13 @@ public unsafe class HeadlessWindow : IDisposable
             }
 
             // Public headless readback remains RGBA regardless of the GPU target format.
-            for (int i = 0; i < unpaddedPixels.Length; i += 4)
+            if (_renderFormat == TextureFormat.Bgra8Unorm)
             {
-                (unpaddedPixels[i], unpaddedPixels[i + 2]) =
-                    (unpaddedPixels[i + 2], unpaddedPixels[i]);
+                for (int i = 0; i < unpaddedPixels.Length; i += 4)
+                {
+                    (unpaddedPixels[i], unpaddedPixels[i + 2]) =
+                        (unpaddedPixels[i + 2], unpaddedPixels[i]);
+                }
             }
         }
 

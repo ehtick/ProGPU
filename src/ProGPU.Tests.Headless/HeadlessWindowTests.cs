@@ -236,10 +236,11 @@ public class HeadlessWindowTests : IDisposable
         uint width = 256;
         uint height = 256;
 
-        var window = HeadlessWindow.Shared;
-        window.Resize(width, height);
+        using var window = new HeadlessWindow(
+            width,
+            height,
+            renderFormat: TextureFormat.Bgra8Unorm);
         
-        var prevEngine = window.Compositor.VectorEngine;
         window.Compositor.VectorEngine = ProGPU.Scene.Compositor.VectorRenderingEngine.Wavefront;
 
         try
@@ -280,7 +281,6 @@ public class HeadlessWindowTests : IDisposable
         }
         finally
         {
-            window.Compositor.VectorEngine = prevEngine;
             window.Content = null;
         }
     }
@@ -291,15 +291,16 @@ public class HeadlessWindowTests : IDisposable
         uint width = 256;
         uint height = 256;
 
-        var window = HeadlessWindow.Shared;
-        window.Resize(width, height);
+        using var window = new HeadlessWindow(
+            width,
+            height,
+            renderFormat: TextureFormat.Bgra8Unorm);
 
         string fontPath = "/System/Library/Fonts/Supplemental/Arial.ttf";
         if (!File.Exists(fontPath)) fontPath = "Arial.ttf";
         Assert.True(File.Exists(fontPath), "Arial font file must exist for text rendering tests");
         var font = new ProGPU.Text.TtfFont(fontPath);
 
-        var prevEngine = window.Compositor.VectorEngine;
         window.Compositor.VectorEngine = ProGPU.Scene.Compositor.VectorRenderingEngine.Wavefront;
 
         try
@@ -334,7 +335,6 @@ public class HeadlessWindowTests : IDisposable
         }
         finally
         {
-            window.Compositor.VectorEngine = prevEngine;
             window.Content = null;
         }
     }
@@ -350,7 +350,10 @@ public class HeadlessWindowTests : IDisposable
         uint physicalWidth = 512;
         uint physicalHeight = 512;
 
-        var window = HeadlessWindow.Shared;
+        using var window = new HeadlessWindow(
+            logicalWidth,
+            logicalHeight,
+            renderFormat: TextureFormat.Bgra8Unorm);
         var context = window.Context;
 
         var mockWindow = System.Reflection.DispatchProxy.Create<Silk.NET.Windowing.IWindow, WindowProxy>();
@@ -362,7 +365,6 @@ public class HeadlessWindowTests : IDisposable
         var originalWindow = contextWindowField!.GetValue(context);
         contextWindowField.SetValue(context, mockWindow);
 
-        var prevEngine = window.Compositor.VectorEngine;
         window.Compositor.VectorEngine = ProGPU.Scene.Compositor.VectorRenderingEngine.Wavefront;
 
         GpuTexture? physicalOffscreenTexture = null;
@@ -500,7 +502,6 @@ public class HeadlessWindowTests : IDisposable
         finally
         {
             contextWindowField.SetValue(context, originalWindow);
-            window.Compositor.VectorEngine = prevEngine;
             physicalOffscreenTexture?.Dispose();
             if (readbackBuffer != null)
             {
