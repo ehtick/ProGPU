@@ -8,6 +8,7 @@ using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Documents;
 using ProGPU.Vector;
+using Silk.NET.WebGPU;
 
 [assembly: Xunit.CollectionBehavior(DisableTestParallelization = true)]
 
@@ -136,5 +137,33 @@ public class HeadlessWindowTests : IDisposable
         }
 
         window.Context.CleanupPendingResources();
+    }
+
+    [Fact]
+    public unsafe void Test_Compile_WavefrontPipelines()
+    {
+        var window = HeadlessWindow.Shared;
+        var context = window.Context;
+        
+        bool hasError = false;
+        string errorDetails = "";
+        
+        context.Wgpu.DeviceSetUncapturedErrorCallback(context.Device, PfnErrorCallback.From((type, msg, _) =>
+        {
+            hasError = true;
+            errorDetails += (msg != null ? Silk.NET.Core.Native.SilkMarshal.PtrToString((nint)msg) : null) ?? "Unknown error";
+            errorDetails += "\n";
+        }), null);
+        
+        using var engine = new ProGPU.Compute.WavefrontVectorEngine(context);
+        
+        // Restore default callback
+        context.Wgpu.DeviceSetUncapturedErrorCallback(context.Device, PfnErrorCallback.From((type, msg, _) =>
+        {
+            string errorMsg = (msg != null ? Silk.NET.Core.Native.SilkMarshal.PtrToString((nint)msg) : null) ?? "Unknown error";
+            Console.WriteLine($"[WebGPU Error] Type: {type}, Message: {errorMsg}");
+        }), null);
+        
+        Assert.False(hasError, $"WebGPU validation errors occurred:\n{errorDetails}");
     }
 }

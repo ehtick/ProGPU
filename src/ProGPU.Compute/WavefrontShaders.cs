@@ -56,7 +56,7 @@ struct LineSegment {
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var<storage, read_write> ray_queue: array<RayState>;
-@group(0) @binding(2) var<atomic, read_write> queue_counter: u32;
+@group(0) @binding(2) var<storage, read_write> queue_counter: atomic<u32>;
 @group(0) @binding(3) var<storage, read> bvh_nodes: array<BvhNode>;
 @group(0) @binding(4) var<storage, read> shape_instances: array<ShapeInstance>;
 @group(0) @binding(5) var<storage, read_write> grid_cells: array<GridCell>;
@@ -66,7 +66,7 @@ struct LineSegment {
 
 // Group bindings for Pass 3
 @group(0) @binding(9) var<storage, read> output_lines: array<LineSegment>;
-@group(0) @binding(10) var mask_texture_write: texture_storage_2d<r32u, write>;
+@group(0) @binding(10) var mask_texture_write: texture_storage_2d<r32uint, write>;
 @group(0) @binding(11) var screen_texture_write: texture_storage_2d<rgba8unorm, write>;
 
 // Binding for sorting parameters
@@ -159,7 +159,7 @@ fn bin_shapes(@builtin(global_invocation_id) global_id: vec3<u32>) {
     for (var i = 0u; i < uniforms.instanceCount; i = i + 1u) {
         let inst = shape_instances[i];
         
-        let corners = array<vec2<f32>, 4>(
+        var corners = array<vec2<f32>, 4>(
             (inst.transform * vec4<f32>(inst.min_bounds, 0.0, 1.0)).xy,
             (inst.transform * vec4<f32>(inst.max_bounds.x, inst.min_bounds.y, 0.0, 1.0)).xy,
             (inst.transform * vec4<f32>(inst.min_bounds.x, inst.max_bounds.y, 0.0, 1.0)).xy,
