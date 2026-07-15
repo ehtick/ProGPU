@@ -6,6 +6,7 @@ public static class WavefrontShaders
 struct RayState {
     pixel_coord: vec2<u32>,
     leaf_node_id: u32,
+    shape_id: u32,
     accumulated_color: vec4<f32>,
     accumulated_alpha: f32,
 };
@@ -77,10 +78,9 @@ struct SortParams {
 @group(0) @binding(12) var<uniform> sort_params: SortParams;
 
 
-// Workgroup shared memory for aggregation (Pass 1)
-var<workgroup> local_counter: atomic<u32>;
-var<workgroup> local_offset: u32;
-var<workgroup> local_slots: array<RayState, 64>;
+fn ray_intersects_aabb(p: vec2<f32>, min_b: vec2<f32>, max_b: vec2<f32>) -> bool {
+    return p.y >= min_b.y && p.y <= max_b.y && p.x <= max_b.x;
+}
 
 fn point_in_aabb(p: vec2<f32>, min_b: vec2<f32>, max_b: vec2<f32>) -> bool {
     return p.x >= min_b.x && p.x <= max_b.x && p.y >= min_b.y && p.y <= max_b.y;
@@ -108,6 +108,7 @@ fn init_queue(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     if (global_id.x < uniforms.maxQueueSize) {
         ray_queue[global_id.x].leaf_node_id = 0xffffffffu;
+        ray_queue[global_id.x].shape_id = 0xffffffffu;
         ray_queue[global_id.x].pixel_coord = vec2<u32>(0xffffffffu, 0xffffffffu);
         ray_queue[global_id.x].accumulated_color = vec4<f32>(0.0);
         ray_queue[global_id.x].accumulated_alpha = 0.0;
@@ -173,12 +174,6 @@ fn wavefront_traverse(
     @builtin(workgroup_id) workgroup_id: vec3<u32>,
     @builtin(local_invocation_index) local_idx: u32
 ) {
-
-    if (local_idx == 0u) {
-        atomicStore(&local_counter, 0u);
-    }
-    workgroupBarrier();
-
     let block_offset = decode_morton_2d(local_idx);
     let pixel_coord = (workgroup_id.xy * 8u) + block_offset;
 
@@ -211,13 +206,14 @@ fn wavefront_traverse(
 
             while (true) {
                 let node = bvh_nodes[current_node];
-                if (point_in_aabb(local_pos, node.min_bounds, node.max_bounds)) {
+                if (ray_intersects_aabb(local_pos, node.min_bounds, node.max_bounds)) {
                     if (node.primitive_count > 0u) {
-                        let slot = atomicAdd(&local_counter, 1u);
-                        if (slot < 64u) {
-                            local_slots[slot] = RayState(
+                        let global_slot = atomicAdd(&queue_counter, 1u);
+                        if (global_slot < uniforms.maxQueueSize) {
+                            ray_queue[global_slot] = RayState(
                                 pixel_coord,
                                 current_node,
+                                instance_idx,
                                 instance.color,
                                 current_alpha
                             );
@@ -238,24 +234,6 @@ fn wavefront_traverse(
                 stack_ptr = stack_ptr - 1u;
                 current_node = stack[stack_ptr];
             }
-        }
-    }
-
-    workgroupBarrier();
-
-    if (local_idx == 0u) {
-        let count = min(atomicLoad(&local_counter), 64u);
-        if (count > 0u) {
-            local_offset = atomicAdd(&queue_counter, count);
-        }
-    }
-    workgroupBarrier();
-
-    let local_count = min(atomicLoad(&local_counter), 64u);
-    if (local_idx < local_count) {
-        let global_slot = local_offset + local_idx;
-        if (global_slot < uniforms.maxQueueSize) {
-            ray_queue[global_slot] = local_slots[local_idx];
         }
     }
 }
@@ -324,7 +302,6 @@ fn check_line_intersection(pixel_pos: vec2<f32>, line: LineSegment) -> i32 {
 
 @compute @workgroup_size(256, 1, 1)
 fn wavefront_intersect(@builtin(global_invocation_id) global_id: vec3<u32>) {
-
     if (global_id.x >= uniforms.maxQueueSize) {
         return;
     }
@@ -334,23 +311,27 @@ fn wavefront_intersect(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
+    let instance = shape_instances[ray.shape_id];
     let node = bvh_nodes[ray.leaf_node_id];
     let start_line = node.left_child_or_first_line;
     let end_line = start_line + node.primitive_count;
+
     let pixel_pos = vec2<f32>(ray.pixel_coord) + vec2<f32>(0.5);
+    let local_pos_3d = instance.inv_transform * vec4<f32>(pixel_pos, 0.0, 1.0);
+    let local_pos = local_pos_3d.xy;
 
     var winding = 0;
     var min_dist = 99999.0;
 
     for (var i = start_line; i < end_line; i = i + 1u) {
         let line = output_lines[i];
-        winding += check_line_intersection(pixel_pos, line);
+        winding += check_line_intersection(local_pos, line);
 
         let ab = line.end - line.start;
-        let ap = pixel_pos - line.start;
+        let ap = local_pos - line.start;
         let t = clamp(dot(ap, ab) / dot(ab, ab), 0.0, 1.0);
         let closest_point = line.start + t * ab;
-        let d = distance(pixel_pos, closest_point);
+        let d = distance(local_pos, closest_point);
         if (d < min_dist) {
             min_dist = d;
         }
@@ -361,7 +342,10 @@ fn wavefront_intersect(@builtin(global_invocation_id) global_id: vec3<u32>) {
         sd = -min_dist;
     }
 
-    let adjusted_dist = sd - uniforms.fontWeightOffset;
+    let scale_factor = length(instance.transform[0].xy);
+    let screen_dist = sd * scale_factor;
+
+    let adjusted_dist = screen_dist - uniforms.fontWeightOffset;
     let coverage = 1.0 - smoothstep(-0.5, 0.5, adjusted_dist);
 
     if (coverage > 0.0) {

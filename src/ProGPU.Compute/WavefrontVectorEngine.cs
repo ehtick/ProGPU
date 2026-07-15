@@ -16,7 +16,7 @@ public struct RayState
     public uint PixelCoordX;
     public uint PixelCoordY;
     public uint LeafNodeId;
-    private uint _pad0;
+    public uint ShapeId;
     public Vector4 AccumulatedColor;
     public float AccumulatedAlpha;
     private float _pad1;
@@ -425,19 +425,20 @@ public unsafe class WavefrontVectorEngine : IDisposable
         _context.Wgpu.BindGroupLayoutRelease(traverseLayout);
 
         // 3.5 Bind Group for Intersect Pipeline
-        var intersectEntries = stackalloc BindGroupEntry[7];
+        var intersectEntries = stackalloc BindGroupEntry[8];
         intersectEntries[0] = new BindGroupEntry { Binding = 0, Buffer = _uniformsBuffer.BufferPtr, Offset = 0, Size = _uniformsBuffer.Size };
         intersectEntries[1] = new BindGroupEntry { Binding = 1, Buffer = _rayQueueBuffer.BufferPtr, Offset = 0, Size = _rayQueueBuffer.Size };
         intersectEntries[2] = new BindGroupEntry { Binding = 3, Buffer = _bvhBuffer.BufferPtr, Offset = 0, Size = _bvhBuffer.Size };
-        intersectEntries[3] = new BindGroupEntry { Binding = 8, TextureView = _bgCopyTexture!.ViewPtr };
-        intersectEntries[4] = new BindGroupEntry { Binding = 9, Buffer = _linesBuffer!.BufferPtr, Offset = 0, Size = _linesBuffer.Size };
-        intersectEntries[5] = new BindGroupEntry { Binding = 10, TextureView = _maskTexture.ViewPtr };
-        intersectEntries[6] = new BindGroupEntry { Binding = 11, TextureView = destination.ViewPtr };
+        intersectEntries[3] = new BindGroupEntry { Binding = 4, Buffer = _instancesBuffer!.BufferPtr, Offset = 0, Size = _instancesBuffer.Size };
+        intersectEntries[4] = new BindGroupEntry { Binding = 8, TextureView = _bgCopyTexture!.ViewPtr };
+        intersectEntries[5] = new BindGroupEntry { Binding = 9, Buffer = _linesBuffer!.BufferPtr, Offset = 0, Size = _linesBuffer.Size };
+        intersectEntries[6] = new BindGroupEntry { Binding = 10, TextureView = _maskTexture.ViewPtr };
+        intersectEntries[7] = new BindGroupEntry { Binding = 11, TextureView = destination.ViewPtr };
         var intersectLayout = _context.Wgpu.ComputePipelineGetBindGroupLayout(_intersectPipeline, 0);
         var intersectBgDesc = new BindGroupDescriptor
         {
             Layout = intersectLayout,
-            EntryCount = 7,
+            EntryCount = 8,
             Entries = intersectEntries
         };
         var intersectBindGroup = _context.Wgpu.DeviceCreateBindGroup(_context.Device, &intersectBgDesc);
