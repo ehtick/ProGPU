@@ -1,5 +1,5 @@
-Warning: truncated output (original token count: 143857)
-Total output lines: 14122
+Warning: truncated output (original token count: 144601)
+Total output lines: 14190
 
 using System;
 using System.Buffers;
@@ -184,6 +184,10 @@ public unsafe class Compositor : IDisposable
     private VectorRenderingEngine _vectorEngine;
     private WavefrontVectorEngine? _wavefrontEngine;
     private GpuTexture? _wavefrontColorTexture;
+    private GpuBuffer? _wavefrontQuadVertexBuffer;
+    private GpuBuffer? _wavefrontQuadIndexBuffer;
+    private BindGroup* _wavefrontTextureBindGroup;
+    private uint _wavefrontTextureBindGroupGeneration;
 
     public VectorRenderingEngine VectorEngine
     {
@@ -2467,36 +2471,22 @@ SceneStateUploadComplete:
         encoder = _context.Wgpu.DeviceCreateCommandEncoder(_context.Device, &encoderDesc);
         SilkMarshal.Free((nint)encoderDesc.Label);
 
-        if (wavefrontEnabled && _wavefrontColorTexture != null && _wavefrontEngine != null)
-        {
-            var clearAttachment = new RenderPassColorAttachment
-            {
-                View = _wavefrontColorTexture.ViewPtr,
-                ResolveTarget = null,
-                LoadOp = LoadOp.Clear,
-                StoreOp = StoreOp.Store,
-                ClearValue = new Color { R = 0d, G = 0d, B = 0d, A = 0d }
-            };
-            var clearPassDescriptor = new RenderPassDescriptor
-            {
-                ColorAttachmentCount = 1,
-                ColorAttachments = &clearAttachment,
-                DepthStencilAttachment = null
-            };
-            var clearPass = _context.Wgpu.CommandEncoderBeginRenderPass(encoder, &clearPassDescriptor);
-            _context.Wgpu.RenderPassEncoderEnd(clearPass);
-            _context.Wgpu.RenderPassEncoderRelease(clearPass);
-            _wavefrontEngine.EndFrame(encoder, _wavefrontColorTexture, _currentDpiScale);
-        }
-
         // Run mask render passes first!
         ExecuteMaskRenderPasses(encoder, isOffscreen: false);
 
         var bgColor = ClearColor;
         var colorAttachment = new RenderPassColorAttachment
         {
-            View = Options.PrimarySampleCount > 1 ? _msaaTextureView : targetView,
-            ResolveTarget = Options.PrimarySampleCount > 1 ? targetView : null,
+            View = Options.PrimarySampleCount > 1
+                ? _msaaTextureView
+                : wavefrontEnabled && _wavefrontColorTexture != null
+                    ? _wavefrontColorTexture.ViewPtr
+                    : targetView,
+            ResolveTarget = Options.PrimarySampleCount > 1
+                ? wavefrontEnabled && _wavefrontColorTexture != null
+                    ? _wavefrontColorTexture.ViewPtr
+                    : targetView
+                : null,
             LoadOp = LoadOp.Clear,
             StoreOp = Options.PrimarySampleCount > 1 ? StoreOp.Discard : StoreOp.Store,
             ClearValue = new Color { R = bgColor.X, G = bgColor.Y, B = bgColor.Z, A = bgColor.W }
@@ -2714,6 +2704,52 @@ SceneStateUploadComplete:
 
         _context.Wgpu.RenderPassEncoderEnd(pass);
         _context.Wgpu.RenderPassEncoderRelease(pass);
+
+        if (wavefrontEnabled &&
+            _wavefrontEngine != null &&
+            _wavefrontColorTexture != null &&
+            _wavefrontQuadVertexBuffer != null &&
+            _wavefrontQuadIndexBuffer != null &&
+            _wavefrontTextureBindGroup != null)
+        {
+            _wavefrontEngine.EndFrame(encoder, _wavefrontColorTexture, _currentDpiScale);
+
+            var finalAttachment = new RenderPassColorAttachment
+            {
+                View = targetView,
+                ResolveTarget = null,
+                LoadOp = LoadOp.Clear,
+                StoreOp = StoreOp.Store,
+                ClearValue = new Color { R = bgColor.X, G = bgColor.Y, B = bgColor.Z, A = bgColor.W }
+            };
+            var finalPassDescriptor = new RenderPassDescriptor
+            {
+                ColorAttachmentCount = 1,
+                ColorAttachments = &finalAttachment,
+                DepthStencilAttachment = null
+            };
+            var finalPass = _context.Wgpu.CommandEncoderBeginRenderPass(encoder, &finalPassDescriptor);
+            ApplyRenderPassViewport(finalPass, renderWidth, renderHeight, useRenderTargetViewport: true);
+            _context.Wgpu.RenderPassEncoderSetPipeline(finalPass, _texturePipelineOffscreen);
+            _context.Wgpu.RenderPassEncoderSetBindGroup(finalPass, 0, _textureUniformBindGroupOffscreen, 0, null);
+            _context.Wgpu.RenderPassEncoderSetBindGroup(finalPass, 1, _wavefrontTextureBindGroup, 0, null);
+            _context.Wgpu.RenderPassEncoderSetBindGroup(finalPass, 2, _dummyMaskBindGroupOffscreen, 0, null);
+            _context.Wgpu.RenderPassEncoderSetVertexBuffer(
+                finalPass,
+                0,
+                _wavefrontQuadVertexBuffer.BufferPtr,
+                0,
+                _wavefrontQuadVertexBuffer.Size);
+            _context.Wgpu.RenderPassEncoderSetIndexBuffer(
+                finalPass,
+                _wavefrontQuadIndexBuffer.BufferPtr,
+                IndexFormat.Uint32,
+                0,
+                _wavefrontQuadIndexBuffer.Size);
+            _context.Wgpu.RenderPassEncoderDrawIndexed(finalPass, 6, 1, 0, 0, 0);
+            _context.Wgpu.RenderPassEncoderEnd(finalPass);
+            _context.Wgpu.RenderPassEncoderRelease(finalPass);
+        }
         }
         finally
         {
@@ -5114,80 +5150,7 @@ SceneStateUploadComplete:
         float right,
         float bottom,
         float tolerance,
-        out int cornerIndex,
-        out float radius)
-    {
-        cornerIndex = -1;
-        radius = arc.Size.X;
-        if (!float.IsFinite(radius) || radius <= tolerance ||
-            !float.IsFinite(arc.Size.Y) || MathF.Abs(arc.Size.Y - radius) > tolerance ||
-            !float.IsFinite(arc.RotationAngle) || MathF.Abs(arc.RotationAngle) > tolerance ||
-            arc.IsLargeArc || arc.SweepDirection != SweepDirection.Clockwise)
-        {
-            return false;
-        }
-
-        if (DirectRoundedPointsEqual(start, new Vector2(left, top + radius), tolerance) &&
-            DirectRoundedPointsEqual(end, new Vector2(left + radius, top), tolerance))
-        {
-            cornerIndex = 0;
-        }
-        else if (DirectRoundedPointsEqual(start, new Vector2(right - radius, top), tolerance) &&
-            DirectRoundedPointsEqual(end, new Vector2(right, top + radius), tolerance))
-        {
-            cornerIndex = 1;
-        }
-        else if (DirectRoundedPointsEqual(start, new Vector2(right, bottom - radius), tolerance) &&
-            DirectRoundedPointsEqual(end, new Vector2(right - radius, bottom), tolerance))
-        {
-            cornerIndex = 2;
-        }
-        else if (DirectRoundedPointsEqual(start, new Vector2(left + radius, bottom), tolerance) &&
-            DirectRoundedPointsEqual(end, new Vector2(left, bottom - radius), tolerance))
-        {
-            cornerIndex = 3;
-        }
-
-        return cornerIndex >= 0;
-    }
-
-    private static bool IsDirectRoundedBoundaryLine(
-        Vector2 start,
-        Vector2 end,
-        float left,
-        float top,
-        float right,
-        float bottom,
-        float tolerance)
-    {
-        if (DirectRoundedPointsEqual(start, end, tolerance))
-        {
-            return true;
-        }
-
-        bool horizo…43857 tokens truncated…se LineSegment line:
-                        transformedFigure.Segments.Add(new LineSegment(
-                            TransformPoint(line.Point),
-                            line.IsSmoothJoin,
-                            line.IsStroked));
-                        break;
-                    case QuadraticBezierSegment quadratic:
-                        transformedFigure.Segments.Add(new QuadraticBezierSegment(
-                            TransformPoint(quadratic.ControlPoint),
-                            TransformPoint(quadratic.Point),
-                            quadratic.IsSmoothJoin,
-                            quadratic.IsStroked));
-                        break;
-                    case CubicBezierSegment cubic:
-                        transformedFigure.Segments.Add(new CubicBezierSegment(
-                            TransformPoint(cubic.ControlPoint1),
-                            TransformPoint(cubic.ControlPoint2),
-                            TransformPoint(cubic.Point),
-                            cubic.IsSmoothJoin,
-                            cubic.IsStroked));
-                        break;
-                    case ArcSegment arc:
-                        transformedFigure.Segments.Add(new ArcSegment(
+        ou…44601 tokens truncated… transformedFigure.Segments.Add(new ArcSegment(
                             TransformPoint(arc.Point),
                             new Vector2(
                                 MathF.Abs(arc.Size.X * emScale * scaleX),
@@ -5656,44 +5619,67 @@ SceneStateUploadComplete:
                 _context,
                 renderWidth,
                 renderHeight,
-                TextureFormat.Rgba8Unorm,
+                RenderFormat,
                 TextureUsage.RenderAttachment |
                 TextureUsage.TextureBinding |
                 TextureUsage.StorageBinding |
                 TextureUsage.CopySrc,
                 "Wavefront Intermediate Color Texture",
                 alphaMode: GpuTextureAlphaMode.Premultiplied);
+
+            if (_wavefrontTextureBindGroup != null)
+            {
+                QueueBindGroupRelease((nint)_wavefrontTextureBindGroup);
+                _wavefrontTextureBindGroup = null;
+            }
         }
 
-        uint vertexStart = (uint)_textureVerticesList.Count;
-        int originalVertexCount = _textureVerticesList.Count;
-        CollectionsMarshal.SetCount(_textureVerticesList, originalVertexCount + 4);
-        var vertices = CollectionsMarshal.AsSpan(_textureVerticesList).Slice(originalVertexCount, 4);
+        _wavefrontQuadVertexBuffer ??= new GpuBuffer(
+            _context,
+            (uint)(4 * Marshal.SizeOf<VectorVertex>()),
+            BufferUsage.Vertex | BufferUsage.CopyDst,
+            "Wavefront Quad Vertex Buffer");
+
+        Span<VectorVertex> vertices = stackalloc VectorVertex[4];
         var color = Vector4.One;
         vertices[0] = new VectorVertex(new Vector2(0f, 0f), color, new Vector2(0f, 0f));
         vertices[1] = new VectorVertex(new Vector2(logicalWidth, 0f), color, new Vector2(1f, 0f));
         vertices[2] = new VectorVertex(new Vector2(logicalWidth, logicalHeight), color, new Vector2(1f, 1f));
         vertices[3] = new VectorVertex(new Vector2(0f, logicalHeight), color, new Vector2(0f, 1f));
 
-        int originalIndexCount = _textureIndicesList.Count;
-        CollectionsMarshal.SetCount(_textureIndicesList, originalIndexCount + 6);
-        var indices = CollectionsMarshal.AsSpan(_textureIndicesList).Slice(originalIndexCount, 6);
-        indices[0] = vertexStart;
-        indices[1] = vertexStart + 1;
-        indices[2] = vertexStart + 2;
-        indices[3] = vertexStart;
-        indices[4] = vertexStart + 2;
-        indices[5] = vertexStart + 3;
+        _wavefrontQuadVertexBuffer.Write(vertices);
 
-        _drawCalls.Insert(0, new CompositorDrawCall
+        if (_wavefrontQuadIndexBuffer == null)
         {
-            Type = DrawCallType.Texture,
-            IndexStart = (uint)originalIndexCount,
-            IndexCount = 6,
-            Texture = _wavefrontColorTexture,
-            TextureAlphaMode = GpuTextureAlphaMode.Premultiplied,
-            BlendMode = GpuBlendMode.SrcOver
-        });
+            _wavefrontQuadIndexBuffer = new GpuBuffer(
+                _context,
+                6u * sizeof(uint),
+                BufferUsage.Index | BufferUsage.CopyDst,
+                "Wavefront Quad Index Buffer");
+            ReadOnlySpan<uint> indices = [0, 1, 2, 0, 2, 3];
+            _wavefrontQuadIndexBuffer.Write(indices);
+        }
+
+        if (_wavefrontTextureBindGroup == null ||
+            _wavefrontTextureBindGroupGeneration != _wavefrontColorTexture.Generation)
+        {
+            if (_wavefrontTextureBindGroup != null)
+            {
+                QueueBindGroupRelease((nint)_wavefrontTextureBindGroup);
+            }
+
+            var entries = stackalloc BindGroupEntry[2];
+            entries[0] = new BindGroupEntry { Binding = 0, Sampler = _atlasSampler };
+            entries[1] = new BindGroupEntry { Binding = 1, TextureView = _wavefrontColorTexture.ViewPtr };
+            var descriptor = new BindGroupDescriptor
+            {
+                Layout = _textureBindGroupLayoutOffscreen,
+                EntryCount = 2,
+                Entries = entries
+            };
+            _wavefrontTextureBindGroup = _context.Wgpu.DeviceCreateBindGroup(_context.Device, &descriptor);
+            _wavefrontTextureBindGroupGeneration = _wavefrontColorTexture.Generation;
+        }
     }
 
     public void Dispose()
@@ -5706,6 +5692,15 @@ SceneStateUploadComplete:
             _wavefrontEngine = null;
             _wavefrontColorTexture?.Dispose();
             _wavefrontColorTexture = null;
+            _wavefrontQuadVertexBuffer?.Dispose();
+            _wavefrontQuadVertexBuffer = null;
+            _wavefrontQuadIndexBuffer?.Dispose();
+            _wavefrontQuadIndexBuffer = null;
+            if (_wavefrontTextureBindGroup != null)
+            {
+                QueueBindGroupRelease((nint)_wavefrontTextureBindGroup);
+                _wavefrontTextureBindGroup = null;
+            }
 
             ReleaseMsaaResources();
 
