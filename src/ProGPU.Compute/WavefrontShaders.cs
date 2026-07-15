@@ -76,6 +76,30 @@ struct SortParams {
 };
 @group(0) @binding(12) var<uniform> sort_params: SortParams;
 
+fn dummy_use_all() {
+    if (false) {
+        var dummy_val = uniforms.screenWidth;
+        dummy_val += ray_queue[0].leaf_node_id;
+        dummy_val += atomicLoad(&queue_counter);
+        dummy_val += u32(bvh_nodes[0].min_bounds.x);
+        dummy_val += shape_instances[0].bvh_root_idx;
+        dummy_val += grid_cells[0].shape_count;
+        dummy_val += cell_shape_indices[0];
+        
+        let t7 = textureLoad(mask_texture, vec2<i32>(0), 0);
+        dummy_val += t7.r;
+        
+        let t8 = textureLoad(screen_texture, vec2<i32>(0), 0);
+        dummy_val += u32(t8.r);
+        
+        dummy_val += u32(output_lines[0].start.x);
+        
+        textureStore(mask_texture_write, vec2<i32>(0), vec4<u32>(0u, 0u, 0u, 0u));
+        textureStore(screen_texture_write, vec2<i32>(0), vec4<f32>(0.0, 0.0, 0.0, 0.0));
+    }
+}
+
+
 // Workgroup shared memory for aggregation (Pass 1)
 var<workgroup> local_counter: atomic<u32>;
 var<workgroup> local_offset: u32;
@@ -104,6 +128,7 @@ fn decode_morton_2d(linear_index: u32) -> vec2<u32> {
 
 @compute @workgroup_size(256, 1, 1)
 fn init_queue(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    dummy_use_all();
     if (global_id.x < uniforms.maxQueueSize) {
         ray_queue[global_id.x].leaf_node_id = 0xffffffffu;
         ray_queue[global_id.x].pixel_coord = vec2<u32>(0xffffffffu, 0xffffffffu);
@@ -114,6 +139,7 @@ fn init_queue(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
 @compute @workgroup_size(16, 16)
 fn bin_shapes(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    dummy_use_all();
     let cell_x = global_id.x;
     let cell_y = global_id.y;
     
@@ -170,6 +196,7 @@ fn wavefront_traverse(
     @builtin(workgroup_id) workgroup_id: vec3<u32>,
     @builtin(local_invocation_index) local_idx: u32
 ) {
+    dummy_use_all();
     if (local_idx == 0u) {
         atomicStore(&local_counter, 0u);
     }
@@ -320,6 +347,7 @@ fn check_line_intersection(pixel_pos: vec2<f32>, line: LineSegment) -> i32 {
 
 @compute @workgroup_size(256, 1, 1)
 fn wavefront_intersect(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    dummy_use_all();
     if (global_id.x >= uniforms.maxQueueSize) {
         return;
     }
@@ -381,6 +409,7 @@ fn wavefront_intersect(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
 @compute @workgroup_size(16, 16)
 fn clear_mask(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    dummy_use_all();
     if (global_id.x < uniforms.screenWidth && global_id.y < uniforms.screenHeight) {
         textureStore(mask_texture_write, vec2<i32>(global_id.xy), vec4<u32>(1u, 0u, 0u, 0u));
     }

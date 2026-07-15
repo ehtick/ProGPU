@@ -67,6 +67,13 @@ public struct GpuSortParams
     public uint Step;
 }
 
+[StructLayout(LayoutKind.Sequential, Size = 256)]
+public struct GpuSortParamsAligned
+{
+    public uint Stage;
+    public uint Step;
+}
+
 public unsafe class WavefrontVectorEngine : IDisposable
 {
     private readonly WgpuContext _context;
@@ -349,21 +356,17 @@ public unsafe class WavefrontVectorEngine : IDisposable
         var mainBindGroup = _context.Wgpu.DeviceCreateBindGroup(_context.Device, &bgDesc);
         _context.Wgpu.BindGroupLayoutRelease(bgLayout);
 
-        // Bind Group for Sorting
-        var sortEntries = stackalloc BindGroupEntry[3];
-        sortEntries[0] = new BindGroupEntry { Binding = 0, Buffer = _rayQueueBuffer.BufferPtr, Offset = 0, Size = _rayQueueBuffer.Size };
-        sortEntries[1] = new BindGroupEntry { Binding = 1, Buffer = _uniformsBuffer.BufferPtr, Offset = 0, Size = _uniformsBuffer.Size };
-        sortEntries[2] = new BindGroupEntry { Binding = 2, Buffer = _sortParamsBuffer!.BufferPtr, Offset = 0, Size = _sortParamsBuffer.Size };
-
-        var sortBgLayout = _context.Wgpu.ComputePipelineGetBindGroupLayout(_sortPipeline, 0);
-        var sortBgDesc = new BindGroupDescriptor
+        // Write all sort parameters for all steps to _sortParamsBuffer once per frame
+        var sortParamsArray = new GpuSortParamsAligned[153];
+        int writeIdx = 0;
+        for (uint stage = 2; stage <= queueSize; stage <<= 1)
         {
-            Layout = sortBgLayout,
-            EntryCount = 3,
-            Entries = sortEntries
-        };
-        var sortBindGroup = _context.Wgpu.DeviceCreateBindGroup(_context.Device, &sortBgDesc);
-        _context.Wgpu.BindGroupLayoutRelease(sortBgLayout);
+            for (uint step = stage >> 1; step > 0; step >>= 1)
+            {
+                sortParamsArray[writeIdx++] = new GpuSortParamsAligned { Stage = stage, Step = step };
+            }
+        }
+        _sortParamsBuffer!.Write(new ReadOnlySpan<GpuSortParamsAligned>(sortParamsArray));
 
         // 4. Dispatch Compute Passes
         var passDesc = new ComputePassDescriptor();
@@ -403,12 +406,28 @@ public unsafe class WavefrontVectorEngine : IDisposable
 
         // Pass 2: Bitonic Sort
         // Loop stages and steps
+        int stepIdx = 0;
         for (uint stage = 2; stage <= queueSize; stage <<= 1)
         {
             for (uint step = stage >> 1; step > 0; step >>= 1)
             {
-                var sortParams = new GpuSortParams { Stage = stage, Step = step };
-                _context.Wgpu.QueueWriteBuffer(_context.Queue, _sortParamsBuffer.BufferPtr, 0, &sortParams, (nuint)sizeof(GpuSortParams));
+                uint sortParamsOffset = (uint)(stepIdx * 256);
+                stepIdx++;
+
+                var sortEntries = stackalloc BindGroupEntry[3];
+                sortEntries[0] = new BindGroupEntry { Binding = 0, Buffer = _uniformsBuffer.BufferPtr, Offset = 0, Size = _uniformsBuffer.Size };
+                sortEntries[1] = new BindGroupEntry { Binding = 1, Buffer = _rayQueueBuffer.BufferPtr, Offset = 0, Size = _rayQueueBuffer.Size };
+                sortEntries[2] = new BindGroupEntry { Binding = 12, Buffer = _sortParamsBuffer.BufferPtr, Offset = sortParamsOffset, Size = (uint)sizeof(GpuSortParams) };
+
+                var sortBgLayout = _context.Wgpu.ComputePipelineGetBindGroupLayout(_sortPipeline, 0);
+                var sortBgDesc = new BindGroupDescriptor
+                {
+                    Layout = sortBgLayout,
+                    EntryCount = 3,
+                    Entries = sortEntries
+                };
+                var sortBindGroup = _context.Wgpu.DeviceCreateBindGroup(_context.Device, &sortBgDesc);
+                _context.Wgpu.BindGroupLayoutRelease(sortBgLayout);
 
                 var sortPass = _context.Wgpu.CommandEncoderBeginComputePass(encoder, &passDesc);
                 _context.Wgpu.ComputePassEncoderSetPipeline(sortPass, _sortPipeline);
@@ -416,6 +435,8 @@ public unsafe class WavefrontVectorEngine : IDisposable
                 _context.Wgpu.ComputePassEncoderDispatchWorkgroups(sortPass, queueSize / 256, 1, 1);
                 _context.Wgpu.ComputePassEncoderEnd(sortPass);
                 _context.Wgpu.ComputePassEncoderRelease(sortPass);
+
+                _context.Wgpu.BindGroupRelease(sortBindGroup);
             }
         }
 
@@ -429,7 +450,6 @@ public unsafe class WavefrontVectorEngine : IDisposable
 
         // Cleanup local Bind Groups
         _context.Wgpu.BindGroupRelease(mainBindGroup);
-        _context.Wgpu.BindGroupRelease(sortBindGroup);
     }
 
     private void UpdateGpuBuffers(uint width, uint height, uint gridStride, uint cellCount, uint indexCount)
@@ -456,7 +476,7 @@ public unsafe class WavefrontVectorEngine : IDisposable
             _rayQueueBuffer = new GpuBuffer(_context, (uint)(maxQueueSize * sizeof(RayState)), BufferUsage.Storage, "Wavefront Ray Queue Buffer");
             _queueCounterBuffer = new GpuBuffer(_context, 4, BufferUsage.Storage | BufferUsage.CopySrc | BufferUsage.CopyDst, "Wavefront Queue Counter Buffer");
             _uniformsBuffer = new GpuBuffer(_context, (uint)sizeof(GpuWavefrontUniforms), BufferUsage.Uniform, "Wavefront Uniforms Buffer");
-            _sortParamsBuffer = new GpuBuffer(_context, (uint)sizeof(GpuSortParams), BufferUsage.Uniform | BufferUsage.CopyDst, "Wavefront Sort Params Buffer");
+            _sortParamsBuffer = new GpuBuffer(_context, 153 * 256, BufferUsage.Uniform | BufferUsage.CopyDst, "Wavefront Sort Params Buffer");
         }
 
         if (_maskTexture == null || _maskTexture.Width != width || _maskTexture.Height != height)
