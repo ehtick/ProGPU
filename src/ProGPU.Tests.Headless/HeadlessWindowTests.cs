@@ -189,7 +189,7 @@ public class HeadlessWindowTests : IDisposable
         }), null);
         
         using var engine = new ProGPU.Compute.WavefrontVectorEngine(context);
-        using var destination = new GpuTexture(context, 256, 256, TextureFormat.Rgba8Unorm, 
+        using var destination = new GpuTexture(context, 256, 256, TextureFormat.Bgra8Unorm, 
             TextureUsage.TextureBinding | TextureUsage.StorageBinding | TextureUsage.CopySrc | TextureUsage.CopyDst, 
             "TestDestinationTexture");
             
@@ -337,6 +337,205 @@ public class HeadlessWindowTests : IDisposable
             window.Compositor.VectorEngine = prevEngine;
             window.Content = null;
         }
+    }
+
+    [System.Runtime.InteropServices.DllImport("wgpu_native", EntryPoint = "wgpuDevicePoll")]
+    private static unsafe extern bool wgpuDevicePoll(void* device, bool wait, void* wrappedSubmissionIndex);
+
+    [Fact]
+    public unsafe void Test_Wavefront_Render_Path_HighDpi()
+    {
+        uint logicalWidth = 256;
+        uint logicalHeight = 256;
+        uint physicalWidth = 512;
+        uint physicalHeight = 512;
+
+        var window = HeadlessWindow.Shared;
+        var context = window.Context;
+
+        var mockWindow = System.Reflection.DispatchProxy.Create<Silk.NET.Windowing.IWindow, WindowProxy>();
+        var proxyInstance = (WindowProxy)(object)mockWindow;
+        proxyInstance.Size = new Silk.NET.Maths.Vector2D<int>((int)logicalWidth, (int)logicalHeight);
+        proxyInstance.FramebufferSize = new Silk.NET.Maths.Vector2D<int>((int)physicalWidth, (int)physicalHeight);
+
+        var contextWindowField = typeof(WgpuContext).GetField("_window", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var originalWindow = contextWindowField.GetValue(context);
+        contextWindowField.SetValue(context, mockWindow);
+
+        var prevEngine = window.Compositor.VectorEngine;
+        window.Compositor.VectorEngine = ProGPU.Scene.Compositor.VectorRenderingEngine.Wavefront;
+
+        GpuTexture? physicalOffscreenTexture = null;
+        Silk.NET.WebGPU.Buffer* readbackBuffer = null;
+
+        try
+        {
+            var path = new PathGeometry();
+            var figure = new PathFigure(new Vector2(10f, 10f), isClosed: true);
+            figure.Segments.Add(new ProGPU.Vector.LineSegment(new Vector2(240f, 10f)));
+            figure.Segments.Add(new ProGPU.Vector.LineSegment(new Vector2(240f, 240f)));
+            figure.Segments.Add(new ProGPU.Vector.LineSegment(new Vector2(10f, 240f)));
+            path.Figures.Add(figure);
+
+            var pathIcon = new PathIcon
+            {
+                Data = path,
+                Foreground = new SolidColorBrush(0xFF0000FF), // Red
+                Width = logicalWidth,
+                Height = logicalHeight
+            };
+
+            pathIcon.Measure(new Vector2(logicalWidth, logicalHeight));
+            pathIcon.Arrange(new ProGPU.Scene.Rect(0, 0, logicalWidth, logicalHeight));
+
+            physicalOffscreenTexture = new GpuTexture(
+                context,
+                physicalWidth,
+                physicalHeight,
+                TextureFormat.Bgra8Unorm,
+                TextureUsage.RenderAttachment | TextureUsage.CopySrc,
+                "HighDpi Test Offscreen Target"
+            );
+
+            window.Compositor.RenderScene(pathIcon, logicalWidth, logicalHeight, physicalOffscreenTexture.ViewPtr);
+
+            var wgpu = context.Wgpu;
+            uint bytesPerPixel = 4;
+            uint unalignedBytesPerRow = physicalWidth * bytesPerPixel;
+            uint bytesPerRow = (unalignedBytesPerRow + 255) & ~255u;
+            uint bufferSize = bytesPerRow * physicalHeight;
+
+            var labelPtr = Silk.NET.Core.Native.SilkMarshal.StringToPtr("HighDpi Readback Buffer");
+            var bufferDesc = new BufferDescriptor
+            {
+                Label = (byte*)labelPtr,
+                Size = bufferSize,
+                Usage = BufferUsage.CopyDst | BufferUsage.MapRead,
+                MappedAtCreation = false
+            };
+            readbackBuffer = wgpu.DeviceCreateBuffer(context.Device, &bufferDesc);
+            Silk.NET.Core.Native.SilkMarshal.Free((nint)labelPtr);
+
+            var encoderDesc = new CommandEncoderDescriptor { Label = (byte*)Silk.NET.Core.Native.SilkMarshal.StringToPtr("HighDpi Readback Encoder") };
+            var encoder = wgpu.DeviceCreateCommandEncoder(context.Device, &encoderDesc);
+            Silk.NET.Core.Native.SilkMarshal.Free((nint)encoderDesc.Label);
+
+            var source = new ImageCopyTexture
+            {
+                Texture = physicalOffscreenTexture.TexturePtr,
+                MipLevel = 0,
+                Origin = new Origin3D { X = 0, Y = 0, Z = 0 },
+                Aspect = TextureAspect.All
+            };
+            var destination = new ImageCopyBuffer
+            {
+                Buffer = readbackBuffer,
+                Layout = new TextureDataLayout { Offset = 0, BytesPerRow = bytesPerRow, RowsPerImage = physicalHeight }
+            };
+            var copySize = new Extent3D { Width = physicalWidth, Height = physicalHeight, DepthOrArrayLayers = 1 };
+            wgpu.CommandEncoderCopyTextureToBuffer(encoder, &source, &destination, &copySize);
+
+            var cmdDesc = new CommandBufferDescriptor { Label = (byte*)Silk.NET.Core.Native.SilkMarshal.StringToPtr("HighDpi Readback Command Buffer") };
+            var cmdBuffer = wgpu.CommandEncoderFinish(encoder, &cmdDesc);
+            Silk.NET.Core.Native.SilkMarshal.Free((nint)cmdDesc.Label);
+
+            wgpu.QueueSubmit(context.Queue, 1, &cmdBuffer);
+            wgpu.CommandBufferRelease(cmdBuffer);
+            wgpu.CommandEncoderRelease(encoder);
+
+            var mapSignal = new System.Threading.ManualResetEventSlim(false);
+            BufferMapAsyncStatus mapStatus = BufferMapAsyncStatus.ValidationError;
+            var onMapped = PfnBufferMapCallback.From((status, userData) =>
+            {
+                mapStatus = status;
+                mapSignal.Set();
+            });
+            wgpu.BufferMapAsync(readbackBuffer, MapMode.Read, 0, (nuint)bufferSize, onMapped, null);
+
+            var swTimeout = System.Diagnostics.Stopwatch.StartNew();
+            while (!mapSignal.IsSet)
+            {
+                wgpuDevicePoll(context.Device, false, null);
+                System.Threading.Thread.Sleep(1);
+                if (swTimeout.ElapsedMilliseconds > 5000)
+                {
+                    throw new TimeoutException("HighDpi BufferMapAsync timed out.");
+                }
+            }
+
+            Assert.Equal(BufferMapAsyncStatus.Success, mapStatus);
+
+            byte[] unpaddedPixels = new byte[physicalWidth * physicalHeight * 4];
+            void* mappedPtr = wgpu.BufferGetConstMappedRange(readbackBuffer, 0, (nuint)bufferSize);
+            byte* srcBytes = (byte*)mappedPtr;
+            for (uint y = 0; y < physicalHeight; y++)
+            {
+                uint srcOffset = y * bytesPerRow;
+                uint dstOffset = y * physicalWidth * 4;
+                System.Runtime.InteropServices.Marshal.Copy((nint)(srcBytes + srcOffset), unpaddedPixels, (int)dstOffset, (int)(physicalWidth * 4));
+            }
+            wgpu.BufferUnmap(readbackBuffer);
+
+            for (int i = 0; i < unpaddedPixels.Length; i += 4)
+            {
+                byte b = unpaddedPixels[i + 0];
+                byte r = unpaddedPixels[i + 2];
+                unpaddedPixels[i + 0] = r;
+                unpaddedPixels[i + 2] = b;
+            }
+
+            int centerIdx = (256 * 512 + 256) * 4;
+            byte redVal = unpaddedPixels[centerIdx + 0];
+            byte greenVal = unpaddedPixels[centerIdx + 1];
+            byte blueVal = unpaddedPixels[centerIdx + 2];
+            byte alphaVal = unpaddedPixels[centerIdx + 3];
+
+            Console.WriteLine($"[Diagnostic] Wavefront high-DPI path center pixel (512x512): R={redVal}, G={greenVal}, B={blueVal}, A={alphaVal}");
+
+            Assert.Equal(255, redVal);
+            Assert.Equal(0, greenVal);
+            Assert.Equal(0, blueVal);
+            Assert.Equal(255, alphaVal);
+        }
+        finally
+        {
+            contextWindowField.SetValue(context, originalWindow);
+            window.Compositor.VectorEngine = prevEngine;
+            physicalOffscreenTexture?.Dispose();
+            if (readbackBuffer != null)
+            {
+                context.Wgpu.BufferDestroy(readbackBuffer);
+                context.Wgpu.BufferRelease(readbackBuffer);
+            }
+        }
+    }
+}
+
+public class WindowProxy : System.Reflection.DispatchProxy
+{
+    public Silk.NET.Maths.Vector2D<int> Size { get; set; }
+    public Silk.NET.Maths.Vector2D<int> FramebufferSize { get; set; }
+
+    protected override object? Invoke(System.Reflection.MethodInfo? targetMethod, object?[]? args)
+    {
+        if (targetMethod == null) return null;
+        if (targetMethod.Name == "get_Size")
+        {
+            return Size;
+        }
+        if (targetMethod.Name == "get_FramebufferSize")
+        {
+            return FramebufferSize;
+        }
+        if (targetMethod.Name == "set_VSync")
+        {
+            return null;
+        }
+        if (targetMethod.ReturnType.IsValueType)
+        {
+            return Activator.CreateInstance(targetMethod.ReturnType);
+        }
+        return null;
     }
 }
 
