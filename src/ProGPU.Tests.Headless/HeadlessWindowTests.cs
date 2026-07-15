@@ -9,6 +9,7 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Documents;
 using ProGPU.Vector;
 using Silk.NET.WebGPU;
+using ProGPU.Backend;
 
 [assembly: Xunit.CollectionBehavior(DisableTestParallelization = true)]
 
@@ -156,6 +157,68 @@ public class HeadlessWindowTests : IDisposable
         }), null);
         
         using var engine = new ProGPU.Compute.WavefrontVectorEngine(context);
+        
+        // Restore default callback
+        context.Wgpu.DeviceSetUncapturedErrorCallback(context.Device, PfnErrorCallback.From((type, msg, _) =>
+        {
+            string errorMsg = (msg != null ? Silk.NET.Core.Native.SilkMarshal.PtrToString((nint)msg) : null) ?? "Unknown error";
+            Console.WriteLine($"[WebGPU Error] Type: {type}, Message: {errorMsg}");
+        }), null);
+        
+        Assert.False(hasError, $"WebGPU validation errors occurred:\n{errorDetails}");
+    }
+
+    [Fact]
+    public unsafe void Test_Run_WavefrontEngine()
+    {
+        var window = HeadlessWindow.Shared;
+        var context = window.Context;
+        
+        bool hasError = false;
+        string errorDetails = "";
+        
+        int errorCount = 0;
+        context.Wgpu.DeviceSetUncapturedErrorCallback(context.Device, PfnErrorCallback.From((type, msg, _) =>
+        {
+            hasError = true;
+            if (errorCount++ < 10)
+            {
+                errorDetails += (msg != null ? Silk.NET.Core.Native.SilkMarshal.PtrToString((nint)msg) : null) ?? "Unknown error";
+                errorDetails += "\n";
+            }
+        }), null);
+        
+        using var engine = new ProGPU.Compute.WavefrontVectorEngine(context);
+        using var destination = new GpuTexture(context, 256, 256, TextureFormat.Rgba8Unorm, 
+            TextureUsage.TextureBinding | TextureUsage.StorageBinding | TextureUsage.CopySrc | TextureUsage.CopyDst, 
+            "TestDestinationTexture");
+            
+        engine.BeginFrame();
+        
+        var path = new PathGeometry();
+        var figure = new PathFigure(new Vector2(10f, 10f), isClosed: true);
+        figure.Segments.Add(new ProGPU.Vector.LineSegment(new Vector2(100f, 10f)));
+        figure.Segments.Add(new ProGPU.Vector.LineSegment(new Vector2(100f, 100f)));
+        figure.Segments.Add(new ProGPU.Vector.LineSegment(new Vector2(10f, 100f)));
+        path.Figures.Add(figure);
+        
+        var brush = new SolidColorBrush(new Vector4(1f, 0f, 0f, 1f));
+        engine.DrawPath(path, Matrix4x4.Identity, brush);
+        
+        var encoderDesc = new CommandEncoderDescriptor { Label = (byte*)Silk.NET.Core.Native.SilkMarshal.StringToPtr("TestEncoder") };
+        var encoder = context.Wgpu.DeviceCreateCommandEncoder(context.Device, &encoderDesc);
+        Silk.NET.Core.Native.SilkMarshal.Free((nint)encoderDesc.Label);
+        
+        engine.EndFrame(encoder, destination);
+        
+        var cmdDesc = new CommandBufferDescriptor { Label = (byte*)Silk.NET.Core.Native.SilkMarshal.StringToPtr("TestCommandBuffer") };
+        var cmdBuffer = context.Wgpu.CommandEncoderFinish(encoder, &cmdDesc);
+        Silk.NET.Core.Native.SilkMarshal.Free((nint)cmdDesc.Label);
+        
+        context.Wgpu.QueueSubmit(context.Queue, 1, &cmdBuffer);
+        
+        context.Wgpu.CommandBufferRelease(cmdBuffer);
+        context.Wgpu.CommandEncoderRelease(encoder);
         
         // Restore default callback
         context.Wgpu.DeviceSetUncapturedErrorCallback(context.Device, PfnErrorCallback.From((type, msg, _) =>

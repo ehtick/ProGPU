@@ -33,6 +33,8 @@ public struct GpuShapeInstance
     public Vector2 MaxBounds;
     public uint BvhRootIdx;
     public uint ShapeId;
+    public uint StructPad0;
+    public uint StructPad1;
     public Vector4 Color;
     public uint IsText;
     public uint Pad0;
@@ -106,6 +108,7 @@ public unsafe class WavefrontVectorEngine : IDisposable
     private GpuBuffer? _sortParamsBuffer;
 
     private GpuTexture? _maskTexture;
+    private GpuTexture? _bgCopyTexture;
 
     private readonly List<GpuShapeInstance> _frameInstances = new();
     private uint _frameNumber = 0;
@@ -313,6 +316,29 @@ public unsafe class WavefrontVectorEngine : IDisposable
         // 2. Allocate & upload GPU Buffers
         UpdateGpuBuffers(width, height, gridStride, cellCount, maxGridIndices);
 
+        // Copy cleared destination texture to background copy texture
+        var copySrc = new ImageCopyTexture
+        {
+            Texture = destination.TexturePtr,
+            MipLevel = 0,
+            Origin = new Origin3D { X = 0, Y = 0, Z = 0 },
+            Aspect = TextureAspect.All
+        };
+        var copyDst = new ImageCopyTexture
+        {
+            Texture = _bgCopyTexture!.TexturePtr,
+            MipLevel = 0,
+            Origin = new Origin3D { X = 0, Y = 0, Z = 0 },
+            Aspect = TextureAspect.All
+        };
+        var copySize = new Extent3D
+        {
+            Width = width,
+            Height = height,
+            DepthOrArrayLayers = 1
+        };
+        _context.Wgpu.CommandEncoderCopyTextureToTexture(encoder, &copySrc, &copyDst, &copySize);
+
         _bvhBuffer!.Write(CollectionsMarshal.AsSpan(_bvhNodes));
         _linesBuffer!.Write(CollectionsMarshal.AsSpan(_lineSegments));
         _instancesBuffer!.Write(CollectionsMarshal.AsSpan(_frameInstances));
@@ -332,29 +358,90 @@ public unsafe class WavefrontVectorEngine : IDisposable
         _uniformsBuffer!.WriteSingle(uniforms);
 
         // 3. Bind Groups
-        var entries = stackalloc BindGroupEntry[12];
-        entries[0] = new BindGroupEntry { Binding = 0, Buffer = _uniformsBuffer.BufferPtr, Offset = 0, Size = _uniformsBuffer.Size };
-        entries[1] = new BindGroupEntry { Binding = 1, Buffer = _rayQueueBuffer!.BufferPtr, Offset = 0, Size = _rayQueueBuffer.Size };
-        entries[2] = new BindGroupEntry { Binding = 2, Buffer = _queueCounterBuffer!.BufferPtr, Offset = 0, Size = _queueCounterBuffer.Size };
-        entries[3] = new BindGroupEntry { Binding = 3, Buffer = _bvhBuffer.BufferPtr, Offset = 0, Size = _bvhBuffer.Size };
-        entries[4] = new BindGroupEntry { Binding = 4, Buffer = _instancesBuffer.BufferPtr, Offset = 0, Size = _instancesBuffer.Size };
-        entries[5] = new BindGroupEntry { Binding = 5, Buffer = _gridCellsBuffer!.BufferPtr, Offset = 0, Size = _gridCellsBuffer.Size };
-        entries[6] = new BindGroupEntry { Binding = 6, Buffer = _gridIndicesBuffer!.BufferPtr, Offset = 0, Size = _gridIndicesBuffer.Size };
-        entries[7] = new BindGroupEntry { Binding = 7, TextureView = _maskTexture!.ViewPtr };
-        entries[8] = new BindGroupEntry { Binding = 8, TextureView = destination.ViewPtr };
-        entries[9] = new BindGroupEntry { Binding = 9, Buffer = _linesBuffer.BufferPtr, Offset = 0, Size = _linesBuffer.Size };
-        entries[10] = new BindGroupEntry { Binding = 10, TextureView = _maskTexture.ViewPtr };
-        entries[11] = new BindGroupEntry { Binding = 11, TextureView = destination.ViewPtr };
-
-        var bgLayout = _context.Wgpu.ComputePipelineGetBindGroupLayout(_traversePipeline, 0);
-        var bgDesc = new BindGroupDescriptor
+        
+        // 3.1 Bind Group for Clear Mask Pipeline
+        var clearMaskEntries = stackalloc BindGroupEntry[2];
+        clearMaskEntries[0] = new BindGroupEntry { Binding = 0, Buffer = _uniformsBuffer.BufferPtr, Offset = 0, Size = _uniformsBuffer.Size };
+        clearMaskEntries[1] = new BindGroupEntry { Binding = 10, TextureView = _maskTexture!.ViewPtr };
+        var clearMaskLayout = _context.Wgpu.ComputePipelineGetBindGroupLayout(_clearMaskPipeline, 0);
+        var clearMaskBgDesc = new BindGroupDescriptor
         {
-            Layout = bgLayout,
-            EntryCount = 12,
-            Entries = entries
+            Layout = clearMaskLayout,
+            EntryCount = 2,
+            Entries = clearMaskEntries
         };
-        var mainBindGroup = _context.Wgpu.DeviceCreateBindGroup(_context.Device, &bgDesc);
-        _context.Wgpu.BindGroupLayoutRelease(bgLayout);
+        var clearMaskBindGroup = _context.Wgpu.DeviceCreateBindGroup(_context.Device, &clearMaskBgDesc);
+        _context.Wgpu.BindGroupLayoutRelease(clearMaskLayout);
+
+        // 3.2 Bind Group for Bin Shapes Pipeline
+        var binShapesEntries = stackalloc BindGroupEntry[4];
+        binShapesEntries[0] = new BindGroupEntry { Binding = 0, Buffer = _uniformsBuffer.BufferPtr, Offset = 0, Size = _uniformsBuffer.Size };
+        binShapesEntries[1] = new BindGroupEntry { Binding = 4, Buffer = _instancesBuffer!.BufferPtr, Offset = 0, Size = _instancesBuffer.Size };
+        binShapesEntries[2] = new BindGroupEntry { Binding = 5, Buffer = _gridCellsBuffer!.BufferPtr, Offset = 0, Size = _gridCellsBuffer.Size };
+        binShapesEntries[3] = new BindGroupEntry { Binding = 6, Buffer = _gridIndicesBuffer!.BufferPtr, Offset = 0, Size = _gridIndicesBuffer.Size };
+        var binShapesLayout = _context.Wgpu.ComputePipelineGetBindGroupLayout(_binShapesPipeline, 0);
+        var binShapesBgDesc = new BindGroupDescriptor
+        {
+            Layout = binShapesLayout,
+            EntryCount = 4,
+            Entries = binShapesEntries
+        };
+        var binShapesBindGroup = _context.Wgpu.DeviceCreateBindGroup(_context.Device, &binShapesBgDesc);
+        _context.Wgpu.BindGroupLayoutRelease(binShapesLayout);
+
+        // 3.3 Bind Group for Init Queue Pipeline
+        var initQueueEntries = stackalloc BindGroupEntry[2];
+        initQueueEntries[0] = new BindGroupEntry { Binding = 0, Buffer = _uniformsBuffer.BufferPtr, Offset = 0, Size = _uniformsBuffer.Size };
+        initQueueEntries[1] = new BindGroupEntry { Binding = 1, Buffer = _rayQueueBuffer!.BufferPtr, Offset = 0, Size = _rayQueueBuffer.Size };
+        var initQueueLayout = _context.Wgpu.ComputePipelineGetBindGroupLayout(_initQueuePipeline, 0);
+        var initQueueBgDesc = new BindGroupDescriptor
+        {
+            Layout = initQueueLayout,
+            EntryCount = 2,
+            Entries = initQueueEntries
+        };
+        var initQueueBindGroup = _context.Wgpu.DeviceCreateBindGroup(_context.Device, &initQueueBgDesc);
+        _context.Wgpu.BindGroupLayoutRelease(initQueueLayout);
+
+        // 3.4 Bind Group for Traverse Pipeline
+        var traverseEntries = stackalloc BindGroupEntry[9];
+        traverseEntries[0] = new BindGroupEntry { Binding = 0, Buffer = _uniformsBuffer.BufferPtr, Offset = 0, Size = _uniformsBuffer.Size };
+        traverseEntries[1] = new BindGroupEntry { Binding = 1, Buffer = _rayQueueBuffer!.BufferPtr, Offset = 0, Size = _rayQueueBuffer.Size };
+        traverseEntries[2] = new BindGroupEntry { Binding = 2, Buffer = _queueCounterBuffer!.BufferPtr, Offset = 0, Size = _queueCounterBuffer.Size };
+        traverseEntries[3] = new BindGroupEntry { Binding = 3, Buffer = _bvhBuffer!.BufferPtr, Offset = 0, Size = _bvhBuffer.Size };
+        traverseEntries[4] = new BindGroupEntry { Binding = 4, Buffer = _instancesBuffer!.BufferPtr, Offset = 0, Size = _instancesBuffer.Size };
+        traverseEntries[5] = new BindGroupEntry { Binding = 5, Buffer = _gridCellsBuffer!.BufferPtr, Offset = 0, Size = _gridCellsBuffer.Size };
+        traverseEntries[6] = new BindGroupEntry { Binding = 6, Buffer = _gridIndicesBuffer!.BufferPtr, Offset = 0, Size = _gridIndicesBuffer.Size };
+        traverseEntries[7] = new BindGroupEntry { Binding = 7, TextureView = _maskTexture!.ViewPtr };
+        traverseEntries[8] = new BindGroupEntry { Binding = 8, TextureView = _bgCopyTexture!.ViewPtr };
+        var traverseLayout = _context.Wgpu.ComputePipelineGetBindGroupLayout(_traversePipeline, 0);
+        var traverseBgDesc = new BindGroupDescriptor
+        {
+            Layout = traverseLayout,
+            EntryCount = 9,
+            Entries = traverseEntries
+        };
+        var traverseBindGroup = _context.Wgpu.DeviceCreateBindGroup(_context.Device, &traverseBgDesc);
+        _context.Wgpu.BindGroupLayoutRelease(traverseLayout);
+
+        // 3.5 Bind Group for Intersect Pipeline
+        var intersectEntries = stackalloc BindGroupEntry[7];
+        intersectEntries[0] = new BindGroupEntry { Binding = 0, Buffer = _uniformsBuffer.BufferPtr, Offset = 0, Size = _uniformsBuffer.Size };
+        intersectEntries[1] = new BindGroupEntry { Binding = 1, Buffer = _rayQueueBuffer.BufferPtr, Offset = 0, Size = _rayQueueBuffer.Size };
+        intersectEntries[2] = new BindGroupEntry { Binding = 3, Buffer = _bvhBuffer.BufferPtr, Offset = 0, Size = _bvhBuffer.Size };
+        intersectEntries[3] = new BindGroupEntry { Binding = 8, TextureView = _bgCopyTexture!.ViewPtr };
+        intersectEntries[4] = new BindGroupEntry { Binding = 9, Buffer = _linesBuffer!.BufferPtr, Offset = 0, Size = _linesBuffer.Size };
+        intersectEntries[5] = new BindGroupEntry { Binding = 10, TextureView = _maskTexture.ViewPtr };
+        intersectEntries[6] = new BindGroupEntry { Binding = 11, TextureView = destination.ViewPtr };
+        var intersectLayout = _context.Wgpu.ComputePipelineGetBindGroupLayout(_intersectPipeline, 0);
+        var intersectBgDesc = new BindGroupDescriptor
+        {
+            Layout = intersectLayout,
+            EntryCount = 7,
+            Entries = intersectEntries
+        };
+        var intersectBindGroup = _context.Wgpu.DeviceCreateBindGroup(_context.Device, &intersectBgDesc);
+        _context.Wgpu.BindGroupLayoutRelease(intersectLayout);
 
         // Write all sort parameters for all steps to _sortParamsBuffer once per frame
         var sortParamsArray = new GpuSortParamsAligned[153];
@@ -374,7 +461,7 @@ public unsafe class WavefrontVectorEngine : IDisposable
         // Pass 0.1: Clear active pixel mask on the GPU
         var passClear = _context.Wgpu.CommandEncoderBeginComputePass(encoder, &passDesc);
         _context.Wgpu.ComputePassEncoderSetPipeline(passClear, _clearMaskPipeline);
-        _context.Wgpu.ComputePassEncoderSetBindGroup(passClear, 0, mainBindGroup, 0, null);
+        _context.Wgpu.ComputePassEncoderSetBindGroup(passClear, 0, clearMaskBindGroup, 0, null);
         _context.Wgpu.ComputePassEncoderDispatchWorkgroups(passClear, (width + 15) / 16, (height + 15) / 16, 1);
         _context.Wgpu.ComputePassEncoderEnd(passClear);
         _context.Wgpu.ComputePassEncoderRelease(passClear);
@@ -382,7 +469,7 @@ public unsafe class WavefrontVectorEngine : IDisposable
         // Pass 0.2: Bin shapes on the GPU
         var passBin = _context.Wgpu.CommandEncoderBeginComputePass(encoder, &passDesc);
         _context.Wgpu.ComputePassEncoderSetPipeline(passBin, _binShapesPipeline);
-        _context.Wgpu.ComputePassEncoderSetBindGroup(passBin, 0, mainBindGroup, 0, null);
+        _context.Wgpu.ComputePassEncoderSetBindGroup(passBin, 0, binShapesBindGroup, 0, null);
         _context.Wgpu.ComputePassEncoderDispatchWorkgroups(passBin, (gridCols + 15) / 16, (gridRows + 15) / 16, 1);
         _context.Wgpu.ComputePassEncoderEnd(passBin);
         _context.Wgpu.ComputePassEncoderRelease(passBin);
@@ -391,7 +478,7 @@ public unsafe class WavefrontVectorEngine : IDisposable
         _context.Wgpu.CommandEncoderClearBuffer(encoder, _queueCounterBuffer.BufferPtr, 0, 4);
         var pass0 = _context.Wgpu.CommandEncoderBeginComputePass(encoder, &passDesc);
         _context.Wgpu.ComputePassEncoderSetPipeline(pass0, _initQueuePipeline);
-        _context.Wgpu.ComputePassEncoderSetBindGroup(pass0, 0, mainBindGroup, 0, null);
+        _context.Wgpu.ComputePassEncoderSetBindGroup(pass0, 0, initQueueBindGroup, 0, null);
         _context.Wgpu.ComputePassEncoderDispatchWorkgroups(pass0, queueSize / 256, 1, 1);
         _context.Wgpu.ComputePassEncoderEnd(pass0);
         _context.Wgpu.ComputePassEncoderRelease(pass0);
@@ -399,7 +486,7 @@ public unsafe class WavefrontVectorEngine : IDisposable
         // Pass 1: Traversal
         var pass1 = _context.Wgpu.CommandEncoderBeginComputePass(encoder, &passDesc);
         _context.Wgpu.ComputePassEncoderSetPipeline(pass1, _traversePipeline);
-        _context.Wgpu.ComputePassEncoderSetBindGroup(pass1, 0, mainBindGroup, 0, null);
+        _context.Wgpu.ComputePassEncoderSetBindGroup(pass1, 0, traverseBindGroup, 0, null);
         _context.Wgpu.ComputePassEncoderDispatchWorkgroups(pass1, (width + 7) / 8, (height + 7) / 8, 1);
         _context.Wgpu.ComputePassEncoderEnd(pass1);
         _context.Wgpu.ComputePassEncoderRelease(pass1);
@@ -407,6 +494,10 @@ public unsafe class WavefrontVectorEngine : IDisposable
         // Pass 2: Bitonic Sort
         // Loop stages and steps
         int stepIdx = 0;
+        var sortEntries = stackalloc BindGroupEntry[3];
+        sortEntries[0] = new BindGroupEntry { Binding = 0, Buffer = _uniformsBuffer.BufferPtr, Offset = 0, Size = _uniformsBuffer.Size };
+        sortEntries[1] = new BindGroupEntry { Binding = 1, Buffer = _rayQueueBuffer.BufferPtr, Offset = 0, Size = _rayQueueBuffer.Size };
+
         for (uint stage = 2; stage <= queueSize; stage <<= 1)
         {
             for (uint step = stage >> 1; step > 0; step >>= 1)
@@ -414,9 +505,6 @@ public unsafe class WavefrontVectorEngine : IDisposable
                 uint sortParamsOffset = (uint)(stepIdx * 256);
                 stepIdx++;
 
-                var sortEntries = stackalloc BindGroupEntry[3];
-                sortEntries[0] = new BindGroupEntry { Binding = 0, Buffer = _uniformsBuffer.BufferPtr, Offset = 0, Size = _uniformsBuffer.Size };
-                sortEntries[1] = new BindGroupEntry { Binding = 1, Buffer = _rayQueueBuffer.BufferPtr, Offset = 0, Size = _rayQueueBuffer.Size };
                 sortEntries[2] = new BindGroupEntry { Binding = 12, Buffer = _sortParamsBuffer.BufferPtr, Offset = sortParamsOffset, Size = (uint)sizeof(GpuSortParams) };
 
                 var sortBgLayout = _context.Wgpu.ComputePipelineGetBindGroupLayout(_sortPipeline, 0);
@@ -443,13 +531,17 @@ public unsafe class WavefrontVectorEngine : IDisposable
         // Pass 3: Intersection & Blending
         var pass3 = _context.Wgpu.CommandEncoderBeginComputePass(encoder, &passDesc);
         _context.Wgpu.ComputePassEncoderSetPipeline(pass3, _intersectPipeline);
-        _context.Wgpu.ComputePassEncoderSetBindGroup(pass3, 0, mainBindGroup, 0, null);
+        _context.Wgpu.ComputePassEncoderSetBindGroup(pass3, 0, intersectBindGroup, 0, null);
         _context.Wgpu.ComputePassEncoderDispatchWorkgroups(pass3, queueSize / 256, 1, 1);
         _context.Wgpu.ComputePassEncoderEnd(pass3);
         _context.Wgpu.ComputePassEncoderRelease(pass3);
 
         // Cleanup local Bind Groups
-        _context.Wgpu.BindGroupRelease(mainBindGroup);
+        _context.Wgpu.BindGroupRelease(clearMaskBindGroup);
+        _context.Wgpu.BindGroupRelease(binShapesBindGroup);
+        _context.Wgpu.BindGroupRelease(initQueueBindGroup);
+        _context.Wgpu.BindGroupRelease(traverseBindGroup);
+        _context.Wgpu.BindGroupRelease(intersectBindGroup);
     }
 
     private void UpdateGpuBuffers(uint width, uint height, uint gridStride, uint cellCount, uint indexCount)
@@ -457,25 +549,25 @@ public unsafe class WavefrontVectorEngine : IDisposable
         uint maxQueueSize = 131072;
 
         _bvhBuffer?.Dispose();
-        _bvhBuffer = new GpuBuffer(_context, (uint)(_bvhNodes.Count * sizeof(GpuBvhNode)), BufferUsage.Storage, "Wavefront BVH Nodes Buffer");
+        _bvhBuffer = new GpuBuffer(_context, (uint)(_bvhNodes.Count * sizeof(GpuBvhNode)), BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront BVH Nodes Buffer");
 
         _linesBuffer?.Dispose();
-        _linesBuffer = new GpuBuffer(_context, (uint)(_lineSegments.Count * sizeof(GpuLineSegment)), BufferUsage.Storage, "Wavefront Lines Buffer");
+        _linesBuffer = new GpuBuffer(_context, (uint)(_lineSegments.Count * sizeof(GpuLineSegment)), BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront Lines Buffer");
 
         _instancesBuffer?.Dispose();
-        _instancesBuffer = new GpuBuffer(_context, (uint)(_frameInstances.Count * sizeof(GpuShapeInstance)), BufferUsage.Storage, "Wavefront Instances Buffer");
+        _instancesBuffer = new GpuBuffer(_context, (uint)(_frameInstances.Count * sizeof(GpuShapeInstance)), BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront Instances Buffer");
 
         _gridCellsBuffer?.Dispose();
-        _gridCellsBuffer = new GpuBuffer(_context, (uint)(cellCount * sizeof(GpuGridCell)), BufferUsage.Storage, "Wavefront Grid Cells Buffer");
+        _gridCellsBuffer = new GpuBuffer(_context, (uint)(cellCount * sizeof(GpuGridCell)), BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront Grid Cells Buffer");
 
         _gridIndicesBuffer?.Dispose();
-        _gridIndicesBuffer = new GpuBuffer(_context, (uint)(indexCount * sizeof(uint)), BufferUsage.Storage, "Wavefront Grid Indices Buffer");
+        _gridIndicesBuffer = new GpuBuffer(_context, (uint)(indexCount * sizeof(uint)), BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront Grid Indices Buffer");
 
         if (_rayQueueBuffer == null)
         {
             _rayQueueBuffer = new GpuBuffer(_context, (uint)(maxQueueSize * sizeof(RayState)), BufferUsage.Storage, "Wavefront Ray Queue Buffer");
             _queueCounterBuffer = new GpuBuffer(_context, 4, BufferUsage.Storage | BufferUsage.CopySrc | BufferUsage.CopyDst, "Wavefront Queue Counter Buffer");
-            _uniformsBuffer = new GpuBuffer(_context, (uint)sizeof(GpuWavefrontUniforms), BufferUsage.Uniform, "Wavefront Uniforms Buffer");
+            _uniformsBuffer = new GpuBuffer(_context, (uint)sizeof(GpuWavefrontUniforms), BufferUsage.Uniform | BufferUsage.CopyDst, "Wavefront Uniforms Buffer");
             _sortParamsBuffer = new GpuBuffer(_context, 153 * 256, BufferUsage.Uniform | BufferUsage.CopyDst, "Wavefront Sort Params Buffer");
         }
 
@@ -485,6 +577,14 @@ public unsafe class WavefrontVectorEngine : IDisposable
             _maskTexture = new GpuTexture(_context, width, height, TextureFormat.R32Uint,
                 TextureUsage.TextureBinding | TextureUsage.StorageBinding | TextureUsage.CopyDst,
                 "Wavefront Mask Texture");
+        }
+
+        if (_bgCopyTexture == null || _bgCopyTexture.Width != width || _bgCopyTexture.Height != height)
+        {
+            _bgCopyTexture?.Dispose();
+            _bgCopyTexture = new GpuTexture(_context, width, height, TextureFormat.Rgba8Unorm,
+                TextureUsage.TextureBinding | TextureUsage.CopySrc | TextureUsage.CopyDst,
+                "Wavefront Background Copy Texture");
         }
     }
 
@@ -503,6 +603,7 @@ public unsafe class WavefrontVectorEngine : IDisposable
         _sortParamsBuffer?.Dispose();
 
         _maskTexture?.Dispose();
+        _bgCopyTexture?.Dispose();
 
         _isDisposed = true;
         GC.SuppressFinalize(this);
