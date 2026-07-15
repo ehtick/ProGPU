@@ -88,10 +88,10 @@ public unsafe class HeadlessWindow : IDisposable
         _context = new WgpuContext();
         _context.Initialize(null);
 
-        // 2. Initialize Compositor with RGBA8 target format for raw pixel reading
+        // 2. Use BGRA8 so headless rendering exercises the primary surface format.
         _compositor = new Compositor(
             _context,
-            TextureFormat.Rgba8Unorm,
+            TextureFormat.Bgra8Unorm,
             compositorOptions ?? CompositorOptions.Default);
 
         // Setup Decoupled Hooks (similar to Window.cs)
@@ -118,7 +118,7 @@ public unsafe class HeadlessWindow : IDisposable
                 _context,
                 _width,
                 _height,
-                TextureFormat.Rgba8Unorm,
+                TextureFormat.Bgra8Unorm,
                 TextureUsage.RenderAttachment | TextureUsage.CopySrc,
                 "Headless Offscreen Target",
                 alphaMode: GpuTextureAlphaMode.Premultiplied
@@ -273,6 +273,13 @@ public unsafe class HeadlessWindow : IDisposable
                 long srcOffset = y * _bytesPerRow;
                 long dstOffset = y * _width * 4;
                 System.Runtime.InteropServices.Marshal.Copy((nint)(srcBytes + srcOffset), unpaddedPixels, (int)dstOffset, (int)(_width * 4));
+            }
+
+            // Public headless readback remains RGBA regardless of the GPU target format.
+            for (int i = 0; i < unpaddedPixels.Length; i += 4)
+            {
+                (unpaddedPixels[i], unpaddedPixels[i + 2]) =
+                    (unpaddedPixels[i + 2], unpaddedPixels[i]);
             }
         }
 

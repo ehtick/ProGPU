@@ -550,11 +550,15 @@ public unsafe class WgpuContext : IDisposable
         var adapterLimits = new SupportedLimits();
         Wgpu.AdapterGetLimits(Adapter, &adapterLimits);
         var requiredLimits = CreateRequiredLimits(adapterLimits);
+        var requiredFeatures = stackalloc FeatureName[1];
+        requiredFeatures[0] = FeatureName.Bgra8UnormStorage;
 
         var deviceDesc = new DeviceDescriptor
         {
             Label = (byte*)SilkMarshal.StringToPtr("ProGPU Primary Device"),
-            RequiredLimits = &requiredLimits
+            RequiredLimits = &requiredLimits,
+            RequiredFeatureCount = 1,
+            RequiredFeatures = requiredFeatures
         };
 
         var onDeviceReceived = PfnRequestDeviceCallback.From((status, device, message, userData) =>

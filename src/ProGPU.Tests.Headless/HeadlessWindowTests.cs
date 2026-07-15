@@ -359,7 +359,7 @@ public class HeadlessWindowTests : IDisposable
         proxyInstance.FramebufferSize = new Silk.NET.Maths.Vector2D<int>((int)physicalWidth, (int)physicalHeight);
 
         var contextWindowField = typeof(WgpuContext).GetField("_window", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-        var originalWindow = contextWindowField.GetValue(context);
+        var originalWindow = contextWindowField!.GetValue(context);
         contextWindowField.SetValue(context, mockWindow);
 
         var prevEngine = window.Compositor.VectorEngine;
@@ -538,4 +538,3 @@ public class WindowProxy : System.Reflection.DispatchProxy
         return null;
     }
 }
-
