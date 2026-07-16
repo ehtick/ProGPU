@@ -1,5 +1,6 @@
 using System;
 using Silk.NET.Windowing;
+using Microsoft.UI.Xaml.HotReload;
 
 namespace Microsoft.UI.Xaml;
 
@@ -57,6 +58,7 @@ public class AppRunner<TApp> where TApp : Application, new()
 
         // Set static dispatcher delegate for asynchronous work
         Microsoft.UI.Xaml.Input.InputSystem.DispatcherQueue = UIThread.Post;
+        HotReloadManager.Initialize("Desktop");
 
         // Launch the App
         var app = new TApp();
@@ -109,6 +111,7 @@ public class AppRunner<TApp> where TApp : Application, new()
             System.Threading.Thread.CurrentThread.CurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
             System.Threading.Thread.CurrentThread.CurrentUICulture = System.Globalization.CultureInfo.InvariantCulture;
             Microsoft.UI.Xaml.Input.InputSystem.DispatcherQueue = UIThread.Post;
+            HotReloadManager.Initialize(WindowHostServices.Current.GetType().Name);
 
             var app = new TApp();
             Application.Current = app;
