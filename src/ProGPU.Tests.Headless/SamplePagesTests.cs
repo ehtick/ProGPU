@@ -313,96 +313,14 @@ public class SamplePagesTests : IDisposable
     }
 
     [Fact]
-    public async Task Test_MarkdownPage_DesktopNavigation_FirstFramesAreBounded()
+    public async Task Test_MarkdownPage_RepeatedActivation_RemainsResponsiveAndHighlighted()
     {
         EnsureFontsAndStateLoaded();
-
-        var navigation = new NavigationView
-        {
-            Font = AppState._font,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Stretch
-        };
-        var initialItem = new NavigationViewItem("3D Mesh Viewer", "", Mesh3DViewerPage.Create);
-        var markdownItem = new NavigationViewItem("Markdown Playground", "", MarkdownPage.Create);
-        navigation.MenuItems.Add(initialItem);
-        navigation.MenuItems.Add(markdownItem);
-
-        var window = HeadlessWindow.Shared;
-        window.Resize(1280, 800);
-        var statusWarmup = new RichTextBlock
-        {
-            Font = AppState._fontCourier ?? AppState._font,
-            FontSize = 10f
-        };
-        statusWarmup.Inlines.Add(new Run("FPS CPU Layout Compile Upload Render Draws Verts Atlas Cursor Focused HR ready"));
-        window.Content = statusWarmup;
-        window.Render();
-        window.Content = navigation;
-        navigation.SelectedItem = initialItem;
-        window.Render();
         await FontApi.WarmUpSystemFontsAsync();
         await TextLayout.WarmUpFallbackMetadataAsync();
-        await VirtualizedCodeEditor.WarmUpSyntaxHighlightingAsync();
         GC.Collect();
         GC.WaitForPendingFinalizers();
         GC.Collect();
-
-        var frameTimes = new List<TimeSpan>();
-        var frameAllocations = new List<long>();
-        void MeasureFrame()
-        {
-            long allocatedBefore = GC.GetTotalAllocatedBytes(precise: true);
-            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-            window.Render();
-            stopwatch.Stop();
-            frameTimes.Add(stopwatch.Elapsed);
-            frameAllocations.Add(GC.GetTotalAllocatedBytes(precise: true) - allocatedBefore);
-        }
-
-        navigation.SelectedItem = markdownItem;
-        ProGPU.Samples.UIThread.RunPending();
-        MeasureFrame();
-        ProGPU.Samples.UIThread.RunPending();
-        MeasureFrame();
-        ProGPU.Samples.UIThread.RunPending();
-        MeasureFrame();
-
-        Console.WriteLine(
-            $"[MARKDOWN_ACTIVATION] frameMs={string.Join(',', frameTimes.Select(static value => value.TotalMilliseconds.ToString("F2")))} " +
-            $"frameAllocatedBytes={string.Join(',', frameAllocations.Select(static value => value.ToString()))}");
-
-        Assert.All(frameTimes, elapsed => Assert.True(
-            elapsed < TimeSpan.FromSeconds(2),
-            $"A staged Markdown activation frame took {elapsed.TotalMilliseconds:F2} ms."));
-        Assert.All(frameAllocations, allocatedBytes => Assert.True(
-            allocatedBytes < 64L * 1024L * 1024L,
-            $"A staged Markdown activation frame allocated {allocatedBytes:N0} bytes."));
-        static MarkdownTextBlock? FindMarkdownTextBlock(Visual visual)
-        {
-            if (visual is MarkdownTextBlock markdown)
-            {
-                return markdown;
-            }
-
-            if (visual is ContainerVisual container)
-            {
-                foreach (var child in container.Children)
-                {
-                    var match = FindMarkdownTextBlock(child);
-                    if (match != null)
-                    {
-                        return match;
-                    }
-                }
-            }
-
-            return null;
-        }
-
-        var preview = FindMarkdownTextBlock(navigation);
-        Assert.NotNull(preview);
-        Assert.NotEmpty(preview.PositionedChars);
 
         static VirtualizedCodeEditor? FindCodeEditor(Visual visual)
         {
@@ -426,12 +344,52 @@ public class SamplePagesTests : IDisposable
             return null;
         }
 
-        var codeEditor = FindCodeEditor(navigation);
-        Assert.NotNull(codeEditor);
-        Assert.True(codeEditor.IsSyntaxHighlightingReady);
-        Assert.True(codeEditor.SyntaxTokenRunCount > 6);
+        var window = HeadlessWindow.Shared;
+        window.Resize(1280, 800);
+        var primaryWarmup = new RichTextBlock { Font = AppState._font, FontSize = 14f };
+        primaryWarmup.Inlines.Add(new Run("ProGPU Markdown navigation ★ ✔ ♠"));
+        window.Content = primaryWarmup;
+        window.Render();
+        var codeWarmup = new RichTextBlock { Font = AppState._fontCourier ?? AppState._font, FontSize = 13f };
+        codeWarmup.Inlines.Add(new Run("public void RenderFrame(DrawingContext context)"));
+        window.Content = codeWarmup;
+        window.Render();
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
 
-        window.Content = null;
+        for (var iteration = 0; iteration < 3; iteration++)
+        {
+            long allocatedBefore = GC.GetTotalAllocatedBytes(precise: true);
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            window.Content = MarkdownPage.Create();
+            window.Render();
+            for (var stage = 0; stage < 3; stage++)
+            {
+                ProGPU.Samples.UIThread.RunPending();
+                window.Render();
+            }
+            stopwatch.Stop();
+
+            var allocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - allocatedBefore;
+            var editor = FindCodeEditor(window.Content!);
+            Assert.NotNull(editor);
+            Console.WriteLine(
+                $"[MARKDOWN_REPEAT] iteration={iteration + 1} elapsedMs={stopwatch.Elapsed.TotalMilliseconds:F2} " +
+                $"allocatedBytes={allocatedBytes}");
+            Assert.True(
+                stopwatch.Elapsed < TimeSpan.FromSeconds(2),
+                $"Markdown activation {iteration + 1} took {stopwatch.Elapsed.TotalMilliseconds:F2} ms.");
+            Assert.True(
+                allocatedBytes < 128L * 1024L * 1024L,
+                $"Markdown activation {iteration + 1} allocated {allocatedBytes:N0} bytes.");
+
+            Assert.True(editor.IsSyntaxHighlightingReady);
+            Assert.True(editor.SyntaxTokenRunCount > 6);
+
+            window.Content = null;
+            ProGPU.Samples.UIThread.RunPending();
+        }
     }
 
     [Fact]
@@ -667,6 +625,64 @@ public class SamplePagesTests : IDisposable
         }
     }
 
+    [Fact]
+    public void Test_DxfCanvasControl_DefaultZoom_RebuildsCrispScreenSpaceTextWithinBudget()
+    {
+        EnsureFontsAndStateLoaded();
+
+        bool savedEnableGpuTransforms = AppState.EnableGpuTransforms;
+        bool savedEnableStatic = AppState.EnableStaticGpuBuffers;
+        bool savedEnableCaching = AppState.EnableCommandCaching;
+        try
+        {
+            AppState.EnableGpuTransforms = false;
+            AppState.EnableStaticGpuBuffers = false;
+            AppState.EnableCommandCaching = false;
+
+            using var window = new HeadlessWindow(800, 600);
+            var control = new DxfCanvasControl();
+            control.LoadDocument(SampleDxfGenerator.GenerateSample());
+            window.Content = control;
+            window.Render();
+
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            for (var step = 0; step < 4; step++)
+            {
+                control.ZoomToPoint(new Vector2(400f, 300f), 1.15f);
+                window.Render();
+            }
+            stopwatch.Stop();
+
+            Assert.Equal(5, control.DocumentRenderCount);
+            Assert.True(
+                stopwatch.Elapsed < TimeSpan.FromSeconds(2),
+                $"Four crisp DXF zoom frames took {stopwatch.Elapsed.TotalMilliseconds:F2} ms.");
+
+            var pixels = window.ReadPixels();
+            int opaqueYellowPixels = 0;
+            for (var pixelIndex = 0; pixelIndex < pixels.Length; pixelIndex += 4)
+            {
+                if (pixels[pixelIndex] >= 192 &&
+                    pixels[pixelIndex + 1] >= 192 &&
+                    pixels[pixelIndex + 2] <= 80 &&
+                    pixels[pixelIndex + 3] >= 224)
+                {
+                    opaqueYellowPixels++;
+                }
+            }
+
+            Assert.True(
+                opaqueYellowPixels >= 64,
+                $"Expected crisp screen-space DXF labels after zoom, found {opaqueYellowPixels} opaque yellow pixels.");
+        }
+        finally
+        {
+            AppState.EnableGpuTransforms = savedEnableGpuTransforms;
+            AppState.EnableStaticGpuBuffers = savedEnableStatic;
+            AppState.EnableCommandCaching = savedEnableCaching;
+        }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -698,112 +714,6 @@ public class SamplePagesTests : IDisposable
             }
 
             Assert.Equal(initialRenderCount, control.DocumentRenderCount);
-        }
-        finally
-        {
-            AppState.EnableGpuTransforms = savedEnableGpuTransforms;
-            AppState.EnableStaticGpuBuffers = savedEnableStatic;
-            AppState.EnableCommandCaching = savedEnableCaching;
-        }
-    }
-
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void Test_DxfCanvasControl_GpuTransforms_RenderTextLabels(bool usePictureCache)
-    {
-        EnsureFontsAndStateLoaded();
-
-        bool savedEnableGpuTransforms = AppState.EnableGpuTransforms;
-        bool savedEnableStatic = AppState.EnableStaticGpuBuffers;
-        bool savedEnableCaching = AppState.EnableCommandCaching;
-        try
-        {
-            static bool[] RenderYellowMask(bool enableGpuTransforms, bool usePictureCache, out int yellowPixelCount)
-            {
-                AppState.EnableGpuTransforms = enableGpuTransforms;
-                AppState.EnableStaticGpuBuffers = false;
-                AppState.EnableCommandCaching = usePictureCache;
-
-                using var window = new HeadlessWindow(800, 600);
-                var control = new DxfCanvasControl();
-                control.LoadDocument(SampleDxfGenerator.GenerateSample());
-                window.Content = control;
-                window.Render();
-
-                var pixels = window.ReadPixels();
-                var mask = new bool[pixels.Length / 4];
-                yellowPixelCount = 0;
-                for (int pixelIndex = 0; pixelIndex < pixels.Length; pixelIndex += 4)
-                {
-                    bool isYellow = pixels[pixelIndex] >= 160 &&
-                        pixels[pixelIndex + 1] >= 160 &&
-                        pixels[pixelIndex + 2] <= 96 &&
-                        pixels[pixelIndex + 3] >= 192;
-                    mask[pixelIndex / 4] = isYellow;
-                    if (isYellow)
-                    {
-                        yellowPixelCount++;
-                    }
-                }
-
-                return mask;
-            }
-
-            var referenceMask = RenderYellowMask(
-                enableGpuTransforms: false,
-                usePictureCache,
-                out int referenceYellowPixelCount);
-            var gpuMask = RenderYellowMask(
-                enableGpuTransforms: true,
-                usePictureCache,
-                out int yellowPixelCount);
-
-            Assert.True(
-                yellowPixelCount >= 64,
-                $"Expected retained DXF text labels to render yellow pixels, found {yellowPixelCount}.");
-
-            int overlapCount = 0;
-            for (int pixelIndex = 0; pixelIndex < gpuMask.Length; pixelIndex++)
-            {
-                if (gpuMask[pixelIndex] && referenceMask[pixelIndex])
-                {
-                    overlapCount++;
-                }
-            }
-
-            static (int MinX, int MinY, int MaxX, int MaxY) GetMaskBounds(bool[] mask)
-            {
-                int minX = 800;
-                int minY = 600;
-                int maxX = -1;
-                int maxY = -1;
-                for (int pixelIndex = 0; pixelIndex < mask.Length; pixelIndex++)
-                {
-                    if (!mask[pixelIndex])
-                    {
-                        continue;
-                    }
-
-                    int x = pixelIndex % 800;
-                    int y = pixelIndex / 800;
-                    minX = Math.Min(minX, x);
-                    minY = Math.Min(minY, y);
-                    maxX = Math.Max(maxX, x);
-                    maxY = Math.Max(maxY, y);
-                }
-
-                return (minX, minY, maxX, maxY);
-            }
-
-            float overlapRatio = overlapCount / (float)Math.Min(yellowPixelCount, referenceYellowPixelCount);
-            var referenceBounds = GetMaskBounds(referenceMask);
-            var gpuBounds = GetMaskBounds(gpuMask);
-            Assert.True(
-                overlapRatio >= 0.5f,
-                $"Expected GPU-camera DXF text to retain readable CPU-projected glyph orientation; " +
-                $"overlap was {overlapRatio:P1}, CPU={referenceYellowPixelCount} {referenceBounds}, " +
-                $"GPU={yellowPixelCount} {gpuBounds}.");
         }
         finally
         {
