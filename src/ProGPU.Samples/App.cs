@@ -1,19 +1,6 @@
-using System;
 using Microsoft.UI.Xaml;
 
 namespace ProGPU.Samples;
-
-public static class Program
-{
-    public static void Main(string[] args)
-    {
-        AppBuilder<App>.Configure()
-            .WithTitle("ProGPU Substrate - High-Performance WinUI Gallery Dashboard")
-            .WithSize(1280, 800)
-            .Build()
-            .Run(args);
-    }
-}
 
 public class App : Application
 {

@@ -106,6 +106,29 @@ public static class SettingsPage
         diagGroup.AddChild(diagnosticsToggle);
         stack.AddChild(diagGroup);
 
+        if (SamplePlatformServices.IsBrowserDiagnosticsAvailable)
+        {
+            var browserDiagnosticsGroup = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Margin = new Thickness(0, 0, 0, 15)
+            };
+            var browserDiagnosticsToggle = new ToggleSwitch
+            {
+                Name = "BrowserDiagnosticsToggle",
+                IsOn = SamplePlatformServices.BrowserDiagnosticsVisible
+            };
+            var browserDiagnosticsLabel = new RichTextBlock { Font = AppState._font, FontSize = 12f };
+            browserDiagnosticsLabel.Inlines.Add(new Run("Show Browser WebGPU Diagnostics"));
+            browserDiagnosticsToggle.Content = browserDiagnosticsLabel;
+            browserDiagnosticsToggle.Toggled += (s, e) =>
+            {
+                SamplePlatformServices.BrowserDiagnosticsVisible = browserDiagnosticsToggle.IsOn;
+            };
+            browserDiagnosticsGroup.AddChild(browserDiagnosticsToggle);
+            stack.AddChild(browserDiagnosticsGroup);
+        }
+
         // 4. CAD Vector Graphics Optimizations Header
         var cadHeader = new RichTextBlock { Font = AppState._font, FontSize = 14f, Margin = new Thickness(0, 15, 0, 10) };
         cadHeader.Inlines.Add(new Bold(new Run("CAD DXF Viewer Rendering Optimizations")));

@@ -39,6 +39,14 @@ public static class AppState
 
     // Active diagnostic metric stats
     public static RichTextBlock? _statsText;
+    public static Run? _statsFpsRun;
+    public static Run? _statsCpuRun;
+    public static Run? _statsTimingRun;
+    public static Run? _statsDrawsRun;
+    public static Run? _statsVerticesRun;
+    public static Run? _statsAtlasRun;
+    public static Run? _statsCursorRun;
+    public static Run? _statsFocusedRun;
     public static Vector2 _mousePos;
     public static string _activeFocusedName = "None";
 

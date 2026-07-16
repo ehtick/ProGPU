@@ -9,6 +9,7 @@ ProGPU release packages are built from `eng/progpu-package-list.sh` by the `Rele
 | Package | Purpose | NuGet |
 | --- | --- | --- |
 | `ProGPU.Backend` | WebGPU device, swapchain, Silk.NET windowing, and platform backend services. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.Backend.svg)](https://www.nuget.org/packages/ProGPU.Backend/) |
+| `ProGPU.Browser` | Batched .NET WebAssembly dispatcher and `navigator.gpu` browser host services. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.Browser.svg)](https://www.nuget.org/packages/ProGPU.Browser/) |
 | `ProGPU.DirectX` | DirectX-compatible facade and shader-oriented API surface implemented on ProGPU/WebGPU. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.DirectX.svg)](https://www.nuget.org/packages/ProGPU.DirectX/) |
 | `ProGPU.Transpiler` | Shader/source transformation helpers used by generated GPU pipelines. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.Transpiler.svg)](https://www.nuget.org/packages/ProGPU.Transpiler/) |
 | `ProGPU.Compute` | Compute pipeline helpers for GPU-side effects, acceleration, and future hit-test indexes. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.Compute.svg)](https://www.nuget.org/packages/ProGPU.Compute/) |
@@ -32,6 +33,88 @@ Local package build:
 ```bash
 PROGPU_PACKAGE_VERSION=0.1.0-preview.18 ./eng/progpu-pack.sh
 ```
+
+## Browser WebGPU sample
+
+The gallery is split into a shared `ProGPU.Samples` library and thin `ProGPU.Samples.Desktop` and `ProGPU.Samples.Browser` hosts. The browser host publishes with the .NET WebAssembly SDK, negotiates WebGPU capabilities, sends aligned binary command packets directly from WASM memory, and passes embedded WGSL unchanged to `GPUDevice.createShaderModule`.
+
+### Prerequisites
+
+- .NET 10 SDK.
+- The `wasm-tools` workload for native relinking and AOT publishing.
+- A browser with WebGPU enabled. Current Chromium-based browsers are the primary development target.
+- An HTTP or HTTPS origin. `http://localhost` and `http://127.0.0.1` are suitable for local development; do not open the published `index.html` through a `file://` URL.
+
+Install or restore the WebAssembly workload once:
+
+```bash
+dotnet workload install wasm-tools
+dotnet workload restore src/ProGPU.slnx
+```
+
+### Use the browser host
+
+`ProGPU.Browser` is the reusable browser backend. It supplies the `navigator.gpu` implementation of `IWebGpuApi`, the batched command protocol, browser input and storage adapters, and the external WinUI-shaped window host. `ProGPU.Samples.Browser` shows the complete startup wiring while reusing every page and shader from the `ProGPU.Samples` library.
+
+For another WebAssembly host, reference `ProGPU.Browser` and the application project, copy `BrowserAssets/progpu-browser.js` into the site's `wwwroot`, initialize `BrowserGpuRuntime`, install a `BrowserWindowHost`, and start the application with `AppRunner.RunAsync`. See [`src/ProGPU.Samples.Browser/Program.cs`](src/ProGPU.Samples.Browser/Program.cs) for the minimal host sequence and [`docs/browser.md`](docs/browser.md) for the protocol and deployment model.
+
+### Build and run without AOT
+
+Debug configuration uses the normal managed WebAssembly/interpreter development path. Build it explicitly with:
+
+```bash
+dotnet build src/ProGPU.Samples.Browser/ProGPU.Samples.Browser.csproj -c Debug
+```
+
+Run the local development server with:
+
+```bash
+dotnet run --project src/ProGPU.Samples.Browser/ProGPU.Samples.Browser.csproj -c Debug
+```
+
+Open the HTTP URL printed by `dotnet run`. To produce a deployable non-AOT artifact—useful for faster publish iterations or AOT comparison—publish with AOT disabled explicitly:
+
+```bash
+dotnet publish src/ProGPU.Samples.Browser/ProGPU.Samples.Browser.csproj \
+  -c Release \
+  -p:RunAOTCompilation=false \
+  -o artifacts/browser-interpreter
+
+python3 -m http.server 8080 --directory artifacts/browser-interpreter/wwwroot
+```
+
+Then browse to `http://localhost:8080/`.
+
+### Publish and run with WebAssembly AOT
+
+Release configuration enables managed WebAssembly AOT compilation, trimming, SIMD, and native relinking by default:
+
+```bash
+dotnet publish src/ProGPU.Samples.Browser/ProGPU.Samples.Browser.csproj \
+  -c Release \
+  -o artifacts/browser-aot
+
+python3 -m http.server 8080 --directory artifacts/browser-aot/wwwroot
+```
+
+Open `http://localhost:8080/`. All ProGPU and sample assemblies are AOT compiled. `netDxf.netstandard` is intentionally retained in supported mixed interpreter/AOT mode because the .NET 10 Mono AOT compiler currently asserts while compiling that upstream assembly.
+
+To confirm that a publish actually used AOT, inspect the publish log for `AOT'ing` and native WebAssembly linking steps. For a clean comparison between modes, remove the selected output directory before republishing so stale fingerprinted framework assets cannot be served.
+
+### Runtime and diagnostics
+
+The browser host runs the shared retained gallery through the complete `IWebGpuApi` dispatcher. It supports main-thread, OffscreenCanvas worker, and cross-origin-isolated worker transports; batches DOM input once per frame; preserves asynchronous mapped-buffer read/write behavior; and sends the same embedded WGSL used by desktop directly to `GPUDevice.createShaderModule`.
+
+The status bar at the bottom of the gallery remains visible. The larger browser WebGPU diagnostics overlay reports the active transport, adapter/profile, frame count, dispatch count, and command bytes; it starts hidden and can be enabled from **Settings → Show Browser WebGPU Diagnostics**. Startup and WebGPU errors reveal it automatically.
+
+For cross-origin-isolated worker mode, configure the server to send:
+
+```text
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+Without these headers, `Auto` uses the ordinary OffscreenCanvas worker when available and falls back to main-thread rendering when canvas transfer is unavailable. See [the browser backend guide](docs/browser.md) for the full protocol, hosting, and capability details.
 
 Local publishing reads the API key from `NUGET_API_KEY` without storing it in the repository:
 
@@ -222,13 +305,13 @@ The opt-in sample harness reports wall-clock FPS, per-phase timings, allocation 
 Run the same deterministic workload from the repository root:
 
 ```bash
-dotnet build src/ProGPU.Samples/ProGPU.Samples.csproj -c Release
+dotnet build src/ProGPU.Samples.Desktop/ProGPU.Samples.Desktop.csproj -c Release
 
 PROGPU_SAMPLE_BENCHMARK_PAGE='LOL/s Benchmark' \
 PROGPU_SAMPLE_BENCHMARK_WARMUP_FRAMES=240 \
 PROGPU_SAMPLE_BENCHMARK_MEASURE_FRAMES=480 \
 PROGPU_SAMPLE_BENCHMARK_VSYNC=true \
-dotnet run --project src/ProGPU.Samples/ProGPU.Samples.csproj -c Release --no-build
+dotnet run --project src/ProGPU.Samples.Desktop/ProGPU.Samples.Desktop.csproj -c Release --no-build
 ```
 
 Set `PROGPU_SAMPLE_BENCHMARK_VSYNC=false` for uncapped throughput, or change the page to `Markdown Playground` or `DXF CAD Viewer` to verify static-scene reuse. The first measured static frame may populate the cache; subsequent frames should report hits unless the page intentionally animates or invalidates.

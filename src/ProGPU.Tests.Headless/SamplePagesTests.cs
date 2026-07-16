@@ -89,6 +89,12 @@ public class SamplePagesTests : IDisposable
     }
 
     [Fact]
+    public void Test_SkiaSharpShimPage_Renders()
+    {
+        RunPageTest(SkiaSharpShimPage.Create(), "SkiaSharp Shim");
+    }
+
+    [Fact]
     public void Test_FontIconAndPathIcon_Renders()
     {
         EnsureFontsAndStateLoaded();
@@ -313,7 +319,14 @@ public class SamplePagesTests : IDisposable
     [Fact]
     public void Test_ImageEffectsPage_Renders()
     {
-        RunPageTest(ImageEffectsPage.Create(), "Image Effects");
+        EnsureFontsAndStateLoaded();
+        AppState._wgpuContext ??= HeadlessWindow.Shared.Context;
+        AppState._gearCanvasVisual = null;
+
+        var page = ImageEffectsPage.Create();
+
+        Assert.NotNull(AppState._gearCanvasVisual);
+        RunPageTest(page, "Image Effects");
     }
 
     [Fact]
