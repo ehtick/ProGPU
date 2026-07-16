@@ -14,7 +14,7 @@ public static class HotReloadManager
 {
     private static readonly object Gate = new();
     private static readonly HashSet<Type> PendingTypes = [];
-    private static readonly List<WeakReference<FrameworkElement>> RegisteredRoots = [];
+    private static readonly List<RegisteredRoot> RegisteredRoots = [];
     private static readonly Dictionary<Type, FactoryRegistration> Factories = [];
     private static readonly List<UpdateHandlerRegistration> UpdateHandlers = [];
     private static bool _allTypesPending;
@@ -122,18 +122,41 @@ public static class HotReloadManager
     /// </summary>
     public static IDisposable RegisterRoot(FrameworkElement root)
     {
+        return RegisterRootCore(root, replaceRoot: null);
+    }
+
+    /// <summary>
+    /// Adds a replaceable non-window visual root. Use this overload when the registered
+    /// root itself belongs to an embedded host and may need to be recreated after a
+    /// metadata update.
+    /// </summary>
+    public static IDisposable RegisterRoot(
+        FrameworkElement root,
+        Action<FrameworkElement> replaceRoot)
+    {
         ArgumentNullException.ThrowIfNull(root);
-        var reference = new WeakReference<FrameworkElement>(root);
+        ArgumentNullException.ThrowIfNull(replaceRoot);
+        return RegisterRootCore(root, replaceRoot);
+    }
+
+    private static IDisposable RegisterRootCore(
+        FrameworkElement root,
+        Action<FrameworkElement>? replaceRoot)
+    {
+        ArgumentNullException.ThrowIfNull(root);
+        var registration = new RegisteredRoot(
+            new WeakReference<FrameworkElement>(root),
+            replaceRoot);
         lock (Gate)
         {
-            RegisteredRoots.Add(reference);
+            RegisteredRoots.Add(registration);
         }
 
         return new Registration(() =>
         {
             lock (Gate)
             {
-                RegisteredRoots.Remove(reference);
+                RegisteredRoots.Remove(registration);
             }
         });
     }
@@ -711,7 +734,8 @@ public static class HotReloadManager
         {
             for (var index = RegisteredRoots.Count - 1; index >= 0; index--)
             {
-                if (!RegisteredRoots[index].TryGetTarget(out var root))
+                var registration = RegisteredRoots[index];
+                if (!registration.Root.TryGetTarget(out var root))
                 {
                     RegisteredRoots.RemoveAt(index);
                     continue;
@@ -719,7 +743,7 @@ public static class HotReloadManager
 
                 if (seen.Add(root))
                 {
-                    roots.Add(new RootTarget(root, null));
+                    roots.Add(new RootTarget(root, registration.Replacement));
                 }
             }
         }
@@ -857,6 +881,30 @@ public static class HotReloadManager
     }
 
     private sealed record RootTarget(FrameworkElement Element, Action<FrameworkElement>? Replace);
+
+    private sealed class RegisteredRoot
+    {
+        private readonly Action<FrameworkElement>? _replace;
+
+        public RegisteredRoot(
+            WeakReference<FrameworkElement> root,
+            Action<FrameworkElement>? replace)
+        {
+            Root = root;
+            _replace = replace;
+            Replacement = replace == null ? null : Replace;
+        }
+
+        public WeakReference<FrameworkElement> Root { get; }
+
+        public Action<FrameworkElement>? Replacement { get; }
+
+        private void Replace(FrameworkElement replacement)
+        {
+            _replace!(replacement);
+            Root.SetTarget(replacement);
+        }
+    }
 
     private sealed record FactoryRegistration(Type Type, Func<FrameworkElement> Factory);
 

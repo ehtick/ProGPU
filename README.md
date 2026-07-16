@@ -154,7 +154,7 @@ var registration = HotReloadManager.RegisterFactory(
     () => new ConstructorBoundControl(applicationService));
 ```
 
-An `Application` may implement `IHotReloadable` to reapply window- or application-level configuration. Static shell builders can register an update callback and call `HotReloadManager.ReloadWindowContent`; custom containers whose backing collection must change with a visual child can implement `IHotReloadChildReplacer`. Embedded/non-window hosts register their visual root with `HotReloadManager.RegisterRoot`.
+An `Application` may implement `IHotReloadable` to reapply window- or application-level configuration. Static shell builders can register an update callback and call `HotReloadManager.ReloadWindowContent`; custom containers whose backing collection must change with a visual child can implement `IHotReloadChildReplacer`. Embedded/non-window hosts register stable visual roots with `HotReloadManager.RegisterRoot(root)`. When the registered root itself can be recreated, use `HotReloadManager.RegisterRoot(root, replacement => host.Root = replacement)` so the framework can replace it atomically while preserving state.
 
 `HotReloadManager.UpdateStarted`, `UpdateCompleted`, `LastResult`, and `Diagnostic` expose generation, duration, replacement/reload/invalidation/failure counts, and isolated exceptions. Set `PROGPU_HOT_RELOAD=0` to disable framework reconciliation. Live metadata updates are a Debug development feature: Release AOT artifacts retain the same UI/browser architecture but do not activate metadata-update handlers.
 

@@ -1,4 +1,5 @@
 using System.Reflection.Metadata;
+using System.Runtime.CompilerServices;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.HotReload;
@@ -78,6 +79,54 @@ public sealed class HotReloadTests : IDisposable
 
         UIThread.RunPending();
         Assert.Same(replacement.Editor, InputSystem.FocusedElement);
+        Assert.Equal(1, HotReloadManager.LastResult.ReplacedElements);
+        Assert.Equal(0, HotReloadManager.LastResult.FailedElements);
+    }
+
+    [Fact]
+    public void ReplaceableEmbeddedRootCanRecreateTheRegisteredRoot()
+    {
+        FrameworkElement root = new EmbeddedRootOriginal { Marker = "old" };
+        var version = 0;
+        using var rootRegistration = HotReloadManager.RegisterRoot(
+            root,
+            replacement => root = replacement);
+        using var factoryRegistration = HotReloadManager.RegisterFactory(
+            () => new EmbeddedRootOriginal { Marker = $"new-{++version}" });
+
+        HotReloadManager.RequestUpdate(typeof(EmbeddedRootOriginal));
+        UIThread.RunPending();
+
+        var firstReplacement = Assert.IsType<EmbeddedRootOriginal>(root);
+        Assert.Equal("new-1", firstReplacement.Marker);
+        Assert.Equal(1, HotReloadManager.LastResult.ReplacedElements);
+        Assert.Equal(0, HotReloadManager.LastResult.FailedElements);
+
+        HotReloadManager.RequestUpdate(typeof(EmbeddedRootOriginal));
+        UIThread.RunPending();
+
+        var secondReplacement = Assert.IsType<EmbeddedRootOriginal>(root);
+        Assert.NotSame(firstReplacement, secondReplacement);
+        Assert.Equal("new-2", secondReplacement.Marker);
+        Assert.Equal(1, HotReloadManager.LastResult.ReplacedElements);
+        Assert.Equal(0, HotReloadManager.LastResult.FailedElements);
+    }
+
+    [Fact]
+    public void RuntimeReplacementTypeMapsBackToTheOriginalLiveType()
+    {
+        var oldElement = new MappedOriginalElement();
+        var root = new Grid();
+        root.AddChild(oldElement);
+        using var rootRegistration = HotReloadManager.RegisterRoot(root);
+        using var factoryRegistration = HotReloadManager.RegisterFactory(
+            () => new MappedReplacementElement());
+
+        HotReloadManager.RequestUpdate(typeof(MappedReplacementElement));
+        UIThread.RunPending();
+
+        Assert.IsType<MappedReplacementElement>(Assert.Single(root.Children));
+        Assert.Contains(typeof(MappedReplacementElement), HotReloadManager.LastResult.UpdatedTypes);
         Assert.Equal(1, HotReloadManager.LastResult.ReplacedElements);
         Assert.Equal(0, HotReloadManager.LastResult.FailedElements);
     }
@@ -303,6 +352,20 @@ public sealed class HotReloadTests : IDisposable
     private sealed class RequiredConstructorElement(string marker) : Grid
     {
         public string Marker { get; } = marker;
+    }
+
+    private sealed class EmbeddedRootOriginal : Grid
+    {
+        public string Marker { get; init; } = string.Empty;
+    }
+
+    private sealed class MappedOriginalElement : Grid
+    {
+    }
+
+    [MetadataUpdateOriginalType(typeof(MappedOriginalElement))]
+    private sealed class MappedReplacementElement : Grid
+    {
     }
 
     private static class FactoryPageOwner
