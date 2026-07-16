@@ -1191,7 +1191,7 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     }
 
     [Fact]
-    public void GdiBitmapFlushUsesOwningContextWhenAmbientContextChanges()
+    public void GdiBitmapFlushUsesConsumingContextWhenCommandsRemainDeferred()
     {
         var previous = WgpuContext.Current;
         using var bitmapContext = new WgpuContext();
@@ -1211,7 +1211,7 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
             WgpuContext.Current = ambientContext;
             bitmap.Flush();
 
-            Assert.Same(bitmapContext, bitmap.GpuTexture.Context);
+            Assert.Same(ambientContext, bitmap.GpuTexture.Context);
         }
         finally
         {
