@@ -177,6 +177,56 @@ public class DesignerCanvasTests
     }
 
     [Fact]
+    public void Test_DesignerCanvas_DesignMode_RoutesSelectionAndToolDropThroughInputSystem()
+    {
+        var canvas = new DesignerCanvas
+        {
+            Width = 800f,
+            Height = 600f,
+            AllowDrop = true
+        };
+        var existing = new Button { Width = 120f, Height = 36f };
+        Canvas.SetLeft(existing, 100f);
+        Canvas.SetTop(existing, 80f);
+        canvas.AddChild(existing);
+        canvas.Measure(new Vector2(800f, 600f));
+        canvas.Arrange(new ProGPU.Scene.Rect(0f, 0f, 800f, 600f));
+
+        InputSystem.Current = InputSystem.CreateExternalState(canvas);
+        try
+        {
+            var selectPoint = new Vector2(120f, 96f);
+            Assert.Same(canvas, InputSystem.HitTest(selectPoint));
+
+            InputSystem.InjectMouseMove(selectPoint);
+            InputSystem.InjectMouseDown(Silk.NET.Input.MouseButton.Left);
+            InputSystem.InjectMouseUp(Silk.NET.Input.MouseButton.Left);
+
+            Assert.Same(existing, canvas.SelectedElement);
+
+            var data = new DataPackage();
+            data.SetData(StandardDataFormats.Tool, "TextBox");
+            DragDropManager.StartDrag(existing, data, DragDropEffects.Copy);
+
+            var dropPoint = new Vector2(253f, 204f);
+            InputSystem.InjectMouseMove(dropPoint);
+            InputSystem.InjectMouseUp(Silk.NET.Input.MouseButton.Left);
+
+            Assert.Equal(2, canvas.DesignSurface.Children.Count);
+            var dropped = Assert.IsType<TextBox>(canvas.DesignSurface.Children[1]);
+            Assert.Equal(250f, Canvas.GetLeft(dropped));
+            Assert.Equal(200f, Canvas.GetTop(dropped));
+            Assert.Same(dropped, canvas.SelectedElement);
+        }
+        finally
+        {
+            DragDropManager.CancelDrag();
+            InputSystem.SetFocus(null);
+            InputSystem.Current = InputSystem.CreateExternalState();
+        }
+    }
+
+    [Fact]
     public void Test_DesignerHost_InteractionMode_RoutesTextAndButtonInput()
     {
         var font = PopupService.DefaultFont;

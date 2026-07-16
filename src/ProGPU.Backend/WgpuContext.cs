@@ -376,11 +376,12 @@ public unsafe class WgpuContext : IDisposable
     public bool IsDisposed => _isDisposed;
     public bool IsInitialized =>
         !_isDisposed &&
-        Wgpu != null &&
-        Instance != null &&
-        Adapter != null &&
+        Api != null &&
         Device != null &&
-        Queue != null;
+        Queue != null &&
+        (BackendKind == WgpuBackendKind.BrowserWebGpu
+            ? Surface != null
+            : Wgpu != null && Instance != null && Adapter != null);
     private uint _lastWidth = 1;
     private uint _lastHeight = 1;
     private bool _isSurfaceConfigured;

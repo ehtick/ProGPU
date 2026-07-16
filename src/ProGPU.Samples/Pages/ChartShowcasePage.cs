@@ -2053,7 +2053,9 @@ namespace ProGPU.Samples
         {
             if (_benchmarkMetricsTimer != null) return;
 
-            var process = System.Diagnostics.Process.GetCurrentProcess();
+            System.Diagnostics.Process? process = OperatingSystem.IsBrowser()
+                ? null
+                : System.Diagnostics.Process.GetCurrentProcess();
             _benchmarkMetricsTimer = new System.Timers.Timer(100.0); // Poll metrics every 100ms
             _benchmarkMetricsTimer.Elapsed += (s, e) =>
             {
@@ -2063,8 +2065,16 @@ namespace ProGPU.Samples
                     _benchmarkElapsedMs += 100.0;
 
                     // Private memory in MB
-                    process.Refresh();
-                    double memoryMb = process.PrivateMemorySize64 / (1024.0 * 1024.0);
+                    double memoryMb;
+                    if (process != null)
+                    {
+                        process.Refresh();
+                        memoryMb = process.PrivateMemorySize64 / (1024.0 * 1024.0);
+                    }
+                    else
+                    {
+                        memoryMb = GC.GetTotalMemory(forceFullCollection: false) / (1024.0 * 1024.0);
+                    }
 
                     // Compositor metrics
                     double frameTimeMs = 1.0;

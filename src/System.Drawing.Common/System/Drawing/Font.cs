@@ -66,6 +66,25 @@ public class Font : IDisposable
     {
     }
 
+    /// <summary>
+    /// Creates a GDI-compatible font from an already loaded ProGPU typeface.
+    /// This avoids a second platform font lookup on runtimes such as WebAssembly
+    /// that do not expose operating-system font discovery.
+    /// </summary>
+    public Font(TtfFont typeface, float emSize, FontStyle style = FontStyle.Regular, GraphicsUnit unit = GraphicsUnit.Point)
+    {
+        ArgumentNullException.ThrowIfNull(typeface);
+
+        FontFamily = new FontFamily(
+            string.IsNullOrWhiteSpace(typeface.FamilyName) ? "ProGPU Font" : typeface.FamilyName);
+        Size = emSize;
+        Style = style;
+        Unit = unit;
+        GdiCharSet = 1;
+        GdiVerticalFont = false;
+        TtfFont = typeface;
+    }
+
     public Font(FontFamily family, float emSize, FontStyle style = FontStyle.Regular, GraphicsUnit unit = GraphicsUnit.Point)
         : this(family, emSize, style, unit, 1)
     {

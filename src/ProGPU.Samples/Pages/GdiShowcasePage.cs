@@ -107,7 +107,7 @@ public class GdiShowcaseVisual : FrameworkElement
 
             // Draw text string using Font
             using (var textBrush = new System.Drawing.SolidBrush(System.Drawing.Color.White))
-            using (var font = new System.Drawing.Font("Arial", 13f))
+            using (var font = new System.Drawing.Font(AppState._font!, 13f))
             {
                 g.DrawString("GPU-Accelerated GDI+ Shim", font, textBrush, new System.Drawing.PointF(-92, -155));
             }

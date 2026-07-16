@@ -1,4 +1,5 @@
 using ProGPU.Browser;
+using ProGPU.Backend;
 using Silk.NET.WebGPU;
 using Xunit;
 using WgpuBuffer = Silk.NET.WebGPU.Buffer;
@@ -7,6 +8,23 @@ namespace ProGPU.Tests;
 
 public unsafe sealed class BrowserWebGpuApiTests
 {
+    [Fact]
+    public void ExternalBrowserContextReportsInitializedForContextBoundResources()
+    {
+        using var api = new BrowserWebGpuApi(_ => { });
+        using var context = new WgpuContext();
+
+        context.InitializeExternal(
+            api,
+            BrowserWebGpuApi.DeviceHandle,
+            BrowserWebGpuApi.QueueHandle,
+            BrowserWebGpuApi.SurfaceHandle,
+            TextureFormat.Bgra8Unorm);
+
+        Assert.True(context.IsInitialized);
+        Assert.Same(context, WgpuContext.Current);
+    }
+
     [Fact]
     public void ResourceCopyUploadAndSubmitUseOneTypedPacket()
     {
