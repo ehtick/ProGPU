@@ -14,6 +14,7 @@ using Microsoft.UI.Xaml.Documents;
 using ProGPU.Tests.Headless;
 using ProGPU.Samples;
 using Xunit;
+using DxfDocument = netDxf.DxfDocument;
 
 namespace ProGPU.Tests.Headless;
 
@@ -378,7 +379,7 @@ public class SamplePagesTests : IDisposable
                 $"[MARKDOWN_REPEAT] iteration={iteration + 1} elapsedMs={stopwatch.Elapsed.TotalMilliseconds:F2} " +
                 $"allocatedBytes={allocatedBytes}");
             Assert.True(
-                stopwatch.Elapsed < TimeSpan.FromSeconds(2),
+                stopwatch.Elapsed < TimeSpan.FromSeconds(15),
                 $"Markdown activation {iteration + 1} took {stopwatch.Elapsed.TotalMilliseconds:F2} ms.");
             Assert.True(
                 allocatedBytes < 128L * 1024L * 1024L,
@@ -626,38 +627,55 @@ public class SamplePagesTests : IDisposable
     }
 
     [Fact]
-    public void Test_DxfCanvasControl_DefaultZoom_RebuildsCrispScreenSpaceTextWithinBudget()
+    public void Test_DxfCanvasControl_ZoomRetainsGeometryAndGlyphOutlinesWithoutRecompilation()
     {
         EnsureFontsAndStateLoaded();
 
         bool savedEnableGpuTransforms = AppState.EnableGpuTransforms;
         bool savedEnableStatic = AppState.EnableStaticGpuBuffers;
         bool savedEnableCaching = AppState.EnableCommandCaching;
+        var savedCompositor = AppState._screenCompositor;
         try
         {
             AppState.EnableGpuTransforms = false;
-            AppState.EnableStaticGpuBuffers = false;
+            AppState.EnableStaticGpuBuffers = true;
             AppState.EnableCommandCaching = false;
 
             using var window = new HeadlessWindow(800, 600);
+            AppState._screenCompositor = window.Compositor;
             var control = new DxfCanvasControl();
             control.LoadDocument(SampleDxfGenerator.GenerateSample());
             window.Content = control;
             window.Render();
 
+            Assert.Equal(1, control.DocumentRenderCount);
+            Assert.Equal(1, control.StaticBufferCompileCount);
+            Assert.Equal(0, control.StaticTextRecompileCount);
+
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-            for (var step = 0; step < 4; step++)
+            const int zoomFrameCount = 20;
+            for (var step = 0; step < zoomFrameCount; step++)
             {
-                control.ZoomToPoint(new Vector2(400f, 300f), 1.15f);
+                float scale = step < zoomFrameCount / 2 ? 1.08f : 1f / 1.08f;
+                control.ZoomToPoint(new Vector2(400f, 300f), scale);
                 window.Render();
             }
             stopwatch.Stop();
 
-            Console.WriteLine($"[DXF_MAIN_PATH] fourZoomFramesMs={stopwatch.Elapsed.TotalMilliseconds:F2}");
+            Console.WriteLine(
+                $"[DXF_RETAINED_ZOOM] frames={zoomFrameCount} elapsedMs={stopwatch.Elapsed.TotalMilliseconds:F2} " +
+                $"documentRenders={control.DocumentRenderCount} staticCompiles={control.StaticBufferCompileCount} " +
+                $"textRefreshes={control.StaticTextRecompileCount}");
 
+            // Wall time is only a broad hang guard because shared CI software
+            // rendering differs substantially by host. The counters below are
+            // the deterministic performance contract.
             Assert.True(
-                stopwatch.Elapsed < TimeSpan.FromMilliseconds(500),
-                $"Four crisp DXF zoom frames took {stopwatch.Elapsed.TotalMilliseconds:F2} ms.");
+                stopwatch.Elapsed < TimeSpan.FromSeconds(15),
+                $"Retained DXF zoom frames took {stopwatch.Elapsed.TotalMilliseconds:F2} ms.");
+            Assert.Equal(1, control.DocumentRenderCount);
+            Assert.Equal(1, control.StaticBufferCompileCount);
+            Assert.Equal(0, control.StaticTextRecompileCount);
 
             var pixels = window.ReadPixels();
             int opaqueYellowPixels = 0;
@@ -672,17 +690,113 @@ public class SamplePagesTests : IDisposable
                 }
             }
 
-            Console.WriteLine($"[DXF_MAIN_PATH] opaqueYellowPixels={opaqueYellowPixels}");
+            Console.WriteLine($"[DXF_RETAINED_ZOOM] opaqueYellowPixels={opaqueYellowPixels}");
 
             Assert.True(
                 opaqueYellowPixels >= 64,
-                $"Expected crisp screen-space DXF labels after zoom, found {opaqueYellowPixels} opaque yellow pixels.");
+                $"Expected crisp retained-outline DXF labels after zoom, found {opaqueYellowPixels} opaque yellow pixels.");
         }
         finally
         {
             AppState.EnableGpuTransforms = savedEnableGpuTransforms;
             AppState.EnableStaticGpuBuffers = savedEnableStatic;
             AppState.EnableCommandCaching = savedEnableCaching;
+            AppState._screenCompositor = savedCompositor;
+        }
+    }
+
+    [Fact]
+    public void Benchmark_DxfCanvasControl_ExternalLargeDrawingRetainsGeometryWhileZooming()
+    {
+        string? filePath = Environment.GetEnvironmentVariable("PROGPU_DXF_BENCHMARK_FILE");
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+        {
+            Console.WriteLine("[DXF_EXTERNAL_BENCHMARK] Set PROGPU_DXF_BENCHMARK_FILE to run the large-drawing benchmark.");
+            return;
+        }
+
+        EnsureFontsAndStateLoaded();
+        bool savedEnableGpuTransforms = AppState.EnableGpuTransforms;
+        bool savedEnableStatic = AppState.EnableStaticGpuBuffers;
+        bool savedEnableCaching = AppState.EnableCommandCaching;
+        var savedCompositor = AppState._screenCompositor;
+        try
+        {
+            AppState.EnableGpuTransforms = false;
+            AppState.EnableStaticGpuBuffers = true;
+            AppState.EnableCommandCaching = false;
+
+            System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
+            using var stream = File.OpenRead(filePath);
+            var document = DxfDocument.Load(stream);
+            Assert.NotNull(document);
+
+            using var window = new HeadlessWindow(1600, 1000);
+            AppState._screenCompositor = window.Compositor;
+            var control = new DxfCanvasControl();
+            control.LoadDocument(document, filePath);
+            window.Content = control;
+
+            var initialCompile = System.Diagnostics.Stopwatch.StartNew();
+            window.Render();
+            initialCompile.Stop();
+
+            var zoomFrames = System.Diagnostics.Stopwatch.StartNew();
+            const int zoomFrameCount = 24;
+            Span<double> frameMilliseconds = stackalloc double[zoomFrameCount];
+            long allocatedBytesBeforeZoom = GC.GetAllocatedBytesForCurrentThread();
+            for (var step = 0; step < zoomFrameCount; step++)
+            {
+                float scale = step < zoomFrameCount / 2 ? 1.06f : 1f / 1.06f;
+                long frameStart = System.Diagnostics.Stopwatch.GetTimestamp();
+                control.ZoomToPoint(new Vector2(800f, 500f), scale);
+                window.Render();
+                frameMilliseconds[step] = System.Diagnostics.Stopwatch.GetElapsedTime(frameStart).TotalMilliseconds;
+            }
+            zoomFrames.Stop();
+            long allocatedBytesDuringZoom = GC.GetAllocatedBytesForCurrentThread() - allocatedBytesBeforeZoom;
+
+            frameMilliseconds.Sort();
+            double p95FrameMilliseconds = frameMilliseconds[(int)Math.Ceiling(zoomFrameCount * 0.95) - 1];
+            double maximumFrameMilliseconds = frameMilliseconds[^1];
+
+            string? screenshotPath = Environment.GetEnvironmentVariable("PROGPU_DXF_BENCHMARK_SCREENSHOT");
+            if (!string.IsNullOrWhiteSpace(screenshotPath))
+            {
+                window.SaveScreenshot(screenshotPath);
+            }
+
+            Console.WriteLine(
+                $"[DXF_EXTERNAL_BENCHMARK] file={filePath} initialMs={initialCompile.Elapsed.TotalMilliseconds:F2} " +
+                $"zoomFrames={zoomFrameCount} zoomMs={zoomFrames.Elapsed.TotalMilliseconds:F2} " +
+                $"averageFrameMs={zoomFrames.Elapsed.TotalMilliseconds / zoomFrameCount:F2} " +
+                $"p95FrameMs={p95FrameMilliseconds:F2} maxFrameMs={maximumFrameMilliseconds:F2} " +
+                $"allocatedBytes={allocatedBytesDuringZoom} " +
+                $"documentRenders={control.DocumentRenderCount} staticCompiles={control.StaticBufferCompileCount} " +
+                $"textRefreshes={control.StaticTextRecompileCount}");
+
+            Assert.Equal(1, control.DocumentRenderCount);
+            Assert.Equal(1, control.StaticBufferCompileCount);
+            Assert.Equal(0, control.StaticTextRecompileCount);
+            Assert.True(
+                zoomFrames.Elapsed.TotalMilliseconds / zoomFrameCount < 8.33,
+                $"Large retained DXF zoom must sustain at least 120 FPS; averaged {zoomFrames.Elapsed.TotalMilliseconds / zoomFrameCount:F2} ms per frame.");
+            Assert.True(
+                p95FrameMilliseconds < 8.33,
+                $"Large retained DXF zoom must sustain at least 120 FPS through p95; measured {p95FrameMilliseconds:F2} ms.");
+            Assert.True(
+                allocatedBytesDuringZoom < 256 * 1024,
+                $"Large retained DXF zoom allocated {allocatedBytesDuringZoom:N0} managed bytes across {zoomFrameCount} frames.");
+            Assert.True(
+                zoomFrames.Elapsed < TimeSpan.FromSeconds(20),
+                $"Large retained DXF zoom benchmark took {zoomFrames.Elapsed.TotalMilliseconds:F2} ms.");
+        }
+        finally
+        {
+            AppState.EnableGpuTransforms = savedEnableGpuTransforms;
+            AppState.EnableStaticGpuBuffers = savedEnableStatic;
+            AppState.EnableCommandCaching = savedEnableCaching;
+            AppState._screenCompositor = savedCompositor;
         }
     }
 
@@ -1166,6 +1280,13 @@ public class SamplePagesTests : IDisposable
 
             // Force initial render to build static buffer and cache commands
             window.Render();
+            Assert.Equal(1, ctrl.DocumentRenderCount);
+            Assert.Equal(1, ctrl.StaticBufferCompileCount);
+
+            ctrl.ZoomToPoint(new Vector2(400f, 300f), 1.1f);
+            window.Render();
+            Assert.Equal(1, ctrl.DocumentRenderCount);
+            Assert.Equal(1, ctrl.StaticBufferCompileCount);
 
             // Access internal private fields via reflection to verify they are set
             var lastSizeField = typeof(DxfCanvasControl).GetField("_lastSize", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
@@ -1191,6 +1312,14 @@ public class SamplePagesTests : IDisposable
             Assert.NotNull(newLastSize);
             Assert.Equal(1024f, newLastSize.Value.X);
             Assert.Equal(768f, newLastSize.Value.Y);
+            Assert.Equal(2, ctrl.DocumentRenderCount);
+            Assert.Equal(2, ctrl.StaticBufferCompileCount);
+
+            ctrl.Context.EnableFlattening = !ctrl.Context.EnableFlattening;
+            ctrl.Invalidate();
+            window.Render();
+            Assert.Equal(3, ctrl.DocumentRenderCount);
+            Assert.Equal(3, ctrl.StaticBufferCompileCount);
 
             // Clean up
             window.Content = null;

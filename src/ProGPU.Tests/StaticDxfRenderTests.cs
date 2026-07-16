@@ -170,6 +170,33 @@ public sealed class StaticDxfRenderTests
         AssertStaticGlyphRunCompiled(contextBuffer);
     }
 
+    [Fact]
+    public void CompileStaticDxfStoresOneOutlineForRepeatedGlyphInstances()
+    {
+        var font = TryLoadTestFont();
+        if (font == null)
+        {
+            return;
+        }
+
+        var glyphIndex = font.GetGlyphIndex('A');
+        var context = new DrawingContext();
+        context.DrawGlyphRun(
+            new[] { glyphIndex, glyphIndex, glyphIndex },
+            new[] { new Vector2(20f, 55f), new Vector2(40f, 55f), new Vector2(60f, 55f) },
+            font,
+            24f,
+            new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f)),
+            Vector2.Zero);
+
+        using var buffer = HeadlessWindow.Shared.Compositor.CompileStaticDxf(context);
+
+        Assert.Equal(1u, buffer.RetainedGlyphRecordCount);
+        Assert.True(buffer.RetainedGlyphSegmentCount > 0);
+        Assert.Equal(3u, buffer.RetainedGlyphInstanceCount);
+        Assert.Empty(buffer.TextVertices);
+    }
+
     private static DxfStaticBuffer CreateStaticRect(Compositor compositor, Rect rect)
     {
         var context = new DrawingContext();
@@ -262,11 +289,11 @@ public sealed class StaticDxfRenderTests
 
     private static void AssertStaticGlyphRunCompiled(DxfStaticBuffer buffer)
     {
-        Assert.NotEmpty(buffer.TextVertices);
-        Assert.Contains(
-            buffer.DrawCalls,
-            drawCall => drawCall.Type == Compositor.DrawCallType.Text && drawCall.IndexCount > 0);
-        Assert.NotEmpty(buffer.TextRecords);
+        Assert.Equal(1u, buffer.RetainedGlyphRecordCount);
+        Assert.True(buffer.RetainedGlyphSegmentCount > 0);
+        Assert.Equal(1u, buffer.RetainedGlyphInstanceCount);
+        Assert.Empty(buffer.TextVertices);
+        Assert.Empty(buffer.TextRecords);
     }
 
     private static TtfFont? TryLoadTestFont()

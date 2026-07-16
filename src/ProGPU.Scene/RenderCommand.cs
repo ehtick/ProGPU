@@ -902,6 +902,17 @@ public class DrawingContext : IRenderDataProvider
 
     public int RetainedResourceCount => _retainedResources.Count;
 
+    /// <summary>
+    /// Reserves storage for a known upper bound of retained commands. Repeated
+    /// recording then reuses the same backing array without a late capacity
+    /// growth in an animation frame.
+    /// </summary>
+    public void EnsureCommandCapacity(int capacity)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(capacity);
+        Commands.EnsureCapacity(capacity);
+    }
+
     public void RetainResource(IDisposable resource)
     {
         ArgumentNullException.ThrowIfNull(resource);

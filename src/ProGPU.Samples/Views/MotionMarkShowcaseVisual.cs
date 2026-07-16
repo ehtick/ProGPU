@@ -467,6 +467,11 @@ public class MotionMarkShowcaseVisual : FrameworkElement, IAnimatedElement
 
     public override void OnRender(DrawingContext context)
     {
+        // The individual pipeline emits one command per element; grouped mode
+        // emits no more than that. Reserve the deterministic upper bound before
+        // recording so a changing split pattern cannot cross a List growth
+        // boundary during an otherwise allocation-free animation frame.
+        context.EnsureCommandCapacity(checked(_elements.Count + 8));
         EnsureThemeResources();
         context.DrawRoundedRectangle(_backgroundBrush, _borderPen, new Rect(Vector2.Zero, Size), 8f);
 
