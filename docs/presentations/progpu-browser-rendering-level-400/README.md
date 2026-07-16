@@ -7,7 +7,6 @@ This directory contains the delivered 23-slide PowerPoint talk and the complete 
 - `ProGPU-Browser-Rendering-Level-400.pptx` — final editable presentation, including speaker notes on every slide.
 - `source/build.mjs` — artifact-tool authoring source for the complete deck.
 - `source/template-starter.pptx` — exact 23-slide inherited-frame starter consumed by the builder.
-- `source/reference/ProGPU-Browser-Rendering-Short.pptx` — original short deck used as the visual reference.
 - `source/template-frame-map.json`, `template-audit.txt`, and `deviation-log.txt` — template-following decisions and provenance.
 - `source/assets/*.dot` — Graphviz architecture sources.
 - `source/assets/*.svg` and `*.png` — generated diagram assets consumed by the deck builder.
