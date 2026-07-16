@@ -68,28 +68,24 @@ namespace ProGPU.Samples
         public static FrameworkElement Create()
         {
             _benchmarkScrollDirection = 1f;
-            // Starting the full TextMate grammar registry from a Markdown layout pass competes
-            // with desktop system-font discovery and stalls first navigation. Keep the existing
-            // virtualized highlighted code block in the browser, while desktop preview code uses
-            // the lightweight retained Markdown text path. Dedicated editor samples continue to
-            // provide TextMate syntax highlighting on both hosts.
-            MarkdownParser.CodeBlockFactory = OperatingSystem.IsBrowser()
-                ? (code, language) =>
+            // TextMate resources are warmed asynchronously with the shared sample fonts, so the
+            // preview retains syntax-colored virtualized code blocks without starting grammar
+            // discovery from the desktop layout pass.
+            MarkdownParser.CodeBlockFactory = (code, language) =>
+            {
+                var editor = new ProGPU.WinUI.Designer.VirtualizedCodeEditor
                 {
-                    var editor = new ProGPU.WinUI.Designer.VirtualizedCodeEditor
-                    {
-                        Font = AppState.GetFontCourier() ?? AppState.GetFont(),
-                        Margin = new Thickness(0, 4, 0, 12),
-                        HorizontalAlignment = HorizontalAlignment.Stretch,
-                        VerticalAlignment = VerticalAlignment.Top
-                    };
-                    editor.SetCode(code);
+                    Font = AppState.GetFontCourier() ?? AppState.GetFont(),
+                    Margin = new Thickness(0, 4, 0, 12),
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    VerticalAlignment = VerticalAlignment.Top
+                };
+                editor.SetCode(code);
 
-                    var lineCount = code.AsSpan().Count('\n') + 1;
-                    editor.HeightConstraint = Math.Clamp(lineCount * 22f + 10f, 60f, 260f);
-                    return editor;
-                }
-                : null;
+                var lineCount = code.AsSpan().Count('\n') + 1;
+                editor.HeightConstraint = Math.Clamp(lineCount * 22f + 10f, 60f, 260f);
+                return editor;
+            };
 
             var rootGrid = new Microsoft.UI.Xaml.Controls.Grid();
             rootGrid.RowDefinitions.Add(new GridLength(48f, GridUnitType.Absolute));  // Row 0: File Operations & Presets

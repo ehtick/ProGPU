@@ -46,6 +46,22 @@ public class VirtualizedCodeEditor : Control
     private string _rawCode = "";
     private readonly List<List<Run>> _tokenizedLines = new();
 
+    public bool IsSyntaxHighlightingReady => _grammar != null;
+
+    public int SyntaxTokenRunCount
+    {
+        get
+        {
+            var count = 0;
+            for (var lineIndex = 0; lineIndex < _tokenizedLines.Count; lineIndex++)
+            {
+                count += _tokenizedLines[lineIndex].Count;
+            }
+
+            return count;
+        }
+    }
+
     // Selection tracking state
     private bool _isSelecting = false;
     private int _selectStartLine = -1;
@@ -196,8 +212,14 @@ public class VirtualizedCodeEditor : Control
 
     public static void WarmUpSyntaxHighlighting()
     {
-        _ = GetSyntaxResourcesAsync(ThemeName.DarkPlus);
-        _ = GetSyntaxResourcesAsync(ThemeName.LightPlus);
+        _ = WarmUpSyntaxHighlightingAsync();
+    }
+
+    public static Task WarmUpSyntaxHighlightingAsync()
+    {
+        return Task.WhenAll(
+            GetSyntaxResourcesAsync(ThemeName.DarkPlus),
+            GetSyntaxResourcesAsync(ThemeName.LightPlus));
     }
 
     private static Task<SyntaxResources?> GetSyntaxResourcesAsync(ThemeName themeName)

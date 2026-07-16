@@ -5,6 +5,7 @@ using ProGPU.Layout;
 using ProGPU.Vector;
 using ProGPU.Scene;
 using ProGPU.Text;
+using ProGPU.WinUI.Designer;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Markup;
@@ -342,6 +343,7 @@ public class SamplePagesTests : IDisposable
         window.Render();
         await FontApi.WarmUpSystemFontsAsync();
         await TextLayout.WarmUpFallbackMetadataAsync();
+        await VirtualizedCodeEditor.WarmUpSyntaxHighlightingAsync();
         GC.Collect();
         GC.WaitForPendingFinalizers();
         GC.Collect();
@@ -401,6 +403,33 @@ public class SamplePagesTests : IDisposable
         var preview = FindMarkdownTextBlock(navigation);
         Assert.NotNull(preview);
         Assert.NotEmpty(preview.PositionedChars);
+
+        static VirtualizedCodeEditor? FindCodeEditor(Visual visual)
+        {
+            if (visual is VirtualizedCodeEditor editor)
+            {
+                return editor;
+            }
+
+            if (visual is ContainerVisual container)
+            {
+                foreach (var child in container.Children)
+                {
+                    var match = FindCodeEditor(child);
+                    if (match != null)
+                    {
+                        return match;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        var codeEditor = FindCodeEditor(navigation);
+        Assert.NotNull(codeEditor);
+        Assert.True(codeEditor.IsSyntaxHighlightingReady);
+        Assert.True(codeEditor.SyntaxTokenRunCount > 6);
 
         window.Content = null;
     }
