@@ -1739,6 +1739,25 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     }
 
     [Fact]
+    public void SmallFallbackFaceIsSharedAcrossGlyphs()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"progpu-fallback-{Guid.NewGuid():N}.ttf");
+        File.WriteAllBytes(path, BuildMissingGlyphOutlineFont());
+        try
+        {
+            TtfFont? first = TextLayout.GetOrLoadFallbackFont(path, faceIndex: 0, glyphIndex: 0);
+            TtfFont? second = TextLayout.GetOrLoadFallbackFont(path, faceIndex: 0, glyphIndex: 1);
+
+            Assert.NotNull(first);
+            Assert.Same(first, second);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void ColdCachedLayerIncludesGlyphCoverageOnItsFirstFrame()
     {
         var font = new TtfFont(BuildMissingGlyphOutlineFont());
