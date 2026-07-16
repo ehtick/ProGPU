@@ -543,6 +543,46 @@ public class SamplePagesTests : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Test_DxfCanvasControl_GpuZoom_ReusesRetainedDocumentCommands(bool usePictureCache)
+    {
+        EnsureFontsAndStateLoaded();
+
+        bool savedEnableGpuTransforms = AppState.EnableGpuTransforms;
+        bool savedEnableStatic = AppState.EnableStaticGpuBuffers;
+        bool savedEnableCaching = AppState.EnableCommandCaching;
+        try
+        {
+            AppState.EnableGpuTransforms = true;
+            AppState.EnableStaticGpuBuffers = false;
+            AppState.EnableCommandCaching = usePictureCache;
+
+            using var window = new HeadlessWindow(800, 600);
+            var control = new DxfCanvasControl();
+            control.LoadDocument(SampleDxfGenerator.GenerateSample());
+            window.Content = control;
+            window.Render();
+            int initialRenderCount = control.DocumentRenderCount;
+            Assert.Equal(1, initialRenderCount);
+
+            for (int step = 0; step < 8; step++)
+            {
+                control.ZoomToPoint(new Vector2(400f, 300f), 1.05f);
+                window.Render();
+            }
+
+            Assert.Equal(initialRenderCount, control.DocumentRenderCount);
+        }
+        finally
+        {
+            AppState.EnableGpuTransforms = savedEnableGpuTransforms;
+            AppState.EnableStaticGpuBuffers = savedEnableStatic;
+            AppState.EnableCommandCaching = savedEnableCaching;
+        }
+    }
+
 
     [Fact]
     public void Benchmark_CacheAsLayer_Performance_Comparison()
