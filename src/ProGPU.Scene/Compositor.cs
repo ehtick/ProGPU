@@ -790,6 +790,10 @@ public unsafe class Compositor : IDisposable
     private PipelineLayout* _vectorPipelineLayoutOffscreen;
     private PipelineLayout* _textPipelineLayoutOffscreen;
     private PipelineLayout* _texturePipelineLayoutOffscreen;
+    private BindGroupLayout* _retainedGlyphBindGroupLayout;
+    private PipelineLayout* _retainedGlyphPipelineLayout;
+    private PipelineLayout* _retainedGlyphPipelineLayoutOffscreen;
+    private ShaderModule* _retainedGlyphShaderModule;
 
     private GpuTexture? _dummyMaskTexture;
     private BindGroup* _dummyMaskBindGroup;
@@ -1462,6 +1466,7 @@ public unsafe class Compositor : IDisposable
         _textureBindGroupLayoutOffscreen = CreateSamplerTextureLayout();
         _maskBindGroupLayout = CreateSamplerTextureLayout();
         _maskBindGroupLayoutOffscreen = CreateSamplerTextureLayout();
+        _retainedGlyphBindGroupLayout = CreateRetainedGlyphLayout();
 
         // Create explicit PipelineLayouts to share layouts across dynamic blend pipelines
         var vectorLayouts = stackalloc BindGroupLayout*[3];
@@ -1529,6 +1534,30 @@ public unsafe class Compositor : IDisposable
             BindGroupLayouts = textureLayoutsOffscreen
         };
         _texturePipelineLayoutOffscreen = _context.Api.DeviceCreatePipelineLayout(_context.Device, &texturePipelineLayoutDescOffscreen);
+
+        var retainedGlyphLayouts = stackalloc BindGroupLayout*[2];
+        retainedGlyphLayouts[0] = _retainedGlyphBindGroupLayout;
+        retainedGlyphLayouts[1] = _maskBindGroupLayout;
+        var retainedGlyphPipelineLayoutDescriptor = new PipelineLayoutDescriptor
+        {
+            BindGroupLayoutCount = 2,
+            BindGroupLayouts = retainedGlyphLayouts
+        };
+        _retainedGlyphPipelineLayout = _context.Api.DeviceCreatePipelineLayout(
+            _context.Device,
+            &retainedGlyphPipelineLayoutDescriptor);
+
+        var retainedGlyphLayoutsOffscreen = stackalloc BindGroupLayout*[2];
+        retainedGlyphLayoutsOffscreen[0] = _retainedGlyphBindGroupLayout;
+        retainedGlyphLayoutsOffscreen[1] = _maskBindGroupLayoutOffscreen;
+        var retainedGlyphPipelineLayoutOffscreenDescriptor = new PipelineLayoutDescriptor
+        {
+            BindGroupLayoutCount = 2,
+            BindGroupLayouts = retainedGlyphLayoutsOffscreen
+        };
+        _retainedGlyphPipelineLayoutOffscreen = _context.Api.DeviceCreatePipelineLayout(
+            _context.Device,
+            &retainedGlyphPipelineLayoutOffscreenDescriptor);
 
         Span<VertexAttribute> vectorAttrs = stackalloc VertexAttribute[8];
         vectorAttrs[0] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 0, ShaderLocation = 0 }; // Position
@@ -8857,7 +8886,9 @@ SceneStateUploadComplete:
 
     private void CompileTextCommand(RenderCommand cmd, ITextLayoutProvider? textNode, Matrix4x4 transform)
     {
-        if (ActiveCompilationContext != null && !ActiveCompilationContext.IsRecompiling)
+        if (ActiveCompilationContext != null &&
+            !ActiveCompilationContext.IsRecompiling &&
+            ActiveCompilationContext.RetainedGlyphBuilder == null)
         {
             _compiledTextRecords.Add(new StaticTextRecord { Command = cmd, Transform = transform });
         }
@@ -8991,6 +9022,23 @@ SceneStateUploadComplete:
                 continue;
             }
 
+            if (TryCompileRetainedGlyph(
+                ActiveCompilationContext?.RetainedGlyphBuilder,
+                glyphFont,
+                glyphIdx,
+                cmd,
+                runGlyph.Position + cmd.Position,
+                glyphItalicSkew,
+                fontScaleX,
+                textPathCoverageGamma,
+                color,
+                activeTransform,
+                passCount,
+                boldOffset))
+            {
+                continue;
+            }
+
             float baseCursorX = runGlyph.Position.X - runGlyph.Glyph.BearX;
             float baseCursorY = runGlyph.Position.Y - runGlyph.Glyph.BearY;
 
@@ -9101,7 +9149,9 @@ SceneStateUploadComplete:
 
     private void CompileGlyphRunCommand(RenderCommand cmd, Matrix4x4 transform)
     {
-        if (ActiveCompilationContext != null && !ActiveCompilationContext.IsRecompiling)
+        if (ActiveCompilationContext != null &&
+            !ActiveCompilationContext.IsRecompiling &&
+            ActiveCompilationContext.RetainedGlyphBuilder == null)
         {
             _compiledTextRecords.Add(new StaticTextRecord { Command = cmd, Transform = transform });
         }
@@ -9211,6 +9261,23 @@ SceneStateUploadComplete:
                     CompilePathCommand(pathCmd, activeTransform);
                 }
 
+                continue;
+            }
+
+            if (TryCompileRetainedGlyph(
+                ActiveCompilationContext?.RetainedGlyphBuilder,
+                font,
+                glyphIdx,
+                cmd,
+                position + cmd.Position,
+                glyphItalicSkew,
+                fontScaleX,
+                textPathCoverageGamma,
+                color,
+                activeTransform,
+                passCount,
+                boldOffset))
+            {
                 continue;
             }
 
@@ -9325,6 +9392,56 @@ SceneStateUploadComplete:
         float clipRight = clip.X + clip.Width;
         float clipBottom = clip.Y + clip.Height;
         return maxX <= clip.X || minX >= clipRight || maxY <= clip.Y || minY >= clipBottom;
+    }
+
+    private static bool TryCompileRetainedGlyph(
+        RetainedGlyphGeometryBuilder? builder,
+        TtfFont font,
+        ushort glyphIndex,
+        RenderCommand command,
+        Vector2 position,
+        float italicSkew,
+        float scaleX,
+        float coverageGamma,
+        Vector4 color,
+        Matrix4x4 activeTransform,
+        int passCount,
+        float boldOffset)
+    {
+        if (builder == null ||
+            command.Brush is not SolidColorBrush ||
+            !builder.TryGetOrAddGlyph(
+                font,
+                glyphIndex,
+                out var recordIndex,
+                out var minBounds,
+                out var maxBounds))
+        {
+            return false;
+        }
+
+        var emScale = command.FontSize / font.UnitsPerEm;
+        var sampleGrid = command.TextRenderingMode == TextRenderingMode.Aliased
+            ? PathAtlas.StandardCoverageSampleGrid
+            : PathAtlas.HighPrecisionCoverageSampleGrid;
+        for (var pass = 0; pass < passCount; pass++)
+        {
+            var glyphTransform = new Matrix4x4(
+                emScale * scaleX, 0f, 0f, 0f,
+                emScale * italicSkew, -emScale, 0f, 0f,
+                0f, 0f, 1f, 0f,
+                position.X + pass * boldOffset, position.Y, 0f, 1f) * activeTransform;
+            builder.AddInstance(
+                glyphTransform,
+                color,
+                minBounds,
+                maxBounds,
+                recordIndex,
+                coverageGamma,
+                sampleGrid);
+        }
+
+        return true;
     }
 
     private void CompileVectorGlyphFallback(
@@ -10157,6 +10274,9 @@ SceneStateUploadComplete:
                 if (_vectorPipelineLayoutOffscreen != null) _context.QueuePipelineLayoutDisposal((IntPtr)_vectorPipelineLayoutOffscreen);
                 if (_textPipelineLayoutOffscreen != null) _context.QueuePipelineLayoutDisposal((IntPtr)_textPipelineLayoutOffscreen);
                 if (_texturePipelineLayoutOffscreen != null) _context.QueuePipelineLayoutDisposal((IntPtr)_texturePipelineLayoutOffscreen);
+                if (_retainedGlyphPipelineLayout != null) _context.QueuePipelineLayoutDisposal((IntPtr)_retainedGlyphPipelineLayout);
+                if (_retainedGlyphPipelineLayoutOffscreen != null) _context.QueuePipelineLayoutDisposal((IntPtr)_retainedGlyphPipelineLayoutOffscreen);
+                if (_retainedGlyphBindGroupLayout != null) _context.QueueBindGroupLayoutDisposal((IntPtr)_retainedGlyphBindGroupLayout);
                 if (_advancedBlendPipelineLayout != null) _context.QueuePipelineLayoutDisposal((IntPtr)_advancedBlendPipelineLayout);
                 if (_advancedBlendBindGroupLayout != null) _context.QueueBindGroupLayoutDisposal((IntPtr)_advancedBlendBindGroupLayout);
 
@@ -12001,7 +12121,12 @@ SceneStateUploadComplete:
         _maskRenderPasses.Clear();
         _masksToReturnToPool.Clear();
 
-        ActiveCompilationContext = new StaticCompilationContext { StaticZoom = staticZoom };
+        var retainedGlyphBuilder = new RetainedGlyphGeometryBuilder();
+        ActiveCompilationContext = new StaticCompilationContext
+        {
+            StaticZoom = staticZoom,
+            RetainedGlyphBuilder = retainedGlyphBuilder
+        };
         lock (_registeredExtensions)
         {
             var extensionCount = _registeredExtensions.Count;
@@ -12273,6 +12398,9 @@ SceneStateUploadComplete:
                 _vectorVerticesList.ToArray(),
                 _vectorIndicesList.ToArray(),
                 _textVerticesList.ToArray(),
+                retainedGlyphBuilder.GetRecords(),
+                retainedGlyphBuilder.GetSegments(),
+                retainedGlyphBuilder.GetInstances(),
                 _activeBrushes.ToArray(),
                 _activeGradientStops.ToArray(),
                 staticDrawCallList.ToArray()
@@ -12294,7 +12422,8 @@ SceneStateUploadComplete:
                 _vectorUniformBindGroupLayout,
                 _vectorUniformBindGroupLayoutOffscreen,
                 _textUniformBindGroupLayout,
-                _textUniformBindGroupLayoutOffscreen
+                _textUniformBindGroupLayoutOffscreen,
+                _retainedGlyphBindGroupLayout
             );
 
             return staticBuffer;
@@ -12432,7 +12561,12 @@ SceneStateUploadComplete:
         _maskRenderPasses.Clear();
         _masksToReturnToPool.Clear();
 
-        ActiveCompilationContext = new StaticCompilationContext { StaticZoom = staticZoom };
+        var retainedGlyphBuilder = new RetainedGlyphGeometryBuilder();
+        ActiveCompilationContext = new StaticCompilationContext
+        {
+            StaticZoom = staticZoom,
+            RetainedGlyphBuilder = retainedGlyphBuilder
+        };
         lock (_registeredExtensions)
         {
             var extensionCount = _registeredExtensions.Count;
@@ -12774,6 +12908,9 @@ SceneStateUploadComplete:
                 _vectorVerticesList.ToArray(),
                 _vectorIndicesList.ToArray(),
                 _textVerticesList.ToArray(),
+                retainedGlyphBuilder.GetRecords(),
+                retainedGlyphBuilder.GetSegments(),
+                retainedGlyphBuilder.GetInstances(),
                 _activeBrushes.ToArray(),
                 _activeGradientStops.ToArray(),
                 staticDrawCallList.ToArray()
@@ -12795,7 +12932,8 @@ SceneStateUploadComplete:
                 _vectorUniformBindGroupLayout,
                 _vectorUniformBindGroupLayoutOffscreen,
                 _textUniformBindGroupLayout,
-                _textUniformBindGroupLayoutOffscreen
+                _textUniformBindGroupLayoutOffscreen,
+                _retainedGlyphBindGroupLayout
             );
 
             return staticBuffer;
@@ -13021,6 +13159,17 @@ SceneStateUploadComplete:
                     }
                 }
             }
+        }
+
+        if (sb.RetainedGlyphInstanceCount > 0 &&
+            sb.RetainedGlyphBindGroup != null &&
+            sb.RetainedGlyphInstanceBuffer != null)
+        {
+            var retainedGlyphPipeline = GetRetainedGlyphPipeline(blendMode, isOffscreen);
+            _context.Api.RenderPassEncoderSetPipeline(pass, retainedGlyphPipeline);
+            _context.Api.RenderPassEncoderSetBindGroup(pass, 0, sb.RetainedGlyphBindGroup, 0, null);
+            _context.Api.RenderPassEncoderSetBindGroup(pass, 1, maskBg, 0, null);
+            _context.Api.RenderPassEncoderDraw(pass, 6, sb.RetainedGlyphInstanceCount, 0, 0);
         }
     }
 
@@ -13737,6 +13886,30 @@ SceneStateUploadComplete:
         }
     }
 
+    private RenderPipeline* GetRetainedGlyphPipeline(GpuBlendMode blendMode, bool isOffscreen)
+    {
+        if (_retainedGlyphShaderModule == null)
+        {
+            _retainedGlyphShaderModule = _pipelineCache.GetOrCreateShader(
+                "RetainedGlyph",
+                RetainedGlyphShaders.Source,
+                "RetainedGlyphShader");
+        }
+
+        return _pipelineCache.GetOrCreateRenderPipeline(
+            $"RetainedGlyph_{(isOffscreen ? "Offscreen" : "Primary")}_{blendMode}",
+            _retainedGlyphShaderModule,
+            ReadOnlySpan<VertexBufferLayout>.Empty,
+            targetFormat: RenderFormat,
+            enableBlend: true,
+            sampleCount: isOffscreen ? 1u : Options.PrimarySampleCount,
+            blendMode: blendMode,
+            pipelineLayout: isOffscreen
+                ? _retainedGlyphPipelineLayoutOffscreen
+                : _retainedGlyphPipelineLayout,
+            sourceAlphaMode: GpuTextureAlphaMode.Premultiplied);
+    }
+
     private void PushGeometryMask(PathGeometry geometry, Matrix4x4 transform)
     {
         CommitPendingDrawCalls();
@@ -14131,6 +14304,62 @@ SceneStateUploadComplete:
         };
 
         return _context.Api.DeviceCreateBindGroupLayout(_context.Device, &desc);
+    }
+
+    private unsafe BindGroupLayout* CreateRetainedGlyphLayout()
+    {
+        var entries = stackalloc BindGroupLayoutEntry[4];
+        entries[0] = new BindGroupLayoutEntry
+        {
+            Binding = 0,
+            Visibility = ShaderStage.Vertex | ShaderStage.Fragment,
+            Buffer = new BufferBindingLayout
+            {
+                Type = BufferBindingType.Uniform,
+                HasDynamicOffset = false,
+                MinBindingSize = 0
+            }
+        };
+        entries[1] = new BindGroupLayoutEntry
+        {
+            Binding = 1,
+            Visibility = ShaderStage.Fragment,
+            Buffer = new BufferBindingLayout
+            {
+                Type = BufferBindingType.ReadOnlyStorage,
+                HasDynamicOffset = false,
+                MinBindingSize = 0
+            }
+        };
+        entries[2] = new BindGroupLayoutEntry
+        {
+            Binding = 2,
+            Visibility = ShaderStage.Fragment,
+            Buffer = new BufferBindingLayout
+            {
+                Type = BufferBindingType.ReadOnlyStorage,
+                HasDynamicOffset = false,
+                MinBindingSize = 0
+            }
+        };
+        entries[3] = new BindGroupLayoutEntry
+        {
+            Binding = 3,
+            Visibility = ShaderStage.Vertex,
+            Buffer = new BufferBindingLayout
+            {
+                Type = BufferBindingType.ReadOnlyStorage,
+                HasDynamicOffset = false,
+                MinBindingSize = 0
+            }
+        };
+
+        var descriptor = new BindGroupLayoutDescriptor
+        {
+            EntryCount = 4,
+            Entries = entries
+        };
+        return _context.Api.DeviceCreateBindGroupLayout(_context.Device, &descriptor);
     }
 
     private unsafe BindGroupLayout* CreateUniformOnlyLayout()

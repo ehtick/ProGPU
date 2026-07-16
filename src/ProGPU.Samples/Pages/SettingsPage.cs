@@ -148,7 +148,7 @@ public static class SettingsPage
         var optBGroup = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 15) };
         var toggleB = new ToggleSwitch { IsOn = AppState.EnableStaticGpuBuffers };
         var labelB = new RichTextBlock { Font = AppState._font, FontSize = 12f };
-        labelB.Inlines.Add(new Run("Option B: Retained-Mode Static WebGPU Vertex/Index Buffers"));
+        labelB.Inlines.Add(new Run("Option B: Retained GPU Geometry + Analytic Glyph Outlines (recommended)"));
         toggleB.Content = labelB;
         toggleB.Toggled += (s, e) => { AppState.EnableStaticGpuBuffers = toggleB.IsOn; };
         optBGroup.AddChild(toggleB);

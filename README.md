@@ -1005,65 +1005,54 @@ To eliminate floating-point coordinate drift and keep layout compilation cycles 
 ---
 
 
-### 16. Hardware-Accelerated Static DXF Rendering & Crisp Static Text Buffers
+### 16. End-to-End Retained GPU DXF Rendering
 
-CAD drawings (like DXF files) contain hundreds of thousands or millions of vector elements (lines, circles, polyline arcs, splines, and complex hatches). Recursively compiling these vector primitives from a dynamic visual tree every frame on camera changes (zoom/pan) is CPU-prohibitive.
+Large CAD drawings cannot be reinterpreted, reshaped, or rerasterized on every wheel event. The DXF sample therefore enables `DxfStaticBuffer` by default and treats it as the single retained boundary for both vector entities and text.
 
-ProGPU introduces **Hardware-Accelerated Static WebGPU Buffers** (Option B) which compiles all vector primitives once into a static, GPU-mapped vertex/index store (`DxfStaticBuffer`). Panning and zooming are executed entirely on the GPU via updates to the viewport uniforms, maintaining a locked 60+ FPS on massive, million-entity CAD models.
-
-#### The Blurry Text Dilemma
-While static geometry scales infinitely on the GPU, TrueType Font (TTF) text is drawn as textured quads pointing to a bitmap-cached `GlyphAtlas`. Zooming in stretches these pre-rendered quads, causing bilinear texture blur because the glyph atlas texture was rasterized at a static zoom scale.
-
-ProGPU resolves this by implementing **Crisp Static Text Buffers via Dynamic Re-compilation**:
+`DxfCanvasControl` records the document once at a neutral camera. `Compositor.CompileStaticDxf` then uploads persistent vector vertex/index buffers, brushes, extension state, unique glyph-outline records, analytic glyph segments, and glyph-instance transforms. A visible frame records one `DrawStaticDxf` command. Pan and zoom update only the 208-byte viewport uniform; they never revisit the DXF entity tree, shape text, allocate glyph geometry, insert an atlas entry, or upload an instance buffer.
 
 ```mermaid
-flowchart TD
-    ZoomChange{"Context.Zoom != _lastZoom?"}
-    ZoomChange -- No --> DrawStatic["Draw Static Dxf Buffer - 100% GPU Bound (Panning Free)"]
-    ZoomChange -- Yes --> Recompile["Trigger RecompileStaticText on CPU"]
-    
-    Recompile --> ScaleDPI["Scale effective dpiScale = _currentDpiScale * Context.Zoom"]
-    ScaleDPI --> RasterGlyph["Rasterize Glyph at physical FontSize * dpiScale * Zoom inside Atlas"]
-    RasterGlyph --> ModelSpace["Divide quad vertex coords by effective dpiScale (cancel out Zoom)"]
-    ModelSpace --> WriteGPU["Dynamic Copy-on-Write vertex/index re-upload to GpuBuffer"]
-    WriteGPU --> DrawStatic
+flowchart LR
+    DXF["DXF document"] --> Record["Record once at neutral camera"]
+    Record --> Vector["Retained vector/index buffers"]
+    Record --> Unique["Deduplicate font + glyph index"]
+    Unique --> Curves["Retained line/quadratic/cubic segments"]
+    Record --> Instances["Retained label transforms + colors"]
+    Camera["Pan / zoom"] --> Uniform["Write camera MVP only"]
+    Vector --> Draw["One static draw boundary"]
+    Curves --> GlyphShader["Analytic retained-glyph shader"]
+    Instances --> GlyphShader
+    Uniform --> Draw
+    Uniform --> GlyphShader
 ```
 
-* **Panning is Completely Free**: Since panning does not affect font size or rasterization dimensions, panning a static drawing remains 100% GPU-bound and runs with zero CPU overhead.
-* **Retina-Sharp Snapping**: On camera zoom changes, the compositor triggers a surgical, sub-millisecond re-compilation of ONLY the text commands using the new zoom factor:
-  $$\text{effectiveDpiScale} = \text{dpiScale} \cdot \text{Zoom}$$
-* **Glyph Sizing**: Glyphs are rasterized into the shared `GlyphAtlas` at their exact, high-resolution physical size (`FontSize * effectiveDpiScale`), ensuring pixel-perfect Retina snapping.
-* **Automatic Scaling Cancelation**: The compiled quad vertex positions ($v_0, v_1, v_2, v_3$) are divided by `effectiveDpiScale` to map them back to base model/world coordinates. When the vertex shader multiplies them by the custom model-to-screen MVP matrix (which scales by `Zoom`), the zoom factor is mathematically canceled out, mapping the quad 1-to-1 to physical screen pixels with zero texture stretching or blur!
+The retained lifetime and invalidation contract are explicit:
 
-#### High-Performance Zoom & Scaling Optimizations
-To support instantaneous zoom transitions on massive CAD models containing thousands of text elements (such as `Schemat IOS Karvina CZ.dxf`), ProGPU integrates three advanced graphics-pipeline optimizations:
+- Loading a different document or unloading the control disposes the old GPU buffers.
+- Document identity, active layout, active-layer set, entity-flattening mode, viewport size, and backend-mode changes rebuild the static buffer.
+- Pan and zoom never invalidate retained content. Resize rebuilds because the neutral screen-space recording bounds changed.
+- Static compilation disables entity LOD and size culling. Geometry that is tiny at the initial fit remains present at deep zoom, including lines, circles, arcs, ellipses, polylines, splines, hatches, blocks, dimensions, and extension-backed entities.
+- Command caching is not stacked on the static buffer, so there is no duplicate `GpuPicture`, duplicated command tree, or second resource lifetime.
 
-1. **$O(\text{TextCount})$ Pre-Filtered Text Records Cache**:
-   - *Problem*: Scanning millions of drawing commands recursively on the CPU during zoomed snapping steps to filter out text elements introduced noticeable interface stutters.
-   - *Solution*: During the initial compilation of the static buffer, the compositor captures the exact `DrawText` commands and their parent block transformations into a flat `TextRecords` array in the `DxfStaticBuffer`:
-     ```csharp
-     public struct StaticTextRecord
-     {
-         public RenderCommand Command;
-         public Matrix4x4 Transform;
-     }
-     ```
-     Subsequent snapped zoom changes bypass the drawing hierarchy entirely and recompile only the text records, reducing complexity from $O(\text{TotalElements})$ to a highly efficient $O(\text{TextElements})$ execution.
+#### Retained glyph geometry and maximum-quality zoom
 
-2. **Discrete Font Snapping & Quad Scaling**:
-   - *Problem*: As the camera zoom levels increase, font sizes become extremely large (up to 128f), which rapidly bloats and thrashes the shared `GlyphAtlas` texture ($2048 \times 2048$), triggering frequent cache evictions. Computing 4-way subpixel snap coordinates for huge fonts also increases memory area consumption by $4\times$.
-   - *Solution*:
-     - **Clamping**: Caps the maximum physical font size rasterized into the atlas to `64f` (instead of `128f`). GPU bilinear filtering scales these large high-resolution sources up without visual quality loss, using $4\times$ less atlas area.
-     - **Size Snapping**: Snaps `rasterFontSize` to discrete steps (0.5px steps below 24px, 2px steps above 24px) for perfect cache hit ratios. Quad quad boundaries are scaled proportionally by `scaleRatio = physicalFontSize / rasterFontSize` to ensure mathematical size precision on screen remains 100% exact.
-     - **Subpixel Bypassing**: Disables subpixel snapping for font sizes larger than `24f` (since subpixel shifts are visually imperceptible on large characters), saving an additional $4\times$ in atlas footprint.
+Ordinary UI text still benefits from `GlyphAtlas`, but a fixed bitmap is the wrong representation for an unbounded CAD camera. Static DXF compilation takes the already-shaped glyph indices and stores each distinct `(TtfFont, glyphIndex)` outline once. Repeated characters add only `RetainedGlyphInstance` records containing the em transform, position, color, record index, coverage gamma, and rendering mode. The temporary CPU builder arrays become collectible after upload; the static buffer retains only counts and GPU resources.
 
-3. **WebGPU Queue & Driver Submission Batching**:
-   - *Problem*: Previously, rasterizing each new glyph synchronously created a temporary uniform buffer, constructed a WebGPU bind group, instantiated a command encoder, and immediately executed a sequential queue submission (`QueueSubmit`). For drawings with thousands of characters, this sequential driver loop caused severe CPU/GPU Metal synchronization bottlenecks on macOS.
-   - *Solution*: Implemented nestable batching APIs (`BeginBatch` / `EndBatch`) in `GlyphAtlas.cs` to pool and combine glyph compute dispatches. A normal scene records all new glyphs into one `CommandEncoder` and executes one `QueueSubmit`. The 256 KB uniform ring stores 1,024 256-byte-aligned dispatch records; exceptionally large batches flush before wrap and continue with a fresh encoder, so an unsubmitted dispatch can never observe overwritten uniforms. Submission complexity is $O(\lceil G / 1024 \rceil)$ for $G$ new glyphs, while raster work remains $O(P)$ for $P$ covered glyph pixels.
+The retained glyph shader reads compact placements from a read-only GPU storage buffer by `instance_index`, transforms one bounding quad per instance, and evaluates the original line, quadratic, and cubic contours in glyph-local coordinates. This storage-backed instance path is shared by native WebGPU and `navigator.gpu` and avoids backend-sensitive matrix vertex attributes. Non-zero/even-odd winding stays analytic and uses direction-aware half-open curve intervals. Grayscale coverage derives a one-device-pixel antialiasing ramp from the nearest contour; the fill boundary itself is never flattened or scaled from a texture. Quadratic and cubic chord samples are used only for the bounded edge-distance estimate (8 and 12 subdivisions respectively), while aliased text uses exact center winding. Solid outline text therefore remains sharp at arbitrary camera scales without an atlas-quality window or zoom-time reconstruction. Color/bitmap glyphs and non-solid paint keep their existing correctness fallbacks.
 
-4. **Stable Atlas Coordinates and Capacity Fallback**:
-   - *Problem*: Clearing a full atlas during compilation relocates UVs that earlier text vertices and static buffers still reference. Clearing proactively near capacity can also turn every changing frame into a full glyph re-rasterization cycle.
-   - *Solution*: Atlas allocation is transactional: a failed shelf placement does not mutate packing state, cached coordinates, or `Generation`. Existing glyphs remain reusable and the new glyph is rendered from its outline through the high-quality vector path. This avoids missing letters and cache thrash while preserving the same geometry and coverage policy. Capacity probing is O(1); an uncached fallback is O(S + P), where S is outline segment count and P is covered path pixels.
+For `G` distinct glyphs, `S` total analytic segments, and `I` placed glyphs, retained storage is `O(G + S + I)`. Static compilation is `O(S + I)`. A camera frame performs one uniform write plus retained draw submission; it performs zero work proportional to the DXF entity count on the CPU. The fragment shader costs `O(P*Sg + E*Sg*K)` for `P` glyph-quad fragments, edge-band fragments `E`, segments `Sg` in the referenced glyph, and fixed edge-distance bound `K`. Far interior and exterior fragments avoid curve-distance work.
+
+Run the optional representative-file regression from the repository root:
+
+```bash
+PROGPU_DXF_BENCHMARK_FILE=/absolute/path/to/large.dxf \
+PROGPU_DXF_BENCHMARK_SCREENSHOT=/absolute/path/output.png \
+dotnet test src/ProGPU.Tests.Headless/ProGPU.Tests.Headless.csproj \
+  -c Release \
+  --filter FullyQualifiedName~Benchmark_DxfCanvasControl_ExternalLargeDrawingRetainsGeometryWhileZooming
+```
+
+The benchmark performs 24 zoom frames and requires exactly one document recording, one static-buffer compilation, zero text recompilations, an average below 8.33 ms, and a p95 below 8.33 ms (at least 120 FPS). On the supplied 1600x1000 `floorplan.dxf`, warmed storage-instance runs measured about 4.0-4.3 ms average, 6.8 ms p95, and no camera-frame resource churn. The optional screenshot preserves the final frame for pixel inspection.
 
 ---
 

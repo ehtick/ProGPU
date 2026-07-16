@@ -89,7 +89,7 @@ public static class AppState
 
     // DXF viewer optimization controls
     public static bool EnableGpuTransforms { get; set; } = false;
-    public static bool EnableStaticGpuBuffers { get; set; } = false;
+    public static bool EnableStaticGpuBuffers { get; set; } = true;
     public static bool EnableCommandCaching { get; set; } = false;
     public static Compositor.VectorRenderingEngine VectorEngine { get; set; } = Compositor.VectorRenderingEngine.Atlas;
 

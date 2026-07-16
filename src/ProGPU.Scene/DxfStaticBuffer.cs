@@ -19,6 +19,13 @@ public unsafe class DxfStaticBuffer : IDisposable
     public GpuBuffer? TextVertexBuffer { get; private set; }
     public uint TextIndexCount { get; private set; }
     public GlyphInstance[] TextVertices { get; }
+
+    public GpuBuffer? RetainedGlyphRecordBuffer { get; private set; }
+    public GpuBuffer? RetainedGlyphSegmentBuffer { get; private set; }
+    public GpuBuffer? RetainedGlyphInstanceBuffer { get; private set; }
+    public uint RetainedGlyphRecordCount { get; }
+    public uint RetainedGlyphSegmentCount { get; }
+    public uint RetainedGlyphInstanceCount { get; }
     
     private GpuBuffer? _textVertexBufferBack;
     
@@ -37,6 +44,7 @@ public unsafe class DxfStaticBuffer : IDisposable
     
     public BindGroup* TextUniformBindGroup { get; private set; }
     public BindGroup* TextUniformBindGroupOffscreen { get; private set; }
+    public BindGroup* RetainedGlyphBindGroup { get; private set; }
     
     // The viewport Uniform buffer for this static buffer's custom MVP matrix
     public GpuBuffer? UniformBuffer { get; private set; }
@@ -52,6 +60,9 @@ public unsafe class DxfStaticBuffer : IDisposable
         VectorVertex[] vertices,
         uint[] indices,
         GlyphInstance[] textVertices,
+        GpuPathRecord[] retainedGlyphRecords,
+        GpuPathSegment[] retainedGlyphSegments,
+        RetainedGlyphInstance[] retainedGlyphInstances,
         GpuBrush[] brushes,
         GpuGradientStop[] gradientStops,
         Compositor.CompositorDrawCall[] drawCalls)
@@ -59,6 +70,9 @@ public unsafe class DxfStaticBuffer : IDisposable
         _context = context;
         VectorVertices = vertices;
         TextVertices = textVertices;
+        RetainedGlyphRecordCount = (uint)retainedGlyphRecords.Length;
+        RetainedGlyphSegmentCount = (uint)retainedGlyphSegments.Length;
+        RetainedGlyphInstanceCount = (uint)retainedGlyphInstances.Length;
         DrawCalls = drawCalls;
         
         // 1. Create and upload Vector Buffers
@@ -78,6 +92,30 @@ public unsafe class DxfStaticBuffer : IDisposable
             TextVertexBuffer = new GpuBuffer(context, (uint)textVertices.Length * (uint)Marshal.SizeOf<GlyphInstance>(), BufferUsage.Vertex | BufferUsage.CopyDst, "Static DXF Text Vertex Buffer");
             TextVertexBuffer.Write(new ReadOnlySpan<GlyphInstance>(textVertices));
             TextIndexCount = (uint)textVertices.Length;
+        }
+
+        if (retainedGlyphInstances.Length > 0)
+        {
+            RetainedGlyphRecordBuffer = new GpuBuffer(
+                context,
+                checked((uint)retainedGlyphRecords.Length * (uint)Marshal.SizeOf<GpuPathRecord>()),
+                BufferUsage.Storage | BufferUsage.CopyDst,
+                "Static DXF Retained Glyph Records");
+            RetainedGlyphRecordBuffer.Write((ReadOnlySpan<GpuPathRecord>)retainedGlyphRecords);
+
+            RetainedGlyphSegmentBuffer = new GpuBuffer(
+                context,
+                checked((uint)retainedGlyphSegments.Length * (uint)Marshal.SizeOf<GpuPathSegment>()),
+                BufferUsage.Storage | BufferUsage.CopyDst,
+                "Static DXF Retained Glyph Segments");
+            RetainedGlyphSegmentBuffer.Write((ReadOnlySpan<GpuPathSegment>)retainedGlyphSegments);
+
+            RetainedGlyphInstanceBuffer = new GpuBuffer(
+                context,
+                checked((uint)retainedGlyphInstances.Length * (uint)Marshal.SizeOf<RetainedGlyphInstance>()),
+                BufferUsage.Storage | BufferUsage.CopyDst,
+                "Static DXF Retained Glyph Instances");
+            RetainedGlyphInstanceBuffer.Write((ReadOnlySpan<RetainedGlyphInstance>)retainedGlyphInstances);
         }
         
         // 3. Brushes buffer
@@ -149,7 +187,12 @@ public unsafe class DxfStaticBuffer : IDisposable
         }
     }
     
-    public void InitializeBindGroups(BindGroupLayout* layout, BindGroupLayout* layoutOffscreen, BindGroupLayout* textLayout, BindGroupLayout* textLayoutOffscreen)
+    public void InitializeBindGroups(
+        BindGroupLayout* layout,
+        BindGroupLayout* layoutOffscreen,
+        BindGroupLayout* textLayout,
+        BindGroupLayout* textLayoutOffscreen,
+        BindGroupLayout* retainedGlyphLayout)
     {
         if (UniformBuffer == null) return;
         
@@ -223,6 +266,42 @@ public unsafe class DxfStaticBuffer : IDisposable
             Entries = &uBufferEntryText
         };
         TextUniformBindGroupOffscreen = _context.Api.DeviceCreateBindGroup(_context.Device, &uDescTextOffscreen);
+
+        if (RetainedGlyphRecordBuffer != null &&
+            RetainedGlyphSegmentBuffer != null &&
+            RetainedGlyphInstanceBuffer != null)
+        {
+            var retainedEntries = stackalloc BindGroupEntry[4];
+            retainedEntries[0] = uBufferEntryText;
+            retainedEntries[1] = new BindGroupEntry
+            {
+                Binding = 1,
+                Buffer = RetainedGlyphRecordBuffer.BufferPtr,
+                Offset = 0,
+                Size = RetainedGlyphRecordBuffer.Size
+            };
+            retainedEntries[2] = new BindGroupEntry
+            {
+                Binding = 2,
+                Buffer = RetainedGlyphSegmentBuffer.BufferPtr,
+                Offset = 0,
+                Size = RetainedGlyphSegmentBuffer.Size
+            };
+            retainedEntries[3] = new BindGroupEntry
+            {
+                Binding = 3,
+                Buffer = RetainedGlyphInstanceBuffer.BufferPtr,
+                Offset = 0,
+                Size = RetainedGlyphInstanceBuffer.Size
+            };
+            var retainedDescriptor = new BindGroupDescriptor
+            {
+                Layout = retainedGlyphLayout,
+                EntryCount = 4,
+                Entries = retainedEntries
+            };
+            RetainedGlyphBindGroup = _context.Api.DeviceCreateBindGroup(_context.Device, &retainedDescriptor);
+        }
     }
     
     public void UpdateViewport(Matrix4x4 projection, float zoom, Vector2 pan, Vector2 center, Vector2 screenCenter)
@@ -283,6 +362,9 @@ public unsafe class DxfStaticBuffer : IDisposable
             IndexBuffer?.Dispose();
             TextVertexBuffer?.Dispose();
             _textVertexBufferBack?.Dispose();
+            RetainedGlyphRecordBuffer?.Dispose();
+            RetainedGlyphSegmentBuffer?.Dispose();
+            RetainedGlyphInstanceBuffer?.Dispose();
             BrushesBuffer?.Dispose();
             GradientStopsBuffer?.Dispose();
             UniformBuffer?.Dispose();
@@ -304,6 +386,7 @@ public unsafe class DxfStaticBuffer : IDisposable
                 if (UniformBindGroupOffscreen != null) _context.Api.BindGroupRelease(UniformBindGroupOffscreen);
                 if (TextUniformBindGroup != null) _context.Api.BindGroupRelease(TextUniformBindGroup);
                 if (TextUniformBindGroupOffscreen != null) _context.Api.BindGroupRelease(TextUniformBindGroupOffscreen);
+                if (RetainedGlyphBindGroup != null) _context.Api.BindGroupRelease(RetainedGlyphBindGroup);
             }
         }
         
