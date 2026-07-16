@@ -1786,6 +1786,18 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     }
 
     [Fact]
+    public void ClippedGlyphDoesNotConsumeGlyphAtlasResidency()
+    {
+        var font = new TtfFont(BuildMissingGlyphOutlineFont());
+        using var window = new HeadlessWindow(64, 48);
+        window.Content = new ClippedGlyphRunVisual(font);
+
+        window.Render();
+
+        Assert.Equal(1, window.Compositor.Atlas.CachedGlyphCount);
+    }
+
+    [Fact]
     public void GlyphAtlasCapacityExhaustionFallsBackWithoutDroppingGlyphs()
     {
         var font = new TtfFont(BuildMissingGlyphOutlineFont());
@@ -5282,6 +5294,36 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
                 24f,
                 new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f)),
                 Vector2.Zero);
+        }
+    }
+
+    private sealed class ClippedGlyphRunVisual : FrameworkElement
+    {
+        private readonly TtfFont _font;
+
+        public ClippedGlyphRunVisual(TtfFont font)
+        {
+            _font = font;
+            Width = 64f;
+            Height = 48f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            ushort glyphIndex = _font.GetGlyphIndex('A');
+            context.PushClip(new Rect(0f, 0f, 64f, 48f));
+            context.DrawGlyphRun(
+                new[] { glyphIndex, glyphIndex },
+                new[]
+                {
+                    new Vector2(4f, 36f),
+                    new Vector2(400.25f, 36f)
+                },
+                _font,
+                24f,
+                new SolidColorBrush(Vector4.One),
+                Vector2.Zero);
+            context.PopClip();
         }
     }
 

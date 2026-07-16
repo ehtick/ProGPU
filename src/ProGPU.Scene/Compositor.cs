@@ -9031,7 +9031,6 @@ SceneStateUploadComplete:
                 continue;
             }
 
-            SwitchBatch(BatchType.Text);
             Vector2 transPos = Vector2.Transform(new Vector2(baseCursorX + cmd.Position.X, baseCursorY + cmd.Position.Y), activeTransform);
             var (subpixelX, snappedLogicalPos) = ResolveTextPlacement(
                 transPos,
@@ -9040,6 +9039,12 @@ SceneStateUploadComplete:
                 isRotated,
                 cmd.TextHintingMode);
 
+            if (IsTextGlyphOutsideActiveClip(snappedLogicalPos, cmd.FontSize))
+            {
+                continue;
+            }
+
+            SwitchBatch(BatchType.Text);
             var info = _atlas.GetOrCreateGlyphByIndex(
                 glyphFont,
                 glyphIdx,
@@ -9066,25 +9071,6 @@ SceneStateUploadComplete:
             for (int pass = 0; pass < passCount; pass++)
             {
                 float xOffset = pass * boldOffset;
-
-                if (_activeClipRect.HasValue && !_useGpuTransformsActive)
-                {
-                    float halfSize = cmd.FontSize * 2f;
-                    float minX = snappedLogicalPos.X - halfSize;
-                    float maxX = snappedLogicalPos.X + halfSize;
-                    float minY = snappedLogicalPos.Y - halfSize;
-                    float maxY = snappedLogicalPos.Y + halfSize;
-
-                    float clipLeft = _activeClipRect.Value.X;
-                    float clipTop = _activeClipRect.Value.Y;
-                    float clipRight = clipLeft + _activeClipRect.Value.Width;
-                    float clipBottom = clipTop + _activeClipRect.Value.Height;
-
-                    if (maxX <= clipLeft || minX >= clipRight || maxY <= clipTop || minY >= clipBottom)
-                    {
-                        continue;
-                    }
-                }
 
                 _textVerticesList.Add(new GlyphInstance
                 {
@@ -9248,7 +9234,6 @@ SceneStateUploadComplete:
                 continue;
             }
 
-            SwitchBatch(BatchType.Text);
             float baseCursorX = position.X;
             float baseCursorY = position.Y;
 
@@ -9260,6 +9245,12 @@ SceneStateUploadComplete:
                 isRotated,
                 cmd.TextHintingMode);
 
+            if (IsTextGlyphOutsideActiveClip(snappedLogicalPos, cmd.FontSize))
+            {
+                continue;
+            }
+
+            SwitchBatch(BatchType.Text);
             var info = _atlas.GetOrCreateGlyphByIndex(
                 font,
                 glyphIdx,
@@ -9287,25 +9278,6 @@ SceneStateUploadComplete:
             {
                 float xOffset = pass * boldOffset;
 
-                if (_activeClipRect.HasValue && !_useGpuTransformsActive)
-                {
-                    float halfSize = cmd.FontSize * 2f;
-                    float minX = snappedLogicalPos.X - halfSize;
-                    float maxX = snappedLogicalPos.X + halfSize;
-                    float minY = snappedLogicalPos.Y - halfSize;
-                    float maxY = snappedLogicalPos.Y + halfSize;
-
-                    float clipLeft = _activeClipRect.Value.X;
-                    float clipTop = _activeClipRect.Value.Y;
-                    float clipRight = clipLeft + _activeClipRect.Value.Width;
-                    float clipBottom = clipTop + _activeClipRect.Value.Height;
-
-                    if (maxX <= clipLeft || minX >= clipRight || maxY <= clipTop || minY >= clipBottom)
-                    {
-                        continue;
-                    }
-                }
-
                 _textVerticesList.Add(new GlyphInstance
                 {
                     SnappedLogicalPos = snappedLogicalPos,
@@ -9331,6 +9303,28 @@ SceneStateUploadComplete:
                 });
             }
         }
+    }
+
+    private bool IsTextGlyphOutsideActiveClip(Vector2 snappedLogicalPosition, float fontSize)
+    {
+        if (!_activeClipRect.HasValue || _useGpuTransformsActive)
+        {
+            return false;
+        }
+
+        // Match the existing conservative text bounds, but evaluate them before
+        // requesting atlas residency so clipped glyphs do not consume CPU, GPU,
+        // or atlas memory. Bold and italic offsets remain inside this margin.
+        float halfSize = fontSize * 2f;
+        float minX = snappedLogicalPosition.X - halfSize;
+        float maxX = snappedLogicalPosition.X + halfSize;
+        float minY = snappedLogicalPosition.Y - halfSize;
+        float maxY = snappedLogicalPosition.Y + halfSize;
+
+        var clip = _activeClipRect.Value;
+        float clipRight = clip.X + clip.Width;
+        float clipBottom = clip.Y + clip.Height;
+        return maxX <= clip.X || minX >= clipRight || maxY <= clip.Y || minY >= clipBottom;
     }
 
     private void CompileVectorGlyphFallback(
