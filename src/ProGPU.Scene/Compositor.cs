@@ -11502,6 +11502,13 @@ SceneStateUploadComplete:
 
         CommitPendingDrawCalls();
 
+        // Cached layers can be compiled while the outer scene's glyph batch is still
+        // active. Submit newly rasterized glyphs before this offscreen render samples
+        // the atlas; otherwise the first cached texture captures empty glyph regions
+        // and remains visually incomplete until another invalidation rebuilds it.
+        // This is a no-op when compilation reused only existing atlas entries.
+        _atlas.FlushPendingBatchWork();
+
         if (_pathAtlas.CapacityExceeded ||
             _pathAtlas.Generation != pathAtlasGenerationAtCompilationStart)
         {

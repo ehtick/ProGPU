@@ -93,7 +93,7 @@ public sealed class SamplePerformanceRegressionTests
 
         var command = Assert.Single(context.Commands, static command => command.Type == RenderCommandType.DrawGlyphRun);
         Assert.True(command.PreferGlyphAtlas);
-        Assert.True(command.UseLogicalGlyphAtlasResolution);
+        Assert.False(command.UseLogicalGlyphAtlasResolution);
         Assert.DoesNotContain(context.Commands, static command => command.Type == RenderCommandType.DrawPath);
     }
 

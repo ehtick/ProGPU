@@ -1713,6 +1713,60 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     }
 
     [Fact]
+    public void GlyphAtlasCheckpointMakesPendingCoverageVisibleWithoutEndingBatch()
+    {
+        const uint atlasSize = 128;
+        var font = new TtfFont(BuildMissingGlyphOutlineFont());
+        using var atlas = new GlyphAtlas(HeadlessWindow.Shared.Context, atlasSize);
+
+        atlas.BeginBatch();
+        try
+        {
+            GlyphInfo first = atlas.GetOrCreateGlyph(font, 'A', 24f);
+
+            atlas.FlushPendingBatchWork();
+
+            var pixels = atlas.AtlasTexture.ReadPixels();
+            Assert.True(ReadGlyphAtlasCoverage(pixels, first, atlasSize, 8, 8) > 200);
+
+            GlyphInfo second = atlas.GetOrCreateGlyph(font, 'A', 25f);
+            Assert.NotEqual(first.X, second.X);
+        }
+        finally
+        {
+            atlas.EndBatch();
+        }
+    }
+
+    [Fact]
+    public void ColdCachedLayerIncludesGlyphCoverageOnItsFirstFrame()
+    {
+        var font = new TtfFont(BuildMissingGlyphOutlineFont());
+        using var window = new HeadlessWindow(48, 48);
+        var visual = new CachedLayerGlyphVisual(font);
+        window.Content = visual;
+
+        window.Render();
+
+        Assert.NotNull(visual.LayerTexture);
+        var pixels = window.ReadPixels();
+        int coveredPixel = (33 * 48 + 14) * 4;
+        Assert.True(
+            pixels[coveredPixel] > 200,
+            "The first cached-layer frame must sample glyph coverage after rasterization is submitted.");
+
+        int cachedGlyphCount = window.Compositor.Atlas.CachedGlyphCount;
+        ulong atlasGeneration = window.Compositor.Atlas.Generation;
+        ulong layerTextureId = visual.LayerTexture.Id;
+
+        window.Render();
+
+        Assert.Equal(cachedGlyphCount, window.Compositor.Atlas.CachedGlyphCount);
+        Assert.Equal(atlasGeneration, window.Compositor.Atlas.Generation);
+        Assert.Equal(layerTextureId, visual.LayerTexture.Id);
+    }
+
+    [Fact]
     public void GlyphAtlasCapacityExhaustionFallsBackWithoutDroppingGlyphs()
     {
         var font = new TtfFont(BuildMissingGlyphOutlineFont());
@@ -5244,6 +5298,30 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
                 translucent,
                 Vector2.Zero);
             context.PopOpacity();
+        }
+    }
+
+    private sealed class CachedLayerGlyphVisual : FrameworkElement
+    {
+        private readonly TtfFont _font;
+
+        public CachedLayerGlyphVisual(TtfFont font)
+        {
+            _font = font;
+            Width = 48f;
+            Height = 48f;
+            CacheAsLayer = true;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            context.DrawGlyphRun(
+                new[] { _font.GetGlyphIndex('A') },
+                new[] { new Vector2(8f, 40f) },
+                _font,
+                24f,
+                new SolidColorBrush(Vector4.One),
+                Vector2.Zero);
         }
     }
 

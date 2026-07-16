@@ -100,6 +100,22 @@ public unsafe class GlyphAtlas : IDisposable
         FlushBatchEncoder();
     }
 
+    /// <summary>
+    /// Submits glyph rasterization recorded by the active batch before a render pass
+    /// that samples the atlas is submitted. The batch remains active so later glyphs
+    /// in the same compositor frame continue to use the allocation-free ring path.
+    /// </summary>
+    public void FlushPendingBatchWork()
+    {
+        if (_isDisposed || _batchDepth == 0 || _batchEncoder == null || _ringOffset == 0)
+        {
+            return;
+        }
+
+        FlushBatchEncoder();
+        CreateBatchEncoder();
+    }
+
     private void FlushBatchEncoder()
     {
         if (_batchEncoder == null) return;
