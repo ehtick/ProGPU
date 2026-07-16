@@ -1464,6 +1464,9 @@ public class Graphics : IDisposable
     {
         _savedStates.Clear();
         _transform.Dispose();
-        _bitmap?.FlushIfContextAvailable();
+        // Bitmap commands are intentionally retained until the image is
+        // consumed (GetPixel, Save, GpuTexture, or a context-bound lease).
+        // Disposing Graphics must not submit work through an ambient host
+        // context whose render scope may already be ending.
     }
 }

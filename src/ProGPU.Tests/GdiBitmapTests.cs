@@ -66,13 +66,14 @@ public sealed class GdiBitmapTests
     }
 
     [Fact]
-    public void GraphicsDisposeDefersBitmapFlushUntilHostContextIsInitialized()
+    public void GraphicsDisposeDefersBitmapFlushUntilBitmapIsConsumed()
     {
         var previous = ProGPU.Backend.WgpuContext.Current;
         using var hostContext = new ProGPU.Backend.WgpuContext();
 
         try
         {
+            hostContext.Initialize(null);
             ProGPU.Backend.WgpuContext.Current = hostContext;
             using var bitmap = new DrawingBitmap(2, 2);
 
@@ -83,7 +84,6 @@ public sealed class GdiBitmapTests
 
             Assert.NotEmpty(bitmap.RecordedContext.Commands);
 
-            hostContext.Initialize(null);
             Assert.True(bitmap.TryGetGpuTexture(hostContext, out _));
             Assert.Empty(bitmap.RecordedContext.Commands);
             Assert.Equal(DrawingColor.Red.ToArgb(), bitmap.GetPixel(0, 0).ToArgb());

@@ -186,34 +186,6 @@ public class Bitmap : Image, IProGpuContextTextureLeaseSource
         }
     }
 
-    internal void FlushIfContextAvailable()
-    {
-        lock (_textureLifetimeLock)
-        {
-            if (_isDisposed || _recordedContext.Commands.Count == 0)
-            {
-                return;
-            }
-
-            WgpuContext? renderContext =
-                _textureLifetime is { Texture.IsDisposed: false } current
-                    && current.Texture.Context.IsInitialized
-                    ? current.Texture.Context
-                    : WgpuContext.Current is { IsInitialized: true } ambient
-                        ? ambient
-                        : null;
-
-            // Graphics.Dispose is a command-list boundary, not permission to
-            // create a second device before the application host is ready.
-            // Keep commands recorded until the bitmap is first consumed by an
-            // initialized host context; TryGet/TryAcquire will flush them there.
-            if (renderContext is not null)
-            {
-                FlushCore(renderContext);
-            }
-        }
-    }
-
     private void FlushCore(WgpuContext? requiredContext)
     {
         if (_isDisposed) return;
