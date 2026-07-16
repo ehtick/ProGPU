@@ -1464,6 +1464,6 @@ public class Graphics : IDisposable
     {
         _savedStates.Clear();
         _transform.Dispose();
-        _bitmap?.Flush();
+        _bitmap?.FlushIfContextAvailable();
     }
 }

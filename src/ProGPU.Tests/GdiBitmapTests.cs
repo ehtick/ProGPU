@@ -65,6 +65,35 @@ public sealed class GdiBitmapTests
         Assert.Equal(new DrawingRectangleF(0f, 0f, 192f, 96f), graphics.VisibleClipBounds);
     }
 
+    [Fact]
+    public void GraphicsDisposeDefersBitmapFlushUntilHostContextIsInitialized()
+    {
+        var previous = ProGPU.Backend.WgpuContext.Current;
+        using var hostContext = new ProGPU.Backend.WgpuContext();
+
+        try
+        {
+            ProGPU.Backend.WgpuContext.Current = hostContext;
+            using var bitmap = new DrawingBitmap(2, 2);
+
+            using (DrawingGraphics graphics = DrawingGraphics.FromImage(bitmap))
+            {
+                graphics.Clear(DrawingColor.Red);
+            }
+
+            Assert.NotEmpty(bitmap.RecordedContext.Commands);
+
+            hostContext.Initialize(null);
+            Assert.True(bitmap.TryGetGpuTexture(hostContext, out _));
+            Assert.Empty(bitmap.RecordedContext.Commands);
+            Assert.Equal(DrawingColor.Red.ToArgb(), bitmap.GetPixel(0, 0).ToArgb());
+        }
+        finally
+        {
+            ProGPU.Backend.WgpuContext.Current = previous;
+        }
+    }
+
     private static void AssertRectangleApproximately(DrawingRectangleF expected, DrawingRectangleF actual)
     {
         Assert.Equal(expected.X, actual.X, 4);
