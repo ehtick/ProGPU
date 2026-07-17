@@ -448,7 +448,9 @@ internal sealed class SuiteRunner
                  left.OffsetY != Round(-right.OffsetY)))
             {
                 return $"glyph[{index}] position expected ({left.AdvanceX},{left.AdvanceY},{left.OffsetX},{left.OffsetY}), " +
-                       $"actual ({Round(right.AdvanceX)},{Round(-right.AdvanceY)},{Round(right.OffsetX)},{Round(-right.OffsetY)})";
+                       $"actual ({Round(right.AdvanceX)},{Round(-right.AdvanceY)},{Round(right.OffsetX)},{Round(-right.OffsetY)}); " +
+                       $"expected [{string.Join('|', expected.Select(static glyph => $"{glyph.Glyph}:{glyph.AdvanceX},{glyph.AdvanceY},{glyph.OffsetX},{glyph.OffsetY}"))}], " +
+                       $"actual [{string.Join('|', actual.Select(static glyph => $"{glyph.GlyphIndex}:{Round(glyph.AdvanceX)},{Round(-glyph.AdvanceY)},{Round(glyph.OffsetX)},{Round(-glyph.OffsetY)}"))}]";
             }
         }
         return null;
