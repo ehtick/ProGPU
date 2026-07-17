@@ -476,7 +476,7 @@ public partial class TtfFont
             using var stream = new MemoryStream(fontData, writable: false);
             return new OpenFontReader().Read(stream);
         }
-        catch (Exception ex) when (ex is OpenFontException or OpenFontNotSupportedException or
+        catch (Exception ex) when (ex is OpenFontException or OpenFontNotSupportedException or NotImplementedException or
                                    InvalidDataException or ArgumentException or IndexOutOfRangeException or
                                    NullReferenceException or OverflowException)
         {

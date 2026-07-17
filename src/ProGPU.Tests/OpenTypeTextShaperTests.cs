@@ -205,6 +205,18 @@ public sealed class OpenTypeTextShaperTests
         Assert.Equal(new[] { 2, 1, 0 }, rightToLeft.Select(static glyph => glyph.Cluster));
     }
 
+    [Theory]
+    [InlineData(0x0627u, 2)]
+    [InlineData(0x0628u, 3)]
+    [InlineData(0x064Bu, 6)]
+    [InlineData(0x1E922u, 3)]
+    public void Unicode17ArabicJoiningDataMatchesExpectedTypes(
+        uint codePoint,
+        int expected)
+    {
+        Assert.Equal(expected, (int)ArabicJoiningData.GetJoiningType(codePoint));
+    }
+
     private static TextShapingOptions Features(params string[] optional)
     {
         var features = new List<OpenTypeFeatureSetting>

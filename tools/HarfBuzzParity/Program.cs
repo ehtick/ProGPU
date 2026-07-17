@@ -306,14 +306,14 @@ internal sealed class SuiteRunner
                 configuration.FontSize ?? font.UnitsPerEm,
                 shapingOptions);
 
-            string? mismatch = Compare(expected, actual, configuration);
+            string? mismatch = Compare(expected, actual, configuration, testCase.Text);
             return mismatch is null
                 ? CaseResult.Passed(testCase)
                 : CaseResult.Failed(testCase, mismatch);
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            return CaseResult.Error(testCase, $"{exception.GetType().Name}: {exception.Message}");
+            return CaseResult.Error(testCase, exception.ToString());
         }
     }
 
@@ -413,7 +413,8 @@ internal sealed class SuiteRunner
     private static string? Compare(
         IReadOnlyList<ReferenceGlyph> expected,
         IReadOnlyList<ShapedGlyph> actual,
-        CaseConfiguration configuration)
+        CaseConfiguration configuration,
+        string text)
     {
         if (expected.Count != actual.Count)
         {
@@ -428,9 +429,10 @@ internal sealed class SuiteRunner
             {
                 return $"glyph[{index}] expected gid {left.Glyph}, actual {right.GlyphIndex}";
             }
-            if (!configuration.IgnoreClusters && left.Cluster != right.Cluster)
+            int actualCluster = Utf16ClusterToScalarIndex(text, right.Cluster);
+            if (!configuration.IgnoreClusters && left.Cluster != actualCluster)
             {
-                return $"glyph[{index}] cluster expected {left.Cluster}, actual {right.Cluster}";
+                return $"glyph[{index}] cluster expected {left.Cluster}, actual {actualCluster}";
             }
             if (!configuration.IgnorePositions &&
                 ((!configuration.IgnoreAdvances &&
@@ -444,6 +446,19 @@ internal sealed class SuiteRunner
             }
         }
         return null;
+    }
+
+    private static int Utf16ClusterToScalarIndex(string text, int utf16Index)
+    {
+        int limit = Math.Clamp(utf16Index, 0, text.Length);
+        int scalarIndex = 0;
+        for (int index = 0; index < limit; scalarIndex++)
+        {
+            index += Rune.DecodeFromUtf16(text.AsSpan(index), out _, out int consumed) == System.Buffers.OperationStatus.Done
+                ? consumed
+                : 1;
+        }
+        return scalarIndex;
     }
 
     private static int Round(float value) => checked((int)MathF.Round(value));
