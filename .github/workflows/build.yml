@@ -106,12 +106,44 @@ jobs:
             exit $LASTEXITCODE
           }
 
-          dotnet test `
-            src/ProGPU.Tests.Headless/ProGPU.Tests.Headless.csproj `
-            --configuration Release `
-            --runtime "${{ matrix.rid }}" `
-            --no-build `
-            --verbosity normal
+          $headlessArgs = @(
+            "test",
+            "src/ProGPU.Tests.Headless/ProGPU.Tests.Headless.csproj",
+            "--configuration",
+            "Release",
+            "--runtime",
+            "${{ matrix.rid }}",
+            "--no-build",
+            "--verbosity",
+            "normal"
+          )
+
+          if ($IsWindows) {
+            # The multilingual specimen loads the large CJK face. Keep it required,
+            # but run it in a fresh process after the long GPU sample-page suite.
+            $headlessArgs += @(
+              "--filter",
+              "FullyQualifiedName!~Test_TypographyScriptsPage_Renders"
+            )
+          }
+
+          dotnet @headlessArgs
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+          if ($IsWindows) {
+            dotnet test `
+              src/ProGPU.Tests.Headless/ProGPU.Tests.Headless.csproj `
+              --configuration Release `
+              --runtime "${{ matrix.rid }}" `
+              --no-build `
+              --verbosity normal `
+              --filter "FullyQualifiedName=ProGPU.Tests.Headless.SamplePagesTests.Test_TypographyScriptsPage_Renders"
+            if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+            }
+          }
 
       - name: Pack shipping packages
         shell: bash
