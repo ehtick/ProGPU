@@ -1,6 +1,7 @@
 using OpenFontSharp;
 using OpenFontSharp.Tables.AdvancedLayout;
 using ProGPU.Text.Shaping;
+using System.Buffers;
 using System.Globalization;
 using System.Numerics;
 using System.Text;
@@ -148,17 +149,39 @@ public static class OpenTypeTextShaper
             return [];
         }
 
-        string script = options.Script ?? InferScript(text);
-        ShapingDirection direction = ResolveDirection(options.Direction, script);
-        options = AddScriptFeatures(options, script);
+        string unicodeScript = options.Script ?? InferScript(text);
+        bool useShaper = ResolveLayoutScript(font, unicodeScript, out string script);
+        ShapingDirection direction = ResolveDirection(options.Direction, unicodeScript);
+        options = AddScriptFeatures(options, script, useShaper);
         options = AddDirectionalFeatures(options, direction);
 
-        var substitutions = GlyphSubstitutionBuffer.Create(text, font, script);
+        var substitutions = GlyphSubstitutionBuffer.Create(text, font, unicodeScript);
+        substitutions.ApplyVowelConstraints(unicodeScript);
+        substitutions.NormalizeUseDiacritics(useShaper);
         substitutions.AssignFractionActions();
         substitutions.PrepareKhmerShaping(script);
-        substitutions.AssignArabicJoiningActions(script);
+        substitutions.PrepareUseShaping(useShaper, unicodeScript);
+        substitutions.AssignArabicJoiningActions(unicodeScript);
         Typeface? typeface = font.LayoutTypeface;
-        ApplySubstitutions(font, typeface?.GSUBTable, substitutions, options, script);
+        SubstitutionPlan substitutionPlan = CreateSubstitutionPlan(font, typeface?.GSUBTable, options, script);
+        if (useShaper)
+        {
+            ApplySubstitutions(font, substitutionPlan, substitutions, options, UseSubstitutionStage.Preprocessing);
+            substitutions.ClearSubstitutionFlags();
+            ApplySubstitutions(font, substitutionPlan, substitutions, options, UseSubstitutionStage.Repha);
+            substitutions.RecordUseRepha();
+            substitutions.ClearSubstitutionFlags();
+            ApplySubstitutions(font, substitutionPlan, substitutions, options, UseSubstitutionStage.Prebase);
+            substitutions.RecordUsePrebase();
+            ApplySubstitutions(font, substitutionPlan, substitutions, options, UseSubstitutionStage.Basic);
+            substitutions.ReorderUseShaping(true);
+            ApplySubstitutions(font, substitutionPlan, substitutions, options, UseSubstitutionStage.Topographical);
+            ApplySubstitutions(font, substitutionPlan, substitutions, options, UseSubstitutionStage.Presentation);
+        }
+        else
+        {
+            ApplySubstitutions(font, substitutionPlan, substitutions, options, UseSubstitutionStage.All);
+        }
 
         var positions = new GlyphPositionBuffer(substitutions, font, direction);
         if (typeface is not null)
@@ -252,9 +275,9 @@ public static class OpenTypeTextShaper
         };
     }
 
-    private static TextShapingOptions AddScriptFeatures(TextShapingOptions options, string script)
+    private static TextShapingOptions AddScriptFeatures(TextShapingOptions options, string script, bool useShaper)
     {
-        if (script != "khmr")
+        if (script != "khmr" && !useShaper)
         {
             return options;
         }
@@ -267,23 +290,29 @@ public static class OpenTypeTextShaper
             values[feature.Tag] = feature.Value;
         }
 
-        string[] khmerFeatures = ["pref", "blwf", "abvf", "pstf", "cfar", "pres", "abvs", "blws", "psts"];
-        foreach (string tag in khmerFeatures)
+        string[] scriptFeatures = script == "khmr"
+            ? ["pref", "blwf", "abvf", "pstf", "cfar", "pres", "abvs", "blws", "psts"]
+            : ["nukt", "akhn", "rphf", "pref", "rkrf", "abvf", "blwf", "half", "pstf", "vatu", "cjct",
+               "isol", "init", "medi", "fina", "abvs", "blws", "haln", "pres", "psts"];
+        foreach (string tag in scriptFeatures)
         {
             values.TryAdd(tag, 1);
         }
-        values.TryAdd("clig", 1);
-        if (!explicitFeatureTags.Contains("liga"))
+        if (script == "khmr")
         {
-            values["liga"] = 0;
+            values.TryAdd("clig", 1);
+            if (!explicitFeatureTags.Contains("liga"))
+            {
+                values["liga"] = 0;
+            }
         }
 
-        string[] orderedTags =
-        [
-            "rvrn", "frac", "numr", "dnom", "locl", "ccmp",
-            "pref", "blwf", "abvf", "pstf", "cfar",
-            "pres", "abvs", "blws", "psts"
-        ];
+        string[] orderedTags = script == "khmr"
+            ? ["rvrn", "frac", "numr", "dnom", "locl", "ccmp",
+               "pref", "blwf", "abvf", "pstf", "cfar", "pres", "abvs", "blws", "psts"]
+            : ["rvrn", "frac", "numr", "dnom", "locl", "ccmp", "nukt", "akhn", "rphf", "pref",
+               "rkrf", "abvf", "blwf", "half", "pstf", "vatu", "cjct", "isol", "init", "medi", "fina",
+               "abvs", "blws", "haln", "pres", "psts"];
         var features = new List<OpenTypeFeatureSetting>(values.Count);
         foreach (string tag in orderedTags)
         {
@@ -314,10 +343,9 @@ public static class OpenTypeTextShaper
         };
     }
 
-    private static void ApplySubstitutions(
+    private static SubstitutionPlan CreateSubstitutionPlan(
         TtfFont font,
         GSUB? table,
-        GlyphSubstitutionBuffer glyphs,
         TextShapingOptions options,
         string script)
     {
@@ -325,11 +353,28 @@ public static class OpenTypeTextShaper
         List<EnabledLookup> rawLookups = font.TryGetTable("GSUB", out rawTable)
             ? GetRawEnabledLookupIndices(rawTable.Span, options.Features, script, options.Language)
             : [];
+        List<EnabledLookup> lookups = table?.FeatureList?.featureTables is { Length: > 0 } features
+            ? GetEnabledLookupIndices(table, features, options, script).ToList()
+            : [];
+        return new SubstitutionPlan(table, rawTable, lookups, rawLookups);
+    }
 
-        if (table?.FeatureList?.featureTables is { Length: > 0 } features)
+    private static void ApplySubstitutions(
+        TtfFont font,
+        SubstitutionPlan plan,
+        GlyphSubstitutionBuffer glyphs,
+        TextShapingOptions options,
+        UseSubstitutionStage stage)
+    {
+        GSUB? table = plan.Table;
+        ReadOnlyMemory<byte> rawTable = plan.RawTable;
+        List<EnabledLookup> rawLookups = plan.RawLookups;
+
+        if (table is not null)
         {
-            foreach (EnabledLookup enabled in GetEnabledLookupIndices(table, features, options, script))
+            foreach (EnabledLookup enabled in plan.Lookups)
             {
+                if (!IsSubstitutionStageFeature(enabled.Tag, stage)) continue;
                 ushort lookupIndex = enabled.LookupIndex;
                 if (lookupIndex >= table.LookupList.Count)
                 {
@@ -383,6 +428,7 @@ public static class OpenTypeTextShaper
         {
             foreach (EnabledLookup enabled in rawLookups)
             {
+                if (!IsSubstitutionStageFeature(enabled.Tag, stage)) continue;
                 if (!IsRawOwnedLookup(rawTable.Span, enabled.LookupIndex)) continue;
                 for (var position = 0; position < glyphs.Count; position++)
                 {
@@ -399,8 +445,29 @@ public static class OpenTypeTextShaper
 
         foreach (EnabledLookup enabled in rawLookups)
         {
+            if (!IsSubstitutionStageFeature(enabled.Tag, stage)) continue;
             ApplyReverseChainingLookup(rawTable.Span, glyphs, enabled.LookupIndex);
         }
+    }
+
+    private static bool IsSubstitutionStageFeature(string tag, UseSubstitutionStage stage)
+    {
+        if (stage == UseSubstitutionStage.All) return true;
+        return stage switch
+        {
+            UseSubstitutionStage.Preprocessing => tag is
+                "rvrn" or "frac" or "numr" or "dnom" or "locl" or "ccmp" or "nukt" or "akhn",
+            UseSubstitutionStage.Repha => tag == "rphf",
+            UseSubstitutionStage.Prebase => tag == "pref",
+            UseSubstitutionStage.Basic => tag is
+                "rkrf" or "abvf" or "blwf" or "half" or "pstf" or "vatu" or "cjct",
+            UseSubstitutionStage.Topographical => tag is "isol" or "init" or "medi" or "fina",
+            UseSubstitutionStage.Presentation => tag is not
+                ("rvrn" or "frac" or "numr" or "dnom" or "locl" or "ccmp" or "nukt" or "akhn" or
+                 "rphf" or "pref" or "rkrf" or "abvf" or "blwf" or "half" or "pstf" or "vatu" or
+                 "cjct" or "isol" or "init" or "medi" or "fina"),
+            _ => false
+        };
     }
 
     private static bool IsRawOwnedLookup(ReadOnlySpan<byte> data, ushort lookupIndex)
@@ -509,6 +576,7 @@ public static class OpenTypeTextShaper
                 AddRawFeatureLookups(data, featureListOffset, (ushort)featureIndex, value, result, positions);
             }
         }
+        result.Sort(static (left, right) => left.LookupIndex.CompareTo(right.LookupIndex));
         return result;
     }
 
@@ -2445,6 +2513,22 @@ public static class OpenTypeTextShaper
     }
 
     private readonly record struct EnabledLookup(ushort LookupIndex, int Value, string Tag);
+    private readonly record struct SubstitutionPlan(
+        GSUB? Table,
+        ReadOnlyMemory<byte> RawTable,
+        List<EnabledLookup> Lookups,
+        List<EnabledLookup> RawLookups);
+
+    private enum UseSubstitutionStage : byte
+    {
+        All,
+        Preprocessing,
+        Repha,
+        Prebase,
+        Basic,
+        Topographical,
+        Presentation
+    }
 
     private static IEnumerable<EnabledLookup> GetEnabledLookupIndices(
         GlyphShapingTableEntry table,
@@ -2483,6 +2567,7 @@ public static class OpenTypeTextShaper
             }
         }
 
+        lookups.Sort(static (left, right) => left.LookupIndex.CompareTo(right.LookupIndex));
         return lookups;
     }
 
@@ -2608,6 +2693,7 @@ public static class OpenTypeTextShaper
             if (value is >= 0x1000 and <= 0x109F or >= 0xA9E0 and <= 0xA9FF or >= 0xAA60 and <= 0xAA7F) return "mymr";
             if (value is >= 0x1800 and <= 0x18AF) return "mong";
             if (value is >= 0x1780 and <= 0x17FF) return "khmr";
+            if (value is >= 0xA980 and <= 0xA9DF) return "java";
             if (value is >= 0xA840 and <= 0xA87F) return "phag";
             if (value is >= 0x10AC0 and <= 0x10AFF) return "mani";
             if (value is >= 0x10B80 and <= 0x10BAF) return "phlp";
@@ -2615,6 +2701,13 @@ public static class OpenTypeTextShaper
             if (value is >= 0x10F30 and <= 0x10F6F) return "sogd";
             if (value is >= 0x10F70 and <= 0x10FAF) return "ougr";
             if (value is >= 0x10FB0 and <= 0x10FDF) return "chrs";
+            if (value is >= 0x11000 and <= 0x1107F) return "brah";
+            if (value is >= 0x11200 and <= 0x1124F) return "khoj";
+            if (value is >= 0x112B0 and <= 0x112FF) return "sind";
+            if (value is >= 0x11480 and <= 0x114DF) return "tirh";
+            if (value is >= 0x11600 and <= 0x1165F) return "modi";
+            if (value is >= 0x11680 and <= 0x116CF) return "takr";
+            if (value is >= 0x11C70 and <= 0x11CBF) return "marc";
             if (value is >= 0x1E900 and <= 0x1E95F) return "adlm";
             if (value is >= 0x3040 and <= 0x30FF) return "kana";
             if (value is >= 0xAC00 and <= 0xD7AF or >= 0x1100 and <= 0x11FF) return "hang";
@@ -2622,6 +2715,60 @@ public static class OpenTypeTextShaper
             if (Rune.IsLetter(rune)) return "latn";
         }
         return "DFLT";
+    }
+
+    private static bool ResolveLayoutScript(TtfFont font, string unicodeScript, out string layoutScript)
+    {
+        string? thirdGenerationTag = unicodeScript switch
+        {
+            "beng" => "bng3",
+            "deva" => "dev3",
+            "gujr" => "gjr3",
+            "guru" => "gur3",
+            "knda" => "knd3",
+            "mlym" => "mlm3",
+            "orya" => "ory3",
+            "taml" => "tml3",
+            "telu" => "tel3",
+            _ => null
+        };
+        if (thirdGenerationTag is not null && HasOpenTypeScript(font, "GSUB", thirdGenerationTag))
+        {
+            layoutScript = thirdGenerationTag;
+            return true;
+        }
+
+        layoutScript = unicodeScript;
+        return unicodeScript is
+            "tibt" or "mong" or "sinh" or "java" or "marc" or "limb" or "tale" or
+            "bugi" or "khar" or "sylo" or "tfng" or "bali" or "nkoo" or "phag" or
+            "cham" or "kali" or "lepc" or "rjng" or "saur" or "sund" or "egyp" or
+            "kthi" or "mtei" or "lana" or "tavt" or "batk" or "brah" or "mand" or
+            "cakm" or "plrd" or "shrd" or "takr" or "dupl" or "gran" or "khoj" or
+            "sind" or "mahj" or "mani" or "modi" or "hmng" or "phlp" or "sidd" or
+            "tirh" or "ahom" or "mult" or "adlm" or "bhks" or "newa" or "gonm" or
+            "soyo" or "zanb" or "dogr" or "gong" or "rohg" or "maka" or "medf" or
+            "sogo" or "sogd" or "elym" or "nand" or "hmnp" or "wcho" or "chrs" or
+            "diak" or "kits" or "yezi" or "cpmn" or "ougr" or "tnsa" or "toto" or
+            "vith" or "kawi" or "nagm";
+    }
+
+    private static bool HasOpenTypeScript(TtfFont font, string tableTag, string scriptTag)
+    {
+        if (!font.TryGetTable(tableTag, out ReadOnlyMemory<byte> memory)) return false;
+        ReadOnlySpan<byte> data = memory.Span;
+        if (!CanRead(data, 4, 2)) return false;
+        int scriptList = ReadU16(data, 4);
+        if (!CanRead(data, scriptList, 2)) return false;
+        int count = ReadU16(data, scriptList);
+        uint requested = ToTag(scriptTag);
+        for (var index = 0; index < count; index++)
+        {
+            int record = scriptList + 2 + index * 6;
+            if (!CanRead(data, record, 6)) break;
+            if (ReadU32(data, record) == requested) return true;
+        }
+        return false;
     }
 
     private static uint ToTag(string value)
@@ -2675,6 +2822,65 @@ public static class OpenTypeTextShaper
         public ushort this[int index] => _glyphs[index].GlyphIndex;
         public GlyphRecord GetRecord(int index) => _glyphs[index];
 
+        public void ApplyVowelConstraints(string script)
+        {
+            for (var index = 0; index + 1 < _glyphs.Count;)
+            {
+                uint third = index + 2 < _glyphs.Count ? _glyphs[index + 2].CodePoint : 0;
+                int matchLength = VowelConstraintData.MatchLength(
+                    script,
+                    _glyphs[index].CodePoint,
+                    _glyphs[index + 1].CodePoint,
+                    third);
+                if (matchLength == 0)
+                {
+                    index++;
+                    continue;
+                }
+
+                int finalIndex = index + matchLength - 1;
+                GlyphRecord final = _glyphs[finalIndex];
+                _glyphs.Insert(
+                    finalIndex,
+                    new GlyphRecord(_font.GetGlyphIndex(0x25CC), final.Cluster, 0x25CC));
+                index += matchLength + 1;
+            }
+        }
+
+        public void NormalizeUseDiacritics(bool enabled)
+        {
+            if (!enabled)
+            {
+                return;
+            }
+            for (var index = 0; index < _glyphs.Count; index++)
+            {
+                GlyphRecord source = _glyphs[index];
+                string scalar = new Rune((int)source.CodePoint).ToString();
+                string decomposed = scalar.Normalize(NormalizationForm.FormD);
+                if (decomposed.Equals(scalar, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                Rune.DecodeFromUtf16(decomposed, out Rune first, out _);
+                if (!IsUnicodeMark((uint)first.Value))
+                {
+                    continue;
+                }
+
+                _glyphs.RemoveAt(index);
+                int component = 0;
+                foreach (Rune rune in decomposed.EnumerateRunes())
+                {
+                    _glyphs.Insert(
+                        index + component,
+                        new GlyphRecord(_font.GetGlyphIndex((uint)rune.Value), source.Cluster, (uint)rune.Value));
+                    component++;
+                }
+                index += component - 1;
+            }
+        }
+
         public void PrepareKhmerShaping(string script)
         {
             if (script != "khmr")
@@ -2683,6 +2889,13 @@ public static class OpenTypeTextShaper
             }
 
             InsertBrokenKhmerDottedCircles();
+
+            for (var index = 0; index < _glyphs.Count; index++)
+            {
+                GlyphRecord glyph = _glyphs[index];
+                glyph.ScriptShaper = ScriptShaperKhmer;
+                _glyphs[index] = glyph;
+            }
 
             for (var start = 0; start < _glyphs.Count;)
             {
@@ -2848,6 +3061,421 @@ public static class OpenTypeTextShaper
         private static bool IsKhmerPreBaseVowel(uint codePoint) =>
             codePoint is >= 0x17C1 and <= 0x17C3;
 
+        public void PrepareUseShaping(bool enabled, string unicodeScript)
+        {
+            if (!enabled)
+            {
+                return;
+            }
+
+            for (var index = 0; index < _glyphs.Count; index++)
+            {
+                GlyphRecord glyph = _glyphs[index];
+                glyph.ScriptShaper = ScriptShaperUse;
+                glyph.UseCategory = UseShapingData.GetCategory(glyph.CodePoint);
+                _glyphs[index] = glyph;
+            }
+
+            FindUseSyllables();
+            AssignUseRephaEligibility();
+            if (!UsesArabicJoining(unicodeScript))
+            {
+                AssignUseTopographicalActions();
+            }
+        }
+
+        public void ReorderUseShaping(bool enabled)
+        {
+            if (!enabled)
+            {
+                return;
+            }
+
+            InsertBrokenUseDottedCircles();
+            for (var start = 0; start < _glyphs.Count;)
+            {
+                byte syllable = _glyphs[start].UseSyllable;
+                int end = start + 1;
+                while (end < _glyphs.Count && _glyphs[end].UseSyllable == syllable)
+                {
+                    end++;
+                }
+                ReorderUseSyllable(start, end, (byte)(syllable & 0x0F));
+                start = end;
+            }
+        }
+
+        public void ClearSubstitutionFlags()
+        {
+            for (var index = 0; index < _glyphs.Count; index++)
+            {
+                GlyphRecord glyph = _glyphs[index];
+                glyph.Substituted = 0;
+                glyph.Ligated = 0;
+                glyph.MultipleSubstitutionComponent = 0;
+                _glyphs[index] = glyph;
+            }
+        }
+
+        public void RecordUseRepha()
+        {
+            for (var start = 0; start < _glyphs.Count;)
+            {
+                byte syllable = _glyphs[start].UseSyllable;
+                int end = start + 1;
+                while (end < _glyphs.Count && _glyphs[end].UseSyllable == syllable) end++;
+                for (var index = start; index < end && _glyphs[index].UseRphfEligible != 0; index++)
+                {
+                    if (_glyphs[index].Substituted == 0) continue;
+                    GlyphRecord glyph = _glyphs[index];
+                    glyph.UseCategory = UseShapingData.Repha;
+                    _glyphs[index] = glyph;
+                    break;
+                }
+                start = end;
+            }
+        }
+
+        public void RecordUsePrebase()
+        {
+            for (var start = 0; start < _glyphs.Count;)
+            {
+                byte syllable = _glyphs[start].UseSyllable;
+                int end = start + 1;
+                while (end < _glyphs.Count && _glyphs[end].UseSyllable == syllable) end++;
+                for (var index = start; index < end; index++)
+                {
+                    if (_glyphs[index].Substituted == 0) continue;
+                    GlyphRecord glyph = _glyphs[index];
+                    glyph.UseCategory = UseShapingData.VowelPre;
+                    _glyphs[index] = glyph;
+                    break;
+                }
+                start = end;
+            }
+        }
+
+        private void AssignUseRephaEligibility()
+        {
+            for (var start = 0; start < _glyphs.Count;)
+            {
+                byte syllable = _glyphs[start].UseSyllable;
+                int end = start + 1;
+                while (end < _glyphs.Count && _glyphs[end].UseSyllable == syllable) end++;
+                int limit = _glyphs[start].UseCategory == UseShapingData.Repha
+                    ? 1
+                    : Math.Min(3, end - start);
+                for (var index = start; index < start + limit; index++)
+                {
+                    GlyphRecord glyph = _glyphs[index];
+                    glyph.UseRphfEligible = 1;
+                    _glyphs[index] = glyph;
+                }
+                start = end;
+            }
+        }
+
+        private void FindUseSyllables()
+        {
+            int[] indices = ArrayPool<int>.Shared.Rent(_glyphs.Count + 1);
+            try
+            {
+                int machineCount = 0;
+                for (var index = 0; index < _glyphs.Count; index++)
+                {
+                    byte category = _glyphs[index].UseCategory;
+                    if (category == UseShapingData.Cgj)
+                    {
+                        continue;
+                    }
+                    if (category == UseShapingData.Zwnj)
+                    {
+                        int following = index + 1;
+                        while (following < _glyphs.Count && _glyphs[following].UseCategory == UseShapingData.Cgj)
+                        {
+                            following++;
+                        }
+                        if (following < _glyphs.Count && IsUnicodeMark(_glyphs[following].CodePoint))
+                        {
+                            continue;
+                        }
+                    }
+                    indices[machineCount++] = index;
+                }
+                indices[machineCount] = _glyphs.Count;
+                RunUseSyllableMachine(indices.AsSpan(0, machineCount + 1), machineCount);
+            }
+            finally
+            {
+                ArrayPool<int>.Shared.Return(indices);
+            }
+        }
+
+        private void RunUseSyllableMachine(ReadOnlySpan<int> indices, int count)
+        {
+            if (count == 0)
+            {
+                return;
+            }
+
+            int state = UseSyllableMachineData.StartState;
+            int position = 0;
+            int tokenStart = -1;
+            int tokenEnd = -1;
+            int pendingAction = 0;
+            byte serial = 1;
+
+            while (true)
+            {
+                int transition;
+                if (position == count)
+                {
+                    transition = UseSyllableMachineData.GetEofTransition(state);
+                    if (transition < 0)
+                    {
+                        break;
+                    }
+                }
+                else
+                {
+                    if (UseSyllableMachineData.GetFromStateAction(state) == 3)
+                    {
+                        tokenStart = position;
+                    }
+                    transition = UseSyllableMachineData.GetTransition(
+                        state,
+                        _glyphs[indices[position]].UseCategory);
+                }
+
+                state = UseSyllableMachineData.GetTarget(transition);
+                int action = UseSyllableMachineData.GetAction(transition);
+                switch (action)
+                {
+                    case 7:
+                        tokenEnd = position + 1;
+                        break;
+                    case 16: tokenEnd = position + 1; AssignUseSyllable(indices, tokenStart, tokenEnd, UseViramaTerminated, ref serial); break;
+                    case 14: tokenEnd = position + 1; AssignUseSyllable(indices, tokenStart, tokenEnd, UseSakotTerminated, ref serial); break;
+                    case 12: tokenEnd = position + 1; AssignUseSyllable(indices, tokenStart, tokenEnd, UseStandard, ref serial); break;
+                    case 20: tokenEnd = position + 1; AssignUseSyllable(indices, tokenStart, tokenEnd, UseNumberJoinerTerminated, ref serial); break;
+                    case 18: tokenEnd = position + 1; AssignUseSyllable(indices, tokenStart, tokenEnd, UseNumeral, ref serial); break;
+                    case 10: tokenEnd = position + 1; AssignUseSyllable(indices, tokenStart, tokenEnd, UseSymbol, ref serial); break;
+                    case 25: tokenEnd = position + 1; AssignUseSyllable(indices, tokenStart, tokenEnd, UseHieroglyph, ref serial); break;
+                    case 5: tokenEnd = position + 1; AssignUseSyllable(indices, tokenStart, tokenEnd, UseBroken, ref serial); break;
+                    case 4: tokenEnd = position + 1; AssignUseSyllable(indices, tokenStart, tokenEnd, UseNonCluster, ref serial); break;
+                    case 15: tokenEnd = position; position--; AssignUseSyllable(indices, tokenStart, tokenEnd, UseViramaTerminated, ref serial); break;
+                    case 13: tokenEnd = position; position--; AssignUseSyllable(indices, tokenStart, tokenEnd, UseSakotTerminated, ref serial); break;
+                    case 11: tokenEnd = position; position--; AssignUseSyllable(indices, tokenStart, tokenEnd, UseStandard, ref serial); break;
+                    case 19: tokenEnd = position; position--; AssignUseSyllable(indices, tokenStart, tokenEnd, UseNumberJoinerTerminated, ref serial); break;
+                    case 17: tokenEnd = position; position--; AssignUseSyllable(indices, tokenStart, tokenEnd, UseNumeral, ref serial); break;
+                    case 9: tokenEnd = position; position--; AssignUseSyllable(indices, tokenStart, tokenEnd, UseSymbol, ref serial); break;
+                    case 24: tokenEnd = position; position--; AssignUseSyllable(indices, tokenStart, tokenEnd, UseHieroglyph, ref serial); break;
+                    case 21: tokenEnd = position; position--; AssignUseSyllable(indices, tokenStart, tokenEnd, UseBroken, ref serial); break;
+                    case 23: tokenEnd = position; position--; AssignUseSyllable(indices, tokenStart, tokenEnd, UseNonCluster, ref serial); break;
+                    case 1:
+                        position = tokenEnd - 1;
+                        AssignUseSyllable(indices, tokenStart, tokenEnd, UseSymbol, ref serial);
+                        break;
+                    case 22:
+                        position = tokenEnd - 1;
+                        AssignUseSyllable(
+                            indices,
+                            tokenStart,
+                            tokenEnd,
+                            pendingAction == 9 ? UseBroken : UseNonCluster,
+                            ref serial);
+                        break;
+                    case 6:
+                        tokenEnd = position + 1;
+                        pendingAction = 8;
+                        break;
+                    case 8:
+                        tokenEnd = position + 1;
+                        pendingAction = 9;
+                        break;
+                }
+
+                if (UseSyllableMachineData.GetToStateAction(state) == 2)
+                {
+                    tokenStart = -1;
+                }
+                position++;
+                if (position < 0 || position > count)
+                {
+                    break;
+                }
+            }
+        }
+
+        private void AssignUseSyllable(
+            ReadOnlySpan<int> indices,
+            int tokenStart,
+            int tokenEnd,
+            byte type,
+            ref byte serial)
+        {
+            if (tokenStart < 0 || tokenEnd < tokenStart)
+            {
+                return;
+            }
+            int start = indices[tokenStart];
+            int end = indices[tokenEnd];
+            byte value = (byte)(serial << 4 | type);
+            for (var index = start; index < end; index++)
+            {
+                GlyphRecord glyph = _glyphs[index];
+                glyph.UseSyllable = value;
+                _glyphs[index] = glyph;
+            }
+            serial++;
+            if (serial == 16)
+            {
+                serial = 1;
+            }
+        }
+
+        private void AssignUseTopographicalActions()
+        {
+            int previousStart = 0;
+            byte previousForm = None;
+            for (var start = 0; start < _glyphs.Count;)
+            {
+                byte syllable = _glyphs[start].UseSyllable;
+                int end = start + 1;
+                while (end < _glyphs.Count && _glyphs[end].UseSyllable == syllable)
+                {
+                    end++;
+                }
+                byte type = (byte)(syllable & 0x0F);
+                if (type is UseHieroglyph or UseNonCluster)
+                {
+                    previousForm = None;
+                }
+                else
+                {
+                    bool joins = previousForm is Final or Isolated;
+                    if (joins)
+                    {
+                        previousForm = previousForm == Final ? Medial : Initial;
+                        SetArabicAction(previousStart, start, previousForm);
+                    }
+                    previousForm = joins ? Final : Isolated;
+                    SetArabicAction(start, end, previousForm);
+                }
+                previousStart = start;
+                start = end;
+            }
+        }
+
+        private void SetArabicAction(int start, int end, byte action)
+        {
+            for (var index = start; index < end; index++)
+            {
+                GlyphRecord glyph = _glyphs[index];
+                glyph.ArabicAction = action;
+                _glyphs[index] = glyph;
+            }
+        }
+
+        private void InsertBrokenUseDottedCircles()
+        {
+            ushort dottedCircleGlyph = _font.GetGlyphIndex(0x25CC);
+            if (dottedCircleGlyph == 0)
+            {
+                return;
+            }
+            byte previousSyllable = 0;
+            for (var index = 0; index < _glyphs.Count; index++)
+            {
+                GlyphRecord current = _glyphs[index];
+                if (current.UseSyllable == previousSyllable || (current.UseSyllable & 0x0F) != UseBroken)
+                {
+                    previousSyllable = current.UseSyllable;
+                    continue;
+                }
+                previousSyllable = current.UseSyllable;
+                while (index < _glyphs.Count &&
+                       _glyphs[index].UseSyllable == previousSyllable &&
+                       _glyphs[index].UseCategory == UseShapingData.Repha)
+                {
+                    index++;
+                }
+                GlyphRecord dottedCircle = new(dottedCircleGlyph, current.Cluster, 0x25CC)
+                {
+                    ScriptShaper = ScriptShaperUse,
+                    UseCategory = UseShapingData.Base,
+                    UseSyllable = previousSyllable,
+                    ArabicAction = current.ArabicAction
+                };
+                _glyphs.Insert(index, dottedCircle);
+            }
+        }
+
+        private void ReorderUseSyllable(int start, int end, byte type)
+        {
+            if (type is not (UseViramaTerminated or UseSakotTerminated or UseStandard or UseSymbol or UseBroken))
+            {
+                return;
+            }
+
+            if (_glyphs[start].UseCategory == UseShapingData.Repha && end - start > 1)
+            {
+                for (var index = start + 1; index < end; index++)
+                {
+                    bool postBase = IsUsePostBase(_glyphs[index].UseCategory) || IsUseHalant(_glyphs[index]);
+                    if (postBase || index == end - 1)
+                    {
+                        int destination = postBase ? index - 1 : index;
+                        MergeCluster(start, destination + 1);
+                        GlyphRecord repha = _glyphs[start];
+                        _glyphs.RemoveAt(start);
+                        _glyphs.Insert(destination, repha);
+                        break;
+                    }
+                }
+            }
+
+            int target = start;
+            for (var index = start; index < end; index++)
+            {
+                GlyphRecord glyph = _glyphs[index];
+                if (IsUseHalant(glyph))
+                {
+                    target = index + 1;
+                }
+                else if (glyph.UseCategory is UseShapingData.VowelPre or UseShapingData.VowelModifierPre &&
+                         glyph.MultipleSubstitutionComponent == 0 &&
+                         target < index)
+                {
+                    MergeCluster(target, index + 1);
+                    _glyphs.RemoveAt(index);
+                    _glyphs.Insert(target, glyph);
+                }
+            }
+        }
+
+        private static bool IsUsePostBase(byte category) => category is
+            UseShapingData.FinalAbove or UseShapingData.FinalBelow or UseShapingData.FinalPost or
+            UseShapingData.FinalModifierAbove or UseShapingData.FinalModifierBelow or UseShapingData.FinalModifierPost or
+            UseShapingData.MedialAbove or UseShapingData.MedialBelow or UseShapingData.MedialPost or UseShapingData.MedialPre or
+            UseShapingData.VowelAbove or UseShapingData.VowelBelow or UseShapingData.VowelPost or UseShapingData.VowelPre or
+            UseShapingData.VowelModifierAbove or UseShapingData.VowelModifierBelow or UseShapingData.VowelModifierPost or
+            UseShapingData.VowelModifierPre;
+
+        private static bool IsUseHalant(GlyphRecord glyph) =>
+            glyph.UseCategory is UseShapingData.Halant or UseShapingData.HalantOrVowelModifier or UseShapingData.InvisibleStacker &&
+            glyph.Ligated == 0;
+
+        private static bool IsUnicodeMark(uint codePoint)
+        {
+            UnicodeCategory category = Rune.GetUnicodeCategory(new Rune((int)codePoint));
+            return category is UnicodeCategory.NonSpacingMark or UnicodeCategory.SpacingCombiningMark or UnicodeCategory.EnclosingMark;
+        }
+
+        private static bool UsesArabicJoining(string script) => script is
+            "adlm" or "arab" or "chrs" or "rohg" or "mand" or "mani" or "mong" or
+            "nkoo" or "ougr" or "phag" or "phlp" or "sogd" or "syrc";
+
         public void AssignArabicJoiningActions(string script)
         {
             if (script is not ("adlm" or "arab" or "chrs" or "rohg" or "mand" or "mani" or
@@ -2918,16 +3546,18 @@ public static class OpenTypeTextShaper
 
         public bool IsFeatureEnabled(int index, string tag, TextShapingOptions options)
         {
-            byte action = _glyphs[index].ArabicAction;
+            GlyphRecord glyph = _glyphs[index];
+            byte action = glyph.ArabicAction;
             bool explicitlyEnabled = options.ExplicitFeatureTags?.Contains(tag) == true;
             return tag switch
             {
-                "frac" => explicitlyEnabled || _glyphs[index].FractionAction != FractionNone,
-                "numr" => explicitlyEnabled || _glyphs[index].FractionAction == FractionNumerator,
-                "dnom" => explicitlyEnabled || _glyphs[index].FractionAction == FractionDenominator,
-                "pref" => (_glyphs[index].ScriptFeatureMask & KhmerPrefMask) != 0,
-                "blwf" or "abvf" or "pstf" => (_glyphs[index].ScriptFeatureMask & KhmerPostBaseMask) != 0,
-                "cfar" => (_glyphs[index].ScriptFeatureMask & KhmerCfarMask) != 0,
+                "frac" => explicitlyEnabled || glyph.FractionAction != FractionNone,
+                "numr" => explicitlyEnabled || glyph.FractionAction == FractionNumerator,
+                "dnom" => explicitlyEnabled || glyph.FractionAction == FractionDenominator,
+                "pref" => glyph.ScriptShaper != ScriptShaperKhmer || (glyph.ScriptFeatureMask & KhmerPrefMask) != 0,
+                "blwf" or "abvf" or "pstf" => glyph.ScriptShaper != ScriptShaperKhmer || (glyph.ScriptFeatureMask & KhmerPostBaseMask) != 0,
+                "cfar" => glyph.ScriptShaper == ScriptShaperKhmer && (glyph.ScriptFeatureMask & KhmerCfarMask) != 0,
+                "rphf" => glyph.ScriptShaper != ScriptShaperUse || glyph.UseRphfEligible != 0,
                 "isol" => action == Isolated,
                 "fina" => action == Final,
                 "fin2" => action == Final2,
@@ -2966,6 +3596,8 @@ public static class OpenTypeTextShaper
             if (componentIndices.IsEmpty) return;
             GlyphRecord ligature = _glyphs[componentIndices[0]];
             ligature.GlyphIndex = ligatureGlyph;
+            ligature.Substituted = 1;
+            ligature.Ligated = 1;
             ligature.LigatureComponentCount = checked((byte)Math.Min(componentIndices.Length, byte.MaxValue));
             int first = componentIndices[0];
             int last = componentIndices[^1];
@@ -3142,6 +3774,7 @@ public static class OpenTypeTextShaper
         {
             GlyphRecord record = _glyphs[index];
             record.GlyphIndex = newGlyphIndex;
+            record.Substituted = 1;
             _glyphs[index] = record;
         }
 
@@ -3149,6 +3782,8 @@ public static class OpenTypeTextShaper
         {
             GlyphRecord record = _glyphs[index];
             record.GlyphIndex = newGlyphIndex;
+            record.Substituted = 1;
+            if (removeLen > 1) record.Ligated = 1;
             _glyphs[index] = record;
             if (removeLen > 1)
             {
@@ -3170,6 +3805,8 @@ public static class OpenTypeTextShaper
             {
                 GlyphRecord replacement = record;
                 replacement.GlyphIndex = newGlyphIndices[replacementIndex];
+                replacement.Substituted = 1;
+                replacement.MultipleSubstitutionComponent = checked((byte)Math.Min(replacementIndex, byte.MaxValue));
                 _glyphs.Insert(index, replacement);
             }
         }
@@ -3507,6 +4144,13 @@ public static class OpenTypeTextShaper
         public byte SpaceFallback;
         public byte FractionAction;
         public byte ScriptFeatureMask;
+        public byte ScriptShaper;
+        public byte UseCategory;
+        public byte UseSyllable;
+        public byte UseRphfEligible;
+        public byte Substituted;
+        public byte Ligated;
+        public byte MultipleSubstitutionComponent;
         public byte LigatureComponentCount;
         public byte LigatureComponent;
         public int AttachmentTarget;
@@ -3522,6 +4166,19 @@ public static class OpenTypeTextShaper
     private const byte Medial2 = 5;
     private const byte Initial = 6;
     private const byte None = 7;
+
+    private const byte ScriptShaperKhmer = 1;
+    private const byte ScriptShaperUse = 2;
+
+    private const byte UseViramaTerminated = 0;
+    private const byte UseSakotTerminated = 1;
+    private const byte UseStandard = 2;
+    private const byte UseNumberJoinerTerminated = 3;
+    private const byte UseNumeral = 4;
+    private const byte UseSymbol = 5;
+    private const byte UseHieroglyph = 6;
+    private const byte UseBroken = 7;
+    private const byte UseNonCluster = 8;
 
     private const byte SpaceNone = 0;
     private const byte SpaceEm = 1;
