@@ -229,7 +229,7 @@ public static class OpenTypeTextShaper
     {
         ReadOnlyMemory<byte> rawTable = default;
         List<EnabledLookup> rawLookups = font.TryGetTable("GSUB", out rawTable)
-            ? GetRawEnabledLookupIndices(rawTable.Span, options.Features)
+            ? GetRawEnabledLookupIndices(rawTable.Span, options.Features, script, options.Language)
             : [];
 
         if (table?.FeatureList?.featureTables is { Length: > 0 } features)
@@ -243,12 +243,22 @@ public static class OpenTypeTextShaper
                 }
 
                 GSUB.LookupTable lookup = table.LookupList[lookupIndex];
+                bool rawContextLookup = IsContextLookup(rawTable.Span, lookupIndex);
                 for (var position = 0; position < glyphs.Count; position++)
                 {
                     if (!glyphs.IsFeatureEnabled(position, enabled.Tag))
                     {
                         continue;
                     }
+                    if (rawContextLookup)
+                    {
+                        int rawCountBefore = glyphs.Count;
+                        ApplyContextLookupAt(rawTable.Span, glyphs, lookupIndex, position);
+                        int rawInsertedGlyphs = glyphs.Count - rawCountBefore;
+                        if (rawInsertedGlyphs > 0) position += rawInsertedGlyphs;
+                        continue;
+                    }
+
                     int countBefore = glyphs.Count;
                     try
                     {
@@ -271,8 +281,25 @@ public static class OpenTypeTextShaper
                     }
                 }
 
-                ApplyUnsupportedChainingLookup(font, glyphs, lookupIndex);
                 ApplyAlternateLookup(font, glyphs, lookupIndex, enabled.Value);
+            }
+        }
+
+        if (table is null)
+        {
+            foreach (EnabledLookup enabled in rawLookups)
+            {
+                if (!IsContextLookup(rawTable.Span, enabled.LookupIndex)) continue;
+                for (var position = 0; position < glyphs.Count; position++)
+                {
+                    if (glyphs.IsFeatureEnabled(position, enabled.Tag))
+                    {
+                        int countBefore = glyphs.Count;
+                        ApplyContextLookupAt(rawTable.Span, glyphs, enabled.LookupIndex, position);
+                        int insertedGlyphs = glyphs.Count - countBefore;
+                        if (insertedGlyphs > 0) position += insertedGlyphs;
+                    }
+                }
             }
         }
 
@@ -282,9 +309,63 @@ public static class OpenTypeTextShaper
         }
     }
 
+    private static bool IsContextLookup(ReadOnlySpan<byte> data, ushort lookupIndex)
+    {
+        if (!TryGetLookup(data, lookupIndex, out int lookupOffset, out ushort lookupType, out int subtableCountOffset))
+        {
+            return false;
+        }
+        if (lookupType is 5 or 6) return true;
+        if (lookupType != 7 || ReadU16(data, subtableCountOffset) == 0 || !CanRead(data, subtableCountOffset + 2, 2))
+        {
+            return false;
+        }
+        int extension = lookupOffset + ReadU16(data, subtableCountOffset + 2);
+        return CanRead(data, extension, 4) && ReadU16(data, extension) == 1 && ReadU16(data, extension + 2) is 5 or 6;
+    }
+
+    private static bool ApplyContextLookupAt(
+        ReadOnlySpan<byte> data,
+        GlyphSubstitutionBuffer glyphs,
+        ushort lookupIndex,
+        int position)
+    {
+        if (!TryGetLookup(data, lookupIndex, out int lookupOffset, out ushort lookupType, out int subtableCountOffset))
+        {
+            return false;
+        }
+        ushort subtableCount = ReadU16(data, subtableCountOffset);
+        for (var subtableIndex = 0; subtableIndex < subtableCount; subtableIndex++)
+        {
+            int relativeOffset = subtableCountOffset + 2 + subtableIndex * 2;
+            if (!CanRead(data, relativeOffset, 2)) break;
+            int subtableOffset = lookupOffset + ReadU16(data, relativeOffset);
+            ushort effectiveType = lookupType;
+            if (effectiveType == 7)
+            {
+                if (!CanRead(data, subtableOffset, 8) || ReadU16(data, subtableOffset) != 1) continue;
+                effectiveType = ReadU16(data, subtableOffset + 2);
+                uint extensionOffset = ReadU32(data, subtableOffset + 4);
+                if (extensionOffset > int.MaxValue) continue;
+                subtableOffset += (int)extensionOffset;
+            }
+
+            bool applied = effectiveType switch
+            {
+                5 => ApplyContextSubtable(data, glyphs, subtableOffset, position),
+                6 => ApplyChainContextSubtable(data, glyphs, subtableOffset, position),
+                _ => false
+            };
+            if (applied) return true;
+        }
+        return false;
+    }
+
     private static List<EnabledLookup> GetRawEnabledLookupIndices(
         ReadOnlySpan<byte> data,
-        IReadOnlyList<OpenTypeFeatureSetting> settings)
+        IReadOnlyList<OpenTypeFeatureSetting> settings,
+        string script,
+        string? language)
     {
         var requested = CreateFeatureMap(settings);
         var result = new List<EnabledLookup>();
@@ -301,6 +382,17 @@ public static class OpenTypeTextShaper
         }
 
         ushort featureCount = ReadU16(data, featureListOffset);
+        if (TryGetRawRequiredFeatureIndex(data, script, language, out ushort requiredFeatureIndex) &&
+            requiredFeatureIndex < featureCount)
+        {
+            AddRawFeatureLookups(
+                data,
+                featureListOffset,
+                requiredFeatureIndex,
+                1,
+                result,
+                positions);
+        }
         foreach (OpenTypeFeatureSetting setting in settings)
         {
             if (!requested.TryGetValue(setting.Tag, out int value) || value == 0 || value != setting.Value)
@@ -320,34 +412,90 @@ public static class OpenTypeTextShaper
                 {
                     continue;
                 }
-
-                int featureOffset = featureListOffset + ReadU16(data, recordOffset + 4);
-                if (!CanRead(data, featureOffset, 4))
-                {
-                    continue;
-                }
-                ushort lookupCount = ReadU16(data, featureOffset + 2);
-                for (var lookup = 0; lookup < lookupCount; lookup++)
-                {
-                    int lookupOffset = featureOffset + 4 + lookup * 2;
-                    if (!CanRead(data, lookupOffset, 2))
-                    {
-                        break;
-                    }
-                    ushort lookupIndex = ReadU16(data, lookupOffset);
-                    if (positions.TryGetValue(lookupIndex, out int existing))
-                    {
-                        result[existing] = new EnabledLookup(lookupIndex, value, tag);
-                    }
-                    else
-                    {
-                        positions.Add(lookupIndex, result.Count);
-                        result.Add(new EnabledLookup(lookupIndex, value, tag));
-                    }
-                }
+                AddRawFeatureLookups(data, featureListOffset, (ushort)featureIndex, value, result, positions);
             }
         }
         return result;
+    }
+
+    private static void AddRawFeatureLookups(
+        ReadOnlySpan<byte> data,
+        int featureListOffset,
+        ushort featureIndex,
+        int value,
+        List<EnabledLookup> result,
+        Dictionary<ushort, int> positions)
+    {
+        int recordOffset = featureListOffset + 2 + featureIndex * 6;
+        if (!CanRead(data, recordOffset, 6)) return;
+        string tag = Encoding.ASCII.GetString(data.Slice(recordOffset, 4));
+        int featureOffset = featureListOffset + ReadU16(data, recordOffset + 4);
+        if (!CanRead(data, featureOffset, 4)) return;
+        ushort lookupCount = ReadU16(data, featureOffset + 2);
+        for (var lookup = 0; lookup < lookupCount; lookup++)
+        {
+            int lookupOffset = featureOffset + 4 + lookup * 2;
+            if (!CanRead(data, lookupOffset, 2)) break;
+            ushort lookupIndex = ReadU16(data, lookupOffset);
+            if (positions.TryGetValue(lookupIndex, out int existing))
+            {
+                result[existing] = new EnabledLookup(lookupIndex, value, tag);
+            }
+            else
+            {
+                positions.Add(lookupIndex, result.Count);
+                result.Add(new EnabledLookup(lookupIndex, value, tag));
+            }
+        }
+    }
+
+    private static bool TryGetRawRequiredFeatureIndex(
+        ReadOnlySpan<byte> data,
+        string script,
+        string? language,
+        out ushort requiredFeatureIndex)
+    {
+        requiredFeatureIndex = ushort.MaxValue;
+        if (!CanRead(data, 4, 2)) return false;
+        int scriptListOffset = ReadU16(data, 4);
+        if (!CanRead(data, scriptListOffset, 2)) return false;
+        ushort scriptCount = ReadU16(data, scriptListOffset);
+        uint requestedScript = ToTag(script);
+        int selectedScriptOffset = 0;
+        int defaultScriptOffset = 0;
+        for (var index = 0; index < scriptCount; index++)
+        {
+            int record = scriptListOffset + 2 + index * 6;
+            if (!CanRead(data, record, 6)) break;
+            uint tag = ReadU32(data, record);
+            int tableOffset = scriptListOffset + ReadU16(data, record + 4);
+            if (tag == requestedScript) selectedScriptOffset = tableOffset;
+            else if (tag == ToTag("DFLT")) defaultScriptOffset = tableOffset;
+        }
+        int scriptOffset = selectedScriptOffset != 0 ? selectedScriptOffset : defaultScriptOffset;
+        if (!CanRead(data, scriptOffset, 4)) return false;
+
+        int languageOffset = 0;
+        ushort defaultRelative = ReadU16(data, scriptOffset);
+        if (defaultRelative != 0) languageOffset = scriptOffset + defaultRelative;
+        if (!string.IsNullOrWhiteSpace(language))
+        {
+            uint requestedLanguage = ToLanguageTag(language);
+            ushort languageCount = ReadU16(data, scriptOffset + 2);
+            for (var index = 0; index < languageCount; index++)
+            {
+                int record = scriptOffset + 4 + index * 6;
+                if (!CanRead(data, record, 6)) break;
+                if (ReadU32(data, record) == requestedLanguage)
+                {
+                    languageOffset = scriptOffset + ReadU16(data, record + 4);
+                    break;
+                }
+            }
+        }
+        if (!CanRead(data, languageOffset, 6)) return false;
+        requiredFeatureIndex = ReadU16(data, languageOffset + 2);
+        return requiredFeatureIndex != ushort.MaxValue;
     }
 
     private static void ApplyReverseChainingLookup(
@@ -543,6 +691,193 @@ public static class OpenTypeTextShaper
                 }
             }
         }
+    }
+
+    private static bool ApplyContextSubtable(
+        ReadOnlySpan<byte> data,
+        GlyphSubstitutionBuffer glyphs,
+        int subtableOffset,
+        int position)
+    {
+        if (!CanRead(data, subtableOffset, 6)) return false;
+        return ReadU16(data, subtableOffset) switch
+        {
+            1 => ApplyContextFormat1(data, glyphs, subtableOffset, position),
+            2 => ApplyContextFormat2(data, glyphs, subtableOffset, position),
+            3 => ApplyContextFormat3(data, glyphs, subtableOffset, position),
+            _ => false
+        };
+    }
+
+    private static bool ApplyContextFormat1(
+        ReadOnlySpan<byte> data,
+        GlyphSubstitutionBuffer glyphs,
+        int subtableOffset,
+        int position)
+    {
+        int coverageIndex = FindCoverage(data, subtableOffset + ReadU16(data, subtableOffset + 2), glyphs[position]);
+        ushort setCount = ReadU16(data, subtableOffset + 4);
+        if ((uint)coverageIndex >= setCount || !CanRead(data, subtableOffset + 6 + coverageIndex * 2, 2)) return false;
+        ushort setRelative = ReadU16(data, subtableOffset + 6 + coverageIndex * 2);
+        if (setRelative == 0) return false;
+        int setOffset = subtableOffset + setRelative;
+        if (!CanRead(data, setOffset, 2)) return false;
+        ushort ruleCount = ReadU16(data, setOffset);
+        for (var ruleIndex = 0; ruleIndex < ruleCount; ruleIndex++)
+        {
+            int rulePointer = setOffset + 2 + ruleIndex * 2;
+            if (!CanRead(data, rulePointer, 2)) break;
+            int ruleOffset = setOffset + ReadU16(data, rulePointer);
+            if (!CanRead(data, ruleOffset, 4)) continue;
+            ushort glyphCount = ReadU16(data, ruleOffset);
+            ushort recordCount = ReadU16(data, ruleOffset + 2);
+            if (glyphCount == 0 || position + glyphCount > glyphs.Count ||
+                !CanRead(data, ruleOffset + 4, (glyphCount - 1 + recordCount * 2) * 2)) continue;
+            bool matches = true;
+            for (var index = 1; index < glyphCount; index++)
+            {
+                if (glyphs[position + index] != ReadU16(data, ruleOffset + 4 + (index - 1) * 2))
+                {
+                    matches = false;
+                    break;
+                }
+            }
+            if (!matches) continue;
+            int recordsOffset = ruleOffset + 4 + (glyphCount - 1) * 2;
+            return ApplySubstitutionRecords(data, glyphs, position, recordsOffset, recordCount);
+        }
+        return false;
+    }
+
+    private static bool ApplyContextFormat2(
+        ReadOnlySpan<byte> data,
+        GlyphSubstitutionBuffer glyphs,
+        int subtableOffset,
+        int position)
+    {
+        if (!CanRead(data, subtableOffset, 8) ||
+            FindCoverage(data, subtableOffset + ReadU16(data, subtableOffset + 2), glyphs[position]) < 0) return false;
+        int classDef = subtableOffset + ReadU16(data, subtableOffset + 4);
+        ushort setCount = ReadU16(data, subtableOffset + 6);
+        int firstClass = GetGlyphClass(data, classDef, glyphs[position]);
+        if ((uint)firstClass >= setCount || !CanRead(data, subtableOffset + 8 + firstClass * 2, 2)) return false;
+        ushort setRelative = ReadU16(data, subtableOffset + 8 + firstClass * 2);
+        if (setRelative == 0) return false;
+        int setOffset = subtableOffset + setRelative;
+        if (!CanRead(data, setOffset, 2)) return false;
+        ushort ruleCount = ReadU16(data, setOffset);
+        for (var ruleIndex = 0; ruleIndex < ruleCount; ruleIndex++)
+        {
+            int pointer = setOffset + 2 + ruleIndex * 2;
+            if (!CanRead(data, pointer, 2)) break;
+            int ruleOffset = setOffset + ReadU16(data, pointer);
+            if (!CanRead(data, ruleOffset, 4)) continue;
+            ushort glyphCount = ReadU16(data, ruleOffset);
+            ushort recordCount = ReadU16(data, ruleOffset + 2);
+            if (glyphCount == 0 || position + glyphCount > glyphs.Count ||
+                !CanRead(data, ruleOffset + 4, (glyphCount - 1 + recordCount * 2) * 2)) continue;
+            bool matches = true;
+            for (var index = 1; index < glyphCount; index++)
+            {
+                int expectedClass = ReadU16(data, ruleOffset + 4 + (index - 1) * 2);
+                if (GetGlyphClass(data, classDef, glyphs[position + index]) != expectedClass)
+                {
+                    matches = false;
+                    break;
+                }
+            }
+            if (!matches) continue;
+            int recordsOffset = ruleOffset + 4 + (glyphCount - 1) * 2;
+            return ApplySubstitutionRecords(data, glyphs, position, recordsOffset, recordCount);
+        }
+        return false;
+    }
+
+    private static bool ApplyContextFormat3(
+        ReadOnlySpan<byte> data,
+        GlyphSubstitutionBuffer glyphs,
+        int subtableOffset,
+        int position)
+    {
+        ushort glyphCount = ReadU16(data, subtableOffset + 2);
+        ushort recordCount = ReadU16(data, subtableOffset + 4);
+        int coverageOffsets = subtableOffset + 6;
+        if (glyphCount == 0 || position + glyphCount > glyphs.Count ||
+            !CanRead(data, coverageOffsets, (glyphCount + recordCount * 2) * 2)) return false;
+        for (var index = 0; index < glyphCount; index++)
+        {
+            int coverage = subtableOffset + ReadU16(data, coverageOffsets + index * 2);
+            if (FindCoverage(data, coverage, glyphs[position + index]) < 0) return false;
+        }
+        return ApplySubstitutionRecords(
+            data,
+            glyphs,
+            position,
+            coverageOffsets + glyphCount * 2,
+            recordCount);
+    }
+
+    private static bool ApplyChainContextSubtable(
+        ReadOnlySpan<byte> data,
+        GlyphSubstitutionBuffer glyphs,
+        int subtableOffset,
+        int position)
+    {
+        if (!CanRead(data, subtableOffset, 2)) return false;
+        return ReadU16(data, subtableOffset) switch
+        {
+            1 => ApplyChainContextFormat1(data, glyphs, subtableOffset, position),
+            2 => ApplyChainContextFormat2(data, glyphs, subtableOffset, position),
+            3 => ApplyChainContextFormat3(data, glyphs, subtableOffset, position),
+            _ => false
+        };
+    }
+
+    private static bool ApplyChainContextFormat3(
+        ReadOnlySpan<byte> data,
+        GlyphSubstitutionBuffer glyphs,
+        int subtableOffset,
+        int position)
+    {
+        int cursor = subtableOffset + 2;
+        if (!CanRead(data, cursor, 2)) return false;
+        ushort backtrackCount = ReadU16(data, cursor);
+        cursor += 2;
+        if (position < backtrackCount || !CanRead(data, cursor, backtrackCount * 2)) return false;
+        for (var index = 0; index < backtrackCount; index++)
+        {
+            int coverage = subtableOffset + ReadU16(data, cursor + index * 2);
+            if (FindCoverage(data, coverage, glyphs[position - index - 1]) < 0) return false;
+        }
+        cursor += backtrackCount * 2;
+
+        if (!CanRead(data, cursor, 2)) return false;
+        ushort inputCount = ReadU16(data, cursor);
+        cursor += 2;
+        if (inputCount == 0 || position + inputCount > glyphs.Count || !CanRead(data, cursor, inputCount * 2)) return false;
+        for (var index = 0; index < inputCount; index++)
+        {
+            int coverage = subtableOffset + ReadU16(data, cursor + index * 2);
+            if (FindCoverage(data, coverage, glyphs[position + index]) < 0) return false;
+        }
+        cursor += inputCount * 2;
+
+        if (!CanRead(data, cursor, 2)) return false;
+        ushort lookaheadCount = ReadU16(data, cursor);
+        cursor += 2;
+        if (position + inputCount + lookaheadCount > glyphs.Count || !CanRead(data, cursor, lookaheadCount * 2)) return false;
+        for (var index = 0; index < lookaheadCount; index++)
+        {
+            int coverage = subtableOffset + ReadU16(data, cursor + index * 2);
+            if (FindCoverage(data, coverage, glyphs[position + inputCount + index]) < 0) return false;
+        }
+        cursor += lookaheadCount * 2;
+
+        if (!CanRead(data, cursor, 2)) return false;
+        ushort recordCount = ReadU16(data, cursor);
+        cursor += 2;
+        return CanRead(data, cursor, recordCount * 4) &&
+               ApplySubstitutionRecords(data, glyphs, position, cursor, recordCount);
     }
 
     private static void ApplyUnsupportedChainingLookup(
@@ -865,9 +1200,11 @@ public static class OpenTypeTextShaper
             return ApplyNestedSubtable(data, glyphs, extensionType, offset + (int)extensionOffset, position);
         }
 
-        if (lookupType != 1)
+        if (lookupType is 5 or 6)
         {
-            return false;
+            return lookupType == 5
+                ? ApplyContextSubtable(data, glyphs, offset, position)
+                : ApplyChainContextSubtable(data, glyphs, offset, position);
         }
 
         int coverageOffset = offset + ReadU16(data, offset + 2);
@@ -877,18 +1214,80 @@ public static class OpenTypeTextShaper
             return false;
         }
 
-        if (format == 1)
+        if (lookupType == 1 && format == 1)
         {
             short delta = ReadI16(data, offset + 4);
             glyphs.Replace(position, unchecked((ushort)(glyphs[position] + delta)));
             return true;
         }
-        if (format == 2 && CanRead(data, offset + 4, 2))
+        if (lookupType == 1 && format == 2 && CanRead(data, offset + 4, 2))
         {
             ushort count = ReadU16(data, offset + 4);
             if ((uint)coverageIndex < count && CanRead(data, offset + 6 + coverageIndex * 2, 2))
             {
                 glyphs.Replace(position, ReadU16(data, offset + 6 + coverageIndex * 2));
+                return true;
+            }
+        }
+
+        if (lookupType == 2 && format == 1 && CanRead(data, offset + 4, 2))
+        {
+            ushort sequenceCount = ReadU16(data, offset + 4);
+            int pointer = offset + 6 + coverageIndex * 2;
+            if ((uint)coverageIndex >= sequenceCount || !CanRead(data, pointer, 2)) return false;
+            int sequenceOffset = offset + ReadU16(data, pointer);
+            if (!CanRead(data, sequenceOffset, 2)) return false;
+            ushort glyphCount = ReadU16(data, sequenceOffset);
+            if (!CanRead(data, sequenceOffset + 2, glyphCount * 2)) return false;
+            var replacements = new ushort[glyphCount];
+            for (var index = 0; index < glyphCount; index++)
+            {
+                replacements[index] = ReadU16(data, sequenceOffset + 2 + index * 2);
+            }
+            glyphs.Replace(position, replacements);
+            return true;
+        }
+
+        if (lookupType == 3 && format == 1 && CanRead(data, offset + 4, 2))
+        {
+            ushort setCount = ReadU16(data, offset + 4);
+            int pointer = offset + 6 + coverageIndex * 2;
+            if ((uint)coverageIndex >= setCount || !CanRead(data, pointer, 2)) return false;
+            int setOffset = offset + ReadU16(data, pointer);
+            if (!CanRead(data, setOffset, 4) || ReadU16(data, setOffset) == 0) return false;
+            glyphs.Replace(position, ReadU16(data, setOffset + 2));
+            return true;
+        }
+
+        if (lookupType == 4 && format == 1 && CanRead(data, offset + 4, 2))
+        {
+            ushort setCount = ReadU16(data, offset + 4);
+            int pointer = offset + 6 + coverageIndex * 2;
+            if ((uint)coverageIndex >= setCount || !CanRead(data, pointer, 2)) return false;
+            int setOffset = offset + ReadU16(data, pointer);
+            if (!CanRead(data, setOffset, 2)) return false;
+            ushort ligatureCount = ReadU16(data, setOffset);
+            for (var ligatureIndex = 0; ligatureIndex < ligatureCount; ligatureIndex++)
+            {
+                int ligaturePointer = setOffset + 2 + ligatureIndex * 2;
+                if (!CanRead(data, ligaturePointer, 2)) break;
+                int ligatureOffset = setOffset + ReadU16(data, ligaturePointer);
+                if (!CanRead(data, ligatureOffset, 4)) continue;
+                ushort ligatureGlyph = ReadU16(data, ligatureOffset);
+                ushort componentCount = ReadU16(data, ligatureOffset + 2);
+                if (componentCount == 0 || position + componentCount > glyphs.Count ||
+                    !CanRead(data, ligatureOffset + 4, (componentCount - 1) * 2)) continue;
+                bool matches = true;
+                for (var component = 1; component < componentCount; component++)
+                {
+                    if (glyphs[position + component] != ReadU16(data, ligatureOffset + 4 + (component - 1) * 2))
+                    {
+                        matches = false;
+                        break;
+                    }
+                }
+                if (!matches) continue;
+                glyphs.Replace(position, componentCount, ligatureGlyph);
                 return true;
             }
         }
@@ -1314,9 +1713,17 @@ public static class OpenTypeTextShaper
         string script)
     {
         Dictionary<string, int> requested = CreateFeatureMap(options.Features);
-        HashSet<ushort>? allowedFeatures = GetLanguageFeatureIndices(table.ScriptList, script, options.Language);
+        HashSet<ushort>? allowedFeatures = GetLanguageFeatureIndices(
+            table.ScriptList,
+            script,
+            options.Language,
+            out ushort? requiredFeatureIndex);
         var lookups = new List<EnabledLookup>();
         var lookupPositions = new Dictionary<ushort, int>();
+        if (requiredFeatureIndex is ushort required && required < features.Length)
+        {
+            AddFeatureLookups(features[required], 1, lookups, lookupPositions);
+        }
         foreach (OpenTypeFeatureSetting setting in options.Features)
         {
             if (!requested.TryGetValue(setting.Tag, out int value) || value == 0 || value != setting.Value)
@@ -1332,23 +1739,32 @@ public static class OpenTypeTextShaper
                     continue;
                 }
 
-                for (var lookupIndex = 0; lookupIndex < feature.LookupListIndices.Length; lookupIndex++)
-                {
-                    ushort index = feature.LookupListIndices[lookupIndex];
-                    if (lookupPositions.TryGetValue(index, out int existing))
-                    {
-                        lookups[existing] = new EnabledLookup(index, value, feature.TagName);
-                    }
-                    else
-                    {
-                        lookupPositions[index] = lookups.Count;
-                        lookups.Add(new EnabledLookup(index, value, feature.TagName));
-                    }
-                }
+                AddFeatureLookups(feature, value, lookups, lookupPositions);
             }
         }
 
         return lookups;
+    }
+
+    private static void AddFeatureLookups(
+        FeatureList.FeatureTable feature,
+        int value,
+        List<EnabledLookup> lookups,
+        Dictionary<ushort, int> lookupPositions)
+    {
+        for (var lookupIndex = 0; lookupIndex < feature.LookupListIndices.Length; lookupIndex++)
+        {
+            ushort index = feature.LookupListIndices[lookupIndex];
+            if (lookupPositions.TryGetValue(index, out int existing))
+            {
+                lookups[existing] = new EnabledLookup(index, value, feature.TagName);
+            }
+            else
+            {
+                lookupPositions[index] = lookups.Count;
+                lookups.Add(new EnabledLookup(index, value, feature.TagName));
+            }
+        }
     }
 
     private static Dictionary<string, int> CreateFeatureMap(IReadOnlyList<OpenTypeFeatureSetting> settings)
@@ -1365,8 +1781,10 @@ public static class OpenTypeTextShaper
     private static HashSet<ushort>? GetLanguageFeatureIndices(
         ScriptList? scripts,
         string script,
-        string? language)
+        string? language,
+        out ushort? requiredFeatureIndex)
     {
+        requiredFeatureIndex = null;
         if (scripts is null || scripts.Count == 0)
         {
             return null;
@@ -1401,6 +1819,7 @@ public static class OpenTypeTextShaper
         var result = new HashSet<ushort>(languageTable.featureIndexList);
         if (languageTable.HasRequireFeature)
         {
+            requiredFeatureIndex = languageTable.RequiredFeatureIndex;
             result.Add(languageTable.RequiredFeatureIndex);
         }
         return result;
