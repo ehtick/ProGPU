@@ -385,8 +385,10 @@ public static class OpenTypeTextShaper
 
                 GSUB.LookupTable lookup = table.LookupList[lookupIndex];
                 bool rawOwnedLookup = IsRawOwnedLookup(rawTable.Span, lookupIndex);
+                bool restrictToSyllable = IsUsePerSyllableFeature(enabled.Tag, stage);
                 for (var position = 0; position < glyphs.Count; position++)
                 {
+                    glyphs.SetLookupSyllable(position, restrictToSyllable);
                     if (!glyphs.IsFeatureEnabled(position, enabled.Tag, options))
                     {
                         continue;
@@ -421,6 +423,7 @@ public static class OpenTypeTextShaper
                         position += insertedGlyphs;
                     }
                 }
+                glyphs.ClearLookupSyllable();
 
                 ApplyAlternateLookup(font, glyphs, lookupIndex, enabled.Value);
             }
@@ -431,8 +434,10 @@ public static class OpenTypeTextShaper
             foreach (EnabledLookup enabled in rawLookups)
             {
                 if (!IsSubstitutionStageFeature(enabled.Tag, stage)) continue;
+                bool restrictToSyllable = IsUsePerSyllableFeature(enabled.Tag, stage);
                 for (var position = 0; position < glyphs.Count; position++)
                 {
+                    glyphs.SetLookupSyllable(position, restrictToSyllable);
                     if (glyphs.IsFeatureEnabled(position, enabled.Tag, options))
                     {
                         int countBefore = glyphs.Count;
@@ -441,6 +446,7 @@ public static class OpenTypeTextShaper
                         if (insertedGlyphs > 0) position += insertedGlyphs;
                     }
                 }
+                glyphs.ClearLookupSyllable();
                 ApplyAlternateLookup(font, glyphs, enabled.LookupIndex, enabled.Value);
             }
         }
@@ -448,9 +454,18 @@ public static class OpenTypeTextShaper
         foreach (EnabledLookup enabled in rawLookups)
         {
             if (!IsSubstitutionStageFeature(enabled.Tag, stage)) continue;
-            ApplyReverseChainingLookup(rawTable.Span, glyphs, enabled.LookupIndex);
+            ApplyReverseChainingLookup(
+                rawTable.Span,
+                glyphs,
+                enabled.LookupIndex,
+                IsUsePerSyllableFeature(enabled.Tag, stage));
         }
     }
+
+    private static bool IsUsePerSyllableFeature(string tag, UseSubstitutionStage stage) =>
+        stage is not UseSubstitutionStage.All && tag is
+            "locl" or "ccmp" or "nukt" or "akhn" or "rphf" or "pref" or
+            "rkrf" or "abvf" or "blwf" or "half" or "pstf" or "vatu" or "cjct";
 
     private static bool IsSubstitutionStageFeature(string tag, UseSubstitutionStage stage)
     {
@@ -757,7 +772,8 @@ public static class OpenTypeTextShaper
     private static void ApplyReverseChainingLookup(
         ReadOnlySpan<byte> data,
         GlyphSubstitutionBuffer glyphs,
-        ushort lookupIndex)
+        ushort lookupIndex,
+        bool restrictToSyllable)
     {
         if (!TryGetLookup(data, lookupIndex, out int lookupOffset, out ushort lookupType, out int subtableCountOffset))
         {
@@ -767,6 +783,7 @@ public static class OpenTypeTextShaper
         ushort subtableCount = ReadU16(data, subtableCountOffset);
         for (var position = glyphs.Count - 1; position >= 0; position--)
         {
+            glyphs.SetLookupSyllable(position, restrictToSyllable);
             for (var subtableIndex = 0; subtableIndex < subtableCount; subtableIndex++)
             {
                 int offsetPosition = subtableCountOffset + 2 + subtableIndex * 2;
@@ -797,6 +814,7 @@ public static class OpenTypeTextShaper
                 }
             }
         }
+        glyphs.ClearLookupSyllable();
     }
 
     private static bool ApplyReverseChainingSubtable(
@@ -2905,6 +2923,8 @@ public static class OpenTypeTextShaper
         private readonly List<GlyphRecord> _glyphs;
         private readonly Typeface? _typeface;
         private readonly TtfFont _font;
+        private byte _lookupSyllable;
+        private bool _restrictLookupToSyllable;
 
         private GlyphSubstitutionBuffer(List<GlyphRecord> glyphs, TtfFont font)
         {
@@ -2914,8 +2934,23 @@ public static class OpenTypeTextShaper
         }
 
         public int Count => _glyphs.Count;
-        public ushort this[int index] => _glyphs[index].GlyphIndex;
+        public ushort this[int index] =>
+            _restrictLookupToSyllable && _glyphs[index].UseSyllable != _lookupSyllable
+                ? ushort.MaxValue
+                : _glyphs[index].GlyphIndex;
         public GlyphRecord GetRecord(int index) => _glyphs[index];
+
+        public void SetLookupSyllable(int index, bool restrict)
+        {
+            _restrictLookupToSyllable = restrict;
+            _lookupSyllable = restrict ? _glyphs[index].UseSyllable : (byte)0;
+        }
+
+        public void ClearLookupSyllable()
+        {
+            _restrictLookupToSyllable = false;
+            _lookupSyllable = 0;
+        }
 
         public void ApplyVowelConstraints(string script)
         {
@@ -3707,6 +3742,10 @@ public static class OpenTypeTextShaper
             while (index < _glyphs.Count)
             {
                 GlyphRecord glyph = _glyphs[index];
+                if (_restrictLookupToSyllable && glyph.UseSyllable != _lookupSyllable)
+                {
+                    return -1;
+                }
                 if (!IsDefaultIgnorable(glyph.CodePoint))
                 {
                     GlyphClassKind glyphClass = _typeface?.GetGlyph(glyph.GlyphIndex).GlyphClass ?? GlyphClassKind.Zero;
