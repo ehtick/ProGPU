@@ -351,6 +351,18 @@ public class SamplePagesTests : IDisposable
         primaryWarmup.Inlines.Add(new Run("ProGPU Markdown navigation ★ ✔ ♠"));
         window.Content = primaryWarmup;
         window.Render();
+
+        // Inline styles now resolve to their real Inter faces instead of synthetic
+        // regular-face transforms. Prime those reusable layout and atlas entries so
+        // this repeated-activation test measures page work, not one-time face setup.
+        const string styleWarmupText = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,;:!?-_`/()[]{}<>★✔♠";
+        var styleWarmup = new RichTextBlock { Font = AppState._font, FontSize = 14f };
+        styleWarmup.Inlines.Add(new Run(styleWarmupText));
+        styleWarmup.Inlines.Add(new Bold(new Run(styleWarmupText)));
+        styleWarmup.Inlines.Add(new Italic(new Run(styleWarmupText)));
+        styleWarmup.Inlines.Add(new Bold(new Italic(new Run(styleWarmupText))));
+        window.Content = styleWarmup;
+        window.Render();
         var codeWarmup = new RichTextBlock { Font = AppState._fontCourier ?? AppState._font, FontSize = 13f };
         codeWarmup.Inlines.Add(new Run("public void RenderFrame(DrawingContext context)"));
         window.Content = codeWarmup;

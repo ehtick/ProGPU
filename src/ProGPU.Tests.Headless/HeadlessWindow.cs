@@ -17,6 +17,9 @@ namespace ProGPU.Tests.Headless;
 
 public unsafe class HeadlessWindow : IDisposable
 {
+    private static readonly TimeSpan ReadbackMapTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan ReadbackAbortTimeout = TimeSpan.FromSeconds(5);
+
     private static HeadlessWindow? _shared;
     public static HeadlessWindow Shared => _shared ??= new HeadlessWindow(1280, 800);
 
@@ -254,9 +257,28 @@ public unsafe class HeadlessWindow : IDisposable
         {
             wgpuDevicePoll(_context.Device, false, null);
             System.Threading.Thread.Sleep(1);
-            if (swTimeout.ElapsedMilliseconds > 5000)
+            if (swTimeout.Elapsed > ReadbackMapTimeout)
             {
-                throw new TimeoutException("WebGPU BufferMapAsync timed out after 5 seconds during headless readback.");
+                // A timed-out map must be cancelled and observed before another test
+                // submits work with this shared buffer. Otherwise wgpu-native can see
+                // the late map complete and abort the process because the buffer is
+                // still mapped during the next QueueSubmit.
+                wgpu.BufferUnmap(_readbackBuffer);
+                var abortTimeout = System.Diagnostics.Stopwatch.StartNew();
+                while (!mapSignal.IsSet && abortTimeout.Elapsed <= ReadbackAbortTimeout)
+                {
+                    wgpuDevicePoll(_context.Device, false, null);
+                    System.Threading.Thread.Sleep(1);
+                }
+
+                if (!mapSignal.IsSet)
+                {
+                    throw new TimeoutException(
+                        $"WebGPU BufferMapAsync did not acknowledge cancellation within {ReadbackAbortTimeout.TotalSeconds:F0} seconds after a {ReadbackMapTimeout.TotalSeconds:F0}-second headless readback timeout.");
+                }
+
+                throw new TimeoutException(
+                    $"WebGPU BufferMapAsync timed out after {ReadbackMapTimeout.TotalSeconds:F0} seconds during headless readback.");
             }
         }
 
