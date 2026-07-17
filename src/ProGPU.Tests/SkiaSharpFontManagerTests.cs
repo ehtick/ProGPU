@@ -106,6 +106,35 @@ public class SkiaSharpFontManagerTests
     }
 
     [Fact]
+    public void MatchCharacterKeepsRequestedSystemFamilyAheadOfGenericFallbacks()
+    {
+        string[] serifCandidates = OperatingSystem.IsMacOS()
+            ? ["Times", "Times New Roman"]
+            : OperatingSystem.IsWindows()
+                ? ["Times New Roman", "Georgia"]
+                : ["Noto Serif", "DejaVu Serif", "Liberation Serif"];
+
+        foreach (string familyName in serifCandidates)
+        {
+            using var requested = SKFontManager.Default.MatchFamily(familyName, SKFontStyle.Normal);
+            if (requested is null)
+            {
+                continue;
+            }
+
+            using var matched = SKFontManager.Default.MatchCharacter(
+                familyName,
+                SKFontStyle.Normal,
+                Array.Empty<string>(),
+                'A');
+
+            Assert.NotNull(matched);
+            Assert.Equal(requested.FamilyName, matched.FamilyName);
+            return;
+        }
+    }
+
+    [Fact]
     public void MatchTypefaceUsesSharedFamilyStyleMatcher()
     {
         SKTypeface source = SKTypeface.Default;

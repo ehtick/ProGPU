@@ -281,7 +281,8 @@ public sealed class FontManager
         var visitedSystem = new HashSet<(string Path, int FaceIndex)>();
 
         if (!string.IsNullOrWhiteSpace(familyName) &&
-            TryRegisteredFamilyCharacter(familyName, style, codePoint, excludedFont, visitedRegistered, out font, out glyphIndex))
+            (TryRegisteredFamilyCharacter(familyName, style, codePoint, excludedFont, visitedRegistered, out font, out glyphIndex) ||
+             TrySystemFamilyCharacter(familyName, style, codePoint, excludedFont, visitedSystem, out font, out glyphIndex)))
         {
             return true;
         }
