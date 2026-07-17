@@ -1552,7 +1552,7 @@ public static class OpenTypeTextShaper
         {
             return false;
         }
-        if (lookupType is 1 or 2 or 4 or 5 or 6) return true;
+        if (lookupType is 1 or 2 or 4 or 5 or 6 or 7 or 8) return true;
         if (lookupType != 9 || ReadU16(data, subtableCountOffset) == 0 || !CanRead(data, subtableCountOffset + 2, 2))
         {
             return false;
@@ -1560,7 +1560,7 @@ public static class OpenTypeTextShaper
         int extension = lookupOffset + ReadU16(data, subtableCountOffset + 2);
         return CanRead(data, extension, 8) &&
                ReadU16(data, extension) == 1 &&
-               ReadU16(data, extension + 2) is 1 or 2 or 4 or 5 or 6;
+               ReadU16(data, extension + 2) is 1 or 2 or 4 or 5 or 6 or 7 or 8;
     }
 
     private static void ApplyRawPositionLookup(
@@ -1574,36 +1574,54 @@ public static class OpenTypeTextShaper
         }
 
         ushort lookupFlags = ReadU16(data, lookupOffset + 2);
-        ushort subtableCount = ReadU16(data, subtableCountOffset);
         for (var position = 0; position < glyphs.Count; position++)
         {
-            for (var subtableIndex = 0; subtableIndex < subtableCount; subtableIndex++)
-            {
-                int offsetPosition = subtableCountOffset + 2 + subtableIndex * 2;
-                if (!CanRead(data, offsetPosition, 2)) break;
-                int subtableOffset = lookupOffset + ReadU16(data, offsetPosition);
-                ushort effectiveType = lookupType;
-                if (effectiveType == 9)
-                {
-                    if (!CanRead(data, subtableOffset, 8) || ReadU16(data, subtableOffset) != 1) continue;
-                    effectiveType = ReadU16(data, subtableOffset + 2);
-                    uint extensionOffset = ReadU32(data, subtableOffset + 4);
-                    if (extensionOffset > int.MaxValue) continue;
-                    subtableOffset += (int)extensionOffset;
-                }
-
-                bool matched = effectiveType switch
-                {
-                    1 => ApplySinglePosition(data, glyphs, subtableOffset, position),
-                    2 => ApplyPairPosition(data, glyphs, subtableOffset, position, lookupFlags),
-                    4 => ApplyMarkToBasePosition(data, glyphs, subtableOffset, position, lookupFlags),
-                    5 => ApplyMarkToLigaturePosition(data, glyphs, subtableOffset, position, lookupFlags),
-                    6 => ApplyMarkToMarkPosition(data, glyphs, subtableOffset, position, lookupFlags),
-                    _ => false
-                };
-                if (matched) break;
-            }
+            ApplyRawPositionLookupAt(data, glyphs, lookupIndex, position);
         }
+    }
+
+    private static bool ApplyRawPositionLookupAt(
+        ReadOnlySpan<byte> data,
+        GlyphPositionBuffer glyphs,
+        ushort lookupIndex,
+        int position)
+    {
+        if ((uint)position >= glyphs.Count ||
+            !TryGetLookup(data, lookupIndex, out int lookupOffset, out ushort lookupType, out int subtableCountOffset))
+        {
+            return false;
+        }
+        ushort lookupFlags = ReadU16(data, lookupOffset + 2);
+        ushort subtableCount = ReadU16(data, subtableCountOffset);
+        for (var subtableIndex = 0; subtableIndex < subtableCount; subtableIndex++)
+        {
+            int offsetPosition = subtableCountOffset + 2 + subtableIndex * 2;
+            if (!CanRead(data, offsetPosition, 2)) break;
+            int subtableOffset = lookupOffset + ReadU16(data, offsetPosition);
+            ushort effectiveType = lookupType;
+            if (effectiveType == 9)
+            {
+                if (!CanRead(data, subtableOffset, 8) || ReadU16(data, subtableOffset) != 1) continue;
+                effectiveType = ReadU16(data, subtableOffset + 2);
+                uint extensionOffset = ReadU32(data, subtableOffset + 4);
+                if (extensionOffset > int.MaxValue) continue;
+                subtableOffset += (int)extensionOffset;
+            }
+
+            bool matched = effectiveType switch
+            {
+                1 => ApplySinglePosition(data, glyphs, subtableOffset, position),
+                2 => ApplyPairPosition(data, glyphs, subtableOffset, position, lookupFlags),
+                4 => ApplyMarkToBasePosition(data, glyphs, subtableOffset, position, lookupFlags),
+                5 => ApplyMarkToLigaturePosition(data, glyphs, subtableOffset, position, lookupFlags),
+                6 => ApplyMarkToMarkPosition(data, glyphs, subtableOffset, position, lookupFlags),
+                7 => ApplyContextPosition(data, glyphs, subtableOffset, position),
+                8 => ApplyChainContextPosition(data, glyphs, subtableOffset, position),
+                _ => false
+            };
+            if (matched) return true;
+        }
+        return false;
     }
 
     private static bool ApplySinglePosition(
@@ -1836,6 +1854,321 @@ public static class OpenTypeTextShaper
         glyphs.AppendGlyphOffset(index, xPlacement, yPlacement);
         glyphs.AppendGlyphAdvance(index, xAdvance, yAdvance);
         return true;
+    }
+
+    private static bool ApplyContextPosition(
+        ReadOnlySpan<byte> data,
+        GlyphPositionBuffer glyphs,
+        int offset,
+        int position)
+    {
+        if (!CanRead(data, offset, 6)) return false;
+        return ReadU16(data, offset) switch
+        {
+            1 => ApplyContextPositionFormat1(data, glyphs, offset, position),
+            2 => ApplyContextPositionFormat2(data, glyphs, offset, position),
+            3 => ApplyContextPositionFormat3(data, glyphs, offset, position),
+            _ => false
+        };
+    }
+
+    private static bool ApplyContextPositionFormat1(
+        ReadOnlySpan<byte> data,
+        GlyphPositionBuffer glyphs,
+        int offset,
+        int position)
+    {
+        int coverageIndex = FindCoverage(data, offset + ReadU16(data, offset + 2), glyphs.GetGlyph(position));
+        int setCount = ReadU16(data, offset + 4);
+        if ((uint)coverageIndex >= setCount || !CanRead(data, offset + 6 + coverageIndex * 2, 2)) return false;
+        ushort setRelative = ReadU16(data, offset + 6 + coverageIndex * 2);
+        if (setRelative == 0) return false;
+        int setOffset = offset + setRelative;
+        if (!CanRead(data, setOffset, 2)) return false;
+        int ruleCount = ReadU16(data, setOffset);
+        for (var ruleIndex = 0; ruleIndex < ruleCount; ruleIndex++)
+        {
+            int pointer = setOffset + 2 + ruleIndex * 2;
+            if (!CanRead(data, pointer, 2)) break;
+            int rule = setOffset + ReadU16(data, pointer);
+            if (!CanRead(data, rule, 4)) continue;
+            int glyphCount = ReadU16(data, rule);
+            int recordCount = ReadU16(data, rule + 2);
+            if (glyphCount == 0 || position + glyphCount > glyphs.Count ||
+                !CanRead(data, rule + 4, (glyphCount - 1) * 2 + recordCount * 4)) continue;
+            bool matches = true;
+            for (var index = 1; index < glyphCount; index++)
+            {
+                if (glyphs.GetGlyph(position + index) != ReadU16(data, rule + 4 + (index - 1) * 2))
+                {
+                    matches = false;
+                    break;
+                }
+            }
+            if (!matches) continue;
+            return ApplyPositionRecords(data, glyphs, position, rule + 4 + (glyphCount - 1) * 2, recordCount);
+        }
+        return false;
+    }
+
+    private static bool ApplyContextPositionFormat2(
+        ReadOnlySpan<byte> data,
+        GlyphPositionBuffer glyphs,
+        int offset,
+        int position)
+    {
+        if (!CanRead(data, offset, 8) ||
+            FindCoverage(data, offset + ReadU16(data, offset + 2), glyphs.GetGlyph(position)) < 0) return false;
+        int classDef = offset + ReadU16(data, offset + 4);
+        int setCount = ReadU16(data, offset + 6);
+        int firstClass = GetGlyphClass(data, classDef, glyphs.GetGlyph(position));
+        if ((uint)firstClass >= setCount || !CanRead(data, offset + 8 + firstClass * 2, 2)) return false;
+        ushort setRelative = ReadU16(data, offset + 8 + firstClass * 2);
+        if (setRelative == 0) return false;
+        int setOffset = offset + setRelative;
+        if (!CanRead(data, setOffset, 2)) return false;
+        int ruleCount = ReadU16(data, setOffset);
+        for (var ruleIndex = 0; ruleIndex < ruleCount; ruleIndex++)
+        {
+            int pointer = setOffset + 2 + ruleIndex * 2;
+            if (!CanRead(data, pointer, 2)) break;
+            int rule = setOffset + ReadU16(data, pointer);
+            if (!CanRead(data, rule, 4)) continue;
+            int glyphCount = ReadU16(data, rule);
+            int recordCount = ReadU16(data, rule + 2);
+            if (glyphCount == 0 || position + glyphCount > glyphs.Count ||
+                !CanRead(data, rule + 4, (glyphCount - 1) * 2 + recordCount * 4)) continue;
+            bool matches = true;
+            for (var index = 1; index < glyphCount; index++)
+            {
+                int expectedClass = ReadU16(data, rule + 4 + (index - 1) * 2);
+                if (GetGlyphClass(data, classDef, glyphs.GetGlyph(position + index)) != expectedClass)
+                {
+                    matches = false;
+                    break;
+                }
+            }
+            if (!matches) continue;
+            return ApplyPositionRecords(data, glyphs, position, rule + 4 + (glyphCount - 1) * 2, recordCount);
+        }
+        return false;
+    }
+
+    private static bool ApplyContextPositionFormat3(
+        ReadOnlySpan<byte> data,
+        GlyphPositionBuffer glyphs,
+        int offset,
+        int position)
+    {
+        int glyphCount = ReadU16(data, offset + 2);
+        int recordCount = ReadU16(data, offset + 4);
+        int coverages = offset + 6;
+        if (glyphCount == 0 || position + glyphCount > glyphs.Count ||
+            !CanRead(data, coverages, glyphCount * 2 + recordCount * 4)) return false;
+        for (var index = 0; index < glyphCount; index++)
+        {
+            int coverage = offset + ReadU16(data, coverages + index * 2);
+            if (FindCoverage(data, coverage, glyphs.GetGlyph(position + index)) < 0) return false;
+        }
+        return ApplyPositionRecords(data, glyphs, position, coverages + glyphCount * 2, recordCount);
+    }
+
+    private static bool ApplyChainContextPosition(
+        ReadOnlySpan<byte> data,
+        GlyphPositionBuffer glyphs,
+        int offset,
+        int position)
+    {
+        if (!CanRead(data, offset, 2)) return false;
+        return ReadU16(data, offset) switch
+        {
+            1 => ApplyChainContextPositionFormat1(data, glyphs, offset, position),
+            2 => ApplyChainContextPositionFormat2(data, glyphs, offset, position),
+            3 => ApplyChainContextPositionFormat3(data, glyphs, offset, position),
+            _ => false
+        };
+    }
+
+    private static bool ApplyChainContextPositionFormat1(
+        ReadOnlySpan<byte> data,
+        GlyphPositionBuffer glyphs,
+        int offset,
+        int position)
+    {
+        if (!CanRead(data, offset, 6)) return false;
+        int coverageIndex = FindCoverage(data, offset + ReadU16(data, offset + 2), glyphs.GetGlyph(position));
+        int setCount = ReadU16(data, offset + 4);
+        if ((uint)coverageIndex >= setCount || !CanRead(data, offset + 6 + coverageIndex * 2, 2)) return false;
+        ushort setRelative = ReadU16(data, offset + 6 + coverageIndex * 2);
+        if (setRelative == 0) return false;
+        int setOffset = offset + setRelative;
+        if (!CanRead(data, setOffset, 2)) return false;
+        int ruleCount = ReadU16(data, setOffset);
+        for (var ruleIndex = 0; ruleIndex < ruleCount; ruleIndex++)
+        {
+            int pointer = setOffset + 2 + ruleIndex * 2;
+            if (!CanRead(data, pointer, 2)) break;
+            int rule = setOffset + ReadU16(data, pointer);
+            if (MatchChainPositionRule(data, glyphs, rule, position, false, 0, 0, 0,
+                    out int records, out int recordCount))
+            {
+                return ApplyPositionRecords(data, glyphs, position, records, recordCount);
+            }
+        }
+        return false;
+    }
+
+    private static bool ApplyChainContextPositionFormat2(
+        ReadOnlySpan<byte> data,
+        GlyphPositionBuffer glyphs,
+        int offset,
+        int position)
+    {
+        if (!CanRead(data, offset, 12) ||
+            FindCoverage(data, offset + ReadU16(data, offset + 2), glyphs.GetGlyph(position)) < 0) return false;
+        int backtrackClassDef = offset + ReadU16(data, offset + 4);
+        int inputClassDef = offset + ReadU16(data, offset + 6);
+        int lookaheadClassDef = offset + ReadU16(data, offset + 8);
+        int setCount = ReadU16(data, offset + 10);
+        int firstClass = GetGlyphClass(data, inputClassDef, glyphs.GetGlyph(position));
+        if ((uint)firstClass >= setCount || !CanRead(data, offset + 12 + firstClass * 2, 2)) return false;
+        ushort setRelative = ReadU16(data, offset + 12 + firstClass * 2);
+        if (setRelative == 0) return false;
+        int setOffset = offset + setRelative;
+        if (!CanRead(data, setOffset, 2)) return false;
+        int ruleCount = ReadU16(data, setOffset);
+        for (var ruleIndex = 0; ruleIndex < ruleCount; ruleIndex++)
+        {
+            int pointer = setOffset + 2 + ruleIndex * 2;
+            if (!CanRead(data, pointer, 2)) break;
+            int rule = setOffset + ReadU16(data, pointer);
+            if (MatchChainPositionRule(data, glyphs, rule, position, true,
+                    backtrackClassDef, inputClassDef, lookaheadClassDef,
+                    out int records, out int recordCount))
+            {
+                return ApplyPositionRecords(data, glyphs, position, records, recordCount);
+            }
+        }
+        return false;
+    }
+
+    private static bool ApplyChainContextPositionFormat3(
+        ReadOnlySpan<byte> data,
+        GlyphPositionBuffer glyphs,
+        int offset,
+        int position)
+    {
+        int cursor = offset + 2;
+        if (!CanRead(data, cursor, 2)) return false;
+        int backtrackCount = ReadU16(data, cursor);
+        cursor += 2;
+        if (position < backtrackCount || !CanRead(data, cursor, backtrackCount * 2)) return false;
+        for (var index = 0; index < backtrackCount; index++)
+        {
+            int coverage = offset + ReadU16(data, cursor + index * 2);
+            if (FindCoverage(data, coverage, glyphs.GetGlyph(position - index - 1)) < 0) return false;
+        }
+        cursor += backtrackCount * 2;
+        if (!CanRead(data, cursor, 2)) return false;
+        int inputCount = ReadU16(data, cursor);
+        cursor += 2;
+        if (inputCount == 0 || position + inputCount > glyphs.Count || !CanRead(data, cursor, inputCount * 2)) return false;
+        for (var index = 0; index < inputCount; index++)
+        {
+            int coverage = offset + ReadU16(data, cursor + index * 2);
+            if (FindCoverage(data, coverage, glyphs.GetGlyph(position + index)) < 0) return false;
+        }
+        cursor += inputCount * 2;
+        if (!CanRead(data, cursor, 2)) return false;
+        int lookaheadCount = ReadU16(data, cursor);
+        cursor += 2;
+        if (position + inputCount + lookaheadCount > glyphs.Count || !CanRead(data, cursor, lookaheadCount * 2)) return false;
+        for (var index = 0; index < lookaheadCount; index++)
+        {
+            int coverage = offset + ReadU16(data, cursor + index * 2);
+            if (FindCoverage(data, coverage, glyphs.GetGlyph(position + inputCount + index)) < 0) return false;
+        }
+        cursor += lookaheadCount * 2;
+        if (!CanRead(data, cursor, 2)) return false;
+        int recordCount = ReadU16(data, cursor);
+        cursor += 2;
+        return CanRead(data, cursor, recordCount * 4) &&
+               ApplyPositionRecords(data, glyphs, position, cursor, recordCount);
+    }
+
+    private static bool MatchChainPositionRule(
+        ReadOnlySpan<byte> data,
+        GlyphPositionBuffer glyphs,
+        int ruleOffset,
+        int position,
+        bool useClasses,
+        int backtrackClassDef,
+        int inputClassDef,
+        int lookaheadClassDef,
+        out int recordsOffset,
+        out int recordCount)
+    {
+        recordsOffset = 0;
+        recordCount = 0;
+        if (!CanRead(data, ruleOffset, 2)) return false;
+        int cursor = ruleOffset;
+        int backtrackCount = ReadU16(data, cursor);
+        cursor += 2;
+        if (position < backtrackCount || !CanRead(data, cursor, backtrackCount * 2)) return false;
+        for (var index = 0; index < backtrackCount; index++)
+        {
+            int expected = ReadU16(data, cursor + index * 2);
+            ushort glyph = glyphs.GetGlyph(position - index - 1);
+            if (useClasses ? GetGlyphClass(data, backtrackClassDef, glyph) != expected : glyph != expected) return false;
+        }
+        cursor += backtrackCount * 2;
+        if (!CanRead(data, cursor, 2)) return false;
+        int inputCount = ReadU16(data, cursor);
+        cursor += 2;
+        if (inputCount == 0 || position + inputCount > glyphs.Count || !CanRead(data, cursor, (inputCount - 1) * 2)) return false;
+        for (var index = 1; index < inputCount; index++)
+        {
+            int expected = ReadU16(data, cursor + (index - 1) * 2);
+            ushort glyph = glyphs.GetGlyph(position + index);
+            if (useClasses ? GetGlyphClass(data, inputClassDef, glyph) != expected : glyph != expected) return false;
+        }
+        cursor += (inputCount - 1) * 2;
+        if (!CanRead(data, cursor, 2)) return false;
+        int lookaheadCount = ReadU16(data, cursor);
+        cursor += 2;
+        if (position + inputCount + lookaheadCount > glyphs.Count || !CanRead(data, cursor, lookaheadCount * 2)) return false;
+        for (var index = 0; index < lookaheadCount; index++)
+        {
+            int expected = ReadU16(data, cursor + index * 2);
+            ushort glyph = glyphs.GetGlyph(position + inputCount + index);
+            if (useClasses ? GetGlyphClass(data, lookaheadClassDef, glyph) != expected : glyph != expected) return false;
+        }
+        cursor += lookaheadCount * 2;
+        if (!CanRead(data, cursor, 2)) return false;
+        recordCount = ReadU16(data, cursor);
+        recordsOffset = cursor + 2;
+        return CanRead(data, recordsOffset, recordCount * 4);
+    }
+
+    private static bool ApplyPositionRecords(
+        ReadOnlySpan<byte> data,
+        GlyphPositionBuffer glyphs,
+        int position,
+        int recordsOffset,
+        int recordCount)
+    {
+        if (!CanRead(data, recordsOffset, recordCount * 4)) return false;
+        bool applied = false;
+        for (var record = 0; record < recordCount; record++)
+        {
+            int offset = recordsOffset + record * 4;
+            int sequenceIndex = ReadU16(data, offset);
+            ushort lookupIndex = ReadU16(data, offset + 2);
+            int target = position + sequenceIndex;
+            if ((uint)target >= glyphs.Count) continue;
+            applied |= ApplyRawPositionLookupAt(data, glyphs, lookupIndex, target);
+        }
+        return applied || recordCount == 0;
     }
 
     private static void ApplyPositionVariations(
