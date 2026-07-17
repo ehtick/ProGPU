@@ -20,6 +20,7 @@ public class TextVisual : FrameworkElement, ITextLayoutProvider
     private float _fontSize = 14f;
     private TextAlignment _alignment = TextAlignment.Left;
     private TextLayout? _layout;
+    private TextShapingOptions _textShapingOptions = TextShapingOptions.Default;
 
     public string Text
     {
@@ -86,6 +87,21 @@ public class TextVisual : FrameworkElement, ITextLayoutProvider
         }
     }
 
+    public TextShapingOptions TextShapingOptions
+    {
+        get => _textShapingOptions;
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            if (!ReferenceEquals(_textShapingOptions, value))
+            {
+                _textShapingOptions = value;
+                _layout = null;
+                Invalidate();
+            }
+        }
+    }
+
     private TtfFont? ResolveFont()
     {
         return Font ?? PopupService.DefaultFont;
@@ -98,7 +114,7 @@ public class TextVisual : FrameworkElement, ITextLayoutProvider
 
         if (_layout == null)
         {
-            _layout = new TextLayout(Text, resolvedFont, FontSize, Size.X, Alignment, atlas);
+            _layout = new TextLayout(Text, resolvedFont, FontSize, Size.X, Alignment, atlas, TextShapingOptions);
             Size = _layout.MeasuredSize;
         }
         else if (!_layout.HasTextures)
@@ -115,7 +131,7 @@ public class TextVisual : FrameworkElement, ITextLayoutProvider
             return Vector2.Zero;
 
         float maxWidth = WidthConstraint ?? availableSize.X;
-        var tempLayout = new TextLayout(Text, resolvedFont, FontSize, maxWidth, Alignment, null);
+        var tempLayout = new TextLayout(Text, resolvedFont, FontSize, maxWidth, Alignment, null, TextShapingOptions);
         return tempLayout.MeasuredSize;
     }
 
@@ -141,7 +157,8 @@ public class TextVisual : FrameworkElement, ITextLayoutProvider
             FontSize = FontSize,
             Brush = resolvedBrush,
             Position = Vector2.Zero,
-            Rect = new Rect(Vector2.Zero, Size)
+            Rect = new Rect(Vector2.Zero, Size),
+            TextShapingOptions = TextShapingOptions
         });
     }
 }

@@ -215,6 +215,35 @@ namespace Microsoft.UI.Xaml.Controls
             return count;
         }
 
+        private static ushort ResolveGlyph(
+            ref RichChar richChar,
+            TtfFont activeFont,
+            out TtfFont charFont)
+        {
+            TtfFont requestedFont = richChar.Font ?? activeFont;
+            var requestedStyle = new FontStyleRequest(
+                richChar.IsBold ? 700 : requestedFont.WeightClass == 0 ? 400 : requestedFont.WeightClass,
+                requestedFont.WidthClass == 0 ? 5 : requestedFont.WidthClass,
+                richChar.IsItalic || requestedFont.IsItalic ? FontSlant.Italic : FontSlant.Upright);
+            charFont = FontApi.Manager.MatchTypeface(requestedFont, requestedStyle) ?? requestedFont;
+            richChar.Font = charFont;
+            ushort glyphIndex = charFont.GetGlyphIndex(richChar.Character);
+            if (glyphIndex == 0 &&
+                FontApi.TryResolvePlatformFallback(
+                    charFont,
+                    richChar.Character,
+                    out TtfFont? fallbackFont,
+                    out ushort fallbackGlyphIndex) &&
+                fallbackFont != null)
+            {
+                charFont = fallbackFont;
+                richChar.Font = fallbackFont;
+                glyphIndex = fallbackGlyphIndex;
+            }
+
+            return glyphIndex;
+        }
+
         private static float EstimateBlockHeight(Block block, float availableWidth, float baseFontSize, TtfFont activeFont)
         {
             float scale = baseFontSize / activeFont.UnitsPerEm;
@@ -536,8 +565,8 @@ namespace Microsoft.UI.Xaml.Controls
                 }
                 else
                 {
-                    TtfFont charFont = rc.Font ?? activeFont;
-                    ushort gIdx = charFont.GetGlyphIndex(c);
+                    ushort gIdx = ResolveGlyph(ref rc, activeFont, out TtfFont charFont);
+                    charList[i] = rc;
                     advance = charFont.GetAdvanceWidth(gIdx, rc.FontSize);
                 }
 
@@ -1052,8 +1081,8 @@ namespace Microsoft.UI.Xaml.Controls
                 }
                 else
                 {
-                    TtfFont charFont = rc.Font ?? activeFont;
-                    ushort gIdx = charFont.GetGlyphIndex(c);
+                    ushort gIdx = ResolveGlyph(ref rc, activeFont, out TtfFont charFont);
+                    charList[i] = rc;
                     advance = charFont.GetAdvanceWidth(gIdx, rc.FontSize);
                 }
 
@@ -1249,8 +1278,8 @@ namespace Microsoft.UI.Xaml.Controls
                         }
                         else
                         {
-                            TtfFont charFont = rc.Font ?? activeFont;
-                            ushort gIdx = charFont.GetGlyphIndex(rc.Character);
+                            ushort gIdx = ResolveGlyph(ref rc, activeFont, out TtfFont charFont);
+                            charList[i] = rc;
                             advance = charFont.GetAdvanceWidth(gIdx, rc.FontSize);
                         }
 
@@ -1370,7 +1399,8 @@ namespace Microsoft.UI.Xaml.Controls
                     }
                     else
                     {
-                        lastAdv = activeFont.GetAdvanceWidth(activeFont.GetGlyphIndex(lastPc.Info.Character), lastPc.Info.FontSize);
+                        TtfFont lastFont = lastPc.Info.Font ?? activeFont;
+                        lastAdv = lastFont.GetAdvanceWidth(lastFont.GetGlyphIndex(lastPc.Info.Character), lastPc.Info.FontSize);
                     }
                     lineW = lastPc.Position.X + lastAdv - cursorX;
 
@@ -1668,14 +1698,17 @@ namespace Microsoft.UI.Xaml.Controls
         private static void RenderRun(DrawingContext context, string text, Vector2 pos, RichChar style, TtfFont activeFont)
         {
             if (activeFont == null) return;
-            context.DrawText(text, activeFont, style.FontSize, style.Foreground!, pos, style.IsBold, style.IsItalic);
+            TtfFont runFont = style.Font ?? activeFont;
+            bool simulateBold = style.IsBold && runFont.WeightClass < 600;
+            bool simulateItalic = style.IsItalic && !runFont.IsItalic;
+            context.DrawText(text, runFont, style.FontSize, style.Foreground!, pos, simulateBold, simulateItalic);
             if (style.IsUnderline)
             {
                 float runW = 0f;
                 foreach (char c in text)
                 {
-                    ushort idx = activeFont.GetGlyphIndex(c);
-                    runW += activeFont.GetAdvanceWidth(idx, style.FontSize);
+                    ushort idx = runFont.GetGlyphIndex(c);
+                    runW += runFont.GetAdvanceWidth(idx, style.FontSize);
                 }
                 context.DrawRectangle(style.Foreground, null, new Rect(pos.X, pos.Y + style.FontSize - 1f, runW, 1f));
             }

@@ -943,7 +943,7 @@ public unsafe class Compositor : IDisposable
     private readonly object _offscreenRenderLock = new();
     private int _offscreenRenderDepth;
     private float _totalTime = 0f;
-    private readonly Dictionary<(string Text, TtfFont Font, float Size, float MaxWidth, TextAlignment Align), TextLayout> _layoutCache = new();
+    private readonly Dictionary<(string Text, TtfFont Font, float Size, float MaxWidth, TextAlignment Align, TextShapingOptions? Shaping), TextLayout> _layoutCache = new();
     private readonly Dictionary<VectorGlyphPathCacheKey, PathGeometry> _vectorGlyphPathCache = new();
     private enum BatchType
     {
@@ -8927,10 +8927,17 @@ SceneStateUploadComplete:
             float maxWidth = cmd.Rect.Width > 0f && float.IsFinite(cmd.Rect.Width)
                 ? cmd.Rect.Width
                 : 10000f;
-            var key = (cmd.Text, font, cmd.FontSize, maxWidth, TextAlignment.Left);
+            var key = (cmd.Text, font, cmd.FontSize, maxWidth, TextAlignment.Left, cmd.TextShapingOptions);
             if (!_layoutCache.TryGetValue(key, out layout))
             {
-                layout = new TextLayout(cmd.Text, font, cmd.FontSize, maxWidth, TextAlignment.Left, null);
+                layout = new TextLayout(
+                    cmd.Text,
+                    font,
+                    cmd.FontSize,
+                    maxWidth,
+                    TextAlignment.Left,
+                    null,
+                    cmd.TextShapingOptions);
                 _layoutCache[key] = layout;
             }
         }

@@ -376,8 +376,9 @@ public class RichTextBlock : FrameworkElement
         {
             if (pc.Info.SourceInline is Hyperlink hl && activeFont != null)
             {
-                ushort gIdx = activeFont.GetGlyphIndex(pc.Info.Character);
-                float advance = activeFont.GetAdvanceWidth(gIdx, pc.Info.FontSize);
+                TtfFont charFont = pc.Info.Font ?? activeFont;
+                ushort gIdx = charFont.GetGlyphIndex(pc.Info.Character);
+                float advance = charFont.GetAdvanceWidth(gIdx, pc.Info.FontSize);
                 Rect charRect = new Rect(pc.Position.X, pc.Position.Y, advance, pc.Info.FontSize);
                 if (charRect.Contains(localPos))
                 {
@@ -427,8 +428,9 @@ public class RichTextBlock : FrameworkElement
             }
             else
             {
-                ushort idx = activeFont.GetGlyphIndex(pc.Info.Character);
-                adv = activeFont.GetAdvanceWidth(idx, pc.Info.FontSize);
+                TtfFont charFont = pc.Info.Font ?? activeFont;
+                ushort idx = charFont.GetGlyphIndex(pc.Info.Character);
+                adv = charFont.GetAdvanceWidth(idx, pc.Info.FontSize);
             }
             measuredW = Math.Max(measuredW, pc.Position.X + adv);
             measuredH = Math.Max(measuredH, pc.Position.Y + pc.Info.FontSize);
