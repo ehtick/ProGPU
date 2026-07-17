@@ -213,6 +213,7 @@ public static class OpenTypeTextShaper
         else if (arabicShaper)
         {
             ApplySubstitutions(font, substitutionPlan, substitutions, options, UseSubstitutionStage.ArabicStretch);
+            substitutions.RecordArabicStretch();
             ApplySubstitutions(font, substitutionPlan, substitutions, options, UseSubstitutionStage.ArabicPreprocessing);
             ApplySubstitutions(font, substitutionPlan, substitutions, options, UseSubstitutionStage.ArabicIsolated);
             ApplySubstitutions(font, substitutionPlan, substitutions, options, UseSubstitutionStage.ArabicFinal);
@@ -255,6 +256,10 @@ public static class OpenTypeTextShaper
         if (direction is ShapingDirection.RightToLeft or ShapingDirection.BottomToTop)
         {
             positions.Reverse();
+        }
+        if (arabicShaper)
+        {
+            positions.ApplyArabicStretch(font, direction == ShapingDirection.RightToLeft);
         }
 
         float scale = fontSize / font.UnitsPerEm;
@@ -3423,6 +3428,19 @@ public static class OpenTypeTextShaper
             ApplyArabicFallbackLigatures(ArabicFallbackData.MarkLigatures, 1, ignoreMarks: false);
         }
 
+        public void RecordArabicStretch()
+        {
+            for (var index = 0; index < _glyphs.Count; index++)
+            {
+                GlyphRecord glyph = _glyphs[index];
+                if (glyph.Multiplied == 0) continue;
+                glyph.ArabicAction = (glyph.MultipleSubstitutionComponent & 1) != 0
+                    ? StretchRepeating
+                    : StretchFixed;
+                _glyphs[index] = glyph;
+            }
+        }
+
         private static bool IsEnabled(Dictionary<string, int> requested, string tag) =>
             requested.TryGetValue(tag, out int value) && value != 0;
 
@@ -5522,7 +5540,7 @@ public static class OpenTypeTextShaper
 
     private sealed class GlyphPositionBuffer : IGlyphPositions
     {
-        private readonly GlyphRecord[] _glyphs;
+        private GlyphRecord[] _glyphs;
         private readonly Typeface? _typeface;
         private readonly ReadOnlyMemory<byte> _gdefTable;
         private readonly ShapingDirection _direction;
@@ -6253,6 +6271,146 @@ public static class OpenTypeTextShaper
 
         public void Reverse() => Array.Reverse(_glyphs);
 
+        public void ApplyArabicStretch(TtfFont font, bool rightToLeft)
+        {
+            if (!Array.Exists(_glyphs, static glyph => IsStretchAction(glyph.ArabicAction))) return;
+            if (!rightToLeft) Array.Reverse(_glyphs);
+
+            var runs = new List<StretchRun>();
+            int extraGlyphs = 0;
+            for (int index = _glyphs.Length; index > 0;)
+            {
+                if (!IsStretchAction(_glyphs[index - 1].ArabicAction))
+                {
+                    index--;
+                    continue;
+                }
+
+                int end = index;
+                int fixedWidth = 0;
+                int repeatingWidth = 0;
+                int fixedCount = 0;
+                int repeatingCount = 0;
+                while (index > 0 && IsStretchAction(_glyphs[index - 1].ArabicAction))
+                {
+                    index--;
+                    int width = (int)MathF.Round(font.GetAdvanceWidth(_glyphs[index].GlyphIndex, font.UnitsPerEm));
+                    if (_glyphs[index].ArabicAction == StretchFixed)
+                    {
+                        fixedWidth += width;
+                        fixedCount++;
+                    }
+                    else
+                    {
+                        repeatingWidth += width;
+                        repeatingCount++;
+                    }
+                }
+                int start = index;
+                int context = start;
+                int totalWidth = 0;
+                while (context > 0 && !IsStretchAction(_glyphs[context - 1].ArabicAction) &&
+                       (GlyphSubstitutionBuffer.IsDefaultIgnorable(_glyphs[context - 1].CodePoint) ||
+                        IsArabicStretchWordCharacter(_glyphs[context - 1].CodePoint)))
+                {
+                    context--;
+                    totalWidth += _glyphs[context].AdvanceX;
+                }
+
+                int remaining = totalWidth - fixedWidth;
+                int copies = remaining > repeatingWidth && repeatingWidth > 0
+                    ? remaining / repeatingWidth - 1
+                    : 0;
+                int overlap = 0;
+                long shortfall = (long)remaining - (long)repeatingWidth * (copies + 1);
+                if (shortfall > 0 && repeatingCount > 0)
+                {
+                    copies++;
+                    long excess = (long)(copies + 1) * repeatingWidth - remaining;
+                    if (excess > 0)
+                    {
+                        overlap = checked((int)(excess / (copies * repeatingCount)));
+                        remaining = 0;
+                    }
+                }
+
+                int baseGlyphs = fixedCount + repeatingCount;
+                int maxCopies = repeatingCount > 0 && baseGlyphs < 256
+                    ? (256 - baseGlyphs) / repeatingCount
+                    : 0;
+                copies = Math.Min(copies, maxCopies);
+                int added = checked(copies * repeatingCount);
+                extraGlyphs = checked(extraGlyphs + added);
+                if (_glyphs.Length + extraGlyphs > MaximumShapedGlyphCount)
+                    throw new InvalidOperationException($"OpenType stretching exceeds the {MaximumShapedGlyphCount} glyph shaping limit.");
+                runs.Add(new StretchRun(start, end, copies, remaining, overlap));
+            }
+
+            GlyphRecord[] source = _glyphs;
+            var stretched = new GlyphRecord[checked(source.Length + extraGlyphs)];
+            int write = stretched.Length;
+            int sourceIndex = source.Length;
+            int runIndex = 0;
+            while (sourceIndex > 0)
+            {
+                if (!IsStretchAction(source[sourceIndex - 1].ArabicAction))
+                {
+                    stretched[--write] = source[--sourceIndex];
+                    continue;
+                }
+
+                StretchRun run = runs[runIndex++];
+                sourceIndex = run.Start;
+                int xOffset = run.RemainingWidth / 2;
+                for (var glyphIndex = run.End; glyphIndex > run.Start; glyphIndex--)
+                {
+                    GlyphRecord glyph = source[glyphIndex - 1];
+                    int width = (int)MathF.Round(font.GetAdvanceWidth(glyph.GlyphIndex, font.UnitsPerEm));
+                    int repeat = glyph.ArabicAction == StretchRepeating ? run.CopyCount + 1 : 1;
+                    glyph.AdvanceX = 0;
+                    for (var copy = 0; copy < repeat; copy++)
+                    {
+                        if (rightToLeft)
+                        {
+                            xOffset -= width;
+                            if (copy > 0) xOffset += run.ExtraRepeatOverlap;
+                        }
+                        glyph.OffsetX = ClampToShort(xOffset);
+                        stretched[--write] = glyph;
+                        if (!rightToLeft)
+                        {
+                            xOffset += width;
+                            if (copy > 0) xOffset -= run.ExtraRepeatOverlap;
+                        }
+                    }
+                }
+            }
+
+            _glyphs = stretched;
+            if (!rightToLeft) Array.Reverse(_glyphs);
+        }
+
+        private static bool IsStretchAction(byte action) => action is StretchFixed or StretchRepeating;
+
+        private static bool IsArabicStretchWordCharacter(uint codePoint)
+        {
+            UnicodeCategory category = Rune.GetUnicodeCategory(new Rune((int)codePoint));
+            return category is UnicodeCategory.OtherNotAssigned or UnicodeCategory.PrivateUse or
+                UnicodeCategory.ModifierLetter or UnicodeCategory.OtherLetter or
+                UnicodeCategory.SpacingCombiningMark or UnicodeCategory.EnclosingMark or
+                UnicodeCategory.NonSpacingMark or UnicodeCategory.DecimalDigitNumber or
+                UnicodeCategory.LetterNumber or UnicodeCategory.OtherNumber or
+                UnicodeCategory.CurrencySymbol or UnicodeCategory.ModifierSymbol or
+                UnicodeCategory.MathSymbol or UnicodeCategory.OtherSymbol;
+        }
+
+        private readonly record struct StretchRun(
+            int Start,
+            int End,
+            int CopyCount,
+            int RemainingWidth,
+            int ExtraRepeatOverlap);
+
         private bool IsMark(int index)
         {
             return GetGlyphClassKind(index) == GlyphClassKind.Mark;
@@ -6351,6 +6509,8 @@ public static class OpenTypeTextShaper
     private const byte Medial2 = 5;
     private const byte Initial = 6;
     private const byte None = 7;
+    private const byte StretchFixed = 8;
+    private const byte StretchRepeating = 9;
 
     private const byte ScriptShaperKhmer = 1;
     private const byte ScriptShaperUse = 2;
