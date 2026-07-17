@@ -4793,7 +4793,8 @@ public static class OpenTypeTextShaper
                 // barrier. Skipping it here incorrectly permits ligatures to
                 // form across an explicit non-join request.
                 if (!IsDefaultIgnorable(glyph.CodePoint) ||
-                    glyph.CodePoint == 0x200C)
+                    glyph.CodePoint == 0x200C || IsMongolianShapingControl(glyph.CodePoint) ||
+                    IsUnicodeTagCharacter(glyph.CodePoint))
                 {
                     GlyphClassKind glyphClass = _typeface?.GetGlyph(glyph.GlyphIndex).GlyphClass ?? GlyphClassKind.Zero;
                     bool ignored = glyphClass switch
@@ -4830,7 +4831,9 @@ public static class OpenTypeTextShaper
                 if (_restrictLookupToSyllable && glyph.UseSyllable != _lookupSyllable) return -1;
                 if (IsDefaultIgnorable(glyph.CodePoint))
                 {
-                    if (glyph.CodePoint is 0x200C or 0x200D) return index;
+                    if (glyph.GlyphIndex == expectedGlyph || glyph.CodePoint == 0x200C ||
+                        IsMongolianShapingControl(glyph.CodePoint) ||
+                        IsUnicodeTagCharacter(glyph.CodePoint)) return index;
                     index++;
                     continue;
                 }
@@ -4854,7 +4857,9 @@ public static class OpenTypeTextShaper
         private bool IsLookupIgnored(int index, ushort lookupFlags)
         {
             GlyphRecord glyph = _glyphs[index];
-            if (IsDefaultIgnorable(glyph.CodePoint) && glyph.CodePoint != 0x200C) return true;
+            if (IsDefaultIgnorable(glyph.CodePoint) && glyph.CodePoint != 0x200C &&
+                !IsMongolianShapingControl(glyph.CodePoint) &&
+                !IsUnicodeTagCharacter(glyph.CodePoint)) return true;
             GlyphClassKind glyphClass = _typeface?.GetGlyph(glyph.GlyphIndex).GlyphClass ?? GlyphClassKind.Zero;
             return glyphClass switch
             {
@@ -4901,6 +4906,12 @@ public static class OpenTypeTextShaper
             >= 0xFE00 and <= 0xFE0F or
             >= 0x1BCA0 and <= 0x1BCAF or >= 0x1D173 and <= 0x1D17A or
             >= 0xE0000 and <= 0xE0FFF;
+
+        private static bool IsMongolianShapingControl(uint codePoint) =>
+            codePoint is >= 0x180B and <= 0x180E;
+
+        private static bool IsUnicodeTagCharacter(uint codePoint) =>
+            codePoint is >= 0xE0000 and <= 0xE007F;
 
         public static GlyphSubstitutionBuffer Create(string text, TtfFont font, string script)
         {
@@ -4974,6 +4985,8 @@ public static class OpenTypeTextShaper
                             hasUseCluster = true;
                         }
                     }
+                    if (rune.Value == 0x200D && glyphs.Count > 0)
+                        cluster = glyphs[^1].Cluster;
                     if (IsVariationSelector(rune.Value) && glyphs.Count > 0)
                     {
                         GlyphRecord previous = glyphs[^1];
@@ -5222,7 +5235,7 @@ public static class OpenTypeTextShaper
                     record.Cluster = forwardMergedCluster;
                 else if (forwardSourceCluster != int.MinValue)
                     forwardSourceCluster = int.MinValue;
-                if (defaultIgnorable)
+                if (defaultIgnorable && record.Substituted == 0)
                 {
                     record.GlyphIndex = invisibleGlyph;
                 }
