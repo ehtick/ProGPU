@@ -27,9 +27,13 @@ public readonly record struct OpenTypeFeatureSetting
 
 public sealed class TextShapingOptions
 {
+    private static readonly IReadOnlySet<string> s_noExplicitFeatures = new HashSet<string>(StringComparer.Ordinal);
     private static readonly OpenTypeFeatureSetting[] s_defaultFeatures =
     [
         new("rvrn"),
+        new("frac"),
+        new("numr"),
+        new("dnom"),
         new("ccmp"),
         new("locl"),
         new("isol"),
@@ -68,7 +72,8 @@ public sealed class TextShapingOptions
         }
         return new TextShapingOptions
         {
-            Features = values.Select(pair => new OpenTypeFeatureSetting(pair.Key, pair.Value)).ToArray()
+            Features = values.Select(pair => new OpenTypeFeatureSetting(pair.Key, pair.Value)).ToArray(),
+            ExplicitFeatureTags = overrides.Select(static feature => feature.Tag).ToHashSet(StringComparer.Ordinal)
         };
     }
 
@@ -76,6 +81,25 @@ public sealed class TextShapingOptions
     public string? Language { get; init; }
     public ShapingDirection Direction { get; init; }
     public IReadOnlyList<OpenTypeFeatureSetting> Features { get; init; } = s_defaultFeatures;
+
+    /// <summary>
+    /// Identifies feature settings explicitly requested by the caller. A null
+    /// value treats a custom <see cref="Features"/> list as entirely explicit;
+    /// an empty set marks a fully resolved plan containing only shaper defaults.
+    /// </summary>
+    public IReadOnlySet<string>? ExplicitFeatureTags { get; init; }
+
+    internal IReadOnlySet<string> ResolveExplicitFeatureTags()
+    {
+        if (ExplicitFeatureTags is not null)
+        {
+            return ExplicitFeatureTags;
+        }
+
+        return ReferenceEquals(Features, s_defaultFeatures)
+            ? s_noExplicitFeatures
+            : Features.Select(static feature => feature.Tag).ToHashSet(StringComparer.Ordinal);
+    }
 }
 
 public readonly record struct ShapedGlyph(
@@ -127,6 +151,7 @@ public static class OpenTypeTextShaper
         options = AddDirectionalFeatures(options, direction);
 
         var substitutions = GlyphSubstitutionBuffer.Create(text, font);
+        substitutions.AssignFractionActions();
         substitutions.AssignArabicJoiningActions(script);
         Typeface? typeface = font.LayoutTypeface;
         ApplySubstitutions(font, typeface?.GSUBTable, substitutions, options, script);
@@ -192,6 +217,7 @@ public static class OpenTypeTextShaper
 
     private static TextShapingOptions AddDirectionalFeatures(TextShapingOptions options, ShapingDirection direction)
     {
+        IReadOnlySet<string> explicitFeatureTags = options.ResolveExplicitFeatureTags();
         string[] required = direction switch
         {
             ShapingDirection.TopToBottom or ShapingDirection.BottomToTop => ["vert", "vrt2", "vkrn"],
@@ -216,7 +242,8 @@ public static class OpenTypeTextShaper
             Script = options.Script,
             Language = options.Language,
             Direction = direction,
-            Features = features
+            Features = features,
+            ExplicitFeatureTags = explicitFeatureTags
         };
     }
 
@@ -246,7 +273,7 @@ public static class OpenTypeTextShaper
                 bool rawOwnedLookup = IsRawOwnedLookup(rawTable.Span, lookupIndex);
                 for (var position = 0; position < glyphs.Count; position++)
                 {
-                    if (!glyphs.IsFeatureEnabled(position, enabled.Tag))
+                    if (!glyphs.IsFeatureEnabled(position, enabled.Tag, options))
                     {
                         continue;
                     }
@@ -292,7 +319,7 @@ public static class OpenTypeTextShaper
                 if (!IsRawOwnedLookup(rawTable.Span, enabled.LookupIndex)) continue;
                 for (var position = 0; position < glyphs.Count; position++)
                 {
-                    if (glyphs.IsFeatureEnabled(position, enabled.Tag))
+                    if (glyphs.IsFeatureEnabled(position, enabled.Tag, options))
                     {
                         int countBefore = glyphs.Count;
                         ApplyNestedLookup(rawTable.Span, glyphs, enabled.LookupIndex, position);
@@ -1167,10 +1194,11 @@ public static class OpenTypeTextShaper
         }
 
         ushort subtableCount = ReadU16(data, subtableCountOffset);
+        ushort lookupFlags = ReadU16(data, lookupOffset + 2);
         for (var subtableIndex = 0; subtableIndex < subtableCount; subtableIndex++)
         {
             int subtableOffset = lookupOffset + ReadU16(data, subtableCountOffset + 2 + subtableIndex * 2);
-            if (ApplyNestedSubtable(data, glyphs, lookupType, subtableOffset, position))
+            if (ApplyNestedSubtable(data, glyphs, lookupType, subtableOffset, position, lookupFlags))
             {
                 return true;
             }
@@ -1183,7 +1211,8 @@ public static class OpenTypeTextShaper
         GlyphSubstitutionBuffer glyphs,
         ushort lookupType,
         int offset,
-        int position)
+        int position,
+        ushort lookupFlags)
     {
         if (!CanRead(data, offset, 6))
         {
@@ -1197,7 +1226,7 @@ public static class OpenTypeTextShaper
             ushort extensionType = ReadU16(data, offset + 2);
             uint extensionOffset = ReadU32(data, offset + 4);
             if (extensionOffset > int.MaxValue) return false;
-            return ApplyNestedSubtable(data, glyphs, extensionType, offset + (int)extensionOffset, position);
+            return ApplyNestedSubtable(data, glyphs, extensionType, offset + (int)extensionOffset, position, lookupFlags);
         }
 
         if (lookupType is 5 or 6)
@@ -1285,7 +1314,7 @@ public static class OpenTypeTextShaper
                 int candidateIndex = position;
                 for (var component = 1; component < componentCount; component++)
                 {
-                    candidateIndex = glyphs.NextVisibleIndex(candidateIndex + 1);
+                    candidateIndex = glyphs.NextVisibleIndex(candidateIndex + 1, lookupFlags);
                     if (candidateIndex < 0 ||
                         glyphs[candidateIndex] != ReadU16(data, ligatureOffset + 4 + (component - 1) * 2))
                     {
@@ -1914,8 +1943,13 @@ public static class OpenTypeTextShaper
         ];
 
         private readonly List<GlyphRecord> _glyphs;
+        private readonly Typeface? _typeface;
 
-        private GlyphSubstitutionBuffer(List<GlyphRecord> glyphs) => _glyphs = glyphs;
+        private GlyphSubstitutionBuffer(List<GlyphRecord> glyphs, TtfFont font)
+        {
+            _glyphs = glyphs;
+            _typeface = font.LayoutTypeface;
+        }
 
         public int Count => _glyphs.Count;
         public ushort this[int index] => _glyphs[index].GlyphIndex;
@@ -1958,11 +1992,46 @@ public static class OpenTypeTextShaper
             }
         }
 
-        public bool IsFeatureEnabled(int index, string tag)
+        public void AssignFractionActions()
+        {
+            for (var slash = 0; slash < _glyphs.Count; slash++)
+            {
+                if (_glyphs[slash].CodePoint != 0x2044) continue;
+                int numeratorStart = slash;
+                while (numeratorStart > 0 && IsDecimalDigit(_glyphs[numeratorStart - 1].CodePoint)) numeratorStart--;
+                int denominatorEnd = slash + 1;
+                while (denominatorEnd < _glyphs.Count && IsDecimalDigit(_glyphs[denominatorEnd].CodePoint)) denominatorEnd++;
+                if (numeratorStart == slash || denominatorEnd == slash + 1) continue;
+                for (var index = numeratorStart; index < slash; index++)
+                {
+                    GlyphRecord glyph = _glyphs[index];
+                    glyph.FractionAction = FractionNumerator;
+                    _glyphs[index] = glyph;
+                }
+                for (var index = slash + 1; index < denominatorEnd; index++)
+                {
+                    GlyphRecord glyph = _glyphs[index];
+                    glyph.FractionAction = FractionDenominator;
+                    _glyphs[index] = glyph;
+                }
+                GlyphRecord fractionSlash = _glyphs[slash];
+                fractionSlash.FractionAction = FractionSlash;
+                _glyphs[slash] = fractionSlash;
+            }
+        }
+
+        private static bool IsDecimalDigit(uint codePoint) =>
+            Rune.GetUnicodeCategory(new Rune((int)codePoint)) == UnicodeCategory.DecimalDigitNumber;
+
+        public bool IsFeatureEnabled(int index, string tag, TextShapingOptions options)
         {
             byte action = _glyphs[index].ArabicAction;
+            bool explicitlyEnabled = options.ExplicitFeatureTags?.Contains(tag) == true;
             return tag switch
             {
+                "frac" => explicitlyEnabled || _glyphs[index].FractionAction != FractionNone,
+                "numr" => explicitlyEnabled || _glyphs[index].FractionAction == FractionNumerator,
+                "dnom" => explicitlyEnabled || _glyphs[index].FractionAction == FractionDenominator,
                 "isol" => action == Isolated,
                 "fina" => action == Final,
                 "fin2" => action == Final2,
@@ -1974,11 +2043,23 @@ public static class OpenTypeTextShaper
             };
         }
 
-        public int NextVisibleIndex(int index)
+        public int NextVisibleIndex(int index, ushort lookupFlags)
         {
             while (index < _glyphs.Count)
             {
-                if (!IsDefaultIgnorable(_glyphs[index].CodePoint)) return index;
+                GlyphRecord glyph = _glyphs[index];
+                if (!IsDefaultIgnorable(glyph.CodePoint))
+                {
+                    GlyphClassKind glyphClass = _typeface?.GetGlyph(glyph.GlyphIndex).GlyphClass ?? GlyphClassKind.Zero;
+                    bool ignored = glyphClass switch
+                    {
+                        GlyphClassKind.Base => (lookupFlags & 0x0002) != 0,
+                        GlyphClassKind.Ligature => (lookupFlags & 0x0004) != 0,
+                        GlyphClassKind.Mark => (lookupFlags & 0x0008) != 0,
+                        _ => false
+                    };
+                    if (!ignored) return index;
+                }
                 index++;
             }
             return -1;
@@ -2051,7 +2132,7 @@ public static class OpenTypeTextShaper
                 }
                 graphemeStart = graphemeEnd;
             }
-            return new GlyphSubstitutionBuffer(glyphs);
+            return new GlyphSubstitutionBuffer(glyphs, font);
         }
 
         private static void AppendNormalizedRune(
@@ -2402,6 +2483,7 @@ public static class OpenTypeTextShaper
         public short OffsetY;
         public byte ArabicAction;
         public byte SpaceFallback;
+        public byte FractionAction;
     }
 
     private readonly record struct ArabicStateEntry(byte PreviousAction, byte CurrentAction, byte NextState);
@@ -2428,4 +2510,9 @@ public static class OpenTypeTextShaper
     private const byte SpaceFigure = 19;
     private const byte SpacePunctuation = 20;
     private const byte SpaceNarrow = 21;
+
+    private const byte FractionNone = 0;
+    private const byte FractionNumerator = 1;
+    private const byte FractionDenominator = 2;
+    private const byte FractionSlash = 3;
 }

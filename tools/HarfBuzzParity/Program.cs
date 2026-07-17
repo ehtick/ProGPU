@@ -614,7 +614,8 @@ internal sealed class CaseConfiguration
             Script = Script,
             Language = Language,
             Direction = Direction,
-            Features = values.Select(static pair => new OpenTypeFeatureSetting(pair.Key, pair.Value)).ToArray()
+            Features = values.Select(static pair => new OpenTypeFeatureSetting(pair.Key, pair.Value)).ToArray(),
+            ExplicitFeatureTags = Features.Select(static feature => feature.Tag).ToHashSet(StringComparer.Ordinal)
         };
     }
 
