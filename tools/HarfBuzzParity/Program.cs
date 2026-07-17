@@ -432,7 +432,9 @@ internal sealed class SuiteRunner
             int actualCluster = Utf16ClusterToScalarIndex(text, right.Cluster);
             if (!configuration.IgnoreClusters && left.Cluster != actualCluster)
             {
-                return $"glyph[{index}] cluster expected {left.Cluster}, actual {actualCluster}";
+                return $"glyph[{index}] cluster expected {left.Cluster}, actual {actualCluster}; " +
+                       $"expected [{string.Join(',', expected.Select(static glyph => glyph.Cluster))}], " +
+                       $"actual [{string.Join(',', actual.Select(glyph => Utf16ClusterToScalarIndex(text, glyph.Cluster)))}]";
             }
             if (!configuration.IgnorePositions &&
                 ((!configuration.IgnoreAdvances &&
