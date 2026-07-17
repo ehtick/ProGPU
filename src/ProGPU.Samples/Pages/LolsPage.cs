@@ -27,6 +27,7 @@ public static class LolsPage
     private static bool _isRunning = false;
     private static readonly System.Diagnostics.Stopwatch _stopwatch = new();
     private static readonly System.Timers.Timer _timer = new(500);
+    private static readonly System.Timers.Timer _browserPumpTimer = new(16);
 
     private static RichTextBlock? _scoreLabel;
     private static RichTextBlock? _progressLabel;
@@ -46,6 +47,9 @@ public static class LolsPage
         // Setup timer once
         _timer.Elapsed -= OnTimer;
         _timer.Elapsed += OnTimer;
+        _browserPumpTimer.AutoReset = true;
+        _browserPumpTimer.Elapsed -= OnBrowserPumpTimer;
+        _browserPumpTimer.Elapsed += OnBrowserPumpTimer;
 
         var mainGrid = new Microsoft.UI.Xaml.Controls.Grid { Margin = new Thickness(12) };
         mainGrid.RowDefinitions.Add(new GridLength(50, GridUnitType.Absolute));   // Header description
@@ -213,7 +217,14 @@ public static class LolsPage
         if (_startStopRun != null) _startStopRun.Text = "Stop Benchmark";
         if (_startStopBtn != null) _startStopBtn.Invalidate();
 
-        _ = Task.Factory.StartNew(RunBenchmarkLoop, TaskCreationOptions.LongRunning);
+        if (OperatingSystem.IsBrowser())
+        {
+            _browserPumpTimer.Start();
+        }
+        else
+        {
+            _ = Task.Factory.StartNew(RunBenchmarkLoop, TaskCreationOptions.LongRunning);
+        }
     }
 
     public static void Stop()
@@ -222,6 +233,7 @@ public static class LolsPage
         _isRunning = false;
         Interlocked.Exchange(ref _pendingElementCount, 0);
         _timer.Stop();
+        _browserPumpTimer.Stop();
         _stopwatch.Stop();
 
         if (_startStopRun != null) _startStopRun.Text = "Start Benchmark";
@@ -307,6 +319,36 @@ public static class LolsPage
             }
 
             SchedulePendingDrain();
+        }
+    }
+
+    private static void OnBrowserPumpTimer(object? sender, System.Timers.ElapsedEventArgs e)
+    {
+        if (!_isRunning)
+        {
+            return;
+        }
+
+        int maxPendingElements = AppState._wgpuContext?.VSync == true
+            ? VSyncPendingElements
+            : UncappedPendingElements;
+
+        while (true)
+        {
+            int pending = Volatile.Read(ref _pendingElementCount);
+            if (pending >= maxPendingElements)
+            {
+                return;
+            }
+
+            if (Interlocked.CompareExchange(
+                    ref _pendingElementCount,
+                    maxPendingElements,
+                    pending) == pending)
+            {
+                SchedulePendingDrain();
+                return;
+            }
         }
     }
 

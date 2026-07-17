@@ -319,6 +319,7 @@ public static class InputSystem
     {
         return fe switch
         {
+            IHitTestBackgroundProvider provider => provider.HasHitTestBackground,
             Control control => control.Background != null,
             Border border => border.Background != null,
             ContentPresenter presenter => presenter.Background != null,

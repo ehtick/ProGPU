@@ -32,9 +32,10 @@ public static class StandardDataFormats
     public const string Tool = "Tool";
 }
 
-public class DesignerCanvas : Panel
+public class DesignerCanvas : Panel, IHitTestBackgroundProvider
 {
     public Brush? Background { get; set; }
+    public bool HasHitTestBackground => Background != null;
     public Canvas DesignSurface { get; }
     public Canvas AdornerSurface { get; }
 
