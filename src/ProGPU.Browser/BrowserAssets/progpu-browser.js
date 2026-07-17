@@ -20,6 +20,7 @@ const state = {
   inputInstalled: false,
   textSink: null,
   clipboardText: '',
+  pickedStorageBytes: null,
   worker: null,
   workerRequests: new Map(),
   nextWorkerRequest: 1,
@@ -426,38 +427,96 @@ function getClipboardText() {
   return state.clipboardText;
 }
 
-function bytesToBase64(bytes) {
-  let binary = '';
-  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
-    binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + 0x8000, bytes.length)));
-  }
-  return btoa(binary);
+function filePickerTypes(filters) {
+  const extensions = String(filters || '')
+    .split(',')
+    .map(value => value.trim().toLowerCase())
+    .filter(value => /^\.[a-z0-9][a-z0-9._+-]*$/.test(value));
+  return extensions.length === 0 ? undefined : [{
+    description: 'Supported files',
+    accept: { 'application/octet-stream': extensions }
+  }];
 }
 
-function pickStorage(mode, filters, defaultName) {
-  if (mode === 1) return Promise.resolve(defaultName || 'untitled.txt');
-  if (mode !== 0) return Promise.resolve('');
+async function stagePickedFile(file) {
+  state.pickedStorageBytes = new Uint8Array(await file.arrayBuffer());
+  return encodeURIComponent(file.name);
+}
+
+function pickStorageWithInput(filters) {
   return new Promise(resolve => {
     const input = document.createElement('input');
+    let settled = false;
     input.type = 'file';
     input.accept = filters || '';
     input.style.display = 'none';
     document.body.appendChild(input);
-    input.addEventListener('change', async () => {
-      try {
-        const file = input.files?.[0];
-        if (!file) { resolve(''); return; }
-        const bytes = new Uint8Array(await file.arrayBuffer());
-        resolve(`${encodeURIComponent(file.name)}\n${bytesToBase64(bytes)}`);
-      } catch {
-        resolve('');
-      } finally {
-        input.remove();
-      }
-    }, { once: true });
-    input.addEventListener('cancel', () => { input.remove(); resolve(''); }, { once: true });
-    input.click();
+
+    const cleanup = () => {
+      globalThis.removeEventListener('focus', onWindowFocus);
+      input.remove();
+    };
+    const finish = async file => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (!file) { resolve(''); return; }
+      try { resolve(await stagePickedFile(file)); }
+      catch { state.pickedStorageBytes = null; resolve(''); }
+    };
+    const onWindowFocus = () => {
+      globalThis.setTimeout(() => {
+        if (!settled && !input.files?.length) finish(null);
+      }, 0);
+    };
+
+    input.addEventListener('change', () => finish(input.files?.[0] || null), { once: true });
+    input.addEventListener('cancel', () => finish(null), { once: true });
+    globalThis.addEventListener('focus', onWindowFocus, { once: true });
+    try { input.click(); }
+    catch { finish(null); }
   });
+}
+
+async function pickStorage(mode, filters, defaultName) {
+  if (mode === 1) return Promise.resolve(defaultName || 'untitled.txt');
+  if (mode !== 0) return Promise.resolve('');
+  state.pickedStorageBytes = null;
+
+  if (typeof globalThis.showOpenFilePicker === 'function') {
+    try {
+      const handles = await globalThis.showOpenFilePicker({
+        multiple: false,
+        types: filePickerTypes(filters),
+        excludeAcceptAllOption: false
+      });
+      if (handles.length === 0) return '';
+      return await stagePickedFile(await handles[0].getFile());
+    } catch (error) {
+      if (error?.name === 'AbortError') return '';
+      // Permission, activation, or option support can vary by browser/origin.
+      // Fall through to the standards-compatible file-input path.
+    }
+  }
+
+  return await pickStorageWithInput(filters);
+}
+
+function getPickedStorageLength() {
+  return state.pickedStorageBytes?.byteLength ?? -1;
+}
+
+function copyPickedStorage(destination, length) {
+  const bytes = state.pickedStorageBytes;
+  if (!bytes || length !== bytes.byteLength) return -1;
+  const heap = runtime.localHeapViewU8();
+  if (destination < 0 || destination + length > heap.byteLength) throw new RangeError('File destination is outside WASM memory.');
+  heap.set(bytes, destination);
+  return length;
+}
+
+function clearPickedStorage() {
+  state.pickedStorageBytes = null;
 }
 
 function downloadText(name, text) {
@@ -1268,6 +1327,6 @@ if (isDispatcherWorker) {
 } else {
   initializeDiagnosticsVisibility();
   runtime = await dotnet.create();
-  runtime.setModuleImports('progpu-browser', { initialize, dispatch, dispatchUpload, mapBuffer, copyMappedBuffer, writeMappedBuffer, releaseMappedBuffer, nextAnimationFrame, writeCanvasMetrics, drainInputEvents, setCanvasCursor, setClipboardText, getClipboardText, pickStorage, downloadText, getDiagnosticsVisible, setDiagnosticsVisible, setStatus, updateCounters });
+  runtime.setModuleImports('progpu-browser', { initialize, dispatch, dispatchUpload, mapBuffer, copyMappedBuffer, writeMappedBuffer, releaseMappedBuffer, nextAnimationFrame, writeCanvasMetrics, drainInputEvents, setCanvasCursor, setClipboardText, getClipboardText, pickStorage, getPickedStorageLength, copyPickedStorage, clearPickedStorage, downloadText, getDiagnosticsVisible, setDiagnosticsVisible, setStatus, updateCounters });
   await runtime.runMain();
 }
