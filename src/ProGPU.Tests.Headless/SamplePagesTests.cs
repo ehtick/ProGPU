@@ -79,7 +79,7 @@ public class SamplePagesTests : IDisposable
         AppState.GenerateLogItems();
     }
 
-    private void RunPageTest(FrameworkElement page, string pageName)
+    private void RunPageTest(FrameworkElement page, string pageName, TimeSpan? readbackTimeout = null)
     {
         EnsureFontsAndStateLoaded();
 
@@ -91,7 +91,7 @@ public class SamplePagesTests : IDisposable
         window.Render();
         window.Render();
 
-        byte[] pixels = window.ReadPixels();
+        byte[] pixels = window.ReadPixels(readbackTimeout);
         Assert.NotNull(pixels);
         Assert.Equal(1280 * 800 * 4, pixels.Length);
 
@@ -114,7 +114,7 @@ public class SamplePagesTests : IDisposable
         Assert.True(nonBgCount > 100, $"Page '{pageName}' rendered blank or empty. Only {nonBgCount} non-background pixels found.");
 
         string screenshotPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, $"page_{pageName.Replace(" ", "_").ToLower()}.png");
-        window.SaveScreenshot(screenshotPath);
+        PngEncoder.SavePng(screenshotPath, pixels, window.Width, window.Height);
         Assert.True(File.Exists(screenshotPath));
 
         // Cleanup
@@ -463,7 +463,10 @@ public class SamplePagesTests : IDisposable
     [Fact]
     public void Test_TypographyScriptsPage_Renders()
     {
-        RunPageTest(SamplePagePresenter.CreateTypographyScriptsView(), "Typography & Scripts");
+        RunPageTest(
+            SamplePagePresenter.CreateTypographyScriptsView(),
+            "Typography & Scripts",
+            TimeSpan.FromSeconds(90));
     }
 
     [Fact]

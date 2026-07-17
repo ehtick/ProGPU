@@ -192,7 +192,7 @@ public unsafe class HeadlessWindow : IDisposable
         _compositor.RenderScene(_content, _width, _height, _offscreenTexture!.ViewPtr);
     }
 
-    public byte[] ReadPixels()
+    public byte[] ReadPixels(TimeSpan? mapTimeout = null)
     {
         if (_offscreenTexture == null || _readbackBuffer == null)
         {
@@ -260,12 +260,13 @@ public unsafe class HeadlessWindow : IDisposable
         wgpu.BufferMapAsync(_readbackBuffer, MapMode.Read, 0, (nuint)_bufferSize, onMapped, null);
 
         // Poll the device to process events and fire the callback synchronously
+        TimeSpan effectiveMapTimeout = mapTimeout ?? ReadbackMapTimeout;
         var swTimeout = System.Diagnostics.Stopwatch.StartNew();
         while (!mapSignal.IsSet)
         {
             wgpuDevicePoll(_context.Device, false, null);
             System.Threading.Thread.Sleep(1);
-            if (swTimeout.Elapsed > ReadbackMapTimeout)
+            if (swTimeout.Elapsed > effectiveMapTimeout)
             {
                 // A timed-out map must be cancelled and observed before another test
                 // submits work with this shared buffer. Otherwise wgpu-native can see
@@ -282,11 +283,11 @@ public unsafe class HeadlessWindow : IDisposable
                 if (!mapSignal.IsSet)
                 {
                     throw new TimeoutException(
-                        $"WebGPU BufferMapAsync did not acknowledge cancellation within {ReadbackAbortTimeout.TotalSeconds:F0} seconds after a {ReadbackMapTimeout.TotalSeconds:F0}-second headless readback timeout.");
+                        $"WebGPU BufferMapAsync did not acknowledge cancellation within {ReadbackAbortTimeout.TotalSeconds:F0} seconds after a {effectiveMapTimeout.TotalSeconds:F0}-second headless readback timeout.");
                 }
 
                 throw new TimeoutException(
-                    $"WebGPU BufferMapAsync timed out after {ReadbackMapTimeout.TotalSeconds:F0} seconds during headless readback.");
+                    $"WebGPU BufferMapAsync timed out after {effectiveMapTimeout.TotalSeconds:F0} seconds during headless readback.");
             }
         }
 
