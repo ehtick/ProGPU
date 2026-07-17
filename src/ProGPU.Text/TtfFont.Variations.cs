@@ -261,6 +261,18 @@ public partial class TtfFont : IEquatable<TtfFont>
             ? 0f
             : _variationData.GetLayoutDelta(_variationInstance, outerIndex, innerIndex);
 
+    internal bool TryGetNormalizedVariationCoordinate(int axisIndex, out short coordinate)
+    {
+        OpenTypeVariationData? data = GetVariationData();
+        if (data is null || (uint)axisIndex >= data.Axes.Count)
+        {
+            coordinate = 0;
+            return false;
+        }
+        coordinate = _variationInstance?.NormalizedCoordinates[axisIndex] ?? 0;
+        return true;
+    }
+
     private void ApplySimpleGlyphVariations(
         ushort glyphIndex,
         Vector2[] coordinates,

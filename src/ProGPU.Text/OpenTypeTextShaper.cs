@@ -350,13 +350,14 @@ public static class OpenTypeTextShaper
         string script)
     {
         ReadOnlyMemory<byte> rawTable = default;
+        bool rawOnly = false;
         List<EnabledLookup> rawLookups = font.TryGetTable("GSUB", out rawTable)
-            ? GetRawEnabledLookupIndices(rawTable.Span, options.Features, script, options.Language)
+            ? GetRawEnabledLookupIndices(font, rawTable.Span, options.Features, script, options.Language, out rawOnly)
             : [];
         List<EnabledLookup> lookups = table?.FeatureList?.featureTables is { Length: > 0 } features
             ? GetEnabledLookupIndices(table, features, options, script).ToList()
             : [];
-        return new SubstitutionPlan(table, rawTable, lookups, rawLookups);
+        return new SubstitutionPlan(table, rawTable, lookups, rawLookups, rawOnly);
     }
 
     private static void ApplySubstitutions(
@@ -370,7 +371,7 @@ public static class OpenTypeTextShaper
         ReadOnlyMemory<byte> rawTable = plan.RawTable;
         List<EnabledLookup> rawLookups = plan.RawLookups;
 
-        if (table is not null)
+        if (table is not null && !plan.RawOnly)
         {
             foreach (EnabledLookup enabled in plan.Lookups)
             {
@@ -424,12 +425,11 @@ public static class OpenTypeTextShaper
             }
         }
 
-        if (table is null)
+        if (table is null || plan.RawOnly)
         {
             foreach (EnabledLookup enabled in rawLookups)
             {
                 if (!IsSubstitutionStageFeature(enabled.Tag, stage)) continue;
-                if (!IsRawOwnedLookup(rawTable.Span, enabled.LookupIndex)) continue;
                 for (var position = 0; position < glyphs.Count; position++)
                 {
                     if (glyphs.IsFeatureEnabled(position, enabled.Tag, options))
@@ -440,6 +440,7 @@ public static class OpenTypeTextShaper
                         if (insertedGlyphs > 0) position += insertedGlyphs;
                     }
                 }
+                ApplyAlternateLookup(font, glyphs, enabled.LookupIndex, enabled.Value);
             }
         }
 
@@ -523,11 +524,15 @@ public static class OpenTypeTextShaper
     }
 
     private static List<EnabledLookup> GetRawEnabledLookupIndices(
+        TtfFont font,
         ReadOnlySpan<byte> data,
         IReadOnlyList<OpenTypeFeatureSetting> settings,
         string script,
-        string? language)
+        string? language,
+        out bool usesFeatureVariations)
     {
+        Dictionary<ushort, int>? substitutions = GetFeatureVariationSubstitutions(font, data);
+        usesFeatureVariations = substitutions is not null;
         var requested = CreateFeatureMap(settings);
         var result = new List<EnabledLookup>();
         var positions = new Dictionary<ushort, int>();
@@ -552,7 +557,8 @@ public static class OpenTypeTextShaper
                 requiredFeatureIndex,
                 1,
                 result,
-                positions);
+                positions,
+                substitutions);
         }
         foreach (OpenTypeFeatureSetting setting in settings)
         {
@@ -573,7 +579,7 @@ public static class OpenTypeTextShaper
                 {
                     continue;
                 }
-                AddRawFeatureLookups(data, featureListOffset, (ushort)featureIndex, value, result, positions);
+                AddRawFeatureLookups(data, featureListOffset, (ushort)featureIndex, value, result, positions, substitutions);
             }
         }
         result.Sort(static (left, right) => left.LookupIndex.CompareTo(right.LookupIndex));
@@ -586,12 +592,15 @@ public static class OpenTypeTextShaper
         ushort featureIndex,
         int value,
         List<EnabledLookup> result,
-        Dictionary<ushort, int> positions)
+        Dictionary<ushort, int> positions,
+        Dictionary<ushort, int>? substitutions)
     {
         int recordOffset = featureListOffset + 2 + featureIndex * 6;
         if (!CanRead(data, recordOffset, 6)) return;
         string tag = Encoding.ASCII.GetString(data.Slice(recordOffset, 4));
-        int featureOffset = featureListOffset + ReadU16(data, recordOffset + 4);
+        int featureOffset = substitutions is not null && substitutions.TryGetValue(featureIndex, out int alternateOffset)
+            ? alternateOffset
+            : featureListOffset + ReadU16(data, recordOffset + 4);
         if (!CanRead(data, featureOffset, 4)) return;
         ushort lookupCount = ReadU16(data, featureOffset + 2);
         for (var lookup = 0; lookup < lookupCount; lookup++)
@@ -609,6 +618,90 @@ public static class OpenTypeTextShaper
                 result.Add(new EnabledLookup(lookupIndex, value, tag));
             }
         }
+    }
+
+    private static Dictionary<ushort, int>? GetFeatureVariationSubstitutions(TtfFont font, ReadOnlySpan<byte> data)
+    {
+        if (!CanRead(data, 0, 14) || ReadU16(data, 0) != 1 || ReadU16(data, 2) < 1)
+        {
+            return null;
+        }
+        uint featureVariationsRelative = ReadU32(data, 10);
+        if (featureVariationsRelative == 0 || featureVariationsRelative > int.MaxValue)
+        {
+            return null;
+        }
+        int featureVariations = (int)featureVariationsRelative;
+        if (!CanRead(data, featureVariations, 8) ||
+            ReadU16(data, featureVariations) != 1 ||
+            ReadU16(data, featureVariations + 2) != 0)
+        {
+            return null;
+        }
+        uint recordCount = ReadU32(data, featureVariations + 4);
+        if (recordCount > int.MaxValue / 8 || !CanRead(data, featureVariations + 8, (int)recordCount * 8))
+        {
+            return null;
+        }
+        for (var recordIndex = 0; recordIndex < (int)recordCount; recordIndex++)
+        {
+            int record = featureVariations + 8 + recordIndex * 8;
+            uint conditionSetRelative = ReadU32(data, record);
+            uint substitutionRelative = ReadU32(data, record + 4);
+            if (conditionSetRelative > int.MaxValue || substitutionRelative > int.MaxValue)
+            {
+                continue;
+            }
+            int conditionSet = featureVariations + (int)conditionSetRelative;
+            if (!MatchesFeatureVariationConditions(font, data, conditionSet))
+            {
+                continue;
+            }
+            int substitutionTable = featureVariations + (int)substitutionRelative;
+            if (!CanRead(data, substitutionTable, 6) ||
+                ReadU16(data, substitutionTable) != 1 ||
+                ReadU16(data, substitutionTable + 2) != 0)
+            {
+                return null;
+            }
+            ushort substitutionCount = ReadU16(data, substitutionTable + 4);
+            if (!CanRead(data, substitutionTable + 6, substitutionCount * 6))
+            {
+                return null;
+            }
+            var result = new Dictionary<ushort, int>(substitutionCount);
+            for (var index = 0; index < substitutionCount; index++)
+            {
+                int substitution = substitutionTable + 6 + index * 6;
+                uint alternateRelative = ReadU32(data, substitution + 2);
+                if (alternateRelative <= int.MaxValue - substitutionTable)
+                {
+                    result[ReadU16(data, substitution)] = substitutionTable + (int)alternateRelative;
+                }
+            }
+            return result;
+        }
+        return null;
+    }
+
+    private static bool MatchesFeatureVariationConditions(TtfFont font, ReadOnlySpan<byte> data, int conditionSet)
+    {
+        if (!CanRead(data, conditionSet, 2)) return false;
+        ushort conditionCount = ReadU16(data, conditionSet);
+        if (!CanRead(data, conditionSet + 2, conditionCount * 4)) return false;
+        for (var index = 0; index < conditionCount; index++)
+        {
+            uint conditionRelative = ReadU32(data, conditionSet + 2 + index * 4);
+            if (conditionRelative > int.MaxValue) return false;
+            int condition = conditionSet + (int)conditionRelative;
+            if (!CanRead(data, condition, 8) || ReadU16(data, condition) != 1) return false;
+            int axisIndex = ReadU16(data, condition + 2);
+            if (!font.TryGetNormalizedVariationCoordinate(axisIndex, out short coordinate)) return false;
+            short minimum = ReadI16(data, condition + 4);
+            short maximum = ReadI16(data, condition + 6);
+            if (coordinate < minimum || coordinate > maximum) return false;
+        }
+        return true;
     }
 
     private static bool TryGetRawRequiredFeatureIndex(
@@ -2517,7 +2610,8 @@ public static class OpenTypeTextShaper
         GSUB? Table,
         ReadOnlyMemory<byte> RawTable,
         List<EnabledLookup> Lookups,
-        List<EnabledLookup> RawLookups);
+        List<EnabledLookup> RawLookups,
+        bool RawOnly);
 
     private enum UseSubstitutionStage : byte
     {
