@@ -1568,10 +1568,27 @@ public static class OpenTypeTextShaper
                     {
                         codePoint = (uint)char.ConvertToUtf32(character, text[++index]);
                     }
+                    ushort glyphIndex = font.GetGlyphIndex(codePoint);
+                    byte spaceFallback = glyphIndex == 0 ? GetSpaceFallback(codePoint) : SpaceNone;
+                    if (spaceFallback != SpaceNone)
+                    {
+                        ushort spaceGlyph = font.GetGlyphIndex(0x20);
+                        if (spaceGlyph != 0)
+                        {
+                            glyphIndex = spaceGlyph;
+                        }
+                        else
+                        {
+                            spaceFallback = SpaceNone;
+                        }
+                    }
                     glyphs.Add(new GlyphRecord(
-                        font.GetGlyphIndex(codePoint),
+                        glyphIndex,
                         separateClusters ? scalarStart : graphemeStart,
-                        codePoint));
+                        codePoint)
+                    {
+                        SpaceFallback = spaceFallback
+                    });
                 }
                 graphemeStart = graphemeEnd;
             }
@@ -1584,6 +1601,23 @@ public static class OpenTypeTextShaper
             0x110BD or 0x110CD or >= 0x111C2 and <= 0x111C3 or
             0x1193F or 0x11941 or 0x11A3A or >= 0x11A84 and <= 0x11A89 or
             0x11D46;
+
+        private static byte GetSpaceFallback(uint codePoint) => codePoint switch
+        {
+            0x0020 or 0x00A0 => Space,
+            0x2000 or 0x2002 => SpaceEm2,
+            0x2001 or 0x2003 or 0x3000 => SpaceEm,
+            0x2004 => SpaceEm3,
+            0x2005 => SpaceEm4,
+            0x2006 => SpaceEm6,
+            0x2007 => SpaceFigure,
+            0x2008 => SpacePunctuation,
+            0x2009 => SpaceEm5,
+            0x200A => SpaceEm16,
+            0x202F => SpaceNarrow,
+            0x205F => SpaceFourEm18,
+            _ => SpaceNone
+        };
 
         public void Replace(int index, ushort newGlyphIndex)
         {
@@ -1657,8 +1691,59 @@ public static class OpenTypeTextShaper
                         short.MinValue,
                         short.MaxValue));
                 }
+                ApplySpaceFallback(font, vertical, ref record);
                 _glyphs[index] = record;
             }
+        }
+
+        private static void ApplySpaceFallback(TtfFont font, bool vertical, ref GlyphRecord record)
+        {
+            int sign = vertical ? -1 : 1;
+            int advance = vertical ? record.AdvanceY : record.AdvanceX;
+            switch (record.SpaceFallback)
+            {
+                case SpaceEm:
+                case SpaceEm2:
+                case SpaceEm3:
+                case SpaceEm4:
+                case SpaceEm5:
+                case SpaceEm6:
+                case SpaceEm16:
+                    int divisor = record.SpaceFallback;
+                    advance = sign * ((font.UnitsPerEm + divisor / 2) / divisor);
+                    break;
+                case SpaceFourEm18:
+                    advance = checked((int)(sign * ((long)font.UnitsPerEm * 4 / 18)));
+                    break;
+                case SpaceFigure:
+                    for (uint codePoint = '0'; codePoint <= '9'; codePoint++)
+                    {
+                        ushort glyph = font.GetGlyphIndex(codePoint);
+                        if (glyph == 0) continue;
+                        advance = vertical
+                            ? -(int)MathF.Round(font.GetAdvanceHeight(glyph, font.UnitsPerEm))
+                            : (int)MathF.Round(font.GetAdvanceWidth(glyph, font.UnitsPerEm));
+                        break;
+                    }
+                    break;
+                case SpacePunctuation:
+                    ushort punctuation = font.GetGlyphIndex('.');
+                    if (punctuation == 0) punctuation = font.GetGlyphIndex(',');
+                    if (punctuation != 0)
+                    {
+                        advance = vertical
+                            ? -(int)MathF.Round(font.GetAdvanceHeight(punctuation, font.UnitsPerEm))
+                            : (int)MathF.Round(font.GetAdvanceWidth(punctuation, font.UnitsPerEm));
+                    }
+                    break;
+                case SpaceNarrow:
+                    advance /= 2;
+                    break;
+            }
+
+            short value = checked((short)Math.Clamp(advance, short.MinValue, short.MaxValue));
+            if (vertical) record.AdvanceY = value;
+            else record.AdvanceX = value;
         }
 
         public int Count => _glyphs.Length;
@@ -1745,6 +1830,7 @@ public static class OpenTypeTextShaper
         public short OffsetX;
         public short OffsetY;
         public byte ArabicAction;
+        public byte SpaceFallback;
     }
 
     private readonly record struct ArabicStateEntry(byte PreviousAction, byte CurrentAction, byte NextState);
@@ -1757,4 +1843,18 @@ public static class OpenTypeTextShaper
     private const byte Medial2 = 5;
     private const byte Initial = 6;
     private const byte None = 7;
+
+    private const byte SpaceNone = 0;
+    private const byte SpaceEm = 1;
+    private const byte SpaceEm2 = 2;
+    private const byte SpaceEm3 = 3;
+    private const byte SpaceEm4 = 4;
+    private const byte SpaceEm5 = 5;
+    private const byte SpaceEm6 = 6;
+    private const byte SpaceEm16 = 16;
+    private const byte SpaceFourEm18 = 17;
+    private const byte Space = 18;
+    private const byte SpaceFigure = 19;
+    private const byte SpacePunctuation = 20;
+    private const byte SpaceNarrow = 21;
 }

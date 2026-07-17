@@ -1174,7 +1174,7 @@ public partial class TtfFont
             int glyphHeight = fallbackYMax - yMin;
             return fallbackYMax + ((fontAdvance - glyphHeight) >> 1);
         }
-        return Ascender;
+        return glyphIndex < NumGlyphs ? (Ascender - Descender) >> 1 : Ascender;
     }
 
     public float GetKerning(char left, char right, float emSize)
