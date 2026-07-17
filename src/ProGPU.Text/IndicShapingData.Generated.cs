@@ -112,6 +112,13 @@ internal static class IndicShapingData
     public const byte Symbol = 17;
     public const byte ConsonantWithStacker = 18;
     public const byte SyllableModifierPost = 57;
+    public const byte VowelAbove = 20;
+    public const byte VowelBelow = 21;
+    public const byte VowelPre = 22;
+    public const byte VowelPost = 23;
+    public const byte Robatic = 25;
+    public const byte XGroup = 26;
+    public const byte YGroup = 27;
 
     public const byte PositionStart = 0;
     public const byte PositionRaToBecomeReph = 1;
