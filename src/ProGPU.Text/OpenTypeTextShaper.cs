@@ -158,6 +158,9 @@ public static class OpenTypeTextShaper
         options = AddDirectionalFeatures(options, direction);
 
         var substitutions = GlyphSubstitutionBuffer.Create(text, font, unicodeScript);
+        substitutions.ReorderModifiedCombiningMarks(unicodeScript);
+        substitutions.ComposeHebrewPresentationForms(
+            unicodeScript == "hebr" && !GetFeatureTags(font).Contains("mark", StringComparer.Ordinal));
         substitutions.ApplyVowelConstraints(unicodeScript);
         substitutions.NormalizeUseDiacritics(useShaper);
         substitutions.PrepareThaiLao(unicodeScript);
@@ -224,7 +227,6 @@ public static class OpenTypeTextShaper
 
         if (direction is ShapingDirection.RightToLeft or ShapingDirection.BottomToTop)
         {
-            positions.ResolveBackwardMarkOffsets(direction);
             positions.Reverse();
         }
 
@@ -2270,19 +2272,22 @@ public static class OpenTypeTextShaper
             if (!CanRead(data, rule, 4)) continue;
             int glyphCount = ReadU16(data, rule);
             int recordCount = ReadU16(data, rule + 2);
-            if (glyphCount == 0 || position + glyphCount > glyphs.Count ||
+            if (glyphCount == 0 ||
                 !CanRead(data, rule + 4, (glyphCount - 1) * 2 + recordCount * 4)) continue;
             bool matches = true;
+            int matchPosition = position;
             for (var index = 1; index < glyphCount; index++)
             {
-                if (glyphs.GetGlyph(position + index) != ReadU16(data, rule + 4 + (index - 1) * 2))
+                matchPosition = glyphs.NextEligibleIndex(matchPosition + 1, lookupFlags);
+                if (matchPosition < 0 ||
+                    glyphs.GetGlyph(matchPosition) != ReadU16(data, rule + 4 + (index - 1) * 2))
                 {
                     matches = false;
                     break;
                 }
             }
             if (!matches) continue;
-            return ApplyPositionRecords(data, glyphs, position, rule + 4 + (glyphCount - 1) * 2, recordCount);
+            return ApplyPositionRecords(data, glyphs, position, rule + 4 + (glyphCount - 1) * 2, recordCount, lookupFlags);
         }
         return false;
     }
@@ -2313,20 +2318,23 @@ public static class OpenTypeTextShaper
             if (!CanRead(data, rule, 4)) continue;
             int glyphCount = ReadU16(data, rule);
             int recordCount = ReadU16(data, rule + 2);
-            if (glyphCount == 0 || position + glyphCount > glyphs.Count ||
+            if (glyphCount == 0 ||
                 !CanRead(data, rule + 4, (glyphCount - 1) * 2 + recordCount * 4)) continue;
             bool matches = true;
+            int matchPosition = position;
             for (var index = 1; index < glyphCount; index++)
             {
+                matchPosition = glyphs.NextEligibleIndex(matchPosition + 1, lookupFlags);
                 int expectedClass = ReadU16(data, rule + 4 + (index - 1) * 2);
-                if (GetGlyphClass(data, classDef, glyphs.GetGlyph(position + index)) != expectedClass)
+                if (matchPosition < 0 ||
+                    GetGlyphClass(data, classDef, glyphs.GetGlyph(matchPosition)) != expectedClass)
                 {
                     matches = false;
                     break;
                 }
             }
             if (!matches) continue;
-            return ApplyPositionRecords(data, glyphs, position, rule + 4 + (glyphCount - 1) * 2, recordCount);
+            return ApplyPositionRecords(data, glyphs, position, rule + 4 + (glyphCount - 1) * 2, recordCount, lookupFlags);
         }
         return false;
     }
@@ -2341,14 +2349,20 @@ public static class OpenTypeTextShaper
         int glyphCount = ReadU16(data, offset + 2);
         int recordCount = ReadU16(data, offset + 4);
         int coverages = offset + 6;
-        if (glyphCount == 0 || position + glyphCount > glyphs.Count ||
+        if (glyphCount == 0 ||
             !CanRead(data, coverages, glyphCount * 2 + recordCount * 4)) return false;
+        int matchPosition = position;
         for (var index = 0; index < glyphCount; index++)
         {
             int coverage = offset + ReadU16(data, coverages + index * 2);
-            if (FindCoverage(data, coverage, glyphs.GetGlyph(position + index)) < 0) return false;
+            if (FindCoverage(data, coverage, glyphs.GetGlyph(matchPosition)) < 0) return false;
+            if (index + 1 < glyphCount)
+            {
+                matchPosition = glyphs.NextEligibleIndex(matchPosition + 1, lookupFlags);
+                if (matchPosition < 0) return false;
+            }
         }
-        return ApplyPositionRecords(data, glyphs, position, coverages + glyphCount * 2, recordCount);
+        return ApplyPositionRecords(data, glyphs, position, coverages + glyphCount * 2, recordCount, lookupFlags);
     }
 
     private static bool ApplyChainContextPosition(
@@ -2444,38 +2458,49 @@ public static class OpenTypeTextShaper
         if (!CanRead(data, cursor, 2)) return false;
         int backtrackCount = ReadU16(data, cursor);
         cursor += 2;
-        if (position < backtrackCount || !CanRead(data, cursor, backtrackCount * 2)) return false;
+        if (!CanRead(data, cursor, backtrackCount * 2)) return false;
+        int matchPosition = position;
         for (var index = 0; index < backtrackCount; index++)
         {
+            matchPosition = glyphs.PreviousEligibleIndex(matchPosition - 1, lookupFlags);
+            if (matchPosition < 0) return false;
             int coverage = offset + ReadU16(data, cursor + index * 2);
-            if (FindCoverage(data, coverage, glyphs.GetGlyph(position - index - 1)) < 0) return false;
+            if (FindCoverage(data, coverage, glyphs.GetGlyph(matchPosition)) < 0) return false;
         }
         cursor += backtrackCount * 2;
         if (!CanRead(data, cursor, 2)) return false;
         int inputCount = ReadU16(data, cursor);
         cursor += 2;
-        if (inputCount == 0 || position + inputCount > glyphs.Count || !CanRead(data, cursor, inputCount * 2)) return false;
+        if (inputCount == 0 || !CanRead(data, cursor, inputCount * 2)) return false;
+        matchPosition = position;
         for (var index = 0; index < inputCount; index++)
         {
             int coverage = offset + ReadU16(data, cursor + index * 2);
-            if (FindCoverage(data, coverage, glyphs.GetGlyph(position + index)) < 0) return false;
+            if (FindCoverage(data, coverage, glyphs.GetGlyph(matchPosition)) < 0) return false;
+            if (index + 1 < inputCount)
+            {
+                matchPosition = glyphs.NextEligibleIndex(matchPosition + 1, lookupFlags);
+                if (matchPosition < 0) return false;
+            }
         }
         cursor += inputCount * 2;
         if (!CanRead(data, cursor, 2)) return false;
         int lookaheadCount = ReadU16(data, cursor);
         cursor += 2;
-        if (position + inputCount + lookaheadCount > glyphs.Count || !CanRead(data, cursor, lookaheadCount * 2)) return false;
+        if (!CanRead(data, cursor, lookaheadCount * 2)) return false;
         for (var index = 0; index < lookaheadCount; index++)
         {
+            matchPosition = glyphs.NextEligibleIndex(matchPosition + 1, lookupFlags);
+            if (matchPosition < 0) return false;
             int coverage = offset + ReadU16(data, cursor + index * 2);
-            if (FindCoverage(data, coverage, glyphs.GetGlyph(position + inputCount + index)) < 0) return false;
+            if (FindCoverage(data, coverage, glyphs.GetGlyph(matchPosition)) < 0) return false;
         }
         cursor += lookaheadCount * 2;
         if (!CanRead(data, cursor, 2)) return false;
         int recordCount = ReadU16(data, cursor);
         cursor += 2;
         return CanRead(data, cursor, recordCount * 4) &&
-               ApplyPositionRecords(data, glyphs, position, cursor, recordCount);
+               ApplyPositionRecords(data, glyphs, position, cursor, recordCount, lookupFlags);
     }
 
     private static bool MatchChainPositionRule(
@@ -3258,6 +3283,141 @@ public static class OpenTypeTextShaper
                     new GlyphRecord(_font.GetGlyphIndex(0x25CC), final.Cluster, 0x25CC));
                 index += matchLength + 1;
             }
+        }
+
+        public void ComposeHebrewPresentationForms(bool enabled)
+        {
+            if (!enabled) return;
+            for (var start = 0; start < _glyphs.Count;)
+            {
+                int cluster = _glyphs[start].Cluster;
+                int end = start + 1;
+                while (end < _glyphs.Count && _glyphs[end].Cluster == cluster) end++;
+                int starter = start;
+                while (starter < end && !IsHebrewStarter(_glyphs[starter].CodePoint)) starter++;
+                if (starter < end)
+                {
+                    for (var index = starter + 1; index < end;)
+                    {
+                        GlyphRecord baseGlyph = _glyphs[starter];
+                        if (TryComposeHebrew(baseGlyph.CodePoint, _glyphs[index].CodePoint, out uint composed) &&
+                            _font.GetGlyphIndex(composed) is ushort composedGlyph and not 0)
+                        {
+                            baseGlyph.CodePoint = composed;
+                            baseGlyph.GlyphIndex = composedGlyph;
+                            _glyphs[starter] = baseGlyph;
+                            _glyphs.RemoveAt(index);
+                            end--;
+                            continue;
+                        }
+                        index++;
+                    }
+                }
+                start = end;
+            }
+        }
+
+        public void ReorderModifiedCombiningMarks(string script)
+        {
+            if (script != "hebr") return;
+            for (var start = 0; start < _glyphs.Count;)
+            {
+                int cluster = _glyphs[start].Cluster;
+                int end = start + 1;
+                while (end < _glyphs.Count && _glyphs[end].Cluster == cluster) end++;
+                int segmentStart = start + 1;
+                while (segmentStart < end)
+                {
+                    while (segmentStart < end && GetHebrewModifiedCombiningClass(_glyphs[segmentStart].CodePoint) == 0)
+                        segmentStart++;
+                    int segmentEnd = segmentStart;
+                    while (segmentEnd < end && GetHebrewModifiedCombiningClass(_glyphs[segmentEnd].CodePoint) != 0)
+                        segmentEnd++;
+                    for (var index = segmentStart + 1; index < segmentEnd; index++)
+                    {
+                        GlyphRecord value = _glyphs[index];
+                        int valueClass = GetHebrewModifiedCombiningClass(value.CodePoint);
+                        int destination = index;
+                        while (destination > segmentStart &&
+                               GetHebrewModifiedCombiningClass(_glyphs[destination - 1].CodePoint) > valueClass)
+                        {
+                            _glyphs[destination] = _glyphs[destination - 1];
+                            destination--;
+                        }
+                        _glyphs[destination] = value;
+                    }
+                    segmentStart = segmentEnd + 1;
+                }
+                start = end;
+            }
+        }
+
+        private static int GetHebrewModifiedCombiningClass(uint codePoint)
+        {
+            // CGJ deliberately blocks canonical reordering even though it is
+            // represented as a non-spacing mark by the Unicode category API.
+            if (codePoint == 0x034F) return 0;
+            int modified = codePoint switch
+            {
+                0x05C1 => 10,
+                0x05C2 => 11,
+                0x05BC => 12,
+                0x05BF => 13,
+                0x05B9 or 0x05BA => 14,
+                0x05B1 => 15,
+                0x05B2 => 16,
+                0x05B3 => 17,
+                0x05B5 => 18,
+                0x05B6 => 19,
+                0x05B7 => 20,
+                0x05B8 or 0x05C7 => 21,
+                0x05B0 => 22,
+                0x05B4 => 23,
+                0x05BB => 24,
+                0x05BD => 25,
+                _ => 0
+            };
+            if (modified != 0) return modified;
+            UnicodeCategory category = Rune.GetUnicodeCategory(new Rune((int)codePoint));
+            return category is UnicodeCategory.NonSpacingMark or UnicodeCategory.SpacingCombiningMark or
+                UnicodeCategory.EnclosingMark ? 200 : 0;
+        }
+
+        private static bool IsHebrewStarter(uint codePoint) =>
+            codePoint is >= 0x05D0 and <= 0x05EA or >= 0xFB1D and <= 0xFB4E or 0x05F2;
+
+        private static bool TryComposeHebrew(uint first, uint second, out uint composed)
+        {
+            composed = 0;
+            if (second == 0x05BC && first is >= 0x05D0 and <= 0x05EA)
+            {
+                ReadOnlySpan<ushort> dageshForms =
+                [
+                    0xFB30, 0xFB31, 0xFB32, 0xFB33, 0xFB34, 0xFB35, 0xFB36, 0,
+                    0xFB38, 0xFB39, 0xFB3A, 0xFB3B, 0xFB3C, 0, 0xFB3E, 0,
+                    0xFB40, 0xFB41, 0, 0xFB43, 0xFB44, 0, 0xFB46, 0xFB47, 0xFB48,
+                    0xFB49, 0xFB4A
+                ];
+                composed = dageshForms[(int)(first - 0x05D0)];
+                return composed != 0;
+            }
+            composed = (first, second) switch
+            {
+                (0x05D9, 0x05B4) => 0xFB1D,
+                (0x05F2, 0x05B7) => 0xFB1F,
+                (0x05D0, 0x05B7) => 0xFB2E,
+                (0x05D0, 0x05B8) => 0xFB2F,
+                (0x05D5, 0x05B9) => 0xFB4B,
+                (0x05D1, 0x05BF) => 0xFB4C,
+                (0x05DB, 0x05BF) => 0xFB4D,
+                (0x05E4, 0x05BF) => 0xFB4E,
+                (0x05E9, 0x05C1) => 0xFB2A,
+                (0x05E9, 0x05C2) => 0xFB2B,
+                (0xFB49, 0x05C1) or (0xFB2A, 0x05BC) => 0xFB2C,
+                (0xFB49, 0x05C2) or (0xFB2B, 0x05BC) => 0xFB2D,
+                _ => 0
+            };
+            return composed != 0;
         }
 
         public void NormalizeUseDiacritics(bool enabled)
@@ -5481,10 +5641,21 @@ public static class OpenTypeTextShaper
             GlyphRecord mark = _glyphs[markIndex];
             int x = anchorDeltaX - mark.OffsetX;
             int y = anchorDeltaY - mark.OffsetY;
-            for (var index = targetIndex; index < markIndex; index++)
+            if (_direction is ShapingDirection.LeftToRight or ShapingDirection.TopToBottom)
             {
-                x -= _glyphs[index].AdvanceX;
-                y -= _glyphs[index].AdvanceY;
+                for (var index = targetIndex; index < markIndex; index++)
+                {
+                    x -= _glyphs[index].AdvanceX;
+                    y -= _glyphs[index].AdvanceY;
+                }
+            }
+            else
+            {
+                for (var index = targetIndex + 1; index <= markIndex; index++)
+                {
+                    x += _glyphs[index].AdvanceX;
+                    y += _glyphs[index].AdvanceY;
+                }
             }
             mark.OffsetX = AddClamped(mark.OffsetX, x);
             mark.OffsetY = AddClamped(mark.OffsetY, y);
@@ -5590,40 +5761,6 @@ public static class OpenTypeTextShaper
         }
 
         public void Reverse() => Array.Reverse(_glyphs);
-
-        public void ResolveBackwardMarkOffsets(ShapingDirection direction)
-        {
-            for (var index = 1; index < _glyphs.Length; index++)
-            {
-                GlyphRecord mark = _glyphs[index];
-                if (!IsMark(index))
-                {
-                    continue;
-                }
-
-                int baseIndex = index - 1;
-                while (baseIndex >= 0 &&
-                       _glyphs[baseIndex].Cluster == mark.Cluster &&
-                       IsMark(baseIndex))
-                {
-                    baseIndex--;
-                }
-                if (baseIndex < 0 || _glyphs[baseIndex].Cluster != mark.Cluster)
-                {
-                    continue;
-                }
-
-                if (direction == ShapingDirection.RightToLeft)
-                {
-                    mark.OffsetX = AddClamped(mark.OffsetX, _glyphs[baseIndex].AdvanceX);
-                }
-                else
-                {
-                    mark.OffsetY = AddClamped(mark.OffsetY, _glyphs[baseIndex].AdvanceY);
-                }
-                _glyphs[index] = mark;
-            }
-        }
 
         private bool IsMark(int index)
         {
