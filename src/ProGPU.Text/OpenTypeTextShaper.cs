@@ -393,14 +393,14 @@ public static class OpenTypeTextShaper
         string script)
     {
         ReadOnlyMemory<byte> rawTable = default;
-        bool rawOnly = false;
-        List<EnabledLookup> rawLookups = font.TryGetTable("GSUB", out rawTable)
-            ? GetRawEnabledLookupIndices(font, rawTable.Span, options.Features, script, options.Language, out rawOnly)
+        bool hasRawTable = font.TryGetTable("GSUB", out rawTable);
+        List<EnabledLookup> rawLookups = hasRawTable
+            ? GetRawEnabledLookupIndices(font, rawTable.Span, options.Features, script, options.Language, out _)
             : [];
         List<EnabledLookup> lookups = table?.FeatureList?.featureTables is { Length: > 0 } features
             ? GetEnabledLookupIndices(table, features, options, script).ToList()
             : [];
-        return new SubstitutionPlan(table, rawTable, lookups, rawLookups, rawOnly);
+        return new SubstitutionPlan(table, rawTable, lookups, rawLookups, hasRawTable);
     }
 
     private static void ApplySubstitutions(
@@ -480,18 +480,22 @@ public static class OpenTypeTextShaper
             {
                 if (!IsSubstitutionStageFeature(enabled.Tag, stage)) continue;
                 bool restrictToSyllable = IsUsePerSyllableFeature(enabled.Tag, stage);
-                for (var position = 0; position < glyphs.Count; position++)
+                bool alternateLookup = IsRawAlternateLookup(rawTable.Span, enabled.LookupIndex);
+                if (!alternateLookup)
                 {
-                    glyphs.SetLookupSyllable(position, restrictToSyllable);
-                    if (glyphs.IsFeatureEnabled(position, enabled.Tag, options))
+                    for (var position = 0; position < glyphs.Count; position++)
                     {
-                        glyphs.ResetContextMatchEnd();
-                        int countBefore = glyphs.Count;
-                        ApplyNestedLookup(rawTable.Span, glyphs, enabled.LookupIndex, position);
-                        int insertedGlyphs = glyphs.Count - countBefore;
-                        if (insertedGlyphs > 0) position += insertedGlyphs;
-                        if (glyphs.ContextMatchEnd > position + 1)
-                            position = glyphs.ContextMatchEnd - 1;
+                        glyphs.SetLookupSyllable(position, restrictToSyllable);
+                        if (glyphs.IsFeatureEnabled(position, enabled.Tag, options))
+                        {
+                            glyphs.ResetContextMatchEnd();
+                            int countBefore = glyphs.Count;
+                            ApplyNestedLookup(rawTable.Span, glyphs, enabled.LookupIndex, position);
+                            int insertedGlyphs = glyphs.Count - countBefore;
+                            if (insertedGlyphs > 0) position += insertedGlyphs;
+                            if (glyphs.ContextMatchEnd > position + 1)
+                                position = glyphs.ContextMatchEnd - 1;
+                        }
                     }
                 }
                 glyphs.ClearLookupSyllable();
@@ -508,6 +512,18 @@ public static class OpenTypeTextShaper
                 enabled.LookupIndex,
                 IsUsePerSyllableFeature(enabled.Tag, stage));
         }
+    }
+
+    private static bool IsRawAlternateLookup(ReadOnlySpan<byte> data, ushort lookupIndex)
+    {
+        if (!TryGetLookup(data, lookupIndex, out int lookupOffset, out ushort lookupType, out int subtableCountOffset))
+            return false;
+        if (lookupType == 3) return true;
+        if (lookupType != 7 || ReadU16(data, subtableCountOffset) == 0 ||
+            !CanRead(data, subtableCountOffset + 2, 2)) return false;
+        int extension = lookupOffset + ReadU16(data, subtableCountOffset + 2);
+        return CanRead(data, extension, 4) && ReadU16(data, extension) == 1 &&
+               ReadU16(data, extension + 2) == 3;
     }
 
     private static bool IsUsePerSyllableFeature(string tag, UseSubstitutionStage stage) =>
@@ -634,8 +650,9 @@ public static class OpenTypeTextShaper
         }
 
         ushort featureCount = ReadU16(data, featureListOffset);
-        if (TryGetRawRequiredFeatureIndex(data, script, language, out ushort requiredFeatureIndex) &&
-            requiredFeatureIndex < featureCount)
+        HashSet<ushort>? allowedFeatures = GetRawLanguageFeatureIndices(
+            data, script, language, out ushort requiredFeatureIndex);
+        if (requiredFeatureIndex < featureCount)
         {
             AddRawFeatureLookups(
                 data,
@@ -654,6 +671,8 @@ public static class OpenTypeTextShaper
             }
             for (var featureIndex = 0; featureIndex < featureCount; featureIndex++)
             {
+                if (allowedFeatures is not null && !allowedFeatures.Contains((ushort)featureIndex))
+                    continue;
                 int recordOffset = featureListOffset + 2 + featureIndex * 6;
                 if (!CanRead(data, recordOffset, 6))
                 {
@@ -790,16 +809,16 @@ public static class OpenTypeTextShaper
         return true;
     }
 
-    private static bool TryGetRawRequiredFeatureIndex(
+    private static HashSet<ushort>? GetRawLanguageFeatureIndices(
         ReadOnlySpan<byte> data,
         string script,
         string? language,
         out ushort requiredFeatureIndex)
     {
         requiredFeatureIndex = ushort.MaxValue;
-        if (!CanRead(data, 4, 2)) return false;
+        if (!CanRead(data, 4, 2)) return null;
         int scriptListOffset = ReadU16(data, 4);
-        if (!CanRead(data, scriptListOffset, 2)) return false;
+        if (!CanRead(data, scriptListOffset, 2)) return null;
         ushort scriptCount = ReadU16(data, scriptListOffset);
         uint requestedScript = ToTag(script);
         int selectedScriptOffset = 0;
@@ -814,15 +833,15 @@ public static class OpenTypeTextShaper
             else if (tag == ToTag("DFLT")) defaultScriptOffset = tableOffset;
         }
         int scriptOffset = selectedScriptOffset != 0 ? selectedScriptOffset : defaultScriptOffset;
-        if (!CanRead(data, scriptOffset, 4)) return false;
+        if (!CanRead(data, scriptOffset, 4)) return null;
 
         int languageOffset = 0;
         ushort defaultRelative = ReadU16(data, scriptOffset);
         if (defaultRelative != 0) languageOffset = scriptOffset + defaultRelative;
+        ushort languageCount = ReadU16(data, scriptOffset + 2);
         if (!string.IsNullOrWhiteSpace(language))
         {
             uint requestedLanguage = ToLanguageTag(language);
-            ushort languageCount = ReadU16(data, scriptOffset + 2);
             for (var index = 0; index < languageCount; index++)
             {
                 int record = scriptOffset + 4 + index * 6;
@@ -834,9 +853,15 @@ public static class OpenTypeTextShaper
                 }
             }
         }
-        if (!CanRead(data, languageOffset, 6)) return false;
+        if (languageOffset == 0 || !CanRead(data, languageOffset, 6)) return [];
         requiredFeatureIndex = ReadU16(data, languageOffset + 2);
-        return requiredFeatureIndex != ushort.MaxValue;
+        ushort featureCount = ReadU16(data, languageOffset + 4);
+        if (!CanRead(data, languageOffset + 6, featureCount * 2)) return null;
+        var result = new HashSet<ushort>();
+        for (var index = 0; index < featureCount; index++)
+            result.Add(ReadU16(data, languageOffset + 6 + index * 2));
+        if (requiredFeatureIndex != ushort.MaxValue) result.Add(requiredFeatureIndex);
+        return result;
     }
 
     private static void ApplyReverseChainingLookup(
@@ -2951,7 +2976,7 @@ public static class OpenTypeTextShaper
         languageTable ??= scriptTable.defaultLang;
         if (languageTable is null)
         {
-            return null;
+            return [];
         }
 
         var result = new HashSet<ushort>(languageTable.featureIndexList);
@@ -2970,10 +2995,16 @@ public static class OpenTypeTextShaper
         {
             "az" or "az-latn" => ToTag("AZE "),
             "de" => ToTag("DEU "),
+            "dv" => ToTag("DHV "),
+            "fa" => ToTag("FAR "),
+            "ja" => ToTag("JAN "),
             "nl" => ToTag("NLD "),
             "pl" => ToTag("PLK "),
             "ro" => ToTag("ROM "),
             "tr" => ToTag("TRK "),
+            "zh" or "zh-cn" or "zh-sg" or "zh-hans" => ToTag("ZHS "),
+            "zh-tw" or "zh-hant" => ToTag("ZHT "),
+            "zh-hk" or "zh-mo" or "zh-hant-hk" or "zh-hant-mo" => ToTag("ZHH "),
             _ => ToTag("dflt")
         };
     }
