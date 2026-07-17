@@ -134,10 +134,14 @@ public class DatePicker : Control
         float textY = (Size.Y - 14f) / 2f;
         context.DrawText(dateText, font, 14f, textBrush, new Vector2(Padding.Left, textY));
 
-        // 3. Render modern vector calendar icon "📅" on the right side
-        float iconX = Size.X - 26f;
-        float iconY = (Size.Y - 14f) / 2f;
-        context.DrawText("📅", font, 11f, ThemeManager.GetBrush("TextSecondary"), new Vector2(iconX, iconY));
+        // 3. Render a font-independent calendar icon on the right side.
+        float iconX = Size.X - 25f;
+        float iconY = (Size.Y - 14f) * 0.5f;
+        var iconPen = new Pen(ThemeManager.GetBrush("TextSecondary"), 1.25f);
+        context.DrawRoundedRectangle(null, iconPen, new Rect(iconX, iconY + 1.5f, 13f, 11f), 1.5f);
+        context.DrawLine(iconPen, new Vector2(iconX, iconY + 5f), new Vector2(iconX + 13f, iconY + 5f));
+        context.DrawLine(iconPen, new Vector2(iconX + 3.5f, iconY), new Vector2(iconX + 3.5f, iconY + 3.5f));
+        context.DrawLine(iconPen, new Vector2(iconX + 9.5f, iconY), new Vector2(iconX + 9.5f, iconY + 3.5f));
 
         base.OnRender(context);
     }

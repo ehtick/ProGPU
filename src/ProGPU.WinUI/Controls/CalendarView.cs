@@ -205,15 +205,16 @@ public class CalendarView : Control
         _prevBtnRect = new Rect(Size.X - 68f, arrowY, 24f, 24f);
         _nextBtnRect = new Rect(Size.X - 36f, arrowY, 24f, 24f);
 
-        // Prev month button (◀)
+        // Prev month button. Use retained vector strokes rather than a font-dependent glyph.
         var prevBrush = _isPrevHovered ? ThemeManager.GetBrush("ControlBackgroundHover") : ThemeManager.GetBrush("ControlBackground");
         context.DrawRoundedRectangle(prevBrush, null, _prevBtnRect, 4f);
-        context.DrawText("◀", font, 10f, Foreground ?? ThemeManager.GetBrush("TextPrimary"), new Vector2(_prevBtnRect.X + 7f, _prevBtnRect.Y + 6f));
 
-        // Next month button (▶)
+        // Next month button.
         var nextBrush = _isNextHovered ? ThemeManager.GetBrush("ControlBackgroundHover") : ThemeManager.GetBrush("ControlBackground");
         context.DrawRoundedRectangle(nextBrush, null, _nextBtnRect, 4f);
-        context.DrawText("▶", font, 10f, Foreground ?? ThemeManager.GetBrush("TextPrimary"), new Vector2(_nextBtnRect.X + 7f, _nextBtnRect.Y + 6f));
+        var arrowPen = new Pen(Foreground ?? ThemeManager.GetBrush("TextPrimary"), 1.5f);
+        DrawNavigationChevron(context, arrowPen, _prevBtnRect, pointsRight: false);
+        DrawNavigationChevron(context, arrowPen, _nextBtnRect, pointsRight: true);
 
         // 3. Render day-of-week header column names
         string[] daysOfWeek = { "Su", "Mo", "Tu", "We", "Th", "Fr", "Sa" };
@@ -291,5 +292,13 @@ public class CalendarView : Control
         }
 
         base.OnRender(context);
+    }
+
+    private static void DrawNavigationChevron(DrawingContext context, Pen pen, Rect rect, bool pointsRight)
+    {
+        float direction = pointsRight ? 1f : -1f;
+        var center = new Vector2(rect.X + rect.Width * 0.5f, rect.Y + rect.Height * 0.5f);
+        context.DrawLine(pen, new Vector2(center.X - direction * 2.5f, center.Y - 4f), center);
+        context.DrawLine(pen, center, new Vector2(center.X - direction * 2.5f, center.Y + 4f));
     }
 }

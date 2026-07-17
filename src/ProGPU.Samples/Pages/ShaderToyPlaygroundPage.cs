@@ -125,7 +125,7 @@ namespace ProGPU.Samples
             };
             runBtn.Content = new TextBlock
             {
-                Text = "▶ Run",
+                Text = "Run",
                 Font = AppState._font,
                 FontSize = 11f,
                 Foreground = new SolidColorBrush(Vector4.One),

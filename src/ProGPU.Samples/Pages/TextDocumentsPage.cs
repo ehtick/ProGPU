@@ -178,8 +178,6 @@ public static class TextDocumentsPage
                 new Run("Club, "),
                 new Bold(new Run("♥ ")),
                 new Run("Heart, "),
-                new Bold(new Run("✔ ")),
-                new Run("Check, "),
                 new Bold(new Run("▲ ")),
                 new Run("Up, and "),
                 new Bold(new Run("▼ ")),

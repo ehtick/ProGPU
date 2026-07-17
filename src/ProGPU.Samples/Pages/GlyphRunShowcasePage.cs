@@ -191,6 +191,7 @@ public static class GlyphRunShowcasePage
         leftStack.AddChild(fontLabel);
 
         var fontCombo = new ComboBox { Font = AppState._font, Width = 260f, Margin = new Thickness(0, 0, 0, 15) };
+        fontCombo.Items.Add(new ComboBoxItem("Inter (UI Default)"));
         fontCombo.Items.Add(new ComboBoxItem("Arial"));
         fontCombo.Items.Add(new ComboBoxItem("Times New Roman"));
         fontCombo.Items.Add(new ComboBoxItem("Georgia"));
@@ -203,7 +204,8 @@ public static class GlyphRunShowcasePage
             {
                 visual.TargetFont = (fontCombo.SelectedItem.Text switch
                 {
-                    "Arial" => AppState._font ?? Microsoft.UI.Xaml.Controls.PopupService.DefaultFont,
+                    "Inter (UI Default)" => AppState._font ?? Microsoft.UI.Xaml.Controls.PopupService.DefaultFont,
+                    "Arial" => AppState._fontArial ?? AppState._font ?? Microsoft.UI.Xaml.Controls.PopupService.DefaultFont,
                     "Times New Roman" => AppState._fontTimes ?? AppState._font ?? Microsoft.UI.Xaml.Controls.PopupService.DefaultFont,
                     "Georgia" => AppState._fontGeorgia ?? AppState._font ?? Microsoft.UI.Xaml.Controls.PopupService.DefaultFont,
                     "Courier New" => AppState._fontCourier ?? AppState._font ?? Microsoft.UI.Xaml.Controls.PopupService.DefaultFont,

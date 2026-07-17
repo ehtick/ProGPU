@@ -130,6 +130,14 @@ public class NavigationView : FrameworkElement
             {
                 _isPaneOpen = value;
                 _splitView.IsPaneOpen = value;
+                // Item chrome records different content in compact and open modes.
+                // Advance each retained item version so the pane's cached layer cannot
+                // replay compact-mode icon commands after the labels become visible.
+                foreach (var item in _flatVisibleItems)
+                {
+                    item.Invalidate();
+                }
+                _settingsItem?.Invalidate();
                 Invalidate();
             }
         }

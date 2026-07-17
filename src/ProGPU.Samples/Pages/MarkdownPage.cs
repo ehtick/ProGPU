@@ -110,14 +110,14 @@ namespace ProGPU.Samples
             // Load File Button
             var loadBtn = new Button { WidthConstraint = 130f, HeightConstraint = 32f, CornerRadius = 4f, Margin = new Thickness(0, 0, 8, 0) };
             var loadBtnText = new RichTextBlock { Font = activeFont, FontSize = 11.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-            loadBtnText.Inlines.Add(new Run("📁 Load MD File..."));
+            loadBtnText.Inlines.Add(new Run("Load MD File..."));
             loadBtn.Content = loadBtnText;
             fileStack.AddChild(loadBtn);
 
             // Save File Button
             var saveBtn = new Button { WidthConstraint = 130f, HeightConstraint = 32f, CornerRadius = 4f, Margin = new Thickness(0, 0, 8, 0) };
             var saveBtnText = new RichTextBlock { Font = activeFont, FontSize = 11.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-            saveBtnText.Inlines.Add(new Run("💾 Save MD File..."));
+            saveBtnText.Inlines.Add(new Run("Save MD File..."));
             saveBtn.Content = saveBtnText;
             fileStack.AddChild(saveBtn);
 
@@ -166,15 +166,17 @@ namespace ProGPU.Samples
             configStack.AddChild(fontLbl);
 
             var fontCombo = new ComboBox { Font = activeFont, WidthConstraint = 140f, HeightConstraint = 32f, Margin = new Thickness(0, 0, 16, 0), VerticalAlignment = VerticalAlignment.Center };
+            var fInter = new ComboBoxItem("Inter (UI Default)");
             var fArial = new ComboBoxItem("Arial");
             var fTimes = new ComboBoxItem("Times New Roman");
             var fGeorgia = new ComboBoxItem("Georgia");
             var fCourier = new ComboBoxItem("Courier New");
+            fontCombo.Items.Add(fInter);
             fontCombo.Items.Add(fArial);
             fontCombo.Items.Add(fTimes);
             fontCombo.Items.Add(fGeorgia);
             fontCombo.Items.Add(fCourier);
-            fontCombo.SelectedItem = fArial;
+            fontCombo.SelectedItem = fInter;
             configStack.AddChild(fontCombo);
 
             // Font Size Slider
@@ -363,7 +365,8 @@ namespace ProGPU.Samples
                 {
                     _previewControl.Font = fontCombo.SelectedItem?.Text switch
                     {
-                        "Arial" => AppState.GetFont()!,
+                        "Inter (UI Default)" => AppState.GetFont()!,
+                        "Arial" => AppState.GetFontArial() ?? AppState.GetFont()!,
                         "Times New Roman" => AppState.GetFontTimes() ?? AppState.GetFont()!,
                         "Georgia" => AppState.GetFontGeorgia() ?? AppState.GetFont()!,
                         "Courier New" => AppState.GetFontCourier() ?? AppState.GetFont()!,

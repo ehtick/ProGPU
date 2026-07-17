@@ -41,7 +41,8 @@ public class ToolboxItem : Border
             Margin = new Thickness(0, 0, 8, 0),
             VerticalAlignment = VerticalAlignment.Center
         };
-        iconText.Inlines.Add(new Run(icon));
+        // Keep toolbox chrome independent of emoji/color-font availability.
+        iconText.Inlines.Add(new Bold(new Run(displayName[..1])));
         panel.AddChild(iconText);
 
         var nameText = new RichTextBlock
