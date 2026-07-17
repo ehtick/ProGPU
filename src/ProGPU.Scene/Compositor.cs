@@ -2345,6 +2345,7 @@ public unsafe class Compositor : IDisposable
                             {
                                 Type = DrawCallType.StaticDxf,
                                 StaticBuffer = cmd.StaticBuffer,
+                                Transform = activeTransform,
                                 ClipRect = _activeClipRect,
                                 MaskTexture = _maskStack.Count > 0 ? _maskStack.Peek() : null,
                                 BlendMode = _activeBlendMode
@@ -2670,7 +2671,7 @@ SceneStateUploadComplete:
             }
             else if (dc.Type == DrawCallType.StaticDxf && dc.StaticBuffer != null)
             {
-                DrawStaticDxfBuffer(pass, dc.StaticBuffer, isOffscreen: false, dc.MaskTexture, dc.BlendMode);
+                DrawStaticDxfBuffer(pass, dc.StaticBuffer, dc.Transform, isOffscreen: false, dc.MaskTexture, dc.BlendMode);
                 currentType = DrawCallType.StaticDxf;
             }
             else if (dc.Type == DrawCallType.ChartLine)
@@ -3873,6 +3874,7 @@ SceneStateUploadComplete:
                         {
                             Type = DrawCallType.StaticDxf,
                             StaticBuffer = cmd.StaticBuffer,
+                            Transform = activeTransform,
                             ClipRect = _activeClipRect,
                             MaskTexture = _maskStack.Count > 0 ? _maskStack.Peek() : null,
                             BlendMode = _activeBlendMode
@@ -11902,7 +11904,7 @@ SceneStateUploadComplete:
             }
             else if (dc.Type == DrawCallType.StaticDxf && dc.StaticBuffer != null)
             {
-                DrawStaticDxfBuffer(pass, dc.StaticBuffer, isOffscreen: true, dc.MaskTexture, dc.BlendMode);
+                DrawStaticDxfBuffer(pass, dc.StaticBuffer, dc.Transform, isOffscreen: true, dc.MaskTexture, dc.BlendMode);
                 currentType = DrawCallType.StaticDxf;
             }
             else if (dc.Type == DrawCallType.ChartLine)
@@ -13067,6 +13069,7 @@ SceneStateUploadComplete:
     internal unsafe void DrawStaticDxfBuffer(
         RenderPassEncoder* pass,
         object staticBufferObj,
+        Matrix4x4 placementTransform,
         bool isOffscreen,
         GpuTexture? maskTexture = null,
         GpuBlendMode blendMode = GpuBlendMode.SrcOver)
@@ -13075,7 +13078,11 @@ SceneStateUploadComplete:
         using var renderLease = sb.AcquireRenderLease();
         if (!renderLease.IsAcquired) return;
 
-        sb.UpdateDefaultViewport(_currentProjection, new Vector2(_currentWidth, _currentHeight), _currentDpiScale);
+        sb.PrepareViewport(
+            _currentProjection,
+            placementTransform,
+            new Vector2(_currentWidth, _currentHeight),
+            _currentDpiScale);
 
         var currentType = DrawCallType.StaticDxf;
         var maskBg = GetMaskBindGroup(maskTexture, isOffscreen);

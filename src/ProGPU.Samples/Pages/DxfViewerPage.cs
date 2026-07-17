@@ -99,12 +99,24 @@ public class DxfCanvasControl : FrameworkElement
             Context.LayerColors[layer.Name] = new Vector4(aci.R / 255f, aci.G / 255f, aci.B / 255f, 1f);
         }
 
+        if (Size.X > 0f && Size.Y > 0f)
+        {
+            _firstLayout = false;
+            UpdateZoomToFit();
+        }
+
         Invalidate();
     }
 
     public void ZoomToFit()
     {
-        if (Document == null || Size.X <= 0 || Size.Y <= 0) return;
+        if (!UpdateZoomToFit()) return;
+        Invalidate();
+    }
+
+    private bool UpdateZoomToFit()
+    {
+        if (Document == null || Size.X <= 0 || Size.Y <= 0) return false;
 
         // Calculate drawing min/max bounds based on active visible layers only
         var (min, max) = DxfDocumentRenderer.CalculateBounds(Document, Context, Context.ActiveLayers);
@@ -128,7 +140,7 @@ public class DxfCanvasControl : FrameworkElement
         if (Context.Zoom <= 0.0001f) Context.Zoom = 1.0f;
 
         Context.Pan = Vector2.Zero;
-        Invalidate();
+        return true;
     }
 
     public void ZoomToPoint(Vector2 mousePos, float scaleFactor)
@@ -149,6 +161,17 @@ public class DxfCanvasControl : FrameworkElement
         Invalidate();
     }
 
+    protected override void ArrangeOverride(Rect arrangeRect)
+    {
+        Size = new Vector2(arrangeRect.Width, arrangeRect.Height);
+        Context.ScreenCenter = Size * 0.5f;
+        if (_firstLayout && Document is not null && Size.X > 0f && Size.Y > 0f)
+        {
+            _firstLayout = false;
+            UpdateZoomToFit();
+        }
+    }
+
     public override void OnRender(DrawingContext context)
     {
         // Draw CAD charcoal background card using resolved brushes
@@ -159,13 +182,6 @@ public class DxfCanvasControl : FrameworkElement
             var warningBrush = ThemeManager.GetBrush("TextSecondary");
             context.DrawText("No DXF document loaded. Load a file or generate a sample.", AppState.GetFont()!, 13f, warningBrush, new Vector2(24, 24));
             return;
-        }
-
-        // Auto-center and fit on the first size-negotiation layout pass
-        if (_firstLayout && Size.X > 0 && Size.Y > 0)
-        {
-            _firstLayout = false;
-            ZoomToFit();
         }
 
         // Sync context's screen viewport parameters
@@ -253,14 +269,12 @@ public class DxfCanvasControl : FrameworkElement
 
             if (_staticBuffer != null && Size.X > 0 && Size.Y > 0)
             {
-                var projection = new Matrix4x4(
-                    2.0f / Size.X, 0f, 0f, 0f,
-                    0f, -2.0f / Size.Y, 0f, 0f,
-                    0f, 0f, 1f, 0f,
-                    -1.0f, 1.0f, 0f, 1.0f
-                );
-
-                _staticBuffer.UpdateViewport(projection, Context.Zoom, Context.Pan, Context.Center, Context.ScreenCenter);
+                _staticBuffer.UpdateViewport(
+                    Matrix4x4.Identity,
+                    Context.Zoom,
+                    Context.Pan,
+                    Context.Center,
+                    Context.ScreenCenter);
 
                 context.PushClip(new Rect(0f, 0f, Size.X, Size.Y));
                 context.DrawStaticDxf(_staticBuffer);
@@ -485,25 +499,25 @@ public static class DxfViewerPage
         // Sidebar Actions Grid
         var openBtn = new Button { HeightConstraint = 32f, CornerRadius = 4f, Margin = new Thickness(0, 0, 0, 8f), HorizontalAlignment = HorizontalAlignment.Stretch };
         var openBtnText = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-        openBtnText.Inlines.Add(new Bold(new Run("📁 Open DXF File...")));
+        openBtnText.Inlines.Add(new Bold(new Run("Open DXF File...")));
         openBtn.Content = openBtnText;
         sidebarStack.AddChild(openBtn);
 
         var sampleBtn = new Button { HeightConstraint = 32f, CornerRadius = 4f, Margin = new Thickness(0, 0, 0, 8f), HorizontalAlignment = HorizontalAlignment.Stretch };
         var sampleBtnText = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-        sampleBtnText.Inlines.Add(new Bold(new Run("⚡ Generate Sample Drawing")));
+        sampleBtnText.Inlines.Add(new Bold(new Run("Generate Sample Drawing")));
         sampleBtn.Content = sampleBtnText;
         sidebarStack.AddChild(sampleBtn);
 
         var fitBtn = new Button { HeightConstraint = 32f, CornerRadius = 4f, Margin = new Thickness(0, 0, 0, 8f), HorizontalAlignment = HorizontalAlignment.Stretch };
         var fitBtnText = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-        fitBtnText.Inlines.Add(new Bold(new Run("📐 Zoom to Fit Bounds")));
+        fitBtnText.Inlines.Add(new Bold(new Run("Zoom to Fit Bounds")));
         fitBtn.Content = fitBtnText;
         sidebarStack.AddChild(fitBtn);
 
         var benchBtn = new Button { HeightConstraint = 32f, CornerRadius = 4f, Margin = new Thickness(0, 0, 0, 16f), HorizontalAlignment = HorizontalAlignment.Stretch };
         var benchBtnText = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-        benchBtnText.Inlines.Add(new Bold(new Run("⚡ Run Performance Benchmark")));
+        benchBtnText.Inlines.Add(new Bold(new Run("Run Performance Benchmark")));
         benchBtn.Content = benchBtnText;
         sidebarStack.AddChild(benchBtn);
 
@@ -687,7 +701,7 @@ public static class DxfViewerPage
         overlay.Child = overlayStack;
 
         var overlayHeader = new RichTextBlock { Font = AppState.GetFont(), FontSize = 16f, Margin = new Thickness(0, 0, 0, 16f) };
-        overlayHeader.Inlines.Add(new Bold(new Run("⚡ Performance Benchmark Results")));
+        overlayHeader.Inlines.Add(new Bold(new Run("Performance Benchmark Results")));
         overlayStack.AddChild(overlayHeader);
 
         var overlayText = new RichTextBlock { Font = AppState.GetFont(), FontSize = 12f, Margin = new Thickness(0, 0, 0, 20f), Foreground = new ThemeResourceBrush("TextPrimary") };
