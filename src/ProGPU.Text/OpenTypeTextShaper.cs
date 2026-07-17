@@ -158,6 +158,7 @@ public static class OpenTypeTextShaper
         var substitutions = GlyphSubstitutionBuffer.Create(text, font, unicodeScript);
         substitutions.ApplyVowelConstraints(unicodeScript);
         substitutions.NormalizeUseDiacritics(useShaper);
+        substitutions.PrepareThaiLao(unicodeScript);
         substitutions.AssignFractionActions();
         substitutions.PrepareKhmerShaping(script);
         substitutions.PrepareUseShaping(useShaper, unicodeScript);
@@ -2973,6 +2974,44 @@ public static class OpenTypeTextShaper
                 }
                 index += component - 1;
             }
+        }
+
+        public void PrepareThaiLao(string script)
+        {
+            if (script is not ("thai" or "lao "))
+            {
+                return;
+            }
+            uint saraAm = script == "thai" ? 0x0E33u : 0x0EB3u;
+            uint nikhahit = script == "thai" ? 0x0E4Du : 0x0ECDu;
+            uint saraAa = saraAm - 1;
+            for (var index = 0; index < _glyphs.Count; index++)
+            {
+                GlyphRecord source = _glyphs[index];
+                if (source.CodePoint != saraAm) continue;
+
+                var nikhahitGlyph = new GlyphRecord(_font.GetGlyphIndex(nikhahit), source.Cluster, nikhahit);
+                var saraAaGlyph = new GlyphRecord(_font.GetGlyphIndex(saraAa), source.Cluster, saraAa);
+                _glyphs[index] = nikhahitGlyph;
+                _glyphs.Insert(index + 1, saraAaGlyph);
+
+                int start = index;
+                while (start > 0 && IsThaiLaoAboveBaseMark(_glyphs[start - 1].CodePoint)) start--;
+                if (start < index)
+                {
+                    _glyphs.RemoveAt(index);
+                    _glyphs.Insert(start, nikhahitGlyph);
+                }
+                int end = index + 2;
+                if (start > 0) MergeCluster(start - 1, end);
+                index++;
+            }
+        }
+
+        private static bool IsThaiLaoAboveBaseMark(uint codePoint)
+        {
+            uint thai = codePoint & ~0x80u;
+            return thai is >= 0x0E34 and <= 0x0E37 or >= 0x0E47 and <= 0x0E4E or 0x0E31 or 0x0E3B;
         }
 
         public void PrepareKhmerShaping(string script)
