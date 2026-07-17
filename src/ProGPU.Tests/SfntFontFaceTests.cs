@@ -554,6 +554,47 @@ public class SfntFontFaceTests
         Assert.Equal(0, missing);
     }
 
+    [Theory]
+    [InlineData(0xB200, 0xF14A)]
+    [InlineData(0xB300, 0xF24C)]
+    public void MapsLegacyArabicSymbolCmapsFromOs2FontPage(ushort fontPage, ushort privateCodePoint)
+    {
+        byte[] fontData = BuildSfntWithTables(
+            ("head", BuildHeadTable()),
+            ("hhea", BuildHheaTable()),
+            ("maxp", BuildMaxpTable()),
+            ("hmtx", BuildHmtxTable()),
+            ("cmap", BuildCmapSymbolFormat4Table(privateCodePoint)),
+            ("loca", BuildLocaTable()),
+            ("glyf", BuildGlyfTable()),
+            ("OS/2", BuildOs2Table(fontPage)));
+
+        SfntFontFace face = SfntFontFace.Load(fontData);
+
+        Assert.True(face.UsesSymbolCharacterMap);
+        Assert.True(face.TryGetGlyphIndex(0x0628, out ushort glyphIndex));
+        Assert.Equal(1, glyphIndex);
+    }
+
+    [Fact]
+    public void MapsOrdinarySymbolCmapLowBytesIntoF000PrivateUseArea()
+    {
+        byte[] fontData = BuildSfntWithTables(
+            ("head", BuildHeadTable()),
+            ("hhea", BuildHheaTable()),
+            ("maxp", BuildMaxpTable()),
+            ("hmtx", BuildHmtxTable()),
+            ("cmap", BuildCmapSymbolFormat4Table(0xF041)),
+            ("loca", BuildLocaTable()),
+            ("glyf", BuildGlyfTable()),
+            ("OS/2", BuildOs2Table()));
+
+        SfntFontFace face = SfntFontFace.Load(fontData);
+
+        Assert.True(face.TryGetGlyphIndex(0x41, out ushort glyphIndex));
+        Assert.Equal(1, glyphIndex);
+    }
+
     [Fact]
     public void ReadsNonDefaultFormat14VariationGlyph()
     {
@@ -1173,6 +1214,21 @@ public class SfntFontFaceTests
         return stream.ToArray();
     }
 
+    private static byte[] BuildCmapSymbolFormat4Table(ushort codePoint)
+    {
+        byte[] format4 = BuildFormat4Subtable(codePoint);
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+
+        WriteUShort(writer, 0);
+        WriteUShort(writer, 1);
+        WriteUShort(writer, 3);
+        WriteUShort(writer, 0);
+        WriteUInt(writer, 12);
+        writer.Write(format4);
+        return stream.ToArray();
+    }
+
     private static byte[] BuildCmapFormat4And12Table()
     {
         byte[] format4 = BuildFormat4Subtable();
@@ -1246,7 +1302,7 @@ public class SfntFontFaceTests
         return stream.ToArray();
     }
 
-    private static byte[] BuildFormat4Subtable()
+    private static byte[] BuildFormat4Subtable(ushort codePoint = 0x0041)
     {
         using var stream = new MemoryStream();
         using var writer = new BinaryWriter(stream);
@@ -1258,12 +1314,12 @@ public class SfntFontFaceTests
         WriteUShort(writer, 0);
         WriteUShort(writer, 0);
         WriteUShort(writer, 0);
-        WriteUShort(writer, 0x0041);
+        WriteUShort(writer, codePoint);
         WriteUShort(writer, 0xFFFF);
         WriteUShort(writer, 0);
-        WriteUShort(writer, 0x0041);
+        WriteUShort(writer, codePoint);
         WriteUShort(writer, 0xFFFF);
-        WriteShort(writer, -64);
+        WriteShort(writer, unchecked((short)(1 - codePoint)));
         WriteShort(writer, 1);
         WriteUShort(writer, 0);
         WriteUShort(writer, 0);
@@ -1329,7 +1385,7 @@ public class SfntFontFaceTests
         return stream.ToArray();
     }
 
-    private static byte[] BuildOs2Table()
+    private static byte[] BuildOs2Table(ushort fontPage = 0)
     {
         byte[] table = new byte[64];
         using var stream = new MemoryStream(table);
@@ -1339,6 +1395,8 @@ public class SfntFontFaceTests
         WriteUShort(writer, 400);
         WriteUShort(writer, 5);
         WriteUShort(writer, 0x0008);
+        stream.Position = 62;
+        WriteUShort(writer, fontPage);
         return table;
     }
 

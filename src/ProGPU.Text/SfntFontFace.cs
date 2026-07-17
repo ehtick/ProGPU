@@ -93,6 +93,11 @@ sealed class SfntFontFace
 {
     private readonly byte[] _data;
     private readonly Dictionary<string, SfntTableRecord> _tables;
+    private readonly ReadOnlyMemory<byte> _cmapFormat4;
+    private readonly ReadOnlyMemory<byte> _cmapFormat12;
+    private readonly ReadOnlyMemory<byte> _cmapFormat13;
+    private readonly bool _usesSymbolCharacterMap;
+    private readonly ushort _legacyFontPage;
 
     private SfntFontFace(byte[] data, int faceIndex, uint baseOffset, Dictionary<string, SfntTableRecord> tables)
     {
@@ -100,12 +105,22 @@ sealed class SfntFontFace
         FaceIndex = faceIndex;
         BaseOffset = baseOffset;
         _tables = tables;
+        if (TryGetTable("cmap", out ReadOnlyMemory<byte> cmapMemory))
+        {
+            TryFindCmapSubtables(
+                cmapMemory,
+                out _cmapFormat4,
+                out _cmapFormat12,
+                out _cmapFormat13,
+                out _usesSymbolCharacterMap);
+        }
+        _legacyFontPage = ReadLegacyFontPage();
     }
 
     public int FaceIndex { get; }
     public uint BaseOffset { get; }
     public IReadOnlyDictionary<string, SfntTableRecord> Tables => _tables;
-    public bool UsesSymbolCharacterMap => TryFindCmapSubtables(out _, out _, out _, out bool usesSymbolCharacterMap) && usesSymbolCharacterMap;
+    public bool UsesSymbolCharacterMap => _usesSymbolCharacterMap;
 
     public static SfntFontFace Load(string filePath, int faceIndex = 0)
     {
@@ -333,13 +348,27 @@ sealed class SfntFontFace
 
     public bool TryGetGlyphIndex(uint codePoint, out ushort glyphIndex)
     {
-        if (!TryGetTable("cmap", out ReadOnlyMemory<byte> cmapMemory))
+        if (_cmapFormat4.IsEmpty && _cmapFormat12.IsEmpty && _cmapFormat13.IsEmpty)
         {
             glyphIndex = 0;
             return false;
         }
 
-        return TryGetGlyphIndexFromCmap(cmapMemory, codePoint, out glyphIndex);
+        if (TryGetGlyphIndexFromSelectedCmap(
+                _cmapFormat4, _cmapFormat12, _cmapFormat13, codePoint, out glyphIndex) &&
+            glyphIndex != 0)
+        {
+            return true;
+        }
+
+        if (_usesSymbolCharacterMap && TryRemapSymbolCodePoint(codePoint, out uint remapped))
+        {
+            return TryGetGlyphIndexFromSelectedCmap(
+                _cmapFormat4, _cmapFormat12, _cmapFormat13, remapped, out glyphIndex);
+        }
+
+        glyphIndex = 0;
+        return true;
     }
 
     internal static bool TryGetGlyphIndexFromCmap(
@@ -358,6 +387,18 @@ sealed class SfntFontFace
             return false;
         }
 
+        return TryGetGlyphIndexFromSelectedCmap(
+            format4Memory, format12Memory, format13Memory, codePoint, out glyphIndex);
+    }
+
+    private static bool TryGetGlyphIndexFromSelectedCmap(
+        ReadOnlyMemory<byte> format4Memory,
+        ReadOnlyMemory<byte> format12Memory,
+        ReadOnlyMemory<byte> format13Memory,
+        uint codePoint,
+        out ushort glyphIndex)
+    {
+        glyphIndex = 0;
         if (!format12Memory.IsEmpty && TryGetFormat12GlyphIndex(format12Memory.Span, codePoint, out glyphIndex) &&
             (glyphIndex != 0 || format4Memory.IsEmpty))
         {
@@ -377,6 +418,65 @@ sealed class SfntFontFace
 
         glyphIndex = 0;
         return true;
+    }
+
+    private ushort ReadLegacyFontPage()
+    {
+        if (!TryGetTable("OS/2", out ReadOnlyMemory<byte> os2Memory)) return 0;
+        ReadOnlySpan<byte> os2 = os2Memory.Span;
+        return os2.Length >= 64 && ReadUShort(os2, 0) == 0
+            ? (ushort)(ReadUShort(os2, 62) & 0xFF00)
+            : (ushort)0;
+    }
+
+    private bool TryRemapSymbolCodePoint(uint codePoint, out uint remapped)
+    {
+        ReadOnlySpan<ushort> mappings = _legacyFontPage switch
+        {
+            0xB200 => ArabicFallbackData.SimplifiedPuaMappings,
+            0xB300 => ArabicFallbackData.TraditionalPuaMappings,
+            _ => default
+        };
+        if (!mappings.IsEmpty && TryFindLegacyMapping(mappings, codePoint, out remapped))
+        {
+            return true;
+        }
+
+        if (_legacyFontPage == 0 && codePoint <= 0xFF)
+        {
+            remapped = 0xF000 + codePoint;
+            return true;
+        }
+
+        remapped = 0;
+        return false;
+    }
+
+    private static bool TryFindLegacyMapping(ReadOnlySpan<ushort> mappings, uint codePoint, out uint remapped)
+    {
+        int low = 0;
+        int high = mappings.Length / 2 - 1;
+        while (low <= high)
+        {
+            int middle = low + ((high - low) >> 1);
+            uint candidate = mappings[middle * 2];
+            if (candidate < codePoint)
+            {
+                low = middle + 1;
+            }
+            else if (candidate > codePoint)
+            {
+                high = middle - 1;
+            }
+            else
+            {
+                remapped = mappings[middle * 2 + 1];
+                return true;
+            }
+        }
+
+        remapped = 0;
+        return false;
     }
 
     public bool TryGetHorizontalGlyphMetrics(ushort glyphIndex, out SfntHorizontalGlyphMetrics metrics)
@@ -643,15 +743,19 @@ sealed class SfntFontFace
                 format4 = subtable;
                 usesSymbolCharacterMap = false;
             }
-            else if (format == 4 && platformId == 3 && encodingId == 0 && format4.IsEmpty)
+            else if (format == 4 && platformId == 3 && encodingId == 0)
             {
                 symbolFormat4 = subtable;
             }
         }
 
-        if (format4.IsEmpty && !symbolFormat4.IsEmpty)
+        // Match HarfBuzz and Windows: a Microsoft symbol cmap takes precedence
+        // over Unicode subtables when both are present in the same face.
+        if (!symbolFormat4.IsEmpty)
         {
             format4 = symbolFormat4;
+            format12 = default;
+            format13 = default;
             usesSymbolCharacterMap = true;
         }
 
