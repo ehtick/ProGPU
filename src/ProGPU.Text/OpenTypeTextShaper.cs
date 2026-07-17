@@ -139,6 +139,7 @@ public static class OpenTypeTextShaper
 
         if (direction is ShapingDirection.RightToLeft or ShapingDirection.BottomToTop)
         {
+            positions.ResolveBackwardMarkOffsets(direction);
             positions.Reverse();
         }
 
@@ -1553,46 +1554,86 @@ public static class OpenTypeTextShaper
                 throw new InvalidOperationException($"Text exceeds the {MaximumShapedGlyphCount} glyph shaping limit.");
             }
             var glyphs = new List<GlyphRecord>(text.Length);
+            bool textIsNormalized = text.IsNormalized(NormalizationForm.FormC);
             for (var graphemeStart = 0; graphemeStart < text.Length;)
             {
                 int graphemeLength = StringInfo.GetNextTextElementLength(text.AsSpan(graphemeStart));
                 int graphemeEnd = checked(graphemeStart + graphemeLength);
-                Rune.DecodeFromUtf16(text.AsSpan(graphemeStart, graphemeLength), out Rune firstRune, out _);
+                string? normalizedGrapheme = textIsNormalized
+                    ? null
+                    : text.Substring(graphemeStart, graphemeLength).Normalize(NormalizationForm.FormC);
+                ReadOnlySpan<char> grapheme = normalizedGrapheme is null
+                    ? text.AsSpan(graphemeStart, graphemeLength)
+                    : normalizedGrapheme.AsSpan();
+                Rune.DecodeFromUtf16(grapheme, out Rune firstRune, out _);
                 bool separateClusters = IsPrepend(firstRune.Value);
-                for (var index = graphemeStart; index < graphemeEnd; index++)
+                for (var index = 0; index < grapheme.Length;)
                 {
-                    int scalarStart = index;
-                    char character = text[index];
-                    uint codePoint = character;
-                    if (char.IsHighSurrogate(character) && index + 1 < graphemeEnd && char.IsLowSurrogate(text[index + 1]))
-                    {
-                        codePoint = (uint)char.ConvertToUtf32(character, text[++index]);
-                    }
-                    ushort glyphIndex = font.GetGlyphIndex(codePoint);
-                    byte spaceFallback = glyphIndex == 0 ? GetSpaceFallback(codePoint) : SpaceNone;
-                    if (spaceFallback != SpaceNone)
-                    {
-                        ushort spaceGlyph = font.GetGlyphIndex(0x20);
-                        if (spaceGlyph != 0)
-                        {
-                            glyphIndex = spaceGlyph;
-                        }
-                        else
-                        {
-                            spaceFallback = SpaceNone;
-                        }
-                    }
-                    glyphs.Add(new GlyphRecord(
-                        glyphIndex,
-                        separateClusters ? scalarStart : graphemeStart,
-                        codePoint)
-                    {
-                        SpaceFallback = spaceFallback
-                    });
+                    Rune.DecodeFromUtf16(grapheme[index..], out Rune rune, out int consumed);
+                    int cluster = separateClusters && normalizedGrapheme is null
+                        ? graphemeStart + index
+                        : graphemeStart;
+                    AppendNormalizedRune(glyphs, font, rune, cluster);
+                    index += consumed;
                 }
                 graphemeStart = graphemeEnd;
             }
             return new GlyphSubstitutionBuffer(glyphs);
+        }
+
+        private static void AppendNormalizedRune(
+            List<GlyphRecord> glyphs,
+            TtfFont font,
+            Rune rune,
+            int cluster)
+        {
+            uint codePoint = (uint)rune.Value;
+            ushort glyphIndex = font.GetGlyphIndex(codePoint);
+            if (glyphIndex == 0)
+            {
+                string scalar = rune.ToString();
+                string decomposed = scalar.Normalize(NormalizationForm.FormD);
+                if (!decomposed.Equals(scalar, StringComparison.Ordinal))
+                {
+                    foreach (Rune component in decomposed.EnumerateRunes())
+                    {
+                        AppendMappedRune(glyphs, font, component, cluster);
+                    }
+                    return;
+                }
+            }
+            AppendMappedRune(glyphs, font, rune, cluster);
+        }
+
+        private static void AppendMappedRune(
+            List<GlyphRecord> glyphs,
+            TtfFont font,
+            Rune rune,
+            int cluster)
+        {
+            if (glyphs.Count >= MaximumShapedGlyphCount)
+            {
+                throw new InvalidOperationException($"Unicode decomposition exceeds the {MaximumShapedGlyphCount} glyph shaping limit.");
+            }
+            uint codePoint = (uint)rune.Value;
+            ushort glyphIndex = font.GetGlyphIndex(codePoint);
+            byte spaceFallback = glyphIndex == 0 ? GetSpaceFallback(codePoint) : SpaceNone;
+            if (spaceFallback != SpaceNone)
+            {
+                ushort spaceGlyph = font.GetGlyphIndex(0x20);
+                if (spaceGlyph != 0)
+                {
+                    glyphIndex = spaceGlyph;
+                }
+                else
+                {
+                    spaceFallback = SpaceNone;
+                }
+            }
+            glyphs.Add(new GlyphRecord(glyphIndex, cluster, codePoint)
+            {
+                SpaceFallback = spaceFallback
+            });
         }
 
         private static bool IsPrepend(int codePoint) => codePoint is
@@ -1774,6 +1815,50 @@ public static class OpenTypeTextShaper
         }
 
         public void Reverse() => Array.Reverse(_glyphs);
+
+        public void ResolveBackwardMarkOffsets(ShapingDirection direction)
+        {
+            for (var index = 1; index < _glyphs.Length; index++)
+            {
+                GlyphRecord mark = _glyphs[index];
+                if (!IsMark(index))
+                {
+                    continue;
+                }
+
+                int baseIndex = index - 1;
+                while (baseIndex >= 0 &&
+                       _glyphs[baseIndex].Cluster == mark.Cluster &&
+                       IsMark(baseIndex))
+                {
+                    baseIndex--;
+                }
+                if (baseIndex < 0 || _glyphs[baseIndex].Cluster != mark.Cluster)
+                {
+                    continue;
+                }
+
+                if (direction == ShapingDirection.RightToLeft)
+                {
+                    mark.OffsetX = AddClamped(mark.OffsetX, _glyphs[baseIndex].AdvanceX);
+                }
+                else
+                {
+                    mark.OffsetY = AddClamped(mark.OffsetY, _glyphs[baseIndex].AdvanceY);
+                }
+                _glyphs[index] = mark;
+            }
+        }
+
+        private bool IsMark(int index)
+        {
+            if (GetGlyphClassKind(index) == GlyphClassKind.Mark)
+            {
+                return true;
+            }
+            UnicodeCategory category = Rune.GetUnicodeCategory(new Rune((int)_glyphs[index].CodePoint));
+            return category is UnicodeCategory.NonSpacingMark or UnicodeCategory.SpacingCombiningMark or UnicodeCategory.EnclosingMark;
+        }
 
         public ushort GetGlyph(int index, out short advW)
         {

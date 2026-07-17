@@ -84,9 +84,9 @@ public sealed class OpenTypeTextShaperTests
     [Fact]
     public void InterCompositionAndMarkAttachmentAreAppliedDuringLayoutShaping()
     {
-        AssertFeatureChanges("ccmp", "A\u030A", new OpenTypeFeatureSetting("calt", 0));
-        AssertFeatureChanges("mark", "a\u0308", new OpenTypeFeatureSetting("ccmp", 0));
-        AssertFeatureChanges("mkmk", "a\u0308\u0301", new OpenTypeFeatureSetting("ccmp", 0));
+        AssertFeatureChanges("ccmp", "i\u0307", new OpenTypeFeatureSetting("calt", 0));
+        AssertFeatureChanges("mark", "x\u0301", new OpenTypeFeatureSetting("ccmp", 0));
+        AssertFeatureChanges("mkmk", "x\u0301\u0308", new OpenTypeFeatureSetting("ccmp", 0));
     }
 
     [Fact]
@@ -215,6 +215,18 @@ public sealed class OpenTypeTextShaperTests
         int expected)
     {
         Assert.Equal(expected, (int)ArabicJoiningData.GetJoiningType(codePoint));
+    }
+
+    [Fact]
+    public void CanonicallyEquivalentTextShapesToTheSameGlyph()
+    {
+        IReadOnlyList<ShapedGlyph> composed = OpenTypeTextShaper.Shape("é", InterFontFamily.Regular, 32f);
+        IReadOnlyList<ShapedGlyph> decomposed = OpenTypeTextShaper.Shape("e\u0301", InterFontFamily.Regular, 32f);
+
+        Assert.Single(composed);
+        Assert.Single(decomposed);
+        Assert.Equal(composed[0].GlyphIndex, decomposed[0].GlyphIndex);
+        Assert.Equal(0, decomposed[0].Cluster);
     }
 
     private static TextShapingOptions Features(params string[] optional)
