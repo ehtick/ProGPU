@@ -172,6 +172,10 @@ public static class OpenTypeTextShaper
         substitutions.AssignArabicJoiningActions(unicodeScript);
         Typeface? typeface = font.LayoutTypeface;
         SubstitutionPlan substitutionPlan = CreateSubstitutionPlan(font, typeface?.GSUBTable, options, script);
+        if (useShaper || indicShaper || khmerShaper || arabicShaper)
+        {
+            ApplySubstitutions(font, substitutionPlan, substitutions, options, UseSubstitutionStage.Directional);
+        }
         if (useShaper)
         {
             ApplySubstitutions(font, substitutionPlan, substitutions, options, UseSubstitutionStage.Preprocessing);
@@ -245,10 +249,15 @@ public static class OpenTypeTextShaper
         {
             ApplyPositions(font, typeface.GPOSTable, positions, options, script);
         }
-        positions.ZeroMarkAdvancesLate(
-            adjustOffsets: !hasGpos && direction is ShapingDirection.LeftToRight or ShapingDirection.TopToBottom);
+        bool usesFallbackMarkPositioning = UsesFallbackMarkPositioning(
+            unicodeScript, useShaper, indicShaper, khmerShaper);
+        if (usesFallbackMarkPositioning)
+        {
+            positions.ZeroMarkAdvancesLate(
+                adjustOffsets: !hasGpos && direction is ShapingDirection.LeftToRight or ShapingDirection.TopToBottom);
+        }
         positions.ResolveAttachmentOffsets();
-        if (!hasGpos && UsesFallbackMarkPositioning(unicodeScript, useShaper, indicShaper, khmerShaper))
+        if (!hasGpos && usesFallbackMarkPositioning)
         {
             positions.ApplyFallbackMarkPositioning(font);
         }
@@ -598,6 +607,7 @@ public static class OpenTypeTextShaper
         if (stage == UseSubstitutionStage.All) return true;
         return stage switch
         {
+            UseSubstitutionStage.Directional => tag is "ltra" or "ltrm" or "rtla" or "rtlm",
             UseSubstitutionStage.Preprocessing => tag is
                 "rvrn" or "frac" or "numr" or "dnom" or "locl" or "ccmp" or "nukt" or "akhn",
             UseSubstitutionStage.Repha => tag == "rphf",
@@ -606,7 +616,7 @@ public static class OpenTypeTextShaper
                 "rkrf" or "abvf" or "blwf" or "half" or "pstf" or "vatu" or "cjct",
             UseSubstitutionStage.Topographical => tag is "isol" or "init" or "medi" or "fina",
             UseSubstitutionStage.Presentation => tag is not
-                ("rvrn" or "frac" or "numr" or "dnom" or "locl" or "ccmp" or "nukt" or "akhn" or
+                ("ltra" or "ltrm" or "rtla" or "rtlm" or "rvrn" or "frac" or "numr" or "dnom" or "locl" or "ccmp" or "nukt" or "akhn" or
                  "rphf" or "pref" or "rkrf" or "abvf" or "blwf" or "half" or "pstf" or "vatu" or
                  "cjct" or "isol" or "init" or "medi" or "fina"),
             UseSubstitutionStage.IndicPreprocessing => tag is
@@ -621,13 +631,13 @@ public static class OpenTypeTextShaper
             UseSubstitutionStage.IndicVattu => tag == "vatu",
             UseSubstitutionStage.IndicConjunct => tag == "cjct",
             UseSubstitutionStage.IndicPresentation => tag is not
-                ("rvrn" or "frac" or "numr" or "dnom" or "locl" or "ccmp" or "nukt" or "akhn" or
+                ("ltra" or "ltrm" or "rtla" or "rtlm" or "rvrn" or "frac" or "numr" or "dnom" or "locl" or "ccmp" or "nukt" or "akhn" or
                  "rphf" or "rkrf" or "pref" or "blwf" or "abvf" or "half" or "pstf" or "vatu" or "cjct"),
             UseSubstitutionStage.KhmerBasic => tag is
                 "rvrn" or "frac" or "numr" or "dnom" or "locl" or "ccmp" or
                 "pref" or "blwf" or "abvf" or "pstf" or "cfar",
             UseSubstitutionStage.KhmerPresentation => tag is not
-                ("rvrn" or "frac" or "numr" or "dnom" or "locl" or "ccmp" or
+                ("ltra" or "ltrm" or "rtla" or "rtlm" or "rvrn" or "frac" or "numr" or "dnom" or "locl" or "ccmp" or
                  "pref" or "blwf" or "abvf" or "pstf" or "cfar"),
             UseSubstitutionStage.ArabicStretch => tag == "stch",
             UseSubstitutionStage.ArabicPreprocessing => tag is
@@ -643,7 +653,7 @@ public static class OpenTypeTextShaper
             UseSubstitutionStage.ArabicContextual => tag is "calt" or "rclt",
             UseSubstitutionStage.ArabicLigatures => tag is "liga" or "clig" or "mset",
             UseSubstitutionStage.ArabicPresentation => tag is not
-                ("rvrn" or "frac" or "numr" or "dnom" or "stch" or "ccmp" or "locl" or
+                ("ltra" or "ltrm" or "rtla" or "rtlm" or "rvrn" or "frac" or "numr" or "dnom" or "stch" or "ccmp" or "locl" or
                  "isol" or "fina" or "fin2" or "fin3" or "medi" or "med2" or "init" or
                  "rlig" or "calt" or "rclt" or "liga" or "clig" or "mset"),
             _ => false
@@ -2946,6 +2956,7 @@ public static class OpenTypeTextShaper
     private enum UseSubstitutionStage : byte
     {
         All,
+        Directional,
         Preprocessing,
         Repha,
         Prebase,
