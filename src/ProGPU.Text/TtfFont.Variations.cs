@@ -26,6 +26,7 @@ public partial class TtfFont : IEquatable<TtfFont>
     private readonly object _variationCacheLock = new();
     private Dictionary<string, TtfFont>? _variationInstanceCache;
     private Queue<string>? _variationInstanceOrder;
+    private int[]? _variationItemCountCache;
 
     /// <summary>Gets the continuous axes exposed by this font's OpenType <c>fvar</c> table.</summary>
     public IReadOnlyList<FontVariationAxis> VariationAxes =>
@@ -251,10 +252,83 @@ public partial class TtfFont : IEquatable<TtfFont>
     private static short? AddMetricDelta(short? value, float delta) =>
         value is null ? null : AddMetricDelta(value.Value, delta);
 
-    private float GetVariationAdvanceDelta(ushort glyphIndex) =>
-        _variationInstance is null || _variationData is null
-            ? 0f
-            : _variationData.GetAdvanceDelta(_variationInstance, glyphIndex);
+    private float GetVariationAdvanceDelta(ushort glyphIndex)
+    {
+        if (_variationInstance is null || _variationData is null) return 0f;
+        if (!_variationData.UsesGlyphPhantomAdvance)
+            return _variationData.GetAdvanceDelta(_variationInstance, glyphIndex);
+        return _variationData.GetGlyphPhantomAdvanceDelta(
+            _variationInstance,
+            glyphIndex,
+            GetGlyphVariationItemCount(glyphIndex));
+    }
+
+    private int GetGlyphVariationItemCount(ushort glyphIndex)
+    {
+        TtfFont root = _variationRoot ?? this;
+        int[] cache;
+        lock (root._variationCacheLock)
+        {
+            cache = root._variationItemCountCache ??= new int[root.NumGlyphs];
+        }
+        int cached = Volatile.Read(ref cache[glyphIndex]);
+        if (cached != 0) return cached;
+        int computed = root.ComputeGlyphVariationItemCount(glyphIndex);
+        Interlocked.CompareExchange(ref cache[glyphIndex], computed, 0);
+        return cache[glyphIndex];
+    }
+
+    private int ComputeGlyphVariationItemCount(ushort glyphIndex)
+    {
+        if (!HasTrueTypeOutlines || glyphIndex >= NumGlyphs) return 4;
+        uint startOffset;
+        uint endOffset;
+        if (_indexToLocFormat == 0)
+        {
+            startOffset = (uint)(ReadUShort(_locaOffset + (uint)(glyphIndex * 2)) * 2);
+            endOffset = (uint)(ReadUShort(_locaOffset + (uint)((glyphIndex + 1) * 2)) * 2);
+        }
+        else
+        {
+            startOffset = ReadUInt(_locaOffset + (uint)(glyphIndex * 4));
+            endOffset = ReadUInt(_locaOffset + (uint)((glyphIndex + 1) * 4));
+        }
+        if (startOffset == endOffset) return 4;
+
+        uint glyphOffset = _glyfOffset + startOffset;
+        if (glyphOffset > (uint)_data.Length - 10u) return 4;
+        short contourCount = ReadShort(glyphOffset);
+        if (contourCount >= 0)
+        {
+            if (contourCount == 0) return 4;
+            uint lastContourEnd = glyphOffset + 10u + (uint)(contourCount - 1) * 2u;
+            return lastContourEnd <= (uint)_data.Length - 2u
+                ? ReadUShort(lastContourEnd) + 5
+                : 4;
+        }
+
+        const ushort ArgumentsAreWords = 0x0001;
+        const ushort WeHaveScale = 0x0008;
+        const ushort MoreComponents = 0x0020;
+        const ushort WeHaveXAndYScale = 0x0040;
+        const ushort WeHaveTwoByTwo = 0x0080;
+        uint cursor = glyphOffset + 10;
+        int componentCount = 0;
+        ushort flags;
+        do
+        {
+            if (cursor > (uint)_data.Length - 4u) return 4;
+            flags = ReadUShort(cursor);
+            cursor += 4;
+            cursor += (flags & ArgumentsAreWords) != 0 ? 4u : 2u;
+            if ((flags & WeHaveScale) != 0) cursor += 2;
+            else if ((flags & WeHaveXAndYScale) != 0) cursor += 4;
+            else if ((flags & WeHaveTwoByTwo) != 0) cursor += 8;
+            componentCount++;
+        }
+        while ((flags & MoreComponents) != 0 && cursor <= (uint)_data.Length);
+        return componentCount + 4;
+    }
 
     internal float GetLayoutVariationDelta(ushort outerIndex, ushort innerIndex) =>
         _variationInstance is null || _variationData is null

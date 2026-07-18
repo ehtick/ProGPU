@@ -5873,7 +5873,9 @@ public static class OpenTypeTextShaper
                 else
                 {
                     record.AdvanceX = checked((short)Math.Clamp(
-                        MathF.Round(font.GetAdvanceWidth(record.GlyphIndex, font.UnitsPerEm)),
+                        MathF.Round(
+                            font.GetAdvanceWidth(record.GlyphIndex, font.UnitsPerEm),
+                            MidpointRounding.AwayFromZero),
                         short.MinValue,
                         short.MaxValue));
                 }

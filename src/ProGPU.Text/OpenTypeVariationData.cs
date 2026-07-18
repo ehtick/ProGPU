@@ -203,7 +203,6 @@ internal sealed class OpenTypeVariationData
                 if (_axisData[axisIndex].PublicAxis.Tag.Equals(setting.Tag, StringComparison.Ordinal))
                 {
                     selected[axisIndex] = setting.Value;
-                    break;
                 }
             }
         }
@@ -266,6 +265,45 @@ internal sealed class OpenTypeVariationData
 
         (ushort outer, ushort inner) = _advanceMap?.Get(glyphIndex) ?? (0, glyphIndex);
         return GetItemDelta(_itemStore, instance, outer, inner);
+    }
+
+    public bool UsesGlyphPhantomAdvance => _itemStore is null && _glyphVariationOffsets is not null;
+
+    public float GetGlyphPhantomAdvanceDelta(
+        OpenTypeVariationInstance instance,
+        ushort glyphIndex,
+        int itemCount)
+    {
+        if (!UsesGlyphPhantomAdvance || itemCount < 4) return 0f;
+        GlyphVariationData? variation = GetGlyphVariation(glyphIndex, itemCount);
+        if (variation is null) return 0f;
+
+        int leftPhantom = itemCount - 4;
+        int rightPhantom = leftPhantom + 1;
+        float leftDelta = 0f;
+        float rightDelta = 0f;
+        foreach (TupleData tuple in variation.Tuples)
+        {
+            float scalar = CalculateScalar(instance.NormalizedCoordinates, tuple.Start, tuple.Peak, tuple.End);
+            if (scalar == 0f) continue;
+            if (tuple.PointNumbers is null)
+            {
+                if (rightPhantom < tuple.X.Length)
+                {
+                    leftDelta += tuple.X[leftPhantom] * scalar;
+                    rightDelta += tuple.X[rightPhantom] * scalar;
+                }
+                continue;
+            }
+
+            for (var deltaIndex = 0; deltaIndex < tuple.PointNumbers.Length; deltaIndex++)
+            {
+                int point = tuple.PointNumbers[deltaIndex];
+                if (point == leftPhantom) leftDelta += tuple.X[deltaIndex] * scalar;
+                else if (point == rightPhantom) rightDelta += tuple.X[deltaIndex] * scalar;
+            }
+        }
+        return rightDelta - leftDelta;
     }
 
     public float GetMetricDelta(OpenTypeVariationInstance instance, string tag)
