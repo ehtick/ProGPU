@@ -5360,11 +5360,11 @@ public static class OpenTypeTextShaper
                 {
                     return -1;
                 }
-                // CGJ and ZWNJ are default-ignorable for display but remain
-                // shaping barriers. Skipping either permits substitutions to
-                // cross an explicit canonical-order or joining boundary.
+                // ZWNJ remains a shaping barrier. CGJ blocks canonical mark
+                // reordering, but OpenType lookup matching skips it just like
+                // HarfBuzz skips the temporary .notdef buffer item.
                 if (!IsDefaultIgnorable(glyph.CodePoint) || IsVisibleDefaultIgnorable(glyph) ||
-                    glyph.CodePoint is 0x034F or 0x200C || IsMongolianShapingControl(glyph.CodePoint) ||
+                    glyph.CodePoint == 0x200C || IsMongolianShapingControl(glyph.CodePoint) ||
                     IsUnicodeTagCharacter(glyph.CodePoint))
                 {
                     if (!IsGlyphClassIgnored(index, lookupFlags)) return index;
@@ -5394,6 +5394,8 @@ public static class OpenTypeTextShaper
                 if (_restrictLookupToSyllable && glyph.UseSyllable != _lookupSyllable) return -1;
                 if (IsDefaultIgnorable(glyph.CodePoint) && !IsVisibleDefaultIgnorable(glyph))
                 {
+                    // CGJ is skipped by contextual matching, but remains an
+                    // explicit component boundary for ligature formation.
                     if (glyph.GlyphIndex == expectedGlyph || glyph.CodePoint is 0x034F or 0x200C ||
                         IsMongolianShapingControl(glyph.CodePoint) ||
                         IsUnicodeTagCharacter(glyph.CodePoint)) return index;
@@ -5420,7 +5422,7 @@ public static class OpenTypeTextShaper
         private bool IsLookupIgnored(int index, ushort lookupFlags)
         {
             GlyphRecord glyph = _glyphs[index];
-            if (IsDefaultIgnorable(glyph.CodePoint) && !IsVisibleDefaultIgnorable(glyph) && glyph.CodePoint is not (0x034F or 0x200C) &&
+            if (IsDefaultIgnorable(glyph.CodePoint) && !IsVisibleDefaultIgnorable(glyph) && glyph.CodePoint != 0x200C &&
                 !IsMongolianShapingControl(glyph.CodePoint) &&
                 !IsUnicodeTagCharacter(glyph.CodePoint)) return true;
             return IsGlyphClassIgnored(index, lookupFlags);
