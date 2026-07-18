@@ -58,6 +58,8 @@ public struct GpuBezierCurve
 
 public static class BvhBuilder
 {
+    public const uint MaximumAdaptiveSubdivisions = 256;
+
     public static (Vector2 Min, Vector2 Max) GetCurveBounds(in GpuBezierCurve curve)
     {
         if (curve.CurveType == 0) // Line
@@ -78,9 +80,9 @@ public static class BvhBuilder
         }
     }
 
-    public static List<GpuBezierCurve> GetPathCurves(PathGeometry path)
+    public static bool TryGetPathCurves(PathGeometry path, out List<GpuBezierCurve> curves)
     {
-        var curves = new List<GpuBezierCurve>();
+        curves = new List<GpuBezierCurve>();
 
         foreach (var figure in path.Figures)
         {
@@ -105,6 +107,14 @@ public static class BvhBuilder
                     curves.Add(new GpuBezierCurve(currentPoint, cubic.ControlPoint1, cubic.ControlPoint2, cubic.Point, 2));
                     currentPoint = cubic.Point;
                 }
+                else
+                {
+                    // Analytic arcs and any future segment kinds must use the established path
+                    // renderer until Wavefront has an explicitly bounded representation for
+                    // them. Silently skipping one would produce incomplete geometry.
+                    curves.Clear();
+                    return false;
+                }
             }
 
             if (figure.IsClosed && currentPoint != figure.StartPoint)
@@ -113,14 +123,14 @@ public static class BvhBuilder
             }
         }
 
-        return curves;
+        return true;
     }
 
-    public static List<GpuBezierCurve> GetGlyphCurves(TtfFont font, ushort glyphId)
+    public static bool TryGetGlyphCurves(TtfFont font, ushort glyphId, out List<GpuBezierCurve> curves)
     {
-        var curves = new List<GpuBezierCurve>();
+        curves = new List<GpuBezierCurve>();
         var outline = font.GetGlyphOutline(glyphId);
-        if (outline == null) return curves;
+        if (outline == null) return false;
 
         foreach (var figure in outline.Figures)
         {
@@ -140,6 +150,16 @@ public static class BvhBuilder
                     curves.Add(new GpuBezierCurve(currentPoint, quad.ControlPoint, quad.Point, Vector2.Zero, 1));
                     currentPoint = quad.Point;
                 }
+                else if (segment is CubicBezierSegment cubic)
+                {
+                    curves.Add(new GpuBezierCurve(currentPoint, cubic.ControlPoint1, cubic.ControlPoint2, cubic.Point, 2));
+                    currentPoint = cubic.Point;
+                }
+                else
+                {
+                    curves.Clear();
+                    return false;
+                }
             }
 
             if (figure.IsClosed && currentPoint != figure.StartPoint)
@@ -148,24 +168,111 @@ public static class BvhBuilder
             }
         }
 
-        return curves;
+        return curves.Count != 0;
     }
 
-    public static List<GpuBvhNode> BuildBvh(List<GpuBezierCurve> curves, out List<GpuBezierCurve> orderedCurves, out uint totalLines)
+    public static bool TryBuildBvh(
+        List<GpuBezierCurve> curves,
+        float localTolerance,
+        out List<GpuBvhNode> nodes,
+        out List<GpuBezierCurve> orderedCurves,
+        out uint totalLines)
     {
-        var nodes = new List<GpuBvhNode>();
+        nodes = new List<GpuBvhNode>();
         orderedCurves = new List<GpuBezierCurve>();
 
         if (curves.Count == 0)
         {
             totalLines = 0;
-            return nodes;
+            return false;
+        }
+
+        if (!float.IsFinite(localTolerance) || localTolerance <= 0f)
+        {
+            totalLines = 0;
+            return false;
+        }
+
+        ulong requiredLineCount = 0;
+        for (int index = 0; index < curves.Count; index++)
+        {
+            var curve = curves[index];
+            if (!TryGetAdaptiveSubdivisionCount(curve, localTolerance, out uint subdivisions))
+            {
+                totalLines = 0;
+                return false;
+            }
+
+            curve.Subdivisions = subdivisions;
+            curves[index] = curve;
+            requiredLineCount += subdivisions;
+            if (requiredLineCount > int.MaxValue)
+            {
+                totalLines = 0;
+                return false;
+            }
         }
 
         int globalLineCount = 0;
         BuildRecursive(curves, 0, curves.Count, nodes, orderedCurves, ref globalLineCount);
         totalLines = (uint)globalLineCount;
-        return nodes;
+        return true;
+    }
+
+    /// <summary>
+    /// Computes a uniform subdivision count whose chord approximation is bounded by
+    /// <paramref name="localTolerance"/>. For an interval of parameter width h, the interpolation
+    /// error is at most max(|B''|) * h^2 / 8. Quadratic second derivatives are constant; cubic
+    /// second derivatives are linear, so the maximum norm is bounded by its two endpoints.
+    /// </summary>
+    public static bool TryGetAdaptiveSubdivisionCount(
+        in GpuBezierCurve curve,
+        float localTolerance,
+        out uint subdivisions)
+    {
+        subdivisions = 0;
+        if (!float.IsFinite(localTolerance) || localTolerance <= 0f ||
+            !IsFinite(curve.P0) || !IsFinite(curve.P1) ||
+            !IsFinite(curve.P2) || !IsFinite(curve.P3))
+        {
+            return false;
+        }
+
+        if (curve.CurveType == 0)
+        {
+            subdivisions = 1;
+            return true;
+        }
+
+        double secondDerivativeBound;
+        if (curve.CurveType == 1)
+        {
+            secondDerivativeBound = 2d * SecondDifferenceLength(curve.P0, curve.P1, curve.P2);
+        }
+        else if (curve.CurveType == 2)
+        {
+            double start = 6d * SecondDifferenceLength(curve.P0, curve.P1, curve.P2);
+            double end = 6d * SecondDifferenceLength(curve.P1, curve.P2, curve.P3);
+            secondDerivativeBound = Math.Max(start, end);
+        }
+        else
+        {
+            return false;
+        }
+
+        if (!double.IsFinite(secondDerivativeBound))
+        {
+            return false;
+        }
+
+        double required = Math.Ceiling(Math.Sqrt(secondDerivativeBound / (8d * localTolerance)));
+        if (!double.IsFinite(required) || required > MaximumAdaptiveSubdivisions)
+        {
+            return false;
+        }
+
+        subdivisions = Math.Max(1u, (uint)required);
+        return true;
     }
 
     private static int BuildRecursive(List<GpuBezierCurve> curves, int start, int end, List<GpuBvhNode> nodes, List<GpuBezierCurve> orderedCurves, ref int globalLineCount)
@@ -194,18 +301,10 @@ public static class BvhBuilder
             for (int i = start; i < end; i++)
             {
                 var curve = curves[i];
-                uint subs = curve.CurveType switch
-                {
-                    0 => 1u,   // Line
-                    1 => 12u,  // Quadratic
-                    2 => 16u,  // Cubic
-                    _ => 1u
-                };
-                curve.Subdivisions = subs;
                 curve.LineOffset = (uint)globalLineCount;
                 orderedCurves.Add(curve);
-                globalLineCount += (int)subs;
-                totalLinesInLeaf += subs;
+                globalLineCount = checked(globalLineCount + (int)curve.Subdivisions);
+                totalLinesInLeaf = checked(totalLinesInLeaf + curve.Subdivisions);
             }
 
             nodes[nodeIdx] = new GpuBvhNode
@@ -247,5 +346,15 @@ public static class BvhBuilder
         }
 
         return nodeIdx;
+    }
+
+    private static bool IsFinite(Vector2 value) =>
+        float.IsFinite(value.X) && float.IsFinite(value.Y);
+
+    private static double SecondDifferenceLength(Vector2 p0, Vector2 p1, Vector2 p2)
+    {
+        double x = (double)p0.X - 2d * p1.X + p2.X;
+        double y = (double)p0.Y - 2d * p1.Y + p2.Y;
+        return Math.Sqrt(x * x + y * y);
     }
 }

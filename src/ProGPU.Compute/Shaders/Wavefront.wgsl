@@ -1,5 +1,5 @@
 // Algorithm: Retain flattened vector curves, build deterministic 16x16-cell coverage bitmaps instance-first, count/scan/scatter exact painter-ordered cell lists, compact non-empty cells stably, conservatively classify solid/outside cell-shape pairs, and indirectly dispatch only active cells to a sparse output texture.
-// Time complexity: O(dC*S) for newly appended curves (O(C*S) only after an arena grow replay), O(O + G*ceil(I/32) + G + O*log L) for sparse binning/active-cell compaction/coarse classification, and O(Pa*Ke*log L + Pa*Ks) for the fine path, where dC is new curves, C retained curves, S subdivisions, O instance/cell overlaps, G cells, I instances, Pa pixels in active cells, Ke edge candidates, Ks solid candidates, and L primitives per shape.
+// Time complexity: O(dC*S) for newly appended curves (O(C*S) only after an arena grow replay), O(O + G*ceil(I/32) + G + O*log L) for sparse binning/active-cell compaction/coarse classification, and O(Pa*Ke*log L + Pa*Ks) for the fine path, where dC is new curves, C retained curves, S is the CPU-selected adaptive subdivision count bounded by 256, O instance/cell overlaps, G cells, I instances, Pa pixels in active cells, Ke edge candidates, Ks solid candidates, and L primitives per shape.
 // Space complexity: O(C*S + I + G*ceil(I/32) + O + G + W*H), for retained geometry/bin arenas and one sparse ping-pong texture; there is no fixed per-cell overlap cap and no full-window texture copy.
 struct BvhNode {
     min_bounds: vec2<f32>,
@@ -124,6 +124,8 @@ fn flatten_curves(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let count = curve.subdivisions;
     let start_offset = curve.line_offset;
     
+    // CPU preparation proves the max(|B''|) * h^2 / 8 chord-error bound at the
+    // quantized upper device scale and rejects curves requiring more than 256 iterations.
     for (var i = 0u; i < count; i = i + 1u) {
         let t0 = f32(i) / f32(count);
         let t1 = f32(i + 1u) / f32(count);

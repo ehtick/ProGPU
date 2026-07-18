@@ -121,6 +121,40 @@ capability is not yet sufficient evidence of usable timing on the current Metal 
 glyph run reported 601 failed timestamp readbacks and zero valid samples. Phase 0 therefore remains
 open for backend-specific timestamp qualification even though queue-completion accounting is valid.
 
+### Working-tree checkpoint: non-blocking per-pass GPU timestamps
+
+Phase 0 now has pass-level instrumentation rather than only a whole-frame timestamp pair:
+
+- `GpuTimestampRing` owns one 24-query set and three independently mappable 192-byte readback
+  buffers. Query zero/one bound the complete compositor command stream; fixed pairs record glyph
+  atlas, path atlas, scene preparation, masks/effects, primary rendering, Wavefront compute, and
+  final composite. Nested fixed pairs further split Wavefront into geometry flattening, bin
+  construction, active-cell compaction, and coarse/fine raster work. A busy ring drops only the
+  diagnostic sample and never stalls rendering.
+- Query resolution, readback copies, and all measured GPU work remain in the caller's single command
+  encoder. Mapping starts only after queue submission, and metrics are harvested opportunistically
+  on later frames. Normal rendering still creates no query set, buffers, arrays, map tasks, or
+  timestamp commands unless diagnostics are explicitly enabled.
+- Each readback slot carries the exact stage-written mask for its frame. Unused query indices are
+  ignored even if the reusable WebGPU query set still contains older values, so an absent glyph,
+  path, or Wavefront pass cannot be misreported as current GPU work.
+- Benchmark warmup ends by advancing a metrics epoch and clearing counters. Late maps from the old
+  epoch are safely unmapped but cannot contaminate measured averages or maxima. This is essential
+  for separating cold pipeline/atlas work from sustained scrolling.
+- The text and JSON benchmark records now expose sample count, average milliseconds, and maximum
+  milliseconds for every pass, plus delta-based whole-frame GPU duration. Unsupported stages remain
+  zero-sample records instead of being reported as zero-cost work.
+- A native headless regression renders multiple frames, requires valid frame and primary-pass
+  samples, checks every optional pass record for internally consistent values, resets the epoch, and
+  requires a second independent sample set while rejecting WebGPU validation errors. The source
+  builds successfully in this checkpoint. The current sandbox reaches
+  wgpu-native but exposes no suitable Metal adapter, so executed timestamp qualification remains an
+  explicit open gate; no GPU-duration result is claimed here.
+
+This instrumentation changes diagnostics only. The remaining Phase 0 work is to qualify timestamp
+units and availability on each desktop/browser backend, measure enabled overhead, and store Release
+and browser AOT baselines.
+
 ### Working-tree checkpoint: retained spatial nodes and indexed text transforms
 
 The current working tree advances Phase 1 beyond explicit row fragments. It is deliberately listed
@@ -413,13 +447,19 @@ The architecture already avoids several common text regressions: shaped glyph in
 
 ### Path atlas
 
-`PathAtlas.RasterizePendingPaths` batches pending outlines into shared record and segment uploads, sorts work by raster dimensions, groups equal workgroup dimensions, uses the dispatch z dimension for multiple paths, records one compute pass, and submits one path-atlas command buffer. This is substantially better than one submission per path.
+`PathAtlas.RasterizePendingPaths` batches pending outlines into shared persistent record and segment
+uploads. A flat 16 x 16 tile-work stream represents mixed raster dimensions in one compute pass and
+records into the compositor's command encoder. This is substantially better than one dispatch,
+binding, or submission per path or raster-size group.
 
 Remaining costs include:
 
-- Temporary GPU buffers for uniforms, records, and segments per pending batch.
-- A bind group per raster-size dispatch group.
-- A separate command encoder and queue submission before the compositor submission.
+- Geometrically growing persistent job, record, segment, uniform, and tile-record arenas retain
+  capacity, but cold growth still replaces bindings and defers the old buffers.
+- The flat tile-work queue removes the former bind group and dispatch per raster-size class; the
+  remaining bind-group rebuild occurs only when an owning arena grows.
+- Ordinary compositor frames record atlas work into the main encoder. Immediate callers and nested
+  separately submitted offscreen work retain an explicit dependency-boundary submission.
 - Full rectangle coverage work for each new scale/phase variant.
 - Atlas packing, generation, and bounded-capacity recovery complexity.
 
@@ -431,18 +471,17 @@ The measured glyph scrolling workload had no new atlas generations or evictions,
 
 ### Experimental wavefront engine
 
-The optional wavefront engine caches CPU BVHs and curve records but currently performs the following each frame:
+The optional Wavefront engine now keeps geometrically growing GPU buffers and stable bind groups,
+uploads only appended cached BVH/curve ranges, and flattens only newly appended raw curves. Its
+instance-driven occupancy bitmap, popcount, hierarchical scans, and stable scatters replace the
+former O(grid cells x instances) binner and fixed 64-index cell capacity. A second scan compacts
+non-empty cells, indirect dispatch launches fine work only for active cells, and the final render
+pass composites only sparse active-cell quads. The former full intermediate-texture copy is gone.
 
-- Disposes and recreates BVH, raw-curve, flattened-line, instance, grid-cell, and grid-index GPU buffers.
-- Uploads all cached BVH nodes and raw curves, not only changes.
-- Flattens all raw curves again.
-- Bins by launching over grid cells and scanning every instance per cell.
-- Keeps only 64 instance indices per cell.
-- Copies the full intermediate texture.
-- Launches one invocation per destination pixel; each pixel loops candidate shapes, transforms to local coordinates, traverses a depth-16 BVH stack, computes winding and minimum distance over flattened lines, and blends.
-- Creates three bind groups every frame and performs a final texture composite pass.
-
-The engine demonstrates GPU curve and shape processing, but its algorithms are not a route to 1000 FPS for ordinary UI. Its binner is O(T x I), where T is grid cells and I is instances, and its fine stage has divergent per-pixel BVH work. It should remain experimental until replaced by count/scan/scatter binning and sparse tile work.
+This is a materially better experimental path, but it is not yet the default route to 1000 FPS for
+ordinary UI. Fine work within an active cell can still diverge while traversing candidate shapes and
+BVHs; complex overlap, clipping/layers, and cold geometry routing still require per-pass timestamp
+evidence and quality comparison against the established atlas/analytic paths.
 
 ## Architecture comparison
 
@@ -806,6 +845,27 @@ are implemented and CPU-qualified.
   deliberately replays all retained source once into the fresh BVH/curve/line arenas. A native
   three-frame test proves first upload, zero-work cache hit, and a two-curve append without arena
   replay. Transform-only frames upload instances but retain BVHs, curves, and flattened lines.
+- Fixed 12-segment quadratic and 16-segment cubic flattening is replaced by a bounded adaptive
+  policy. CPU preparation computes the standard `max(|B''|) * h^2 / 8` chord-error bound, while the
+  GPU still emits the flattened line range in parallel. The requested transform, glyph size, and
+  physical DPI select an upper-rounded quarter-octave scale bucket, so cached lines remain valid up
+  to the bucket boundary and are reused across transform-only frames. Supported scales from 2^-16
+  through 2^16 yield at most 129 variants per geometry; larger scales use the quality fallback. The
+  device-space tolerance is 1/8 pixel and each curve is capped at 256 subdivisions. A non-finite/singular transform, unsupported
+  brush, stroke path, empty outline, analytic arc, unknown segment kind, or curve that would exceed
+  the cap routes through the existing atlas/glyph path; quality is never recovered by silently
+  truncating subdivisions or skipping unsupported geometry. CPU tests sample quadratic and cubic
+  chords, prove the bound, verify conservative bucket rounding and exact BVH line offsets, and
+  exercise both explicit over-cap rejection and fail-closed arc extraction.
+- Mixed fallback frames remain safe: `BeginFrame` clears the sparse-work flag, and an empty or fully
+  atlas-routed Wavefront frame cannot replay the prior frame's indirect active-cell draw. The final
+  base composite still runs when needed, but stale sparse tiles are not overlaid.
+- Wavefront no longer disables the whole-scene cache unconditionally. A compatible static cache hit
+  retains the instance list and replays it without visual-tree traversal or geometry discovery;
+  accepted path/glyph, fallback, cache hit/miss, and retained-line counters make that route visible.
+  A scene containing shared mutable retained-transform nodes remains on the full correctness path
+  because Wavefront instances do not yet index the compositor transform table. The native path test
+  now requires a second-frame scene-cache hit and identical center coverage.
 - The former cell-centric `for every instance` shader and fixed 64-index slab are removed. One invocation per instance transforms its four bounds corners and atomically ORs its painter-index bit into each covered 16 x 16 cell. This performs `O(I + O)` invocation/overlap work for `I` instances and `O` actual overlaps.
 - Coverage words are cell-major and instance-word-minor. A popcount pass writes exact word counts into the reusable hierarchical `GpuPrefixScan`; deterministic scatter enumerates words and set bits in increasing order. Each cell receives one exact contiguous range with source painter order preserved. Atomic scheduling cannot reorder output.
 - The CPU computes only the exact overlap capacity in `O(I)` from transformed rectangles, with no GPU readback. A count beyond the backend's 32-bit buffer addressability rejects the frame explicitly before encoding; it cannot truncate or silently drop shapes.
@@ -1054,6 +1114,16 @@ browser packet protocol uses a fixed `DrawIndirect` opcode with pass handle, buf
 offset; JavaScript invokes `GPURenderPassEncoder.drawIndirect` without synchronous readback or object
 serialization. The focused typed-packet test passes.
 
+The ordinary worker fallback now also reuses command-packet transfer storage. The main thread copies
+each WASM packet into a fitting buffer from a bounded 64-entry pool (4 KiB minimum, 1 MiB maximum
+retained capacity), transfers `{ buffer, length }` records as one microtask batch, and the dispatcher
+worker returns those detached buffers immediately after synchronous packet decoding—even when a
+packet throws. Large exceptional packets are transferred once but are not retained. This removes
+the former `heap.slice(...).buffer` allocation on every dispatch while preserving a copy-based path
+for deployments without shared WASM memory or cross-origin isolation. JavaScript syntax validation,
+the dependency build, and a source regression protecting transfer, length, return, bounds, and the
+absence of `heap.slice` pass; browser runtime allocation measurement remains part of the AOT gate.
+
 The browser, sample, and test dependency graphs compile on .NET 10 Release. Earlier working-tree AOT
 publishes closed the retained-transform, scan, stable-binner, browser-indirect, and multi-page-atlas
 managed call graph. A final republish after the sample-only Phase 6 cleanup could not complete in this
@@ -1064,6 +1134,11 @@ the same silent tool-host stall before producing compiler/linker output and was 
 servers were then shut down explicitly. This is an environmental validation gap, not an FPS or
 WebGPU runtime success; a clean AOT publish and browser execution remain mandatory before
 integration.
+
+The post-transfer-pool retry produced every Release dependency through `ProGPU.Samples`, then again
+stalled silently at the AOT/ILLink tool-host boundary for more than one minute. It was cancelled and
+the build servers were shut down. This third reproduction narrows the gap to sandboxed tool-host IPC;
+it does not change the mandatory clean AOT and browser-runtime gate.
 
 Deliverables:
 

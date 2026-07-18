@@ -1,4 +1,6 @@
 using ProGPU.Compute;
+using ProGPU.Vector;
+using System.Numerics;
 using Xunit;
 
 namespace ProGPU.Tests;
@@ -108,6 +110,140 @@ public class WavefrontBinningTests
             GpuCellShapeClass.Edge,
             WavefrontVectorEngine.ClassifyCellByCenterDistance(
                 float.NaN, 1f, 1f, 16f, 16f, centerIsInside: true));
+    }
+
+    [Theory]
+    [InlineData(0.99f)]
+    [InlineData(1f)]
+    [InlineData(1.01f)]
+    [InlineData(2f)]
+    [InlineData(7.5f)]
+    public void FlatteningScaleBucketsRoundUpConservatively(float scale)
+    {
+        Assert.True(WavefrontVectorEngine.TryGetScaleBucket(scale, out _, out float upperScale));
+        Assert.True(upperScale >= scale);
+        Assert.True(upperScale / scale <= MathF.Pow(2f, 0.25f) + 0.0001f);
+    }
+
+    [Fact]
+    public void AdaptiveQuadraticAndCubicFlatteningMeetChordErrorBound()
+    {
+        const float tolerance = 0.125f;
+        GpuBezierCurve[] curves =
+        [
+            new(new Vector2(0f, 0f), new Vector2(40f, 100f), new Vector2(100f, 0f), Vector2.Zero, 1),
+            new(new Vector2(0f, 0f), new Vector2(20f, 140f), new Vector2(80f, -120f), new Vector2(120f, 10f), 2)
+        ];
+
+        foreach (var curve in curves)
+        {
+            Assert.True(BvhBuilder.TryGetAdaptiveSubdivisionCount(curve, tolerance, out uint subdivisions));
+            Assert.InRange(subdivisions, 2u, BvhBuilder.MaximumAdaptiveSubdivisions);
+            Assert.True(MaximumMatchedParameterChordError(curve, subdivisions) <= tolerance + 0.0001f);
+        }
+    }
+
+    [Fact]
+    public void AdaptiveFlatteningUsesOneLineForLinearCurvesAndRejectsUnboundedWork()
+    {
+        var line = new GpuBezierCurve(
+            new Vector2(0f, 0f),
+            new Vector2(10f, 10f),
+            Vector2.Zero,
+            Vector2.Zero,
+            0);
+        Assert.True(BvhBuilder.TryGetAdaptiveSubdivisionCount(line, 0.001f, out uint lineCount));
+        Assert.Equal(1u, lineCount);
+
+        var extreme = new GpuBezierCurve(
+            new Vector2(0f, 0f),
+            new Vector2(0f, 1_000_000f),
+            new Vector2(1_000_000f, -1_000_000f),
+            new Vector2(1_000_000f, 0f),
+            2);
+        Assert.False(BvhBuilder.TryGetAdaptiveSubdivisionCount(extreme, 0.000001f, out _));
+    }
+
+    [Fact]
+    public void AdaptiveBvhStoresExactLineOffsetsAndCounts()
+    {
+        var curves = new List<GpuBezierCurve>
+        {
+            new(new Vector2(0f, 0f), new Vector2(20f, 30f), new Vector2(40f, 0f), Vector2.Zero, 1),
+            new(new Vector2(40f, 0f), new Vector2(60f, 0f), Vector2.Zero, Vector2.Zero, 0)
+        };
+
+        Assert.True(BvhBuilder.TryBuildBvh(
+            curves,
+            0.25f,
+            out var nodes,
+            out var ordered,
+            out uint totalLines));
+
+        Assert.Single(nodes);
+        Assert.Equal(2, ordered.Count);
+        Assert.Equal(0u, ordered[0].LineOffset);
+        Assert.Equal(ordered[0].Subdivisions, ordered[1].LineOffset);
+        uint expectedLines = 0;
+        foreach (var curve in ordered)
+        {
+            expectedLines = checked(expectedLines + curve.Subdivisions);
+        }
+        Assert.Equal(expectedLines, totalLines);
+        Assert.Equal(totalLines, nodes[0].PrimitiveCount);
+    }
+
+    [Fact]
+    public void WavefrontPathExtractionFailsClosedForUnsupportedSegments()
+    {
+        var path = new PathGeometry();
+        var figure = new PathFigure(Vector2.Zero);
+        figure.Segments.Add(new LineSegment(new Vector2(10f, 0f)));
+        figure.Segments.Add(new ArcSegment(
+            new Vector2(20f, 10f),
+            new Vector2(10f, 10f),
+            0f,
+            isLargeArc: false,
+            SweepDirection.Clockwise));
+        path.Figures.Add(figure);
+
+        Assert.False(BvhBuilder.TryGetPathCurves(path, out var curves));
+        Assert.Empty(curves);
+    }
+
+    private static float MaximumMatchedParameterChordError(in GpuBezierCurve curve, uint subdivisions)
+    {
+        float maximum = 0f;
+        const int sampleCount = 16_384;
+        for (int sample = 0; sample <= sampleCount; sample++)
+        {
+            float t = sample / (float)sampleCount;
+            float scaled = t * subdivisions;
+            uint segment = t >= 1f ? subdivisions - 1u : (uint)scaled;
+            float segmentT = t >= 1f ? 1f : scaled - segment;
+            float t0 = segment / (float)subdivisions;
+            float t1 = (segment + 1u) / (float)subdivisions;
+            Vector2 chord = Vector2.Lerp(Evaluate(curve, t0), Evaluate(curve, t1), segmentT);
+            maximum = MathF.Max(maximum, Vector2.Distance(Evaluate(curve, t), chord));
+        }
+
+        return maximum;
+    }
+
+    private static Vector2 Evaluate(in GpuBezierCurve curve, float t)
+    {
+        float oneMinusT = 1f - t;
+        return curve.CurveType switch
+        {
+            0 => Vector2.Lerp(curve.P0, curve.P1, t),
+            1 => oneMinusT * oneMinusT * curve.P0 +
+                 2f * oneMinusT * t * curve.P1 +
+                 t * t * curve.P2,
+            _ => oneMinusT * oneMinusT * oneMinusT * curve.P0 +
+                 3f * oneMinusT * oneMinusT * t * curve.P1 +
+                 3f * oneMinusT * t * t * curve.P2 +
+                 t * t * t * curve.P3
+        };
     }
 
     private static uint[] Slice(GpuGridCell cell, uint[] indices) =>

@@ -27,6 +27,7 @@ const state = {
   nextWorkerRequest: 1,
   workerMappedBuffers: new Map(),
   workerPackets: [],
+  workerPacketPool: [],
   workerDispatchScheduled: false,
   diagnosticsVisible: false,
   framebufferWidth: 1,
@@ -43,6 +44,9 @@ const DIAGNOSTICS_VISIBILITY_KEY = 'progpu.browser.diagnostics.visible';
 const uncappedFrameResolvers = [];
 const uncappedGpuFenceResolvers = [];
 const MAX_UNCAPPED_FRAMES_IN_FLIGHT = 2;
+const MIN_WORKER_PACKET_CAPACITY = 4096;
+const MAX_POOLED_WORKER_PACKET_CAPACITY = 1024 * 1024;
+const MAX_POOLED_WORKER_PACKETS = 64;
 let uncappedFramesSinceFence = 0;
 const uncappedFrameChannel = new MessageChannel();
 uncappedFrameChannel.port1.onmessage = async () => {
@@ -617,6 +621,8 @@ function handleWorkerMessage(event) {
     globalThis.setTimeout(() => globalThis.location.reload(), 250);
   } else if (message.type === 'uncapped-frame-ready') {
     uncappedGpuFenceResolvers.shift()?.();
+  } else if (message.type === 'recycle-packets') {
+    for (const buffer of message.buffers) recycleWorkerPacketBuffer(buffer);
   } else if (message.type === 'response') {
     const pending = state.workerRequests.get(message.id);
     if (!pending) return;
@@ -643,7 +649,31 @@ function flushWorkerPackets() {
   const packets = state.workerPackets;
   state.workerPackets = [];
   state.workerDispatchScheduled = false;
-  state.worker.postMessage({ type: 'dispatch-batch', packets }, packets);
+  state.worker.postMessage(
+    { type: 'dispatch-batch', packets },
+    packets.map(packet => packet.buffer));
+}
+
+function acquireWorkerPacketBuffer(length) {
+  for (let index = state.workerPacketPool.length - 1; index >= 0; index--) {
+    const buffer = state.workerPacketPool[index];
+    if (buffer.byteLength < length) continue;
+    state.workerPacketPool.splice(index, 1);
+    return buffer;
+  }
+
+  let capacity = MIN_WORKER_PACKET_CAPACITY;
+  while (capacity < length && capacity < MAX_POOLED_WORKER_PACKET_CAPACITY) capacity *= 2;
+  return new ArrayBuffer(Math.max(length, capacity));
+}
+
+function recycleWorkerPacketBuffer(buffer) {
+  if (!(buffer instanceof ArrayBuffer) ||
+      buffer.byteLength > MAX_POOLED_WORKER_PACKET_CAPACITY ||
+      state.workerPacketPool.length >= MAX_POOLED_WORKER_PACKETS) {
+    return;
+  }
+  state.workerPacketPool.push(buffer);
 }
 
 async function initialize(requestJson) {
@@ -688,8 +718,9 @@ function dispatch(address, length) {
   const heap = runtime.localHeapViewU8();
   if (state.worker) {
     if (address < 0 || length < HEADER_SIZE || address + length > heap.byteLength) throw new RangeError('Command packet is outside WASM memory.');
-    const packet = heap.slice(address, address + length).buffer;
-    state.workerPackets.push(packet);
+    const buffer = acquireWorkerPacketBuffer(length);
+    new Uint8Array(buffer, 0, length).set(heap.subarray(address, address + length));
+    state.workerPackets.push({ buffer, length });
     if (!state.workerDispatchScheduled) {
       state.workerDispatchScheduled = true;
       queueMicrotask(flushWorkerPackets);
@@ -1349,9 +1380,14 @@ async function handleDispatcherWorkerMessage(event) {
         }
         break;
       case 'dispatch-batch': {
-        for (const packetBuffer of message.packets) {
-          const packet = new Uint8Array(packetBuffer);
-          dispatchPacket(packet, 0, packet.byteLength);
+        const recycled = message.packets.map(packet => packet.buffer);
+        try {
+          for (const packetRecord of message.packets) {
+            const packet = new Uint8Array(packetRecord.buffer, 0, packetRecord.length);
+            dispatchPacket(packet, 0, packet.byteLength);
+          }
+        } finally {
+          globalThis.postMessage({ type: 'recycle-packets', buffers: recycled }, recycled);
         }
         break;
       }

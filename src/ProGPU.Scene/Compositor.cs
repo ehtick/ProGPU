@@ -133,6 +133,12 @@ public struct CompositorMetrics
     public int SceneFragmentUpdateCount;
     public int GpuVisibilityBatchCount;
     public int GpuVisibilityInputCount;
+    public int WavefrontPathCount;
+    public int WavefrontGlyphCount;
+    public int WavefrontFallbackCount;
+    public int WavefrontGeometryCacheHits;
+    public int WavefrontGeometryCacheMisses;
+    public uint WavefrontRetainedLineSegmentCount;
     public int DrawCallsCount;
     public int VectorVerticesCount;
     public int TextVerticesCount;
@@ -2175,10 +2181,6 @@ public unsafe class Compositor : IDisposable
         _context.CleanupPendingResources();
 
         var wavefrontEnabled = VectorEngine == VectorRenderingEngine.Wavefront;
-        if (wavefrontEnabled)
-        {
-            (_wavefrontEngine ??= new WavefrontVectorEngine(_context)).BeginFrame();
-        }
 
         _currentWidth = width;
         _currentHeight = height;
@@ -2235,13 +2237,24 @@ public unsafe class Compositor : IDisposable
         );
         _currentProjection = projection;
 
-        bool reuseCompiledScene = !wavefrontEnabled && CanReuseCompiledScene(
+        bool wavefrontRetainedReplayCompatible = !wavefrontEnabled || !_compiledSceneHasGpuTransforms;
+        bool reuseCompiledScene = wavefrontRetainedReplayCompatible && CanReuseCompiledScene(
             root,
             width,
             height,
             externalLayers,
             activeToolTip,
             hasDynamicDiagnostics);
+        if (!wavefrontRetainedReplayCompatible)
+        {
+            _currentSceneCacheMissReason = "Wavefront retained transform fallback";
+        }
+        if (wavefrontEnabled)
+        {
+            (_wavefrontEngine ??= new WavefrontVectorEngine(_context)).BeginFrame(
+                _currentDpiScale,
+                reuseRetainedInstances: reuseCompiledScene);
+        }
 
         _useGpuTransformsActive = false;
         _cameraViewMatrix = Matrix4x4.Identity;
@@ -2660,6 +2673,7 @@ SceneStateUploadComplete:
         _context.BeginFrameGpuTimestamp(encoder);
         encoderCreationTimeMs = System.Diagnostics.Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
 
+        _context.BeginGpuTimestampStage(encoder, GpuTimestampStage.GlyphAtlas);
         if (glyphBatchActive)
         {
             phaseStart = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -2668,20 +2682,28 @@ SceneStateUploadComplete:
             glyphBatchActive = false;
             glyphAtlasTimeMs += System.Diagnostics.Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
         }
+        _context.EndGpuTimestampStage(encoder, GpuTimestampStage.GlyphAtlas);
 
         // Record atlas compute into the same command stream as the render pass. WebGPU
         // command ordering makes the storage writes visible to later atlas sampling.
+        _context.BeginGpuTimestampStage(encoder, GpuTimestampStage.PathAtlas);
         long pathAtlasStart = System.Diagnostics.Stopwatch.GetTimestamp();
         _pathAtlas.RasterizePendingPaths(encoder);
         pathAtlasTimeMs = System.Diagnostics.Stopwatch.GetElapsedTime(pathAtlasStart).TotalMilliseconds;
+        _context.EndGpuTimestampStage(encoder, GpuTimestampStage.PathAtlas);
 
+        _context.BeginGpuTimestampStage(encoder, GpuTimestampStage.ScenePreparation);
         RecordStaticDxfVisibility(encoder);
+        _context.EndGpuTimestampStage(encoder, GpuTimestampStage.ScenePreparation);
 
         // Run mask render passes first!
+        _context.BeginGpuTimestampStage(encoder, GpuTimestampStage.MaskEffects);
         phaseStart = System.Diagnostics.Stopwatch.GetTimestamp();
         ExecuteMaskRenderPasses(encoder, isOffscreen: false);
         maskPassRecordTimeMs = System.Diagnostics.Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
+        _context.EndGpuTimestampStage(encoder, GpuTimestampStage.MaskEffects);
 
+        _context.BeginGpuTimestampStage(encoder, GpuTimestampStage.PrimaryRender);
         phaseStart = System.Diagnostics.Stopwatch.GetTimestamp();
         var bgColor = ClearColor;
         var colorAttachment = new RenderPassColorAttachment
@@ -2994,6 +3016,7 @@ SceneStateUploadComplete:
 
         _context.Api.RenderPassEncoderEnd(pass);
         _context.Api.RenderPassEncoderRelease(pass);
+        _context.EndGpuTimestampStage(encoder, GpuTimestampStage.PrimaryRender);
 
         if (wavefrontEnabled &&
             _wavefrontEngine != null &&
@@ -3002,8 +3025,11 @@ SceneStateUploadComplete:
             _wavefrontQuadIndexBuffer != null &&
             _wavefrontTextureBindGroup != null)
         {
+            _context.BeginGpuTimestampStage(encoder, GpuTimestampStage.WavefrontCompute);
             _wavefrontEngine.EndFrame(encoder, _wavefrontColorTexture, _currentDpiScale);
+            _context.EndGpuTimestampStage(encoder, GpuTimestampStage.WavefrontCompute);
 
+            _context.BeginGpuTimestampStage(encoder, GpuTimestampStage.FinalComposite);
             var finalAttachment = new RenderPassColorAttachment
             {
                 View = targetView,
@@ -3040,6 +3066,7 @@ SceneStateUploadComplete:
             _wavefrontEngine.RecordSparseComposite(finalPass);
             _context.Api.RenderPassEncoderEnd(finalPass);
             _context.Api.RenderPassEncoderRelease(finalPass);
+            _context.EndGpuTimestampStage(encoder, GpuTimestampStage.FinalComposite);
         }
         primaryPassRecordTimeMs = System.Diagnostics.Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
         }
@@ -3114,6 +3141,12 @@ SceneStateUploadComplete:
             SceneFragmentUpdateCount = _sceneFragmentUpdatesInFrame,
             GpuVisibilityBatchCount = _gpuVisibilityBatchesInFrame,
             GpuVisibilityInputCount = _gpuVisibilityInputsInFrame,
+            WavefrontPathCount = _wavefrontEngine?.FramePathCount ?? 0,
+            WavefrontGlyphCount = _wavefrontEngine?.FrameGlyphCount ?? 0,
+            WavefrontFallbackCount = _wavefrontEngine?.FrameFallbackCount ?? 0,
+            WavefrontGeometryCacheHits = _wavefrontEngine?.FrameGeometryCacheHits ?? 0,
+            WavefrontGeometryCacheMisses = _wavefrontEngine?.FrameGeometryCacheMisses ?? 0,
+            WavefrontRetainedLineSegmentCount = _wavefrontEngine?.RetainedLineSegmentCount ?? 0,
             DrawCallsCount = _drawCalls.Count,
             VectorVerticesCount = _vectorVerticesList.Count,
             TextVerticesCount = _textVerticesList.Count,
@@ -6342,11 +6375,18 @@ SceneStateUploadComplete:
         if (VectorEngine == VectorRenderingEngine.Wavefront)
         {
             var activeTransform = cmd.Transform == default ? transform : cmd.Transform * transform;
-            (_wavefrontEngine ??= new WavefrontVectorEngine(_context)).DrawPath(
-                cmd.Path,
-                activeTransform,
-                cmd.Brush ?? new SolidColorBrush(Vector4.One));
-            return;
+            var wavefrontEngine = _wavefrontEngine ??= new WavefrontVectorEngine(_context);
+            if (cmd.Pen == null && cmd.Brush != null)
+            {
+                if (wavefrontEngine.TryDrawPath(cmd.Path, activeTransform, cmd.Brush))
+                {
+                    return;
+                }
+            }
+            else
+            {
+                wavefrontEngine.RecordFallback();
+            }
         }
 
         int startIndex = _vectorVerticesList.Count;
@@ -10182,13 +10222,23 @@ SceneStateUploadComplete:
                     glyphBaselinePosition.X,
                     glyphBaselinePosition.Y,
                     0f) * activeTransform;
-                (_wavefrontEngine ??= new WavefrontVectorEngine(_context)).DrawGlyph(
-                    glyphFont,
-                    glyphIdx,
-                    cmd.FontSize,
-                    glyphTransform,
-                    cmd.Brush ?? new SolidColorBrush(Vector4.One));
-                continue;
+                var wavefrontEngine = _wavefrontEngine ??= new WavefrontVectorEngine(_context);
+                if (cmd.Brush != null)
+                {
+                    if (wavefrontEngine.TryDrawGlyph(
+                            glyphFont,
+                            glyphIdx,
+                            cmd.FontSize,
+                            glyphTransform,
+                            cmd.Brush))
+                    {
+                        continue;
+                    }
+                }
+                else
+                {
+                    wavefrontEngine.RecordFallback();
+                }
             }
 
             var hasBitmapGlyph = glyphFont.HasBitmapGlyphs &&

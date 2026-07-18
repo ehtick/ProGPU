@@ -123,6 +123,8 @@ public unsafe class WgpuContext : IDisposable
 
     public GpuTimestampMetrics GpuTimestampMetrics => _gpuTimestampRing?.Metrics ?? default;
 
+    public void ResetGpuTimestampMetrics() => _gpuTimestampRing?.ResetMetrics();
+
     public GpuQueueUploadMetrics QueueUploadMetrics => new(
         Interlocked.Read(ref _queueBufferWriteCount),
         Interlocked.Read(ref _queueBufferBytes),
@@ -156,6 +158,12 @@ public unsafe class WgpuContext : IDisposable
 
     public bool BeginFrameGpuTimestamp(CommandEncoder* encoder) =>
         _gpuTimestampRing?.BeginFrame(encoder) == true;
+
+    public bool BeginGpuTimestampStage(CommandEncoder* encoder, GpuTimestampStage stage) =>
+        _gpuTimestampRing?.BeginStage(encoder, stage) == true;
+
+    public void EndGpuTimestampStage(CommandEncoder* encoder, GpuTimestampStage stage) =>
+        _gpuTimestampRing?.EndStage(encoder, stage);
 
     public void EndFrameGpuTimestamp(CommandEncoder* encoder) =>
         _gpuTimestampRing?.EndFrame(encoder);

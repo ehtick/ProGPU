@@ -181,6 +181,10 @@ internal static class SamplePerformanceBenchmark
         s_frame++;
         if (s_frame <= s_warmupFrames)
         {
+            if (s_frame == s_warmupFrames)
+            {
+                AppState._wgpuContext?.ResetGpuTimestampMetrics();
+            }
             return;
         }
 
@@ -319,6 +323,18 @@ internal static class SamplePerformanceBenchmark
         double primaryRecordP95 = Percentile(s_primaryPassRecordSamples, measuredFrames, 0.95d);
         double queueSubmitP95 = Percentile(s_queueSubmitSamples, measuredFrames, 0.95d);
         double uploadedBytesP95 = Percentile(s_uploadedByteSamples, measuredFrames, 0.95d);
+        double gpuFrameAverage = DeltaGpuAverage(finalGpuTimestamps, s_gpuTimestampsAtStart);
+        double gpuGlyphAtlasAverage = DeltaGpuAverage(finalGpuTimestamps.GlyphAtlas, s_gpuTimestampsAtStart.GlyphAtlas);
+        double gpuPathAtlasAverage = DeltaGpuAverage(finalGpuTimestamps.PathAtlas, s_gpuTimestampsAtStart.PathAtlas);
+        double gpuScenePreparationAverage = DeltaGpuAverage(finalGpuTimestamps.ScenePreparation, s_gpuTimestampsAtStart.ScenePreparation);
+        double gpuMaskEffectsAverage = DeltaGpuAverage(finalGpuTimestamps.MaskEffects, s_gpuTimestampsAtStart.MaskEffects);
+        double gpuPrimaryRenderAverage = DeltaGpuAverage(finalGpuTimestamps.PrimaryRender, s_gpuTimestampsAtStart.PrimaryRender);
+        double gpuWavefrontAverage = DeltaGpuAverage(finalGpuTimestamps.WavefrontCompute, s_gpuTimestampsAtStart.WavefrontCompute);
+        double gpuFinalCompositeAverage = DeltaGpuAverage(finalGpuTimestamps.FinalComposite, s_gpuTimestampsAtStart.FinalComposite);
+        double gpuWavefrontGeometryAverage = DeltaGpuAverage(finalGpuTimestamps.WavefrontGeometry, s_gpuTimestampsAtStart.WavefrontGeometry);
+        double gpuWavefrontBinningAverage = DeltaGpuAverage(finalGpuTimestamps.WavefrontBinning, s_gpuTimestampsAtStart.WavefrontBinning);
+        double gpuWavefrontCompactionAverage = DeltaGpuAverage(finalGpuTimestamps.WavefrontCompaction, s_gpuTimestampsAtStart.WavefrontCompaction);
+        double gpuWavefrontCoarseFineAverage = DeltaGpuAverage(finalGpuTimestamps.WavefrontCoarseFine, s_gpuTimestampsAtStart.WavefrontCoarseFine);
         string workloadDetails = string.Empty;
         if (string.Equals(RequestedPage, "Font Glyph Browser", StringComparison.OrdinalIgnoreCase))
         {
@@ -424,8 +440,25 @@ internal static class SamplePerformanceBenchmark
             $" gpuMaxInFlightFrames={finalGpuCompletion.MaxInFlightFrames}" +
             $" gpuTimestampSupported={AppState._wgpuContext?.SupportsTimestampQueries == true}" +
             $" gpuTimestampedFrames={timestampedGpuFrames}" +
-            $" gpuFrameAverageMs={finalGpuTimestamps.AverageFrameMilliseconds:F4}" +
+            $" gpuFrameAverageMs={gpuFrameAverage:F4}" +
             $" gpuFrameMaxMs={finalGpuTimestamps.MaximumFrameMilliseconds:F4}" +
+            $" gpuGlyphAtlasAverageMs={gpuGlyphAtlasAverage:F4}" +
+            $" gpuPathAtlasAverageMs={gpuPathAtlasAverage:F4}" +
+            $" gpuScenePreparationAverageMs={gpuScenePreparationAverage:F4}" +
+            $" gpuMaskEffectsAverageMs={gpuMaskEffectsAverage:F4}" +
+            $" gpuPrimaryRenderAverageMs={gpuPrimaryRenderAverage:F4}" +
+            $" gpuWavefrontAverageMs={gpuWavefrontAverage:F4}" +
+            $" gpuFinalCompositeAverageMs={gpuFinalCompositeAverage:F4}" +
+            $" gpuWavefrontGeometryAverageMs={gpuWavefrontGeometryAverage:F4}" +
+            $" gpuWavefrontBinningAverageMs={gpuWavefrontBinningAverage:F4}" +
+            $" gpuWavefrontCompactionAverageMs={gpuWavefrontCompactionAverage:F4}" +
+            $" gpuWavefrontCoarseFineAverageMs={gpuWavefrontCoarseFineAverage:F4}" +
+            $" wavefrontPaths={finalMetrics?.WavefrontPathCount ?? 0}" +
+            $" wavefrontGlyphs={finalMetrics?.WavefrontGlyphCount ?? 0}" +
+            $" wavefrontFallbacks={finalMetrics?.WavefrontFallbackCount ?? 0}" +
+            $" wavefrontCacheHits={finalMetrics?.WavefrontGeometryCacheHits ?? 0}" +
+            $" wavefrontCacheMisses={finalMetrics?.WavefrontGeometryCacheMisses ?? 0}" +
+            $" wavefrontRetainedLines={finalMetrics?.WavefrontRetainedLineSegmentCount ?? 0}" +
             $" gpuTimestampFailures={failedGpuTimestamps}" +
             $" gpuTimestampDrops={droppedGpuTimestamps}" +
             $" allocatedBytesPerFrame={allocatedBytes / divisor:F0}" +
@@ -511,6 +544,22 @@ internal static class SamplePerformanceBenchmark
         }
 
         return maximum;
+    }
+
+    private static double DeltaGpuAverage(GpuTimestampMetrics end, GpuTimestampMetrics start)
+    {
+        long samples = Math.Max(0, end.CompletedSamples - start.CompletedSamples);
+        return samples == 0
+            ? 0d
+            : Math.Max(0d, end.TotalFrameMilliseconds - start.TotalFrameMilliseconds) / samples;
+    }
+
+    private static double DeltaGpuAverage(GpuTimestampStageMetrics end, GpuTimestampStageMetrics start)
+    {
+        long samples = Math.Max(0, end.CompletedSamples - start.CompletedSamples);
+        return samples == 0
+            ? 0d
+            : Math.Max(0d, end.TotalMilliseconds - start.TotalMilliseconds) / samples;
     }
 
     private static void WriteJsonResult(
@@ -622,10 +671,27 @@ internal static class SamplePerformanceBenchmark
             writer.WriteNumber("gpuMaxInFlightFrames", gpuCompletion.MaxInFlightFrames);
             writer.WriteBoolean("gpuTimestampSupported", AppState._wgpuContext?.SupportsTimestampQueries == true);
             writer.WriteNumber("gpuTimestampedFrames", timestampedGpuFrames);
-            writer.WriteNumber("gpuFrameAverageMs", gpuTimestamps.AverageFrameMilliseconds);
+            writer.WriteNumber("gpuFrameAverageMs", DeltaGpuAverage(gpuTimestamps, s_gpuTimestampsAtStart));
             writer.WriteNumber("gpuFrameMaximumMs", gpuTimestamps.MaximumFrameMilliseconds);
+            WriteGpuStage(writer, "gpuGlyphAtlas", gpuTimestamps.GlyphAtlas, s_gpuTimestampsAtStart.GlyphAtlas);
+            WriteGpuStage(writer, "gpuPathAtlas", gpuTimestamps.PathAtlas, s_gpuTimestampsAtStart.PathAtlas);
+            WriteGpuStage(writer, "gpuScenePreparation", gpuTimestamps.ScenePreparation, s_gpuTimestampsAtStart.ScenePreparation);
+            WriteGpuStage(writer, "gpuMaskEffects", gpuTimestamps.MaskEffects, s_gpuTimestampsAtStart.MaskEffects);
+            WriteGpuStage(writer, "gpuPrimaryRender", gpuTimestamps.PrimaryRender, s_gpuTimestampsAtStart.PrimaryRender);
+            WriteGpuStage(writer, "gpuWavefront", gpuTimestamps.WavefrontCompute, s_gpuTimestampsAtStart.WavefrontCompute);
+            WriteGpuStage(writer, "gpuFinalComposite", gpuTimestamps.FinalComposite, s_gpuTimestampsAtStart.FinalComposite);
+            WriteGpuStage(writer, "gpuWavefrontGeometry", gpuTimestamps.WavefrontGeometry, s_gpuTimestampsAtStart.WavefrontGeometry);
+            WriteGpuStage(writer, "gpuWavefrontBinning", gpuTimestamps.WavefrontBinning, s_gpuTimestampsAtStart.WavefrontBinning);
+            WriteGpuStage(writer, "gpuWavefrontCompaction", gpuTimestamps.WavefrontCompaction, s_gpuTimestampsAtStart.WavefrontCompaction);
+            WriteGpuStage(writer, "gpuWavefrontCoarseFine", gpuTimestamps.WavefrontCoarseFine, s_gpuTimestampsAtStart.WavefrontCoarseFine);
             writer.WriteNumber("gpuTimestampFailures", failedGpuTimestamps);
             writer.WriteNumber("gpuTimestampDrops", droppedGpuTimestamps);
+            writer.WriteNumber("wavefrontPaths", compositorMetrics?.WavefrontPathCount ?? 0);
+            writer.WriteNumber("wavefrontGlyphs", compositorMetrics?.WavefrontGlyphCount ?? 0);
+            writer.WriteNumber("wavefrontFallbacks", compositorMetrics?.WavefrontFallbackCount ?? 0);
+            writer.WriteNumber("wavefrontGeometryCacheHits", compositorMetrics?.WavefrontGeometryCacheHits ?? 0);
+            writer.WriteNumber("wavefrontGeometryCacheMisses", compositorMetrics?.WavefrontGeometryCacheMisses ?? 0);
+            writer.WriteNumber("wavefrontRetainedLineSegments", compositorMetrics?.WavefrontRetainedLineSegmentCount ?? 0);
             writer.WriteNumber("sceneCacheHits", s_sceneCacheHitFrames);
             writer.WriteString("sceneCacheMiss", compositorMetrics?.SceneCacheMissReason ?? "none");
             writer.WriteNumber("draws", compositorMetrics?.DrawCallsCount ?? 0);
@@ -635,6 +701,17 @@ internal static class SamplePerformanceBenchmark
         }
 
         Console.WriteLine($"[SampleBenchmark] JSON {Encoding.UTF8.GetString(output.WrittenSpan)}");
+    }
+
+    private static void WriteGpuStage(
+        Utf8JsonWriter writer,
+        string prefix,
+        GpuTimestampStageMetrics end,
+        GpuTimestampStageMetrics start)
+    {
+        writer.WriteNumber($"{prefix}Samples", Math.Max(0, end.CompletedSamples - start.CompletedSamples));
+        writer.WriteNumber($"{prefix}AverageMs", DeltaGpuAverage(end, start));
+        writer.WriteNumber($"{prefix}MaximumMs", end.MaximumMilliseconds);
     }
 
     private static void RecordGlyphBrowserState()

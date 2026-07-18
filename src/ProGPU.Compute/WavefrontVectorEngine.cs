@@ -102,6 +102,13 @@ public struct GpuSortParamsAligned
 public unsafe class WavefrontVectorEngine : IDisposable
 {
     public const uint MaximumPortableDispatchDimension = 65535;
+    public const float DeviceFlatteningTolerance = 0.125f;
+    private const float MinimumCoverageScale = 1f / 65536f;
+    private const float MaximumCoverageScale = 65536f;
+    private const int ScaleBucketsPerOctave = 4;
+
+    private readonly record struct PathGeometryKey(int ContentHash, int ScaleBucket);
+    private readonly record struct GlyphGeometryKey(TtfFont Font, ushort GlyphId, int ScaleBucket);
 
     private readonly WgpuContext _context;
     private readonly RenderPipelineCache _pipelineCache;
@@ -135,8 +142,8 @@ public unsafe class WavefrontVectorEngine : IDisposable
     private uint _totalLineSegmentsCount = 0;
     
     // Cache maps to offsets inside _bvhNodes and _rawCurves
-    private readonly Dictionary<PathCacheKey, (uint BvhOffset, uint CurveOffset, Vector2 Min, Vector2 Max)> _pathCache = new();
-    private readonly Dictionary<(TtfFont Font, ushort GlyphId), (uint BvhOffset, uint CurveOffset, Vector2 Min, Vector2 Max)> _glyphCache = new();
+    private readonly Dictionary<PathGeometryKey, (uint BvhOffset, uint CurveOffset, Vector2 Min, Vector2 Max)> _pathCache = new();
+    private readonly Dictionary<GlyphGeometryKey, (uint BvhOffset, uint CurveOffset, Vector2 Min, Vector2 Max)> _glyphCache = new();
 
     // GPU Buffers (Reallocated/resized when frame sizes grow)
     private GpuBuffer? _bvhBuffer;
@@ -171,6 +178,11 @@ public unsafe class WavefrontVectorEngine : IDisposable
 
     private readonly List<GpuShapeInstance> _frameInstances = new();
     private uint _frameNumber = 0;
+    private float _frameDpiScale = 1f;
+    private bool _hasSparseFrameWork;
+    private int _retainedPathCount;
+    private int _retainedGlyphCount;
+    private int _retainedFallbackCount;
     private uint _uploadedBvhNodeCount;
     private uint _uploadedRawCurveCount;
     private bool _isDisposed;
@@ -182,6 +194,18 @@ public unsafe class WavefrontVectorEngine : IDisposable
     public uint LastFlattenedCurveCount { get; private set; }
 
     public bool LastGeometryArenaReplay { get; private set; }
+
+    public int FramePathCount { get; private set; }
+
+    public int FrameGlyphCount { get; private set; }
+
+    public int FrameFallbackCount { get; private set; }
+
+    public int FrameGeometryCacheHits { get; private set; }
+
+    public int FrameGeometryCacheMisses { get; private set; }
+
+    public uint RetainedLineSegmentCount => _totalLineSegmentsCount;
 
     public WavefrontVectorEngine(WgpuContext context)
     {
@@ -230,18 +254,40 @@ public unsafe class WavefrontVectorEngine : IDisposable
         _compositeLayout = _context.Api.RenderPipelineGetBindGroupLayout(_compositePipeline, 0);
     }
 
-    private (uint BvhOffset, uint CurveOffset, Vector2 Min, Vector2 Max) GetOrAddPathGeometry(PathGeometry path)
+    private bool TryGetOrAddPathGeometry(
+        PathGeometry path,
+        in Matrix4x4 transform,
+        out (uint BvhOffset, uint CurveOffset, Vector2 Min, Vector2 Max) geometry)
     {
+        geometry = default;
+        if (!TryGetToleranceBucket(transform, 1f, out int scaleBucket, out float localTolerance))
+        {
+            return false;
+        }
+
         int contentHash = PathAtlas.ComputeHash(path);
-        var key = new PathCacheKey(contentHash, 1f);
+        var key = new PathGeometryKey(contentHash, scaleBucket);
 
         if (_pathCache.TryGetValue(key, out var cached))
         {
-            return cached;
+            FrameGeometryCacheHits++;
+            geometry = cached;
+            return true;
         }
 
-        var curves = BvhBuilder.GetPathCurves(path);
-        var nodes = BvhBuilder.BuildBvh(curves, out var orderedCurves, out var totalLines);
+        if (!BvhBuilder.TryGetPathCurves(path, out var curves))
+        {
+            return false;
+        }
+        if (!BvhBuilder.TryBuildBvh(
+                curves,
+                localTolerance,
+                out var nodes,
+                out var orderedCurves,
+                out var totalLines))
+        {
+            return false;
+        }
 
         uint bvhOffset = (uint)_bvhNodes.Count;
         uint curveOffset = (uint)_rawCurves.Count;
@@ -286,21 +332,45 @@ public unsafe class WavefrontVectorEngine : IDisposable
         var boundsMin = new Vector2(minX, minY);
         var boundsMax = new Vector2(maxX, maxY);
 
-        var result = (bvhOffset, curveOffset, boundsMin, boundsMax);
-        _pathCache[key] = result;
-        return result;
+        geometry = (bvhOffset, curveOffset, boundsMin, boundsMax);
+        _pathCache[key] = geometry;
+        FrameGeometryCacheMisses++;
+        return true;
     }
 
-    private (uint BvhOffset, uint CurveOffset, Vector2 Min, Vector2 Max) GetOrAddGlyphGeometry(TtfFont font, ushort glyphId)
+    private bool TryGetOrAddGlyphGeometry(
+        TtfFont font,
+        ushort glyphId,
+        in Matrix4x4 glyphTransform,
+        out (uint BvhOffset, uint CurveOffset, Vector2 Min, Vector2 Max) geometry)
     {
-        var key = (font, glyphId);
-        if (_glyphCache.TryGetValue(key, out var cached))
+        geometry = default;
+        if (!TryGetToleranceBucket(glyphTransform, 1f, out int scaleBucket, out float localTolerance))
         {
-            return cached;
+            return false;
         }
 
-        var curves = BvhBuilder.GetGlyphCurves(font, glyphId);
-        var nodes = BvhBuilder.BuildBvh(curves, out var orderedCurves, out var totalLines);
+        var key = new GlyphGeometryKey(font, glyphId, scaleBucket);
+        if (_glyphCache.TryGetValue(key, out var cached))
+        {
+            FrameGeometryCacheHits++;
+            geometry = cached;
+            return true;
+        }
+
+        if (!BvhBuilder.TryGetGlyphCurves(font, glyphId, out var curves))
+        {
+            return false;
+        }
+        if (!BvhBuilder.TryBuildBvh(
+                curves,
+                localTolerance,
+                out var nodes,
+                out var orderedCurves,
+                out var totalLines))
+        {
+            return false;
+        }
 
         uint bvhOffset = (uint)_bvhNodes.Count;
         uint curveOffset = (uint)_rawCurves.Count;
@@ -343,28 +413,44 @@ public unsafe class WavefrontVectorEngine : IDisposable
         var boundsMin = new Vector2(minX, minY);
         var boundsMax = new Vector2(maxX, maxY);
 
-        var result = (bvhOffset, curveOffset, boundsMin, boundsMax);
-        _glyphCache[key] = result;
-        return result;
+        geometry = (bvhOffset, curveOffset, boundsMin, boundsMax);
+        _glyphCache[key] = geometry;
+        FrameGeometryCacheMisses++;
+        return true;
     }
 
-    public void BeginFrame()
+    public void BeginFrame(float dpiScale = 1f, bool reuseRetainedInstances = false)
     {
-        _frameInstances.Clear();
+        if (!reuseRetainedInstances)
+        {
+            _frameInstances.Clear();
+            _retainedPathCount = 0;
+            _retainedGlyphCount = 0;
+            _retainedFallbackCount = 0;
+        }
         _frameNumber++;
+        _frameDpiScale = NormalizeDpiScale(dpiScale);
+        _hasSparseFrameWork = false;
         LastUploadedBvhNodeCount = 0;
         LastUploadedRawCurveCount = 0;
         LastFlattenedCurveCount = 0;
         LastGeometryArenaReplay = false;
+        FramePathCount = reuseRetainedInstances ? _retainedPathCount : 0;
+        FrameGlyphCount = reuseRetainedInstances ? _retainedGlyphCount : 0;
+        FrameFallbackCount = reuseRetainedInstances ? _retainedFallbackCount : 0;
+        FrameGeometryCacheHits = 0;
+        FrameGeometryCacheMisses = 0;
     }
 
-    public void DrawPath(PathGeometry path, in Matrix4x4 transform, Brush brush)
+    public bool TryDrawPath(PathGeometry path, in Matrix4x4 transform, Brush brush)
     {
-        var geom = GetOrAddPathGeometry(path);
-        
-        Matrix4x4.Invert(transform, out var inv);
-
-        var brushColor = (brush is SolidColorBrush solid) ? solid.Color : Vector4.One;
+        if (brush is not SolidColorBrush solid ||
+            !Matrix4x4.Invert(transform, out var inv) ||
+            !TryGetOrAddPathGeometry(path, transform, out var geom))
+        {
+            RecordFallback();
+            return false;
+        }
 
         _frameInstances.Add(new GpuShapeInstance
         {
@@ -374,22 +460,46 @@ public unsafe class WavefrontVectorEngine : IDisposable
             MaxBounds = geom.Max,
             BvhRootIdx = geom.BvhOffset,
             ShapeId = (uint)_frameInstances.Count,
-            Color = brushColor,
+            Color = solid.Color,
             IsText = 0
         });
+        FramePathCount++;
+        _retainedPathCount++;
+        return true;
     }
 
-    public void DrawGlyph(TtfFont font, ushort glyphId, float fontSize, in Matrix4x4 transform, Brush brush)
+    public void DrawPath(PathGeometry path, in Matrix4x4 transform, Brush brush)
     {
-        var geom = GetOrAddGlyphGeometry(font, glyphId);
-        
+        if (!TryDrawPath(path, transform, brush))
+        {
+            throw new InvalidOperationException(
+                "Wavefront path geometry cannot satisfy the configured device-space flattening tolerance or brush contract.");
+        }
+    }
+
+    public void RecordFallback()
+    {
+        FrameFallbackCount++;
+        _retainedFallbackCount++;
+    }
+
+    public bool TryDrawGlyph(TtfFont font, ushort glyphId, float fontSize, in Matrix4x4 transform, Brush brush)
+    {
+        if (brush is not SolidColorBrush solid)
+        {
+            RecordFallback();
+            return false;
+        }
+
         float fontScale = fontSize / font.UnitsPerEm;
 
         var glyphTransform = Matrix4x4.CreateScale(fontScale, -fontScale, 1f) * transform;
-
-        Matrix4x4.Invert(glyphTransform, out var inv);
-
-        var brushColor = (brush is SolidColorBrush solid) ? solid.Color : Vector4.One;
+        if (!Matrix4x4.Invert(glyphTransform, out var inv) ||
+            !TryGetOrAddGlyphGeometry(font, glyphId, glyphTransform, out var geom))
+        {
+            RecordFallback();
+            return false;
+        }
 
         _frameInstances.Add(new GpuShapeInstance
         {
@@ -399,17 +509,37 @@ public unsafe class WavefrontVectorEngine : IDisposable
             MaxBounds = geom.Max,
             BvhRootIdx = geom.BvhOffset,
             ShapeId = (uint)_frameInstances.Count,
-            Color = brushColor,
+            Color = solid.Color,
             IsText = 1
         });
+        FrameGlyphCount++;
+        _retainedGlyphCount++;
+        return true;
+    }
+
+    public void DrawGlyph(TtfFont font, ushort glyphId, float fontSize, in Matrix4x4 transform, Brush brush)
+    {
+        if (!TryDrawGlyph(font, glyphId, fontSize, transform, brush))
+        {
+            throw new InvalidOperationException(
+                "Wavefront glyph geometry cannot satisfy the configured device-space flattening tolerance or brush contract.");
+        }
     }
 
     public void EndFrame(CommandEncoder* encoder, GpuTexture destination, float dpiScale, float fontWeightOffset = 0f)
     {
+        dpiScale = NormalizeDpiScale(dpiScale);
+        if (MathF.Abs(dpiScale - _frameDpiScale) > MathF.Max(dpiScale, _frameDpiScale) * 0.0001f)
+        {
+            throw new InvalidOperationException(
+                "Wavefront BeginFrame and EndFrame must use the same DPI scale so the retained flattening tolerance remains valid.");
+        }
+
         uint width = destination.Width;
         uint height = destination.Height;
 
         if (_frameInstances.Count == 0 || width == 0 || height == 0) return;
+        _hasSparseFrameWork = true;
 
         // Build exact, uncapped cell-list capacity from the same transformed bounds used by the
         // GPU. This is O(I), performs no readback, and makes capacity failure explicit before any
@@ -478,6 +608,7 @@ public unsafe class WavefrontVectorEngine : IDisposable
 
         var passDesc = new ComputePassDescriptor();
 
+        _context.BeginGpuTimestampStage(encoder, GpuTimestampStage.WavefrontGeometry);
         if (pendingCurveCount > 0)
         {
             LastFlattenedCurveCount = pendingCurveCount;
@@ -488,6 +619,7 @@ public unsafe class WavefrontVectorEngine : IDisposable
             _context.Api.ComputePassEncoderEnd(passFlatten);
             _context.Api.ComputePassEncoderRelease(passFlatten);
         }
+        _context.EndGpuTimestampStage(encoder, GpuTimestampStage.WavefrontGeometry);
         if (geometryChanged)
         {
             _uploadedBvhNodeCount = (uint)_bvhNodes.Count;
@@ -496,6 +628,7 @@ public unsafe class WavefrontVectorEngine : IDisposable
 
         // Instance-driven bitmap construction performs O(overlap) writes. Word popcount followed
         // by the reusable hierarchical scan reserves an exact, stable list for every cell.
+        _context.BeginGpuTimestampStage(encoder, GpuTimestampStage.WavefrontBinning);
         var passBin = _context.Api.CommandEncoderBeginComputePass(encoder, &passDesc);
         _context.Api.ComputePassEncoderSetPipeline(passBin, _clearBinWordsPipeline);
         _context.Api.ComputePassEncoderSetBindGroup(passBin, 0, _clearBinWordsBindGroup, 0, null);
@@ -510,7 +643,9 @@ public unsafe class WavefrontVectorEngine : IDisposable
         _context.Api.ComputePassEncoderRelease(passBin);
 
         _binWordScan.RecordExclusiveScan(encoder, coverageWordCount);
+        _context.EndGpuTimestampStage(encoder, GpuTimestampStage.WavefrontBinning);
 
+        _context.BeginGpuTimestampStage(encoder, GpuTimestampStage.WavefrontCompaction);
         var passScatter = _context.Api.CommandEncoderBeginComputePass(encoder, &passDesc);
         _context.Api.ComputePassEncoderSetPipeline(passScatter, _scatterBinWordsPipeline);
         _context.Api.ComputePassEncoderSetBindGroup(passScatter, 0, _scatterBinWordsBindGroup, 0, null);
@@ -532,10 +667,12 @@ public unsafe class WavefrontVectorEngine : IDisposable
         _context.Api.ComputePassEncoderDispatchWorkgroups(passActiveCells, 1, 1, 1);
         _context.Api.ComputePassEncoderEnd(passActiveCells);
         _context.Api.ComputePassEncoderRelease(passActiveCells);
+        _context.EndGpuTimestampStage(encoder, GpuTimestampStage.WavefrontCompaction);
 
         // Coarse work classifies each active cell's candidates once. Only uncertain edge pairs
         // retain per-pixel BVH traversal; conservative solid/outside pairs become constant work.
         // The exact active workgroup count is reused without CPU readback.
+        _context.BeginGpuTimestampStage(encoder, GpuTimestampStage.WavefrontCoarseFine);
         var passRender = _context.Api.CommandEncoderBeginComputePass(encoder, &passDesc);
         _context.Api.ComputePassEncoderSetPipeline(passRender, _classifyCellShapesPipeline);
         _context.Api.ComputePassEncoderSetBindGroup(passRender, 0, _classifyCellShapesBindGroup, 0, null);
@@ -551,7 +688,48 @@ public unsafe class WavefrontVectorEngine : IDisposable
             0);
         _context.Api.ComputePassEncoderEnd(passRender);
         _context.Api.ComputePassEncoderRelease(passRender);
+        _context.EndGpuTimestampStage(encoder, GpuTimestampStage.WavefrontCoarseFine);
     }
+
+    public static bool TryGetScaleBucket(
+        float deviceScale,
+        out int scaleBucket,
+        out float bucketUpperScale)
+    {
+        scaleBucket = 0;
+        bucketUpperScale = 0f;
+        if (!float.IsFinite(deviceScale) ||
+            deviceScale <= 0f ||
+            deviceScale > MaximumCoverageScale)
+        {
+            return false;
+        }
+
+        deviceScale = MathF.Max(deviceScale, MinimumCoverageScale);
+        scaleBucket = checked((int)Math.Ceiling(Math.Log2(deviceScale) * ScaleBucketsPerOctave));
+        bucketUpperScale = MathF.Pow(2f, scaleBucket / (float)ScaleBucketsPerOctave);
+        return float.IsFinite(bucketUpperScale) && bucketUpperScale >= deviceScale;
+    }
+
+    private bool TryGetToleranceBucket(
+        in Matrix4x4 transform,
+        float localScale,
+        out int scaleBucket,
+        out float localTolerance)
+    {
+        float deviceScale = TransformMetrics.GetStrokeScale(transform) * _frameDpiScale * localScale;
+        if (!TryGetScaleBucket(deviceScale, out scaleBucket, out float bucketUpperScale))
+        {
+            localTolerance = 0f;
+            return false;
+        }
+
+        localTolerance = DeviceFlatteningTolerance / bucketUpperScale;
+        return true;
+    }
+
+    private static float NormalizeDpiScale(float dpiScale) =>
+        float.IsFinite(dpiScale) && dpiScale > 0f ? dpiScale : 1f;
 
     /// <summary>
     /// Replaces only compacted active tiles with the exact pixels produced by the compute stage.
@@ -560,7 +738,7 @@ public unsafe class WavefrontVectorEngine : IDisposable
     /// </summary>
     public void RecordSparseComposite(RenderPassEncoder* pass)
     {
-        if (pass == null || _compositeBindGroup == null || _activeDrawBuffer == null)
+        if (!_hasSparseFrameWork || pass == null || _compositeBindGroup == null || _activeDrawBuffer == null)
         {
             return;
         }

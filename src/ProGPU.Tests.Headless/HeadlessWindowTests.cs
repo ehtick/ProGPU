@@ -81,6 +81,118 @@ public class HeadlessWindowTests : IDisposable
     }
 
     [Fact]
+    public void GpuTimestampRing_ReportsPerPassMetricsWithoutBlockingRendering()
+    {
+        using var window = new HeadlessWindow(64, 64);
+        var context = window.Context;
+        if (!context.SupportsTimestampQueries)
+        {
+            return;
+        }
+
+        bool hasError = false;
+        string errorDetails = string.Empty;
+        void OnWebGpuError(ErrorType type, string message)
+        {
+            hasError = true;
+            errorDetails += $"{type}: {message}\n";
+        }
+
+        WgpuContext.OnWebGpuError += OnWebGpuError;
+        try
+        {
+            context.EnableGpuTimestampTracking = true;
+            window.Content = new Border
+            {
+                Background = new SolidColorBrush(0x336699FF),
+                Width = 64,
+                Height = 64
+            };
+
+            for (int frame = 0; frame < 6; frame++)
+            {
+                window.Render();
+            }
+
+            GpuTimestampMetrics metrics = WaitForTimestampSample(context);
+            Assert.True(metrics.SubmittedSamples >= metrics.CompletedSamples);
+            Assert.True(metrics.CompletedSamples > 0);
+            Assert.True(metrics.TotalFrameMilliseconds > 0d);
+            Assert.True(metrics.MaximumFrameMilliseconds > 0d);
+            Assert.True(metrics.PrimaryRender.CompletedSamples > 0);
+            Assert.True(metrics.PrimaryRender.TotalMilliseconds >= 0d);
+            AssertStageMetricsAreValid(metrics.GlyphAtlas, metrics.CompletedSamples);
+            AssertStageMetricsAreValid(metrics.PathAtlas, metrics.CompletedSamples);
+            AssertStageMetricsAreValid(metrics.ScenePreparation, metrics.CompletedSamples);
+            AssertStageMetricsAreValid(metrics.MaskEffects, metrics.CompletedSamples);
+            AssertStageMetricsAreValid(metrics.PrimaryRender, metrics.CompletedSamples);
+            AssertStageMetricsAreValid(metrics.WavefrontCompute, metrics.CompletedSamples);
+            AssertStageMetricsAreValid(metrics.FinalComposite, metrics.CompletedSamples);
+            AssertStageMetricsAreValid(metrics.WavefrontGeometry, metrics.CompletedSamples);
+            AssertStageMetricsAreValid(metrics.WavefrontBinning, metrics.CompletedSamples);
+            AssertStageMetricsAreValid(metrics.WavefrontCompaction, metrics.CompletedSamples);
+            AssertStageMetricsAreValid(metrics.WavefrontCoarseFine, metrics.CompletedSamples);
+
+            context.ResetGpuTimestampMetrics();
+            metrics = context.GpuTimestampMetrics;
+            Assert.Equal(0, metrics.SubmittedSamples);
+            Assert.Equal(0, metrics.CompletedSamples);
+            Assert.Equal(0d, metrics.TotalFrameMilliseconds);
+            Assert.Equal(0d, metrics.MaximumFrameMilliseconds);
+            Assert.Equal(0, metrics.PrimaryRender.CompletedSamples);
+            Assert.Equal(0d, metrics.PrimaryRender.MaximumMilliseconds);
+
+            for (int frame = 0; frame < 4; frame++)
+            {
+                window.Render();
+            }
+
+            metrics = WaitForTimestampSample(context);
+            Assert.True(metrics.CompletedSamples > 0);
+            Assert.True(metrics.PrimaryRender.CompletedSamples > 0);
+        }
+        finally
+        {
+            context.EnableGpuTimestampTracking = false;
+            WgpuContext.OnWebGpuError -= OnWebGpuError;
+        }
+
+        Assert.False(hasError, $"WebGPU validation errors occurred:\n{errorDetails}");
+    }
+
+    private static GpuTimestampMetrics WaitForTimestampSample(WgpuContext context)
+    {
+        var timeout = System.Diagnostics.Stopwatch.StartNew();
+        while (timeout.Elapsed < TimeSpan.FromSeconds(5))
+        {
+            context.PollDevice(wait: false);
+            GpuTimestampMetrics metrics = context.GpuTimestampMetrics;
+            if (metrics.CompletedSamples > 0)
+            {
+                return metrics;
+            }
+
+            System.Threading.Thread.Yield();
+        }
+
+        return context.GpuTimestampMetrics;
+    }
+
+    private static void AssertStageMetricsAreValid(GpuTimestampStageMetrics metrics, long frameSamples)
+    {
+        Assert.InRange(metrics.CompletedSamples, 0, frameSamples);
+        Assert.True(metrics.TotalMilliseconds >= 0d);
+        Assert.True(metrics.LastMilliseconds >= 0d);
+        Assert.True(metrics.AverageMilliseconds >= 0d);
+        Assert.True(metrics.MaximumMilliseconds >= 0d);
+        if (metrics.CompletedSamples == 0)
+        {
+            Assert.Equal(0d, metrics.TotalMilliseconds);
+            Assert.Equal(0d, metrics.MaximumMilliseconds);
+        }
+    }
+
+    [Fact]
     public void Test_HeadlessWindow_Screenshot_Export()
     {
         uint width = 512;
@@ -467,6 +579,17 @@ public class HeadlessWindowTests : IDisposable
             Assert.Equal(0, g);
             Assert.Equal(0, b);
             Assert.Equal(255, a);
+
+            window.Render();
+            Assert.True(window.Compositor.Metrics.SceneCacheHit);
+            Assert.Equal(1, window.Compositor.Metrics.WavefrontPathCount);
+            Assert.Equal(0, window.Compositor.Metrics.WavefrontGeometryCacheMisses);
+
+            byte[] replayPixels = window.ReadPixels();
+            Assert.Equal(255, replayPixels[centerIdx + 0]);
+            Assert.Equal(0, replayPixels[centerIdx + 1]);
+            Assert.Equal(0, replayPixels[centerIdx + 2]);
+            Assert.Equal(255, replayPixels[centerIdx + 3]);
         }
         finally
         {

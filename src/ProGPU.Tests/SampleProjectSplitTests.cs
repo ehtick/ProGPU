@@ -130,6 +130,22 @@ public sealed class SampleProjectSplitTests
     }
 
     [Fact]
+    public void BrowserWorkerReusesBoundedTransferPacketBuffers()
+    {
+        var browserAsset = Read("src", "ProGPU.Browser", "BrowserAssets", "progpu-browser.js");
+
+        Assert.Contains("workerPacketPool: []", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("const MAX_POOLED_WORKER_PACKETS = 64;", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("function acquireWorkerPacketBuffer(length)", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("function recycleWorkerPacketBuffer(buffer)", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("new Uint8Array(buffer, 0, length).set(heap.subarray", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("packets.map(packet => packet.buffer)", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("type: 'recycle-packets'", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("new Uint8Array(packetRecord.buffer, 0, packetRecord.length)", browserAsset, StringComparison.Ordinal);
+        Assert.DoesNotContain("heap.slice(address, address + length).buffer", browserAsset, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void BrowserFilePickerUsesCancellationSafeDirectByteTransfer()
     {
         var browserAsset = Read("src", "ProGPU.Browser", "BrowserAssets", "progpu-browser.js");
