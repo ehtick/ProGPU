@@ -2,7 +2,7 @@
 
 Status: accepted architecture; implementation in progress  
 Research date: 2026-07-18  
-ProGPU revision: `f5ca7c51dbcd9ab6cdd7614c199d4e9a3673562e`  
+ProGPU committed revision: `06451e53e53d28fff946b2942dd24e5cc33210b9`
 Vello revision inspected: `8ecea46dc79bbb10315c101f9dbd0955c627dab8` (2026-07-16)
 
 ## Executive decision
@@ -120,6 +120,41 @@ closed a false-success hole where an invalid vector shader produced approximatel
 capability is not yet sufficient evidence of usable timing on the current Metal adapter: a traced
 glyph run reported 601 failed timestamp readbacks and zero valid samples. Phase 0 therefore remains
 open for backend-specific timestamp qualification even though queue-completion accounting is valid.
+
+### Working-tree checkpoint: retained spatial nodes and indexed text transforms
+
+The current working tree advances Phase 1 beyond explicit row fragments. It is deliberately listed
+separately from the committed measurements above because a clean browser AOT and sustained
+GPU-completed benchmark have not yet qualified this slice.
+
+- `Visual.RetainedTransform` and `ContainerVisual.ChildrenRetainedTransform` introduce a stable
+  spatial-node handle. Translation changes patch a transform table and mark transform state dirty
+  without incrementing immutable scene content versions.
+- `Visual.ExcludeFromParentRetainedTransform` keeps overlays such as scrollbars in viewport space
+  while content moves in scroll space.
+- `ScrollViewer` uses one child transform for compatible subtrees and retains its scrollbar thumb as
+  a picture plus transform. Its compatibility fallback preserves the former layout-translation path
+  for clips, masks, effects, cached layers, or nested transforms that are not yet representable.
+- `UniformVirtualizingGridPanel` keeps realized item positions absolute and moves the realized set
+  through a shared transform. Realization changes remain container updates rather than per-pixel
+  descendant placement changes.
+- `InputSystem` composes the same retained transforms during hit testing and coordinate conversion,
+  including the viewport-space overlay exclusion rule.
+- `GpuSceneFragmentArena` owns stable transform indices. Retained text glyph instances store a
+  transform-table index, and `Text.wgsl::fragment_vs_main` loads placement from the shared storage
+  buffer. Adjacent compatible text fragments can therefore merge even when their placements differ.
+
+Focused CPU/headless coverage currently proves that a retained root transform moves a compiled
+subtree on a whole-scene cache hit, a retained child transform moves content while an excluded
+overlay remains fixed, scroll does not rearrange content, coordinate conversion observes the scroll,
+and representative glyph/data pages still render. These tests establish correctness invariants, not
+the 1000 FPS performance claim. Before integration this slice still requires:
+
+1. browser AOT shader/pipeline creation with zero uncaptured WebGPU errors;
+2. interactive scroll and hit-test checks on Data Virtualization, Font Glyph Browser, and Inter;
+3. a safe per-panel fallback when a realized child is incompatible with retained translation;
+4. the equivalent shared-transform conversion for `VirtualizingStackPanel`;
+5. process-isolated sustained desktop and browser measurements with valid completion accounting.
 
 ### Proposed 1 ms throughput budget
 
@@ -330,6 +365,63 @@ The engine demonstrates GPU curve and shape processing, but its algorithms are n
 | Submission | Many compute stages in recording | Few render passes plus atlas work | Glyph submit + path submit + main submit possible | One normal frame encoder and one submit; exceptional external upload lane only |
 | Browser | WebGPU compute required | WebGPU/WebGL compatible | WebGPU browser worker/AOT path | Same retained packet format; compute feature tiers and transfer-free fast path |
 | Quality risks | Compute AA differs from native text | CPU strip quantization/atlas text | Strong protected DPI/phase/coverage contracts | Keep current quality policy and validate every new representation pixel-wise |
+
+## Cross-engine design gate
+
+Vello is the principal algorithmic reference for the compute portion of this plan, but it is not the
+only architecture considered. The following primary-source comparison prevents two common mistakes:
+moving reusable shaping/layout onto the GPU, and applying a full-scene compute pipeline to a workload
+whose only mutation is one scroll transform.
+
+| Engine | Relevant production design | ProGPU decision |
+| --- | --- | --- |
+| Skia/SkParagraph | Separates shaping/formatted results from drawing; GPU contexts own resource and font caches; positioned glyph runs can be replayed without repeating shaping. Skia GPU rendering specializes and combines paint, clip, coverage, color conversion, and blending in generated pipelines. | **Adopt** reusable shaped runs and device-owned caches. **Adapt** pipeline specialization to ProGPU's static WGSL modules and typed cache keys. **Reject** re-shaping or rebuilding glyph positions during scroll. |
+| DirectWrite/Direct2D and Win2D | DirectWrite owns font discovery, shaping, layout, and cached glyph positions; Direct2D/Win2D consumes glyph runs and accelerates immediate drawing. A reused text-layout object avoids recalculating positions. Win2D command lists/sprite batching demonstrate retained command and bulk-image replay. | **Adopt** the layout/render boundary and immutable glyph-run contract. **Adapt** glyph-run replay to persistent WebGPU instances and physical-DPI phase keys. **Reject** per-frame platform text-layout calls in the compositor. |
+| WebRender | Serializes a compact display list, builds a scene larger than the viewport, culls it into a frame, separates picture and spatial trees, interns repeated primitives, uses tile caches for localized invalidation, and prepares glyph atlas entries on worker threads. | **Adopt** separate spatial handles, stable interned IDs, viewport culling, localized damage, and demand-driven glyph preparation. **Adapt** process/IPC packets to the browser AOT worker only where a boundary exists. **Reject** raster cache layers for every scrollable subtree because memory and invalidation cost can exceed a transform-table patch. |
+| Vello classic | Uses compact streams, associative scans, adaptive flattening, stable binning, exact tile allocation, coarse command generation, and a fine compute rasterizer. | **Adopt** scans, stable count/scan/scatter, indirect sizing, explicit overflow, and sparse tile work for large dynamic vector scenes. **Adapt** the immediate encoding into persistent retained fragments. **Reject** processing the complete unchanged scene for a scroll-only frame. |
+| Vello Hybrid / sparse strips | Uses SIMD CPU geometry preparation, sparse 4-pixel strips, instanced vertex/fragment rendering, fast source-over and separate coarse/layer paths, and a managed glyph atlas. | **Adopt** sparse representation, simple instanced replay, and adaptive CPU/GPU routing. **Adapt** strip coverage to ProGPU's protected winding and quality rules. **Reject** assuming compute is faster for small or cold workloads without device measurements. |
+| Parley | Keeps font context, rich text construction, shaping, line breaking, and layout as reusable CPU-side results; its output is consumed by a renderer rather than prescribing one raster backend. | **Adopt** renderer-neutral positioned text and explicit invalidation keys. **Reject** coupling font fallback or OpenType feature evaluation to atlas residency. |
+| HarfBuzz | Converts Unicode buffers plus direction/script/language/features into glyph IDs, clusters, advances, and offsets; shape plans make reusable shaping decisions explicit. It is a shaping engine, not a rasterizer. | **Adopt** complete CPU shaping semantics and cacheable shape-plan/font-instance identity. **Reject** a partial GPU substitute: the proposed compute pipeline starts after shaping and line layout. |
+
+The resulting boundary is intentional:
+
+```text
+Unicode + styles + font fallback + OpenType features
+        -> reusable CPU shaping and line layout
+        -> retained glyph IDs, positions, clusters, and local bounds
+        -> GPU transform/cull/compact
+        -> demand-driven atlas or vector coverage
+        -> batched raster/composite
+```
+
+This plan uses the GPU for work that is parallel and frame-dependent—transform propagation,
+visibility, allocation scans, binning, rasterization, and compositing. It keeps Unicode and OpenType
+semantics in a correct reusable CPU result. A future GPU shaping proposal would need full behavioral
+parity for all scripts, clusters, variation state, fallback, and feature ranges plus a measured win;
+otherwise it would trade correctness for a workload that scrolling should not perform at all.
+
+### Explicit Vello adoption record
+
+The following is the implementation-level decision record for Vello's compute stages:
+
+| Vello concept | Decision | Reason and ProGPU form |
+| --- | --- | --- |
+| Compact path/draw streams | Adapt | Store immutable encoded fragments in persistent arenas, addressed by generation-safe handles; patch only dirty ranges. |
+| Path-tag/draw/clip scans | Adapt selectively | Use scans for variable GPU work and large scenes; retain direct CPU metadata for small stable scenes where a dispatch chain costs more than the work. |
+| Adaptive GPU flattening | Adopt for large dynamic geometry | Replace fixed subdivisions and retain flattened output by geometry/tolerance key. Existing atlas/analytic routes remain for small stable shapes. |
+| Shared-memory stable binning | Adopt | Implement block/bin count, exclusive scan, and deterministic scatter; remove the current O(tiles x instances) search and 64-item overlap cap. |
+| Exact tile allocation and indirect sizing | Adopt | Capacity is counted before writes, overflow is explicit, and downstream dispatch sizes are generated without CPU readback. |
+| Coarse command stream | Adopt for complex vector batches | Emit only edge/interior/layer work that the fine stage consumes; do not launch a generic full-screen BVH traversal. |
+| Fine compute rasterizer | Adapt behind router | Use only when it beats atlas, analytic primitives, or sparse strips for the measured workload and backend. Preserve painter order, coverage, blend, and clip semantics. |
+| Whole immediate scene re-encoding | Reject | ProGPU already owns retained visual identity; scroll should update one spatial node rather than repack all draw streams. |
+| Sparse 4-pixel strips | Adopt first as CPU SIMD experiment | It offers a lower-risk representation and conventional render path; a GPU producer follows only when upload or CPU generation is proven dominant. |
+| Glyph outlines through general vector pipeline | Reject as universal route | Ordinary text stays in a high-quality multi-page glyph atlas; vector/color/CFF fallbacks retain their existing bounded phase and scale policies. |
+
+The decisive architectural difference is retention. Vello classic is strongest when a substantial
+vector scene must be prepared in parallel. ProGPU's sample scrolling is strongest when the renderer
+does almost no preparation because scene content is already resident. The target architecture uses
+both: retention minimizes the input work set, then Vello-style scans and tiling process the remaining
+large dynamic work without CPU serialization.
 
 ## Root causes of the current scrolling gap
 
@@ -864,6 +956,17 @@ Primary source snapshot:
 - [Sparse strip GPU shader](https://github.com/linebender/vello/blob/8ecea46dc79bbb10315c101f9dbd0955c627dab8/sparse_strips/vello_sparse_shaders/shaders/render_strips.wgsl)
 - [Current Vello Hybrid glyph atlas integration](https://github.com/linebender/vello/blob/8ecea46dc79bbb10315c101f9dbd0955c627dab8/sparse_strips/vello_hybrid/src/text.rs)
 - [GPU-friendly stroke expansion paper](https://arxiv.org/abs/2405.00127)
+- [Linebender sparse-strip and Vello Hybrid progress report](https://linebender.org/blog/tmil-15/)
+- [Parley source and architecture entry point](https://github.com/linebender/parley)
+- [Skia shaped-text staged result design](https://skia.org/docs/dev/design/text_shaper/)
+- [Skia Canvas/GPU context and resource-cache ownership](https://skia.org/docs/user/api/skcanvas_creation/)
+- [Skia GPU text sub-run, strike-cache, and slug sources](https://github.com/google/skia/tree/main/src/text/gpu)
+- [Direct2D and DirectWrite text/layout separation](https://learn.microsoft.com/en-us/windows/win32/direct2d/direct2d-and-directwrite)
+- [Win2D overview and glyph-run support](https://learn.microsoft.com/en-us/windows/apps/develop/win2d/)
+- [Firefox/WebRender rendering overview](https://firefox-source-docs.mozilla.org/gfx/RenderingOverview.html)
+- [WebRender tile-cache source](https://searchfox.org/firefox-main/source/gfx/wr/webrender/src/tile_cache)
+- [HarfBuzz shaping and shape plans](https://harfbuzz.github.io/shaping-and-shape-plans.html)
+- [HarfBuzz `hb_shape` contract](https://harfbuzz.github.io/harfbuzz-hb-shape.html)
 
 Local ProGPU evidence inspected:
 
@@ -875,3 +978,10 @@ Local ProGPU evidence inspected:
 - `src/ProGPU.Compute/WavefrontVectorEngine.cs`
 - `src/ProGPU.Compute/Shaders/Wavefront.wgsl`
 - `src/ProGPU.Samples/SamplePerformanceBenchmark.cs`
+- `src/ProGPU.Scene/GpuSceneFragmentArena.cs`
+- `src/ProGPU.Scene/SceneTransformHandle.cs`
+- `src/ProGPU.Scene/Visual.cs`
+- `src/ProGPU.Backend/Shaders/Text.wgsl`
+- `src/ProGPU.WinUI/Controls/ScrollViewer.cs`
+- `src/ProGPU.WinUI/Controls/UniformVirtualizingGridPanel.cs`
+- `src/ProGPU.WinUI/Input/InputSystem.cs`
