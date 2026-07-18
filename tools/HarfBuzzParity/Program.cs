@@ -484,7 +484,7 @@ internal sealed class SuiteRunner : IDisposable
 
     private static bool IsKhmerBaseCategory(uint codePoint)
     {
-        byte category = checked((byte)UnicodeShapingProperties.GetIndicProperties(codePoint));
+        byte category = (byte)(UnicodeShapingProperties.GetIndicProperties(codePoint) & 0xff);
         return category is 1 or 2 or 10 or 11 or 15;
     }
 
