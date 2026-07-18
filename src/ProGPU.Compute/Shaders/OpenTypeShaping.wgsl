@@ -157,6 +157,19 @@ const FEATURE_GPOS_MATCH: u32 = 16u;
 const GLYPH_SUBSTITUTED: u32 = 2u;
 const GLYPH_INVISIBLE: u32 = 4u;
 const GLYPH_SPLIT_MATRA_COMPONENT: u32 = 32u;
+const SPACE_FALLBACK_SHIFT: u32 = 8u;
+const SPACE_EM: u32 = 1u;
+const SPACE_EM2: u32 = 2u;
+const SPACE_EM3: u32 = 3u;
+const SPACE_EM4: u32 = 4u;
+const SPACE_EM5: u32 = 5u;
+const SPACE_EM6: u32 = 6u;
+const SPACE_EM16: u32 = 16u;
+const SPACE_FOUR_EM18: u32 = 17u;
+const SPACE_REGULAR: u32 = 18u;
+const SPACE_FIGURE: u32 = 19u;
+const SPACE_PUNCTUATION: u32 = 20u;
+const SPACE_NARROW: u32 = 21u;
 const FRACTION_NUMERATOR: u32 = 1u;
 const FRACTION_DENOMINATOR: u32 = 2u;
 const FRACTION_SLASH: u32 = 4u;
@@ -4437,6 +4450,22 @@ fn nominal_glyph(codepoint: u32) -> u32 {
     return 0u;
 }
 
+fn space_fallback(codepoint: u32) -> u32 {
+    if (codepoint == 0x20u || codepoint == 0xa0u) { return SPACE_REGULAR; }
+    if (codepoint == 0x2000u || codepoint == 0x2002u) { return SPACE_EM2; }
+    if (codepoint == 0x2001u || codepoint == 0x2003u || codepoint == 0x3000u) { return SPACE_EM; }
+    if (codepoint == 0x2004u) { return SPACE_EM3; }
+    if (codepoint == 0x2005u) { return SPACE_EM4; }
+    if (codepoint == 0x2006u) { return SPACE_EM6; }
+    if (codepoint == 0x2007u) { return SPACE_FIGURE; }
+    if (codepoint == 0x2008u) { return SPACE_PUNCTUATION; }
+    if (codepoint == 0x2009u) { return SPACE_EM5; }
+    if (codepoint == 0x200au) { return SPACE_EM16; }
+    if (codepoint == 0x202fu) { return SPACE_NARROW; }
+    if (codepoint == 0x205fu) { return SPACE_FOUR_EM18; }
+    return 0u;
+}
+
 @compute @workgroup_size(64)
 fn initialize_glyphs(@builtin(global_invocation_id) id: vec3<u32>) {
     let index = id.x;
@@ -4445,17 +4474,32 @@ fn initialize_glyphs(@builtin(global_invocation_id) id: vec3<u32>) {
         run_state = RunState(params.input_count, 0u, 0u, params.input_count + 1u, 1u, 0u, 0u, 0u);
     }
     let input = input_scalars[index];
+    var glyph_id = nominal_glyph(input.codepoint);
+    var fallback = 0u;
+    if (glyph_id == 0u) {
+        fallback = space_fallback(input.codepoint);
+        let ordinary_space = nominal_glyph(0x20u);
+        if (fallback != 0u && ordinary_space != 0u) {
+            glyph_id = ordinary_space;
+        } else {
+            fallback = 0u;
+        }
+    }
     glyphs[index] = ShapingGlyph(
-        nominal_glyph(input.codepoint), input.codepoint, input.cluster, input.flags,
+        glyph_id, input.codepoint, input.cluster, input.flags,
         0, 0, 0, 0);
     glyph_states[index] = GlyphState(
-        index + 1u, 0u, 0u, 0, 0u, ARABIC_NONE << ARABIC_ACTION_SHIFT, 0u, 0u);
+        index + 1u, 0u, 0u, -1, fallback << SPACE_FALLBACK_SHIFT,
+        ARABIC_NONE << ARABIC_ACTION_SHIFT, 0u, 0u);
 }
 
 @compute @workgroup_size(64)
 fn load_metrics(@builtin(global_invocation_id) id: vec3<u32>) {
     let index = id.x;
     if (index >= run_state.glyph_count) { return; }
+    let fallback = glyph_states[index].attachment_type >> SPACE_FALLBACK_SHIFT;
+    glyph_states[index].attachment_chain = -1;
+    glyph_states[index].attachment_type = 0u;
     let glyph_id = glyphs[index].glyph_id;
     if (glyph_id >= params.metric_count) { return; }
     if ((glyph_states[index].internal_flags & GLYPH_INVISIBLE) != 0u) { return; }
@@ -4466,6 +4510,43 @@ fn load_metrics(@builtin(global_invocation_id) id: vec3<u32>) {
         glyphs[index].offset_y = -metric.origin_y;
     } else {
         glyphs[index].advance_x = metric.advance_x;
+    }
+    if (fallback == 0u || fallback == SPACE_REGULAR) { return; }
+    let vertical = params.direction == 3u || params.direction == 4u;
+    var advance = select(glyphs[index].advance_x, glyphs[index].advance_y, vertical);
+    if (fallback <= SPACE_EM6 || fallback == SPACE_EM16) {
+        let divisor = i32(fallback);
+        let magnitude = (i32(params.reserved1) + divisor / 2) / divisor;
+        advance = select(magnitude, -magnitude, vertical);
+    } else if (fallback == SPACE_FOUR_EM18) {
+        let magnitude = i32(params.reserved1 * 4u / 18u);
+        advance = select(magnitude, -magnitude, vertical);
+    } else if (fallback == SPACE_FIGURE) {
+        for (var codepoint = 0x30u; codepoint <= 0x39u; codepoint++) {
+            let candidate = nominal_glyph(codepoint);
+            if (candidate == 0u || candidate >= params.metric_count) { continue; }
+            advance = select(
+                glyph_metrics[candidate].advance_x,
+                -glyph_metrics[candidate].advance_y,
+                vertical);
+            break;
+        }
+    } else if (fallback == SPACE_PUNCTUATION) {
+        var candidate = nominal_glyph(0x2eu);
+        if (candidate == 0u) { candidate = nominal_glyph(0x2cu); }
+        if (candidate != 0u && candidate < params.metric_count) {
+            advance = select(
+                glyph_metrics[candidate].advance_x,
+                -glyph_metrics[candidate].advance_y,
+                vertical);
+        }
+    } else if (fallback == SPACE_NARROW) {
+        advance /= 2;
+    }
+    if (vertical) {
+        glyphs[index].advance_y = advance;
+    } else {
+        glyphs[index].advance_x = advance;
     }
 }
 

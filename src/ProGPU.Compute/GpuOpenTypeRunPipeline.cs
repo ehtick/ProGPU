@@ -316,11 +316,12 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
             else if (stage == 1)
             {
                 entries[0] = Entry(0, _paramsBuffer!);
-                entries[1] = Entry(3, font.MetricsBuffer);
-                entries[2] = Entry(4, _glyphBuffer!);
-                entries[3] = Entry(7, _stateBuffer!);
-                entries[4] = Entry(9, _glyphStateBuffer!);
-                count = 5;
+                entries[1] = Entry(2, font.CmapBuffer);
+                entries[2] = Entry(3, font.MetricsBuffer);
+                entries[3] = Entry(4, _glyphBuffer!);
+                entries[4] = Entry(7, _stateBuffer!);
+                entries[5] = Entry(9, _glyphStateBuffer!);
+                count = 6;
             }
             else if (stage == 2)
             {
