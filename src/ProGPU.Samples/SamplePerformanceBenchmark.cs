@@ -548,7 +548,7 @@ internal static class SamplePerformanceBenchmark
         using (var writer = new Utf8JsonWriter(output))
         {
             writer.WriteStartObject();
-            writer.WriteNumber("schemaVersion", 3);
+            writer.WriteNumber("schemaVersion", 4);
             writer.WriteString("page", RequestedPage);
             writer.WriteString("platform", OperatingSystem.IsBrowser() ? "browser" : "desktop");
             writer.WriteString("backend", AppState._wgpuContext?.BackendKind.ToString());
@@ -563,6 +563,14 @@ internal static class SamplePerformanceBenchmark
             writer.WriteNumber("renderTargetWidth", frameMetrics.RenderTargetWidth);
             writer.WriteNumber("renderTargetHeight", frameMetrics.RenderTargetHeight);
             writer.WriteNumber("dpiScale", frameMetrics.DpiScale);
+            uint primarySampleCount = AppState._screenCompositor?.Options.PrimarySampleCount ?? 1u;
+            writer.WriteNumber("primarySampleCount", primarySampleCount);
+            double minimumColorBytesPerFrame =
+                (double)frameMetrics.RenderTargetWidth * frameMetrics.RenderTargetHeight * 4d * primarySampleCount;
+            writer.WriteNumber("minimumColorBytesPerFrame", minimumColorBytesPerFrame);
+            writer.WriteNumber(
+                "minimumColorWriteGiBPerSecond",
+                minimumColorBytesPerFrame * completedGpuFps / (1024d * 1024d * 1024d));
             writer.WriteNumber("deltaFps", deltaFps);
             writer.WriteNumber("wallFps", wallFps);
             writer.WriteNumber("cpuSubmittedFps", wallFps);
