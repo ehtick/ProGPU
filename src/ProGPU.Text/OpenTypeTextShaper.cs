@@ -4,6 +4,7 @@ using ProGPU.Text.Shaping;
 using System.Buffers;
 using System.Globalization;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace ProGPU.Text;
@@ -258,6 +259,45 @@ public static class OpenTypeTextShaper
 {
     private const int MaximumShapedGlyphCount = 1_048_576;
     private const int MaximumLookupNestingDepth = 64;
+    private const int ShapingPlanCacheLimit = 64;
+
+    private static readonly ConditionalWeakTable<TtfFont, FontShapingPlanCache> s_shapingPlanCaches = new();
+
+    private readonly record struct ShapingPlanKey(
+        string UnicodeScript,
+        TextShapingOptions Options);
+
+    private sealed class FontShapingPlanCache
+    {
+        private readonly object _lock = new();
+        private readonly Dictionary<ShapingPlanKey, ShapingPlan> _plans = new();
+        private readonly Queue<ShapingPlanKey> _order = new();
+
+        public ShapingPlan GetOrCreate(
+            TtfFont font,
+            string unicodeScript,
+            TextShapingOptions options)
+        {
+            var key = new ShapingPlanKey(unicodeScript, options);
+            lock (_lock)
+            {
+                if (_plans.TryGetValue(key, out ShapingPlan cached))
+                {
+                    return cached;
+                }
+
+                ShapingPlan created = CreateShapingPlan(font, unicodeScript, options);
+                _plans.Add(key, created);
+                _order.Enqueue(key);
+                while (_order.Count > ShapingPlanCacheLimit)
+                {
+                    ShapingPlanKey oldest = _order.Dequeue();
+                    _plans.Remove(oldest);
+                }
+                return created;
+            }
+        }
+    }
 
     internal static bool IsDefaultIgnorableCodePoint(uint codePoint) =>
         GlyphSubstitutionBuffer.IsDefaultIgnorable(codePoint);
@@ -372,18 +412,19 @@ public static class OpenTypeTextShaper
         TtfFont font,
         TextShapingOptions options)
     {
-
         string unicodeScript = options.Script ?? InferScript(text);
-        bool useShaper = ResolveLayoutScript(font, unicodeScript, out string script);
-        bool indicShaper = !useShaper && IsIndicShaperScript(unicodeScript);
-        bool khmerShaper = script == "khmr";
-        bool myanmarShaper = unicodeScript == "mymr";
-        bool arabicShaper = UsesArabicJoiningScript(unicodeScript);
-        ShapingDirection direction = ResolveDirection(options.Direction, unicodeScript);
-        options = AddScriptFeatures(options, script, useShaper, indicShaper);
-        options = AddDirectionalFeatures(options, direction);
-        Typeface? typeface = font.LayoutTypeface;
-        SubstitutionPlan substitutionPlan = CreateSubstitutionPlan(font, typeface?.GSUBTable, options, script);
+        ShapingPlan shapingPlan = s_shapingPlanCaches
+            .GetValue(font, static _ => new FontShapingPlanCache())
+            .GetOrCreate(font, unicodeScript, options);
+        string script = shapingPlan.Script;
+        bool useShaper = shapingPlan.UseShaper;
+        bool indicShaper = shapingPlan.IndicShaper;
+        bool khmerShaper = shapingPlan.KhmerShaper;
+        bool myanmarShaper = shapingPlan.MyanmarShaper;
+        bool arabicShaper = shapingPlan.ArabicShaper;
+        ShapingDirection direction = shapingPlan.Direction;
+        options = shapingPlan.Options;
+        SubstitutionPlan substitutionPlan = shapingPlan.Substitution;
 
         var substitutions = GlyphSubstitutionBuffer.Create(
             text,
@@ -399,7 +440,7 @@ public static class OpenTypeTextShaper
         substitutions.PrepareHangulShaping(unicodeScript == "hang", font);
         substitutions.ReorderModifiedCombiningMarks(unicodeScript);
         substitutions.ComposeHebrewPresentationForms(
-            unicodeScript == "hebr" && !GetFeatureTags(font).Contains("mark", StringComparer.Ordinal));
+            unicodeScript == "hebr" && !shapingPlan.HasMarkFeature);
         substitutions.ApplyVowelConstraints(unicodeScript);
         substitutions.NormalizeUseDiacritics(useShaper);
         substitutions.PrepareThaiLao(unicodeScript);
@@ -506,8 +547,8 @@ public static class OpenTypeTextShaper
             zeroMarkAdvancesEarly: useShaper || myanmarShaper,
             clusterLevel: options.ClusterLevel,
             bufferFlags: options.BufferFlags);
-        bool hasGpos = font.TryGetTable("GPOS", out _);
-        bool hasGposKerning = ApplyPositions(font, typeface?.GPOSTable, positions, options, script);
+        bool hasGpos = shapingPlan.Positioning.HasTable;
+        bool hasGposKerning = ApplyPositions(font, shapingPlan.Positioning, positions, options);
         bool kernEnabled = IsFeatureEnabled(options.Features, "kern");
         if (!hasGposKerning && kernEnabled && !indicShaper &&
             direction is ShapingDirection.LeftToRight or ShapingDirection.RightToLeft)
@@ -540,6 +581,38 @@ public static class OpenTypeTextShaper
         }
 
         return new ShapingResult(positions, direction);
+    }
+
+    private static ShapingPlan CreateShapingPlan(
+        TtfFont font,
+        string unicodeScript,
+        TextShapingOptions requestedOptions)
+    {
+        bool useShaper = ResolveLayoutScript(font, unicodeScript, out string script);
+        bool indicShaper = !useShaper && IsIndicShaperScript(unicodeScript);
+        bool khmerShaper = script == "khmr";
+        bool myanmarShaper = unicodeScript == "mymr";
+        bool arabicShaper = UsesArabicJoiningScript(unicodeScript);
+        ShapingDirection direction = ResolveDirection(requestedOptions.Direction, unicodeScript);
+        TextShapingOptions options = AddScriptFeatures(requestedOptions, script, useShaper, indicShaper);
+        options = AddDirectionalFeatures(options, direction);
+        Typeface? typeface = font.LayoutTypeface;
+        SubstitutionPlan substitution = CreateSubstitutionPlan(font, typeface?.GSUBTable, options, script);
+        PositioningPlan positioning = CreatePositioningPlan(font, typeface?.GPOSTable, options, script);
+        bool hasMarkFeature = unicodeScript == "hebr" &&
+            GetFeatureTags(font).Contains("mark", StringComparer.Ordinal);
+        return new ShapingPlan(
+            script,
+            useShaper,
+            indicShaper,
+            khmerShaper,
+            myanmarShaper,
+            arabicShaper,
+            direction,
+            options,
+            substitution,
+            positioning,
+            hasMarkFeature);
     }
 
     private readonly record struct ShapingResult(
@@ -711,11 +784,11 @@ public static class OpenTypeTextShaper
     {
         ReadOnlyMemory<byte> rawTable = default;
         bool hasRawTable = font.TryGetTable("GSUB", out rawTable);
-        List<EnabledLookup> rawLookups = hasRawTable
-            ? GetRawEnabledLookupIndices(font, rawTable.Span, options.Features, script, options.Language, out _)
+        EnabledLookup[] rawLookups = hasRawTable
+            ? GetRawEnabledLookupIndices(font, rawTable.Span, options.Features, script, options.Language, out _).ToArray()
             : [];
-        List<EnabledLookup> lookups = table?.FeatureList?.featureTables is { Length: > 0 } features
-            ? GetEnabledLookupIndices(table, features, options, script).ToList()
+        EnabledLookup[] lookups = table?.FeatureList?.featureTables is { Length: > 0 } features
+            ? GetEnabledLookupIndices(table, features, options, script).ToArray()
             : [];
         return new SubstitutionPlan(table, rawTable, lookups, rawLookups, hasRawTable);
     }
@@ -729,7 +802,7 @@ public static class OpenTypeTextShaper
     {
         GSUB? table = plan.Table;
         ReadOnlyMemory<byte> rawTable = plan.RawTable;
-        List<EnabledLookup> rawLookups = plan.RawLookups;
+        EnabledLookup[] rawLookups = plan.RawLookups;
 
         if (table is not null && !plan.RawOnly)
         {
@@ -2297,43 +2370,70 @@ public static class OpenTypeTextShaper
     private static uint ReadU32(ReadOnlySpan<byte> data, int offset) =>
         (uint)(data[offset] << 24 | data[offset + 1] << 16 | data[offset + 2] << 8 | data[offset + 3]);
 
-    private static bool ApplyPositions(
+    private static PositioningPlan CreatePositioningPlan(
         TtfFont font,
         GPOS? table,
-        GlyphPositionBuffer glyphs,
         TextShapingOptions options,
         string script)
     {
         if (font.TryGetTable("GPOS", out ReadOnlyMemory<byte> rawTable))
         {
-            List<EnabledLookup> rawLookups = GetRawEnabledLookupIndices(
+            EnabledLookup[] rawLookups = GetRawEnabledLookupIndices(
                 font,
                 rawTable.Span,
                 options.Features,
                 script,
                 options.Language,
-                out _);
-            foreach (EnabledLookup enabled in rawLookups)
-            {
-                ApplyRawPositionLookup(
-                    rawTable.Span, glyphs, enabled.LookupIndex, enabled.Tag, enabled.Required, options);
-                ApplyPositionVariations(font, glyphs, enabled.LookupIndex);
-            }
-            return rawLookups.Any(static lookup => lookup.Tag is "kern" or "dist");
+                out _).ToArray();
+            return new PositioningPlan(
+                table,
+                rawTable,
+                rawLookups,
+                HasRawTable: true,
+                HasTable: true,
+                HasKerning: rawLookups.Any(static lookup => lookup.Tag is "kern" or "dist"));
         }
 
-        if (table?.FeatureList?.featureTables is not { Length: > 0 } features) return false;
-        bool hasKerning = false;
-        foreach (EnabledLookup enabled in GetEnabledLookupIndices(table, features, options, script))
+        EnabledLookup[] lookups = table?.FeatureList?.featureTables is { Length: > 0 } features
+            ? GetEnabledLookupIndices(table, features, options, script).ToArray()
+            : [];
+        return new PositioningPlan(
+            table,
+            default,
+            lookups,
+            HasRawTable: false,
+            HasTable: table is not null,
+            HasKerning: lookups.Any(static lookup => lookup.Tag is "kern" or "dist"));
+    }
+
+    private static bool ApplyPositions(
+        TtfFont font,
+        PositioningPlan plan,
+        GlyphPositionBuffer glyphs,
+        TextShapingOptions options)
+    {
+        if (plan.HasRawTable)
         {
-            hasKerning |= enabled.Tag is "kern" or "dist";
+            foreach (EnabledLookup enabled in plan.Lookups)
+            {
+                ApplyRawPositionLookup(
+                    plan.RawTable.Span, glyphs, enabled.LookupIndex, enabled.Tag, enabled.Required, options);
+                ApplyPositionVariations(font, glyphs, enabled.LookupIndex);
+            }
+            return plan.HasKerning;
+        }
+
+        GPOS? table = plan.Table;
+        if (table is null) return false;
+        foreach (EnabledLookup enabled in plan.Lookups)
+        {
             ushort lookupIndex = enabled.LookupIndex;
             if (lookupIndex < table.LookupList.Count)
             {
                 table.LookupList[lookupIndex].DoGlyphPosition(glyphs, 0, glyphs.Count);
             }
         }
-        return hasKerning;
+        return plan.HasKerning;
     }
 
     private static void ApplyRawPositionLookup(
@@ -3318,9 +3418,28 @@ public static class OpenTypeTextShaper
     private readonly record struct SubstitutionPlan(
         GSUB? Table,
         ReadOnlyMemory<byte> RawTable,
-        List<EnabledLookup> Lookups,
-        List<EnabledLookup> RawLookups,
+        EnabledLookup[] Lookups,
+        EnabledLookup[] RawLookups,
         bool RawOnly);
+    private readonly record struct PositioningPlan(
+        GPOS? Table,
+        ReadOnlyMemory<byte> RawTable,
+        EnabledLookup[] Lookups,
+        bool HasRawTable,
+        bool HasTable,
+        bool HasKerning);
+    private readonly record struct ShapingPlan(
+        string Script,
+        bool UseShaper,
+        bool IndicShaper,
+        bool KhmerShaper,
+        bool MyanmarShaper,
+        bool ArabicShaper,
+        ShapingDirection Direction,
+        TextShapingOptions Options,
+        SubstitutionPlan Substitution,
+        PositioningPlan Positioning,
+        bool HasMarkFeature);
 
     private enum UseSubstitutionStage : byte
     {

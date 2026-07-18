@@ -280,6 +280,35 @@ public sealed class OpenTypeTextShaperTests
                 new OpenTypeFeatureSetting("ss01", 1)));
     }
 
+    [Fact]
+    public void RepeatedEquivalentShapingPlansKeepAllocationsBounded()
+    {
+        TtfFont font = InterFontFamily.Regular;
+        TextShapingOptions first = TextShapingOptions.WithFeatures(
+            new OpenTypeFeatureSetting("liga", 1),
+            new OpenTypeFeatureSetting("kern", 1));
+        TextShapingOptions second = TextShapingOptions.WithFeatures(
+            new OpenTypeFeatureSetting("liga", 1),
+            new OpenTypeFeatureSetting("kern", 1));
+
+        _ = OpenTypeTextShaper.Shape("Scrolling label 123", font, 14f, first);
+        _ = OpenTypeTextShaper.Shape("Scrolling label 123", font, 14f, second);
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        for (var iteration = 0; iteration < 256; iteration++)
+        {
+            _ = OpenTypeTextShaper.Shape(
+                "Scrolling label 123",
+                font,
+                14f,
+                (iteration & 1) == 0 ? first : second);
+        }
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.True(
+            allocated < 2_000_000,
+            $"Repeated shaping allocated {allocated:N0} bytes; cached lookup plans must not be rebuilt per run.");
+    }
+
     private static TextShapingOptions Features(params string[] optional)
     {
         var features = new List<OpenTypeFeatureSetting>
