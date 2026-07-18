@@ -152,6 +152,7 @@ const FEATURE_MANUAL_ZWJ: u32 = 8u;
 const FEATURE_GPOS_MATCH: u32 = 16u;
 const GLYPH_SUBSTITUTED: u32 = 2u;
 const GLYPH_INVISIBLE: u32 = 4u;
+const GLYPH_SPLIT_MATRA_COMPONENT: u32 = 32u;
 const FRACTION_NUMERATOR: u32 = 1u;
 const FRACTION_DENOMINATOR: u32 = 2u;
 const FRACTION_SLASH: u32 = 4u;
@@ -1873,8 +1874,9 @@ fn apply_vowel_constraints() {
     }
 }
 
-fn normalize_use_diacritics() {
-    if (!is_use_syllable_script()) { return; }
+fn normalize_complex_script_diacritics() {
+    if (!is_use_syllable_script() && !is_indic_syllable_script()) { return; }
+    var has_indic_split_matra = false;
     var position = 0u;
     while (position < run_state.glyph_count) {
         let codepoint = glyphs[position].codepoint;
@@ -1894,6 +1896,7 @@ fn normalize_use_diacritics() {
         }
         let source = glyphs[position];
         let source_state = glyph_states[position];
+        let restore_character_cluster = is_indic_syllable_script() && has_indic_split_matra;
         for (var component = 0u; component < count; component++) {
             let target_index = position + component;
             let scalar = decomposition_scalar(codepoint, record, component);
@@ -1901,13 +1904,39 @@ fn normalize_use_diacritics() {
             glyphs[target_index].codepoint = scalar;
             glyphs[target_index].glyph_id = nominal_glyph(scalar);
             glyph_states[target_index] = source_state;
+            if (restore_character_cluster) {
+                glyph_states[target_index].attachment_chain = source.cluster;
+                glyph_states[target_index].internal_flags |= GLYPH_SPLIT_MATRA_COMPONENT;
+            }
             if (component != 0u) {
                 glyph_states[target_index].serial = run_state.next_serial;
                 run_state.next_serial += 1u;
             }
         }
+        if (is_indic_syllable_script()) { has_indic_split_matra = true; }
         run_state.glyph_count += extra;
         position += count;
+    }
+}
+
+fn restore_split_matra_character_clusters() {
+    if (params.cluster_level != 1u) { return; }
+    var changed = false;
+    for (var index = 0u; index < run_state.glyph_count; index++) {
+        if ((glyph_states[index].internal_flags & GLYPH_SPLIT_MATRA_COMPONENT) == 0u) { continue; }
+        glyphs[index].cluster = glyph_states[index].attachment_chain;
+        glyph_states[index].attachment_chain = 0;
+        glyph_states[index].internal_flags &= ~GLYPH_SPLIT_MATRA_COMPONENT;
+        changed = true;
+    }
+    if (!changed) { return; }
+    for (var index = 1u; index < run_state.glyph_count; index++) {
+        let cluster = glyphs[index].cluster;
+        var previous = index;
+        while (previous > 0u && glyphs[previous - 1u].cluster > cluster) {
+            previous -= 1u;
+            glyphs[previous].cluster = cluster;
+        }
     }
 }
 
@@ -1940,7 +1969,7 @@ fn reorder_canonical_combining_marks() {
             glyphs[destination] = value;
             glyph_states[destination] = value_state;
             if (params.cluster_level == 1u && destination < index) {
-                for (var crossed = destination + 1u; crossed <= index; crossed++) {
+                for (var crossed = destination; crossed <= index; crossed++) {
                     glyphs[crossed].cluster = crossed_cluster;
                 }
             }
@@ -2045,7 +2074,7 @@ fn decompose_missing_glyphs() {
 
 fn normalize_unicode() {
     if (params.script_tag == 0x68616e67u) { return; }
-    reorder_canonical_combining_marks();
+    reorder_modified_combining_marks();
     compose_canonical_sequences();
     decompose_missing_glyphs();
 }
@@ -2342,7 +2371,7 @@ fn reorder_modified_combining_marks() {
             glyphs[destination] = value;
             glyph_states[destination] = value_state;
             if (params.cluster_level == 1u && destination < index) {
-                for (var crossed = destination + 1u; crossed <= index; crossed++) {
+                for (var crossed = destination; crossed <= index; crossed++) {
                     glyphs[crossed].cluster = crossed_cluster;
                 }
             }
@@ -3312,14 +3341,13 @@ fn preprocess_glyphs(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     apply_vowel_constraints();
     if (run_state.status != 0u) { return; }
-    normalize_use_diacritics();
+    normalize_complex_script_diacritics();
     if (run_state.status != 0u) { return; }
     prepare_hangul_shaping();
     if (run_state.status != 0u) { return; }
     prepare_thai_lao();
     if (run_state.status != 0u) { return; }
     apply_directional_codepoint_fallback();
-    reorder_modified_combining_marks();
     prepare_complex_syllables();
     if (run_state.status != 0u) { return; }
     initialize_indic_shaping_state();
@@ -3393,48 +3421,50 @@ fn finalize_substitutions(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x != 0u) { return; }
     let preserve = (params.request_flags & 4u) != 0u;
     let remove = (params.request_flags & 8u) != 0u;
-    if (preserve) { return; }
-    let invisible_glyph = select(nominal_glyph(0x20u), 0u, remove);
-    var index = 0u;
-    loop {
-        if (index >= run_state.glyph_count) { break; }
-        if (!is_default_ignorable(glyphs[index].codepoint) ||
-                (glyph_states[index].internal_flags & GLYPH_SUBSTITUTED) != 0u ||
-                (glyph_states[index].feature_mask & HANGUL_FEATURE_MASK) != 0u) {
-            index += 1u;
-            continue;
-        }
-        if (invisible_glyph != 0u) {
-            glyphs[index].glyph_id = invisible_glyph;
-            glyph_states[index].internal_flags |= GLYPH_INVISIBLE;
-            index += 1u;
-            continue;
-        }
-        let removed_cluster = glyphs[index].cluster;
-        if (index > 0u && (index + 1u >= run_state.glyph_count ||
-                glyphs[index + 1u].cluster != removed_cluster) &&
-                removed_cluster < glyphs[index - 1u].cluster) {
-            let previous_cluster = glyphs[index - 1u].cluster;
-            var previous = index;
-            loop {
-                if (previous == 0u || glyphs[previous - 1u].cluster != previous_cluster) { break; }
-                previous -= 1u;
-                glyphs[previous].cluster = removed_cluster;
+    if (!preserve) {
+        let invisible_glyph = select(nominal_glyph(0x20u), 0u, remove);
+        var index = 0u;
+        loop {
+            if (index >= run_state.glyph_count) { break; }
+            if (!is_default_ignorable(glyphs[index].codepoint) ||
+                    (glyph_states[index].internal_flags & GLYPH_SUBSTITUTED) != 0u ||
+                    (glyph_states[index].feature_mask & HANGUL_FEATURE_MASK) != 0u) {
+                index += 1u;
+                continue;
             }
-        } else if (index == 0u && run_state.glyph_count > 1u) {
-            let source_cluster = glyphs[1u].cluster;
-            let merged_cluster = min(removed_cluster, source_cluster);
-            for (var following = 1u; following < run_state.glyph_count; following++) {
-                if (glyphs[following].cluster != source_cluster) { break; }
-                glyphs[following].cluster = merged_cluster;
+            if (invisible_glyph != 0u) {
+                glyphs[index].glyph_id = invisible_glyph;
+                glyph_states[index].internal_flags |= GLYPH_INVISIBLE;
+                index += 1u;
+                continue;
             }
+            let removed_cluster = glyphs[index].cluster;
+            if (index > 0u && (index + 1u >= run_state.glyph_count ||
+                    glyphs[index + 1u].cluster != removed_cluster) &&
+                    removed_cluster < glyphs[index - 1u].cluster) {
+                let previous_cluster = glyphs[index - 1u].cluster;
+                var previous = index;
+                loop {
+                    if (previous == 0u || glyphs[previous - 1u].cluster != previous_cluster) { break; }
+                    previous -= 1u;
+                    glyphs[previous].cluster = removed_cluster;
+                }
+            } else if (index == 0u && run_state.glyph_count > 1u) {
+                let source_cluster = glyphs[1u].cluster;
+                let merged_cluster = min(removed_cluster, source_cluster);
+                for (var following = 1u; following < run_state.glyph_count; following++) {
+                    if (glyphs[following].cluster != source_cluster) { break; }
+                    glyphs[following].cluster = merged_cluster;
+                }
+            }
+            for (var cursor = index + 1u; cursor < run_state.glyph_count; cursor++) {
+                glyphs[cursor - 1u] = glyphs[cursor];
+                glyph_states[cursor - 1u] = glyph_states[cursor];
+            }
+            run_state.glyph_count -= 1u;
         }
-        for (var cursor = index + 1u; cursor < run_state.glyph_count; cursor++) {
-            glyphs[cursor - 1u] = glyphs[cursor];
-            glyph_states[cursor - 1u] = glyph_states[cursor];
-        }
-        run_state.glyph_count -= 1u;
     }
+    restore_split_matra_character_clusters();
 }
 
 fn legacy_kern_class(subtable: u32, length: u32, relative: u32, glyph: u32) -> u32 {

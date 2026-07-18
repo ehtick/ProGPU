@@ -737,6 +737,35 @@ public sealed class ShapingContractsTests
     }
 
     [Fact]
+    public void GpuMonotoneCharacterClustersMergeWhenCombiningMarksReorder()
+    {
+        var face = new TtfShapingFontFace(InterFontFamily.Regular);
+        GpuOpenTypeShapingPlan plan = GpuOpenTypeShapingPlanCompiler.Compile(face);
+        using var context = new WgpuContext();
+        context.Initialize(null);
+        using var fontData = new GpuOpenTypeFontData(context, plan);
+        using var pipeline = new GpuOpenTypeRunPipeline(context);
+        using var output = new ShapingBuffer();
+
+        pipeline.ExecuteRun(
+            [
+                new GpuShapingScalar(0x05d4, 0),
+                new GpuShapingScalar(0x05b7, 1),
+                new GpuShapingScalar(0x05c1, 2),
+                new GpuShapingScalar(0x05e9, 3)
+            ],
+            fontData,
+            new ShapingRequest(
+                ShapingDirection.RightToLeft,
+                new OpenTypeTag("hebr"),
+                clusterLevel: ShapingClusterLevel.MonotoneCharacters),
+            [], output);
+
+        Assert.Equal(new[] { 3, 1, 1, 0 },
+            output.Glyphs.ToArray().Select(static glyph => glyph.Cluster));
+    }
+
+    [Fact]
     public void GpuIndicTwoPassReorderingMatchesManagedRules()
     {
         var face = new IndicShapingFontFace();
