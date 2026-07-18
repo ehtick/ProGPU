@@ -436,6 +436,47 @@ public sealed class ShapingContractsTests
     }
 
     [Fact]
+    public void GpuHangulShapingComposesAndGatesJamoFeatures()
+    {
+        var composedFace = new HangulShapingFontFace(hasSyllableGlyph: true);
+        var jamoFace = new HangulShapingFontFace(hasSyllableGlyph: false);
+        GpuOpenTypeShapingPlan composedPlan = GpuOpenTypeShapingPlanCompiler.Compile(composedFace);
+        GpuOpenTypeShapingPlan jamoPlan = GpuOpenTypeShapingPlanCompiler.Compile(jamoFace);
+        var request = new ShapingRequest(ShapingDirection.LeftToRight, new OpenTypeTag("hang"), language: "ko");
+        uint table = jamoPlan.Tables.GsubOffset;
+        GpuOpenTypeLookupCommand[] commands =
+        [
+            new(1, table + 4, 1, 0, new OpenTypeTag("ljmo").Value, 1),
+            new(1, table + 26, 1, 0, new OpenTypeTag("vjmo").Value, 1)
+        ];
+        using var context = new WgpuContext();
+        context.Initialize(null);
+        using var composedData = new GpuOpenTypeFontData(context, composedPlan);
+        using var jamoData = new GpuOpenTypeFontData(context, jamoPlan);
+        using var pipeline = new GpuOpenTypeRunPipeline(context);
+        using var composed = new ShapingBuffer();
+        using var jamo = new ShapingBuffer();
+        using var decomposed = new ShapingBuffer();
+
+        pipeline.ExecuteRun(
+            [new GpuShapingScalar(0x1100, 0), new GpuShapingScalar(0x1161, 1)],
+            composedData, request, [], composed);
+        pipeline.ExecuteRun(
+            [new GpuShapingScalar(0x1100, 0), new GpuShapingScalar(0x1161, 1)],
+            jamoData, request, commands, jamo);
+        pipeline.ExecuteRun(
+            [new GpuShapingScalar(0xac00, 0)],
+            jamoData, request, commands, decomposed);
+
+        Assert.Single(composed.Glyphs.ToArray());
+        Assert.Equal(0xac00u, composed[0].CodePoint);
+        Assert.Equal(3u, composed[0].GlyphId);
+        Assert.Equal(new uint[] { 10, 11 }, jamo.Glyphs.ToArray().Select(static glyph => glyph.GlyphId));
+        Assert.Equal(new uint[] { 10, 11 }, decomposed.Glyphs.ToArray().Select(static glyph => glyph.GlyphId));
+        Assert.All(jamo.Glyphs.ToArray(), static glyph => Assert.Equal(0, glyph.Cluster));
+    }
+
+    [Fact]
     public void GpuLookupPlanPreservesHalfOpenFeatureRanges()
     {
         var face = new TtfShapingFontFace(InterFontFamily.Regular);
@@ -894,6 +935,65 @@ public sealed class ShapingContractsTests
             return false;
         }
         public float GetLayoutVariationDelta(ushort outerIndex, ushort innerIndex) => 0;
+    }
+
+    private sealed class HangulShapingFontFace(bool hasSyllableGlyph) : IShapingFontFace
+    {
+        private static readonly byte[] s_gsub = CreateGsub();
+        public int FaceIndex => 0;
+        public ushort UnitsPerEm => 1000;
+        public uint GlyphCount => 12;
+        public uint VariationAxisCount => 0;
+        public bool HasActiveVariations => false;
+        public bool TryGetTable(OpenTypeTag tag, out ReadOnlyMemory<byte> table)
+        {
+            table = tag == new OpenTypeTag("GSUB") ? s_gsub : ReadOnlyMemory<byte>.Empty;
+            return !table.IsEmpty;
+        }
+        public uint GetNominalGlyph(uint codePoint) => codePoint switch
+        {
+            0x1100 => 1,
+            0x1161 => 2,
+            0xac00 when hasSyllableGlyph => 3,
+            _ => 0
+        };
+        public bool TryGetVariationGlyph(uint codePoint, uint variationSelector, out uint glyphId)
+        {
+            glyphId = 0;
+            return false;
+        }
+        public int GetHorizontalAdvance(uint glyphId) => 500;
+        public int GetVerticalAdvance(uint glyphId) => 1000;
+        public int GetHorizontalOrigin(uint glyphId) => 250;
+        public int GetVerticalOrigin(uint glyphId) => 800;
+        public bool TryGetNormalizedVariationCoordinate(uint axisIndex, out short coordinate)
+        {
+            coordinate = 0;
+            return false;
+        }
+        public float GetLayoutVariationDelta(ushort outerIndex, ushort innerIndex) => 0;
+
+        private static byte[] CreateGsub()
+        {
+            var data = new byte[48];
+            WriteLookup(4, 1, 10);
+            WriteLookup(26, 2, 11);
+            return data;
+
+            void WriteLookup(int lookup, ushort coveredGlyph, ushort substitute)
+            {
+                U16(lookup, 1); U16(lookup + 2, 0); U16(lookup + 4, 1); U16(lookup + 6, 8);
+                int subtable = lookup + 8;
+                U16(subtable, 2); U16(subtable + 2, 8); U16(subtable + 4, 1); U16(subtable + 6, substitute);
+                U16(subtable + 8, 1); U16(subtable + 10, 1); U16(subtable + 12, coveredGlyph);
+            }
+
+            void U16(int offset, ushort value)
+            {
+                data[offset] = (byte)(value >> 8);
+                data[offset + 1] = (byte)value;
+            }
+        }
     }
 
     private sealed class VariationSelectorFontFace : IShapingFontFace

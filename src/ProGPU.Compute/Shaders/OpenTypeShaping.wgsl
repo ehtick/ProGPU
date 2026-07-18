@@ -149,6 +149,10 @@ const ARABIC_MEDIAL: u32 = 4u;
 const ARABIC_MEDIAL2: u32 = 5u;
 const ARABIC_INITIAL: u32 = 6u;
 const ARABIC_NONE: u32 = 7u;
+const HANGUL_LJMO: u32 = 1u << 16u;
+const HANGUL_VJMO: u32 = 1u << 17u;
+const HANGUL_TJMO: u32 = 1u << 18u;
+const HANGUL_FEATURE_MASK: u32 = HANGUL_LJMO | HANGUL_VJMO | HANGUL_TJMO;
 var<private> arabic_state_table: array<u32, 42> = array<u32, 42>(
     0x00000707u, 0x00020007u, 0x00010007u, 0x00020007u, 0x00010007u, 0x00060007u,
     0x00000707u, 0x00020007u, 0x00010007u, 0x00020007u, 0x00050207u, 0x00060007u,
@@ -581,6 +585,160 @@ fn normalize_unicode() {
     decompose_missing_glyphs();
 }
 
+fn is_hangul_l(codepoint: u32) -> bool {
+    return (codepoint >= 0x1100u && codepoint <= 0x115fu) ||
+        (codepoint >= 0xa960u && codepoint <= 0xa97cu);
+}
+
+fn is_hangul_v(codepoint: u32) -> bool {
+    return (codepoint >= 0x1160u && codepoint <= 0x11a7u) ||
+        (codepoint >= 0xd7b0u && codepoint <= 0xd7c6u);
+}
+
+fn is_hangul_t(codepoint: u32) -> bool {
+    return (codepoint >= 0x11a8u && codepoint <= 0x11ffu) ||
+        (codepoint >= 0xd7cbu && codepoint <= 0xd7fbu);
+}
+
+fn set_hangul_feature(position: u32, feature: u32) {
+    glyph_states[position].feature_mask =
+        (glyph_states[position].feature_mask & ~HANGUL_FEATURE_MASK) | feature;
+}
+
+fn merge_cluster(start_value: u32, end_value: u32) -> i32 {
+    var start = start_value;
+    var end = end_value;
+    if (start >= end) {
+        if (start < run_state.glyph_count) { return glyphs[start].cluster; }
+        return 0;
+    }
+    let first_cluster = glyphs[start].cluster;
+    let last_cluster = glyphs[end - 1u].cluster;
+    while (start > 0u && glyphs[start - 1u].cluster == first_cluster) { start -= 1u; }
+    while (end < run_state.glyph_count && glyphs[end].cluster == last_cluster) { end += 1u; }
+    var cluster = 0x7fffffffi;
+    for (var index = start; index < end; index++) { cluster = min(cluster, glyphs[index].cluster); }
+    for (var index = start; index < end; index++) { glyphs[index].cluster = cluster; }
+    return cluster;
+}
+
+fn insert_hangul_decomposition(position: u32, codepoint: u32, followed_by_trailing: bool) -> u32 {
+    let syllable_index = codepoint - 0xac00u;
+    let trailing_index = syllable_index % 28u;
+    let count = select(3u, 2u, trailing_index == 0u);
+    let extra = count - 1u;
+    if (run_state.glyph_count + extra > params.capacity) {
+        run_state.status = 1u;
+        return 0u;
+    }
+    var cursor = run_state.glyph_count;
+    while (cursor > position + 1u) {
+        cursor -= 1u;
+        glyphs[cursor + extra] = glyphs[cursor];
+        glyph_states[cursor + extra] = glyph_states[cursor];
+    }
+    let source = glyphs[position];
+    let source_state = glyph_states[position];
+    let leading = 0x1100u + syllable_index / 588u;
+    let vowel = 0x1161u + (syllable_index % 588u) / 28u;
+    glyphs[position].codepoint = leading;
+    glyphs[position].glyph_id = nominal_glyph(leading);
+    set_hangul_feature(position, HANGUL_LJMO);
+    glyphs[position + 1u] = source;
+    glyphs[position + 1u].codepoint = vowel;
+    glyphs[position + 1u].glyph_id = nominal_glyph(vowel);
+    glyph_states[position + 1u] = source_state;
+    glyph_states[position + 1u].serial = run_state.next_serial;
+    run_state.next_serial += 1u;
+    set_hangul_feature(position + 1u, HANGUL_VJMO);
+    if (trailing_index != 0u) {
+        let trailing = 0x11a7u + trailing_index;
+        glyphs[position + 2u] = source;
+        glyphs[position + 2u].codepoint = trailing;
+        glyphs[position + 2u].glyph_id = nominal_glyph(trailing);
+        glyph_states[position + 2u] = source_state;
+        glyph_states[position + 2u].serial = run_state.next_serial;
+        run_state.next_serial += 1u;
+        set_hangul_feature(position + 2u, HANGUL_TJMO);
+    }
+    run_state.glyph_count += extra;
+    if (followed_by_trailing) { set_hangul_feature(position + count, HANGUL_TJMO); }
+    return count + select(0u, 1u, followed_by_trailing);
+}
+
+fn prepare_hangul_shaping() {
+    if (params.script_tag != 0x68616e67u) { return; }
+    for (var clear = 0u; clear < run_state.glyph_count; clear++) { set_hangul_feature(clear, 0u); }
+    var position = 0u;
+    while (position < run_state.glyph_count) {
+        let codepoint = glyphs[position].codepoint;
+        if (is_hangul_l(codepoint) && position + 1u < run_state.glyph_count &&
+                is_hangul_v(glyphs[position + 1u].codepoint)) {
+            var trailing = 0u;
+            if (position + 2u < run_state.glyph_count && is_hangul_t(glyphs[position + 2u].codepoint)) {
+                trailing = glyphs[position + 2u].codepoint;
+            }
+            let input_count = select(3u, 2u, trailing == 0u);
+            var composed = 0xffffffffu;
+            if (codepoint >= 0x1100u && codepoint <= 0x1112u &&
+                    glyphs[position + 1u].codepoint >= 0x1161u &&
+                    glyphs[position + 1u].codepoint <= 0x1175u &&
+                    (trailing == 0u || (trailing >= 0x11a8u && trailing <= 0x11c2u))) {
+                composed = 0xac00u + (codepoint - 0x1100u) * 588u +
+                    (glyphs[position + 1u].codepoint - 0x1161u) * 28u +
+                    select(trailing - 0x11a7u, 0u, trailing == 0u);
+            }
+            if (composed != 0xffffffffu && nominal_glyph(composed) != 0u) {
+                glyphs[position].codepoint = composed;
+                glyphs[position].glyph_id = nominal_glyph(composed);
+                glyphs[position].cluster = merge_cluster(position, position + input_count);
+                for (var removed = 1u; removed < input_count; removed++) { remove_record(position + 1u); }
+                position += 1u;
+                continue;
+            }
+            set_hangul_feature(position, HANGUL_LJMO);
+            set_hangul_feature(position + 1u, HANGUL_VJMO);
+            if (trailing != 0u) { set_hangul_feature(position + 2u, HANGUL_TJMO); }
+            _ = merge_cluster(position, position + input_count);
+            position += input_count;
+            continue;
+        }
+        if (codepoint >= 0xac00u && codepoint <= 0xd7a3u) {
+            let syllable_index = codepoint - 0xac00u;
+            let trailing_index = syllable_index % 28u;
+            if (trailing_index == 0u && position + 1u < run_state.glyph_count &&
+                    glyphs[position + 1u].codepoint >= 0x11a8u &&
+                    glyphs[position + 1u].codepoint <= 0x11c2u) {
+                let combined = codepoint + glyphs[position + 1u].codepoint - 0x11a7u;
+                if (nominal_glyph(combined) != 0u) {
+                    glyphs[position].codepoint = combined;
+                    glyphs[position].glyph_id = nominal_glyph(combined);
+                    glyphs[position].cluster = merge_cluster(position, position + 2u);
+                    remove_record(position + 1u);
+                    position += 1u;
+                    continue;
+                }
+            }
+            let followed_by_trailing = trailing_index == 0u && position + 1u < run_state.glyph_count &&
+                is_hangul_t(glyphs[position + 1u].codepoint) &&
+                !(glyphs[position + 1u].codepoint >= 0x11a8u && glyphs[position + 1u].codepoint <= 0x11c2u);
+            if (glyphs[position].glyph_id == 0u || followed_by_trailing) {
+                let leading = 0x1100u + syllable_index / 588u;
+                let vowel = 0x1161u + (syllable_index % 588u) / 28u;
+                let trailing = 0x11a7u + trailing_index;
+                if (nominal_glyph(leading) != 0u && nominal_glyph(vowel) != 0u &&
+                        (trailing_index == 0u || nominal_glyph(trailing) != 0u)) {
+                    let advanced = insert_hangul_decomposition(position, codepoint, followed_by_trailing);
+                    if (run_state.status != 0u) { return; }
+                    position += advanced;
+                    continue;
+                }
+            }
+        }
+        position += 1u;
+    }
+}
+
 fn reverse_records(start_value: u32, end_value: u32) {
     var start = start_value;
     var end = end_value;
@@ -715,6 +873,15 @@ fn feature_allowed(command: LookupCommand, position: u32) -> bool {
     if (command.feature_tag == 0x646e6f6du) {
         return (glyph_states[position].feature_mask & FRACTION_DENOMINATOR) != 0u;
     }
+    if (command.feature_tag == 0x6c6a6d6fu) {
+        return (glyph_states[position].feature_mask & HANGUL_LJMO) != 0u;
+    }
+    if (command.feature_tag == 0x766a6d6fu) {
+        return (glyph_states[position].feature_mask & HANGUL_VJMO) != 0u;
+    }
+    if (command.feature_tag == 0x746a6d6fu) {
+        return (glyph_states[position].feature_mask & HANGUL_TJMO) != 0u;
+    }
     let arabic_action = (glyph_states[position].feature_mask & ARABIC_ACTION_MASK) >> ARABIC_ACTION_SHIFT;
     if (command.feature_tag == 0x69736f6cu) { return arabic_action == ARABIC_ISOLATED; }
     if (command.feature_tag == 0x66696e61u) { return arabic_action == ARABIC_FINAL; }
@@ -816,6 +983,7 @@ fn lookup_ignored(position: u32, lookup_offset: u32, lookup_flags: u32) -> bool 
     let codepoint = glyphs[position].codepoint;
     if (is_default_ignorable(codepoint) &&
             (glyph_states[position].internal_flags & GLYPH_SUBSTITUTED) == 0u &&
+            (glyph_states[position].feature_mask & HANGUL_FEATURE_MASK) == 0u &&
             !is_visible_shaping_control(codepoint)) { return true; }
     let glyph = glyphs[position].glyph_id;
     let glyph_class = gdef_class(4u, glyph);
@@ -1380,6 +1548,8 @@ fn preprocess_glyphs(@builtin(global_invocation_id) id: vec3<u32>) {
         }
         run_state.glyph_count -= 1u;
     }
+    prepare_hangul_shaping();
+    if (run_state.status != 0u) { return; }
     apply_directional_codepoint_fallback();
     reorder_modified_combining_marks();
     assign_arabic_joining_actions();
@@ -1442,7 +1612,8 @@ fn finalize_substitutions(@builtin(global_invocation_id) id: vec3<u32>) {
     loop {
         if (index >= run_state.glyph_count) { break; }
         if (!is_default_ignorable(glyphs[index].codepoint) ||
-                (glyph_states[index].internal_flags & GLYPH_SUBSTITUTED) != 0u) {
+                (glyph_states[index].internal_flags & GLYPH_SUBSTITUTED) != 0u ||
+                (glyph_states[index].feature_mask & HANGUL_FEATURE_MASK) != 0u) {
             index += 1u;
             continue;
         }
