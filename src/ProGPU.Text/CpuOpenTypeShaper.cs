@@ -26,27 +26,36 @@ public sealed class CpuOpenTypeShaper : IOpenTypeShaper
         }
 
         ReadOnlySpan<ShapingFeature> requestedFeatures = request.Features.Span;
-        var overrides = new OpenTypeFeatureSetting[requestedFeatures.Length];
+        var globalOverrides = new List<OpenTypeFeatureSetting>(requestedFeatures.Length);
         var explicitTags = new HashSet<string>(StringComparer.Ordinal);
         for (var index = 0; index < requestedFeatures.Length; index++)
         {
             ShapingFeature feature = requestedFeatures[index];
             string tag = feature.Tag.ToString();
-            overrides[index] = new OpenTypeFeatureSetting(tag, checked((int)Math.Min(feature.Value, int.MaxValue)));
+            if (feature.Start == 0 && feature.End == uint.MaxValue)
+                globalOverrides.Add(new OpenTypeFeatureSetting(tag, checked((int)Math.Min(feature.Value, int.MaxValue))));
             explicitTags.Add(tag);
         }
 
-        TextShapingOptions resolved = TextShapingOptions.WithFeatures(overrides);
+        TextShapingOptions baseline = TextShapingOptions.WithFeatures(globalOverrides.ToArray());
+        var selectedFeatures = baseline.Features.ToList();
+        foreach (ShapingFeature feature in requestedFeatures)
+        {
+            string tag = feature.Tag.ToString();
+            if (feature.Value == 0 || selectedFeatures.Any(setting => setting.Tag == tag && setting.Value != 0)) continue;
+            selectedFeatures.Add(new OpenTypeFeatureSetting(tag, 1));
+        }
         var options = new TextShapingOptions
         {
             Script = request.Script == OpenTypeTag.DefaultScript ? null : request.Script.ToString(),
             Language = request.Language,
             Direction = request.Direction,
-            Features = resolved.Features,
+            Features = selectedFeatures,
             ExplicitFeatureTags = explicitTags,
             ClusterLevel = request.ClusterLevel,
             BufferFlags = request.Flags,
-            RangedFeatures = request.Features
+            RangedFeatures = request.Features,
+            BaseFeatures = baseline.Features
         };
 
         OpenTypeTextShaper.ShapeDesignUnits(text.ToString(), ttfFace.Font, options, buffer);

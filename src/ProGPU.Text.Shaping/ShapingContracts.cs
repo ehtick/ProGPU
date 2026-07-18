@@ -179,6 +179,13 @@ public readonly record struct ShapingRequest
         {
             throw new ArgumentOutOfRangeException(nameof(direction), "A shaping executor requires a resolved direction.");
         }
+        if ((flags & (ShapingBufferFlags.PreserveDefaultIgnorables | ShapingBufferFlags.RemoveDefaultIgnorables)) ==
+            (ShapingBufferFlags.PreserveDefaultIgnorables | ShapingBufferFlags.RemoveDefaultIgnorables))
+        {
+            throw new ArgumentException(
+                "Default ignorables cannot be preserved and removed in the same shaping request.",
+                nameof(flags));
+        }
         Direction = direction;
         Script = script;
         Language = language;

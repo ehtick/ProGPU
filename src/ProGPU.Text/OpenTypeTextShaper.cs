@@ -96,6 +96,28 @@ public sealed class TextShapingOptions
     internal ShapingClusterLevel ClusterLevel { get; init; } = ShapingClusterLevel.MonotoneGraphemes;
     internal ShapingBufferFlags BufferFlags { get; init; }
     internal ReadOnlyMemory<ShapingFeature> RangedFeatures { get; init; }
+    internal IReadOnlyList<OpenTypeFeatureSetting>? BaseFeatures { get; init; }
+
+    internal int GetFeatureValue(string tag, int inputIndex)
+    {
+        IReadOnlyList<OpenTypeFeatureSetting> baseline = BaseFeatures ?? Features;
+        int value = 0;
+        for (var index = baseline.Count - 1; index >= 0; index--)
+        {
+            if (baseline[index].Tag != tag) continue;
+            value = baseline[index].Value;
+            break;
+        }
+        ReadOnlySpan<ShapingFeature> ranges = RangedFeatures.Span;
+        uint position = checked((uint)Math.Max(inputIndex, 0));
+        for (var index = 0; index < ranges.Length; index++)
+        {
+            ShapingFeature feature = ranges[index];
+            if (feature.Tag.ToString() == tag && feature.AppliesTo(position))
+                value = checked((int)Math.Min(feature.Value, int.MaxValue));
+        }
+        return value;
+    }
 
     internal IReadOnlySet<string> ResolveExplicitFeatureTags()
     {
@@ -247,7 +269,7 @@ public static class OpenTypeTextShaper
         Typeface? typeface = font.LayoutTypeface;
         SubstitutionPlan substitutionPlan = CreateSubstitutionPlan(font, typeface?.GSUBTable, options, script);
 
-        var substitutions = GlyphSubstitutionBuffer.Create(text, font, unicodeScript);
+        var substitutions = GlyphSubstitutionBuffer.Create(text, font, unicodeScript, options.BufferFlags);
         substitutions.ApplyDirectionalCodePointFallback(
             font,
             direction,
@@ -360,7 +382,8 @@ public static class OpenTypeTextShaper
             substitutions,
             font,
             direction,
-            zeroMarkAdvancesEarly: useShaper || myanmarShaper);
+            zeroMarkAdvancesEarly: useShaper || myanmarShaper,
+            bufferFlags: options.BufferFlags);
         bool hasGpos = font.TryGetTable("GPOS", out _);
         bool hasGposKerning = ApplyPositions(font, typeface?.GPOSTable, positions, options, script);
         bool kernEnabled = IsFeatureEnabled(options.Features, "kern");
@@ -449,7 +472,8 @@ public static class OpenTypeTextShaper
             ExplicitFeatureTags = explicitFeatureTags,
             ClusterLevel = options.ClusterLevel,
             BufferFlags = options.BufferFlags,
-            RangedFeatures = options.RangedFeatures
+            RangedFeatures = options.RangedFeatures,
+            BaseFeatures = options.BaseFeatures
         };
     }
 
@@ -550,7 +574,8 @@ public static class OpenTypeTextShaper
             ExplicitFeatureTags = explicitFeatureTags,
             ClusterLevel = options.ClusterLevel,
             BufferFlags = options.BufferFlags,
-            RangedFeatures = options.RangedFeatures
+            RangedFeatures = options.RangedFeatures,
+            BaseFeatures = options.BaseFeatures
         };
     }
 
@@ -599,7 +624,7 @@ public static class OpenTypeTextShaper
                 bool restrictToSyllable = IsUsePerSyllableFeature(enabled.Tag, stage);
                 if (IsRawReverseLookup(rawTable.Span, lookupIndex))
                 {
-                    ApplyReverseChainingLookup(rawTable.Span, glyphs, lookupIndex, restrictToSyllable);
+                    ApplyReverseChainingLookup(rawTable.Span, glyphs, lookupIndex, restrictToSyllable, enabled.Tag, options);
                     continue;
                 }
                 for (var position = 0; position < glyphs.Count; position++)
@@ -645,7 +670,7 @@ public static class OpenTypeTextShaper
                 glyphs.ClearLookupSyllable();
                 glyphs.SetManualJoiners(false);
 
-                ApplyAlternateLookup(font, glyphs, lookupIndex, enabled.Value, enabled.Tag);
+                ApplyAlternateLookup(font, glyphs, lookupIndex, enabled.Value, enabled.Tag, options);
             }
         }
 
@@ -660,7 +685,7 @@ public static class OpenTypeTextShaper
                 if (IsRawReverseLookup(rawTable.Span, enabled.LookupIndex))
                 {
                     ApplyReverseChainingLookup(
-                        rawTable.Span, glyphs, enabled.LookupIndex, restrictToSyllable);
+                        rawTable.Span, glyphs, enabled.LookupIndex, restrictToSyllable, enabled.Tag, options);
                     continue;
                 }
                 if (!alternateLookup)
@@ -682,7 +707,7 @@ public static class OpenTypeTextShaper
                 }
                 glyphs.ClearLookupSyllable();
                 glyphs.SetManualJoiners(false);
-                ApplyAlternateLookup(font, glyphs, enabled.LookupIndex, enabled.Value, enabled.Tag);
+                ApplyAlternateLookup(font, glyphs, enabled.LookupIndex, enabled.Value, enabled.Tag, options);
             }
         }
 
@@ -1115,7 +1140,9 @@ public static class OpenTypeTextShaper
         ReadOnlySpan<byte> data,
         GlyphSubstitutionBuffer glyphs,
         ushort lookupIndex,
-        bool restrictToSyllable)
+        bool restrictToSyllable,
+        string featureTag,
+        TextShapingOptions options)
     {
         if (!TryGetLookup(data, lookupIndex, out int lookupOffset, out ushort lookupType, out int subtableCountOffset))
         {
@@ -1131,6 +1158,7 @@ public static class OpenTypeTextShaper
         for (var position = glyphs.Count - 1; position >= 0; position--)
         {
             glyphs.SetLookupSyllable(position, restrictToSyllable);
+            if (!glyphs.IsFeatureEnabled(position, featureTag, options)) continue;
             for (var subtableIndex = 0; subtableIndex < subtableCount; subtableIndex++)
             {
                 int offsetPosition = subtableCountOffset + 2 + subtableIndex * 2;
@@ -1245,7 +1273,8 @@ public static class OpenTypeTextShaper
         GlyphSubstitutionBuffer glyphs,
         ushort lookupIndex,
         int featureValue,
-        string featureTag)
+        string featureTag,
+        TextShapingOptions options)
     {
         if (featureValue <= 0 || !font.TryGetTable("GSUB", out ReadOnlyMemory<byte> tableMemory))
         {
@@ -1294,6 +1323,8 @@ public static class OpenTypeTextShaper
             ushort setCount = ReadU16(data, subtableOffset + 4);
             for (var position = 0; position < glyphs.Count; position++)
             {
+                int positionValue = options.GetFeatureValue(featureTag, glyphs.GetRecord(position).Cluster);
+                if (positionValue <= 0 || !glyphs.IsFeatureEnabled(position, featureTag, options)) continue;
                 int coverageIndex = FindCoverage(data, coverageOffset, glyphs[position]);
                 if ((uint)coverageIndex >= setCount ||
                     !CanRead(data, subtableOffset + 6 + coverageIndex * 2, 2))
@@ -1313,9 +1344,9 @@ public static class OpenTypeTextShaper
                     continue;
                 }
 
-                int alternateIndex = featureTag == "rand" && featureValue == ushort.MaxValue
+                int alternateIndex = featureTag == "rand" && positionValue == ushort.MaxValue
                     ? glyphs.NextRandomAlternate(alternateCount)
-                    : Math.Clamp(featureValue, 1, alternateCount) - 1;
+                    : Math.Clamp(positionValue, 1, alternateCount) - 1;
                 int alternateOffset = setOffset + 2 + alternateIndex * 2;
                 if (CanRead(data, alternateOffset, 2))
                 {
@@ -2136,7 +2167,7 @@ public static class OpenTypeTextShaper
                 out _);
             foreach (EnabledLookup enabled in rawLookups)
             {
-                ApplyRawPositionLookup(rawTable.Span, glyphs, enabled.LookupIndex);
+                ApplyRawPositionLookup(rawTable.Span, glyphs, enabled.LookupIndex, enabled.Tag, options);
                 ApplyPositionVariations(font, glyphs, enabled.LookupIndex);
             }
             return rawLookups.Any(static lookup => lookup.Tag is "kern" or "dist");
@@ -2159,7 +2190,9 @@ public static class OpenTypeTextShaper
     private static void ApplyRawPositionLookup(
         ReadOnlySpan<byte> data,
         GlyphPositionBuffer glyphs,
-        ushort lookupIndex)
+        ushort lookupIndex,
+        string featureTag,
+        TextShapingOptions options)
     {
         if (!TryGetLookup(data, lookupIndex, out int lookupOffset, out ushort lookupType, out int subtableCountOffset))
         {
@@ -2169,6 +2202,7 @@ public static class OpenTypeTextShaper
         ushort lookupFlags = ReadU16(data, lookupOffset + 2);
         for (var position = 0; position < glyphs.Count; position++)
         {
+            if (options.GetFeatureValue(featureTag, glyphs[position].Cluster) == 0) continue;
             ApplyRawPositionLookupAt(data, glyphs, lookupIndex, position);
         }
     }
@@ -3476,6 +3510,7 @@ public static class OpenTypeTextShaper
         private readonly Typeface? _typeface;
         private readonly TtfFont _font;
         private readonly ReadOnlyMemory<byte> _gdefTable;
+        private readonly ShapingBufferFlags _bufferFlags;
         private byte _lookupSyllable;
         private bool _restrictLookupToSyllable;
         private bool _manualJoiners;
@@ -3484,10 +3519,14 @@ public static class OpenTypeTextShaper
         private uint _randomState = 1;
         private int _nestedLookupDepth;
 
-        private GlyphSubstitutionBuffer(List<GlyphRecord> glyphs, TtfFont font)
+        private GlyphSubstitutionBuffer(
+            List<GlyphRecord> glyphs,
+            TtfFont font,
+            ShapingBufferFlags bufferFlags = ShapingBufferFlags.None)
         {
             _glyphs = glyphs;
             _font = font;
+            _bufferFlags = bufferFlags;
             _typeface = font.LayoutTypeface;
             font.TryGetTable("GDEF", out _gdefTable);
         }
@@ -4135,6 +4174,7 @@ public static class OpenTypeTextShaper
 
         private void InsertBrokenKhmerDottedCircles()
         {
+            if ((_bufferFlags & ShapingBufferFlags.DoNotInsertDottedCircle) != 0) return;
             ushort dottedGlyph = _font.GetGlyphIndex(0x25CC);
             if (dottedGlyph == 0) return;
             byte previous = 0;
@@ -4327,6 +4367,7 @@ public static class OpenTypeTextShaper
 
         private void InsertBrokenMyanmarDottedCircles()
         {
+            if ((_bufferFlags & ShapingBufferFlags.DoNotInsertDottedCircle) != 0) return;
             ushort dottedGlyph = _font.GetGlyphIndex(0x25CC);
             if (dottedGlyph == 0) return;
             byte previous = 0;
@@ -4625,6 +4666,7 @@ public static class OpenTypeTextShaper
 
         private void InsertBrokenIndicDottedCircles()
         {
+            if ((_bufferFlags & ShapingBufferFlags.DoNotInsertDottedCircle) != 0) return;
             ushort dottedGlyph = _font.GetGlyphIndex(0x25CC);
             if (dottedGlyph == 0) return;
             byte previous = 0;
@@ -5538,6 +5580,7 @@ public static class OpenTypeTextShaper
 
         private void InsertBrokenUseDottedCircles()
         {
+            if ((_bufferFlags & ShapingBufferFlags.DoNotInsertDottedCircle) != 0) return;
             ushort dottedCircleGlyph = _font.GetGlyphIndex(0x25CC);
             if (dottedCircleGlyph == 0)
             {
@@ -5706,6 +5749,7 @@ public static class OpenTypeTextShaper
         public bool IsFeatureEnabled(int index, string tag, TextShapingOptions options)
         {
             GlyphRecord glyph = _glyphs[index];
+            if (options.GetFeatureValue(tag, glyph.Cluster) == 0) return false;
             if (glyph.ScriptShaper == ScriptShaperHangul)
             {
                 return tag switch
@@ -5977,7 +6021,11 @@ public static class OpenTypeTextShaper
         private static bool IsUnicodeTagCharacter(uint codePoint) =>
             codePoint is >= 0xE0000 and <= 0xE007F;
 
-        public static GlyphSubstitutionBuffer Create(string text, TtfFont font, string script)
+        public static GlyphSubstitutionBuffer Create(
+            string text,
+            TtfFont font,
+            string script,
+            ShapingBufferFlags bufferFlags)
         {
             if (text.Length > MaximumShapedGlyphCount)
             {
@@ -6075,7 +6123,7 @@ public static class OpenTypeTextShaper
                 }
                 graphemeStart = graphemeEnd;
             }
-            return new GlyphSubstitutionBuffer(glyphs, font);
+            return new GlyphSubstitutionBuffer(glyphs, font, bufferFlags);
         }
 
         private static bool IsKhmerBaseCategory(uint codePoint)
@@ -6285,19 +6333,27 @@ public static class OpenTypeTextShaper
             GlyphSubstitutionBuffer substitutions,
             TtfFont font,
             ShapingDirection direction,
-            bool zeroMarkAdvancesEarly)
+            bool zeroMarkAdvancesEarly,
+            ShapingBufferFlags bufferFlags)
         {
             _typeface = font.LayoutTypeface;
             _direction = direction;
             font.TryGetTable("GDEF", out _gdefTable);
-            ushort invisibleGlyph = font.GetGlyphIndex(' ');
+            bool preserveDefaultIgnorables =
+                (bufferFlags & ShapingBufferFlags.PreserveDefaultIgnorables) != 0;
+            bool removeDefaultIgnorables =
+                (bufferFlags & ShapingBufferFlags.RemoveDefaultIgnorables) != 0;
+            ushort invisibleGlyph = preserveDefaultIgnorables || removeDefaultIgnorables
+                ? (ushort)0
+                : font.GetGlyphIndex(' ');
             int outputCount = substitutions.Count;
             if (invisibleGlyph == 0)
             {
                 for (var index = 0; index < substitutions.Count; index++)
                 {
                     GlyphRecord record = substitutions.GetRecord(index);
-                    if (GlyphSubstitutionBuffer.IsDefaultIgnorable(record.CodePoint) && record.Substituted == 0)
+                    if (GlyphSubstitutionBuffer.IsDefaultIgnorable(record.CodePoint) && record.Substituted == 0 &&
+                        !preserveDefaultIgnorables)
                         outputCount--;
                 }
             }
@@ -6309,7 +6365,8 @@ public static class OpenTypeTextShaper
             {
                 GlyphRecord record = substitutions.GetRecord(sourceIndex);
                 bool defaultIgnorable = GlyphSubstitutionBuffer.IsDefaultIgnorable(record.CodePoint);
-                if (defaultIgnorable && record.Substituted == 0 && invisibleGlyph == 0)
+                if (defaultIgnorable && record.Substituted == 0 && invisibleGlyph == 0 &&
+                    !preserveDefaultIgnorables)
                 {
                     int cluster = record.Cluster;
                     if (sourceIndex + 1 < substitutions.Count &&
@@ -6335,7 +6392,7 @@ public static class OpenTypeTextShaper
                     record.Cluster = forwardMergedCluster;
                 else if (forwardSourceCluster != int.MinValue)
                     forwardSourceCluster = int.MinValue;
-                if (defaultIgnorable && record.Substituted == 0)
+                if (defaultIgnorable && record.Substituted == 0 && !preserveDefaultIgnorables)
                 {
                     record.GlyphIndex = invisibleGlyph;
                 }
@@ -6376,7 +6433,7 @@ public static class OpenTypeTextShaper
                     record.AdvanceX = 0;
                     record.AdvanceY = 0;
                 }
-                if (defaultIgnorable && record.Substituted == 0)
+                if (defaultIgnorable && record.Substituted == 0 && !preserveDefaultIgnorables)
                 {
                     record.AdvanceX = 0;
                     record.AdvanceY = 0;

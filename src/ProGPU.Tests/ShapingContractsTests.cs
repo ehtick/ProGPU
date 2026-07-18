@@ -135,5 +135,63 @@ public sealed class ShapingContractsTests
         }
     }
 
+    [Fact]
+    public void CpuExecutorAppliesFeaturesToHalfOpenInputRanges()
+    {
+        var face = new TtfShapingFontFace(InterFontFamily.Regular);
+        using var ranged = new ShapingBuffer();
+        using var enabled = new ShapingBuffer();
+        using var disabled = new ShapingBuffer();
+        const string text = "33";
+
+        CpuOpenTypeShaper.Instance.Shape(text, face,
+            new ShapingRequest(
+                ShapingDirection.LeftToRight,
+                new OpenTypeTag("latn"),
+                features: new[] { new ShapingFeature(new OpenTypeTag("ss01"), 1, 0, 1) }),
+            ranged);
+        CpuOpenTypeShaper.Instance.Shape(text, face,
+            new ShapingRequest(ShapingDirection.LeftToRight, new OpenTypeTag("latn")),
+            enabled);
+        CpuOpenTypeShaper.Instance.Shape(text, face,
+            new ShapingRequest(
+                ShapingDirection.LeftToRight,
+                new OpenTypeTag("latn"),
+                features: new[] { new ShapingFeature(new OpenTypeTag("ss01"), 1) }),
+            disabled);
+
+        Assert.Equal(2, ranged.Count);
+        Assert.NotEqual(enabled[0].GlyphId, ranged[0].GlyphId);
+        Assert.Equal(enabled[1].GlyphId, ranged[1].GlyphId);
+        Assert.Equal(disabled[0].GlyphId, ranged[0].GlyphId);
+        Assert.NotEqual(disabled[1].GlyphId, ranged[1].GlyphId);
+    }
+
+    [Fact]
+    public void CpuExecutorHonorsDefaultIgnorableBufferPolicy()
+    {
+        var face = new TtfShapingFontFace(InterFontFamily.Regular);
+        using var normal = new ShapingBuffer();
+        using var preserved = new ShapingBuffer();
+        using var removed = new ShapingBuffer();
+        CpuOpenTypeShaper.Instance.Shape("\u200d", face,
+            new ShapingRequest(ShapingDirection.LeftToRight, new OpenTypeTag("latn")), normal);
+        CpuOpenTypeShaper.Instance.Shape("\u200d", face,
+            new ShapingRequest(
+                ShapingDirection.LeftToRight,
+                new OpenTypeTag("latn"),
+                flags: ShapingBufferFlags.PreserveDefaultIgnorables), preserved);
+        CpuOpenTypeShaper.Instance.Shape("\u200d", face,
+            new ShapingRequest(
+                ShapingDirection.LeftToRight,
+                new OpenTypeTag("latn"),
+                flags: ShapingBufferFlags.RemoveDefaultIgnorables), removed);
+
+        Assert.Equal(1, normal.Count);
+        Assert.Equal(1, preserved.Count);
+        Assert.Equal(0, removed.Count);
+        Assert.NotEqual(normal[0].GlyphId, preserved[0].GlyphId);
+    }
+
     private static ShapingGlyph Glyph(uint glyphId) => new() { GlyphId = glyphId };
 }
