@@ -92,6 +92,35 @@ Post-fix checks removed the five-second outlier:
 
 The sweep's remaining renderer-bound blockers are Font Glyph Browser (221 completed FPS, 1.431 ms average and 3.763 ms p95 compile), Inter Typeface (258 completed FPS, 1.332/3.362 ms compile), Visual Designer (230 completed FPS, 3.237/5.024 ms compile and 3.3 MB uploaded per frame), Data Virtualization, and LOL/s. These require incremental fragment compilation, retained glyph-run placement, bounded indirection/compaction, and specialized batched primitives. Presentation-bound static pages must be evaluated separately because surface acquisition still has 3-5 ms p95 variance even when compile time is under 0.02 ms.
 
+A later corrected 600-frame blocker sweep, after automatic text promotion was disabled and
+invalid WebGPU runs were made fatal, measured 347.52 completed FPS for Font Glyph Browser,
+359.73 for Inter Typeface, and 385.51 for Data Virtualization. Font Glyph Browser still compiled
+for 1.481 ms on average, uploaded 163,127 bytes, allocated 93,910 bytes, and issued 108 draws per
+frame. The sampled trace attributed the recurring managed work to full visual-tree traversal and
+text/glyph compilation; its atlas work averaged only 0.042 ms, although the long scroll did expose
+LRU turnover. Inter compiled for 0.499 ms but had 8.599 ms surface-acquire p95. DataGrid reused
+21.43 row fragments and updated 1.43 per frame, but alternating row chrome and text fragments still
+created 66 draws.
+
+Two focused fixes establish the next checkpoint:
+
+- Visual Designer no longer invalidates its selection adorner after an unchanged arrange. Stable
+  replay rose from 197.56 to 552.21 completed FPS, with 358 of 360 frames hitting the scene cache.
+- Its dot background is now one analytic periodic GPU quad instead of roughly 52,000 circle
+  vertices. The validated run retained 2,664 total page vector vertices and 560.70 completed FPS;
+  the remaining 7.551 ms acquire p95 is presentation/GPU pacing, not scene compilation.
+- DataGrid records non-overlapping row chrome before retained row text. This preserves painter
+  output, reduces the measured page from 66 to 37 draws, and raised a 600-frame run from 385.51 to
+  437.24 completed FPS. Compile-tail variance remains and requires transform-indexed fragment
+  replay rather than further control-specific command reordering.
+
+The benchmark now also counts uncaptured WebGPU errors and rejects a run when any occur. This
+closed a false-success hole where an invalid vector shader produced approximately 9,700 reported
+"completed FPS" while all render pipelines and command buffers were invalid. Timestamp-query
+capability is not yet sufficient evidence of usable timing on the current Metal adapter: a traced
+glyph run reported 601 failed timestamp readbacks and zero valid samples. Phase 0 therefore remains
+open for backend-specific timestamp qualification even though queue-completion accounting is valid.
+
 ### Proposed 1 ms throughput budget
 
 CPU and GPU work can overlap, so the following are parallel budgets rather than values to add naively.
