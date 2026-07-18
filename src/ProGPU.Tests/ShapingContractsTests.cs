@@ -719,6 +719,60 @@ public sealed class ShapingContractsTests
     }
 
     [Fact]
+    public void GpuIndicLookupsRespectSyllableAndManualJoinerContracts()
+    {
+        GpuOpenTypeShapingPlan manualJoinerPlan = GpuOpenTypeShapingPlanCompiler.Compile(
+            new IndicShapingFontFace("pref"));
+        var request = new ShapingRequest(ShapingDirection.LeftToRight, new OpenTypeTag("deva"));
+        GpuOpenTypeLookupCommand manualJoinerCommand = Assert.Single(
+            GpuOpenTypeLookupPlanCompiler.Compile(manualJoinerPlan, request),
+            static value => value.FeatureTag == new OpenTypeTag("pref").Value);
+        Assert.Equal(0x0eu, manualJoinerCommand.CommandFlags & 0x0eu);
+
+        var face = new IndicShapingFontFace("locl");
+        GpuOpenTypeShapingPlan plan = GpuOpenTypeShapingPlanCompiler.Compile(face);
+        GpuOpenTypeLookupCommand command = Assert.Single(
+            GpuOpenTypeLookupPlanCompiler.Compile(plan, request),
+            static value => value.FeatureTag == new OpenTypeTag("locl").Value);
+        Assert.Equal(2u, command.CommandFlags & 0x0eu);
+
+        using var context = new WgpuContext();
+        context.Initialize(null);
+        using var fontData = new GpuOpenTypeFontData(context, plan);
+        using var pipeline = new GpuOpenTypeRunPipeline(context);
+        GpuShapingScalar[] input =
+        [
+            new GpuShapingScalar(0x0915, 0),
+            new GpuShapingScalar(0x0915, 1)
+        ];
+        using var bounded = new ShapingBuffer();
+        pipeline.ExecuteRun(input, fontData, request, [command], bounded);
+        Assert.Equal(2, bounded.Count);
+
+        using var unrestricted = new ShapingBuffer();
+        pipeline.ExecuteRun(input, fontData, request,
+            [command with { CommandFlags = command.CommandFlags & ~2u }], unrestricted);
+        Assert.Single(unrestricted.Glyphs.ToArray());
+        Assert.Equal(5u, unrestricted[0].GlyphId);
+
+        GpuShapingScalar[] joinedInput =
+        [
+            new GpuShapingScalar(0x0915, 0),
+            new GpuShapingScalar(0x200d, 1),
+            new GpuShapingScalar(0x0915, 2)
+        ];
+        using var automaticJoiner = new ShapingBuffer();
+        pipeline.ExecuteRun(joinedInput, fontData, request,
+            [command with { CommandFlags = 0 }], automaticJoiner);
+        Assert.Single(automaticJoiner.Glyphs.ToArray());
+
+        using var manualJoiner = new ShapingBuffer();
+        pipeline.ExecuteRun(joinedInput, fontData, request,
+            [command with { CommandFlags = 8 }], manualJoiner);
+        Assert.Equal(2, manualJoiner.Count);
+    }
+
+    [Fact]
     public void GpuLookupPlanPreservesHalfOpenFeatureRanges()
     {
         var face = new TtfShapingFontFace(InterFontFamily.Regular);
@@ -1350,8 +1404,10 @@ public sealed class ShapingContractsTests
         public float GetLayoutVariationDelta(ushort outerIndex, ushort innerIndex) => 0;
     }
 
-    private sealed class IndicShapingFontFace : IShapingFontFace
+    private sealed class IndicShapingFontFace(string? featureTag = null) : IShapingFontFace
     {
+        private readonly byte[]? _gsub = featureTag is null ? null : CreateGsub(featureTag);
+
         public int FaceIndex => 0;
         public ushort UnitsPerEm => 1000;
         public uint GlyphCount => 6;
@@ -1359,8 +1415,10 @@ public sealed class ShapingContractsTests
         public bool HasActiveVariations => false;
         public bool TryGetTable(OpenTypeTag tag, out ReadOnlyMemory<byte> table)
         {
-            table = ReadOnlyMemory<byte>.Empty;
-            return false;
+            table = tag == new OpenTypeTag("GSUB") && _gsub is not null
+                ? _gsub
+                : ReadOnlyMemory<byte>.Empty;
+            return !table.IsEmpty;
         }
         public uint GetNominalGlyph(uint codePoint) => codePoint switch
         {
@@ -1386,6 +1444,34 @@ public sealed class ShapingContractsTests
             return false;
         }
         public float GetLayoutVariationDelta(ushort outerIndex, ushort innerIndex) => 0;
+
+        private static byte[] CreateGsub(string featureTag)
+        {
+            var data = new byte[80];
+            U16(0, 1); U16(2, 0); U16(4, 10); U16(6, 30); U16(8, 44);
+            U16(10, 1); Tag(12, "dev2"); U16(16, 8);
+            U16(18, 4); U16(20, 0);
+            U16(22, 0); U16(24, ushort.MaxValue); U16(26, 1); U16(28, 0);
+            U16(30, 1); Tag(32, featureTag); U16(36, 8);
+            U16(38, 0); U16(40, 1); U16(42, 0);
+            U16(44, 1); U16(46, 4);
+            U16(48, 4); U16(50, 0); U16(52, 1); U16(54, 8);
+            U16(56, 1); U16(58, 18); U16(60, 1); U16(62, 8);
+            U16(64, 1); U16(66, 4);
+            U16(68, 5); U16(70, 2); U16(72, 1);
+            U16(74, 1); U16(76, 1); U16(78, 1);
+            return data;
+
+            void U16(int offset, ushort value)
+            {
+                data[offset] = (byte)(value >> 8);
+                data[offset + 1] = (byte)value;
+            }
+            void Tag(int offset, string value)
+            {
+                for (var index = 0; index < 4; index++) data[offset + index] = (byte)value[index];
+            }
+        }
     }
 
     private sealed class VariationSelectorFontFace : IShapingFontFace

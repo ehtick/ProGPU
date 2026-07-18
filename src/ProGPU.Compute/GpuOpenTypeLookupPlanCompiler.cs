@@ -8,6 +8,11 @@ namespace ProGPU.Compute;
 /// </summary>
 public static class GpuOpenTypeLookupPlanCompiler
 {
+    private const uint FeatureExplicit = 1u;
+    private const uint FeaturePerSyllable = 2u;
+    private const uint FeatureManualZwnj = 4u;
+    private const uint FeatureManualZwj = 8u;
+
     private static readonly string[] s_defaultTags =
     [
         "rvrn", "frac", "numr", "dnom", "ccmp", "locl", "isol", "fina", "fin2", "fin3",
@@ -64,7 +69,8 @@ public static class GpuOpenTypeLookupPlanCompiler
                     FeatureValue = interval.Value,
                     RangeStart = interval.Start,
                     RangeEnd = interval.End,
-                    CommandFlags = lookup.Explicit ? 1u : 0u,
+                    CommandFlags = lookup.Command.CommandFlags |
+                        (lookup.Explicit ? FeatureExplicit : 0u),
                     Stage = checked((uint)lookup.Stage)
                 });
             }
@@ -251,7 +257,7 @@ public static class GpuOpenTypeLookupPlanCompiler
                     baseValue,
                     requiredFeature,
                     HasFeatureTag(requestFeatures.Span, tag),
-                    command);
+                    command with { CommandFlags = GetFeatureBehaviorFlags(scriptTag, tag, tableKind) });
                 if (!selected.TryGetValue(lookupIndex, out ResolvedLookup existing) ||
                     !IsGlobalFeature(existing.FeatureTag) || IsGlobalFeature(tag))
                     selected[lookupIndex] = value;
@@ -510,6 +516,53 @@ public static class GpuOpenTypeLookupPlanCompiler
             };
         }
         return 0;
+    }
+
+    private static uint GetFeatureBehaviorFlags(OpenTypeTag scriptTag, uint tag, uint tableKind)
+    {
+        if (tableKind != 1) return 0;
+        string script = scriptTag.ToString().ToLowerInvariant();
+        string feature = new OpenTypeTag(tag).ToString();
+        uint flags = 0;
+
+        if (IsIndicScript(script))
+        {
+            if (feature is "locl" or "ccmp" or "nukt" or "akhn" or "rphf" or "rkrf" or
+                "pref" or "blwf" or "abvf" or "half" or "pstf" or "vatu" or "cjct" or
+                "init" or "pres" or "abvs" or "blws" or "psts" or "haln")
+                flags |= FeaturePerSyllable;
+            if (feature is "nukt" or "akhn" or "rphf" or "rkrf" or "pref" or "blwf" or
+                "abvf" or "half" or "pstf" or "vatu" or "cjct" or "init" or "pres" or
+                "abvs" or "blws" or "psts" or "haln")
+                flags |= FeatureManualZwnj | FeatureManualZwj;
+        }
+        else if (IsUseScript(script))
+        {
+            if (feature is "locl" or "ccmp" or "nukt" or "akhn" or "rphf" or "pref" or
+                "rkrf" or "abvf" or "blwf" or "half" or "pstf" or "vatu" or "cjct")
+                flags |= FeaturePerSyllable;
+            if (feature is "akhn" or "rphf" or "pref" or "rkrf" or "abvf" or "blwf" or
+                "half" or "pstf" or "vatu" or "cjct" or "abvs" or "blws" or "haln" or
+                "pres" or "psts")
+                flags |= FeatureManualZwj;
+        }
+        else if (script == "khmr")
+        {
+            if (feature is "locl" or "ccmp" or "pref" or "blwf" or "abvf" or "pstf" or "cfar")
+                flags |= FeaturePerSyllable;
+            if (feature is "pref" or "blwf" or "abvf" or "pstf" or "cfar" or
+                "pres" or "abvs" or "blws" or "psts")
+                flags |= FeatureManualZwnj | FeatureManualZwj;
+        }
+        else if (script is "mymr" or "mym2")
+        {
+            if (feature is "locl" or "ccmp" or "rphf" or "pref" or "blwf" or "pstf")
+                flags |= FeaturePerSyllable;
+            if (feature is "rphf" or "pref" or "blwf" or "pstf" or
+                "pres" or "abvs" or "blws" or "psts")
+                flags |= FeatureManualZwj;
+        }
+        return flags;
     }
 
     private static IEnumerable<string> DirectionFeatures(ShapingDirection direction) => direction switch

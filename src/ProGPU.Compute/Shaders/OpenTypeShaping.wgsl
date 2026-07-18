@@ -135,6 +135,12 @@ struct LookupTask {
 @group(0) @binding(12) var<storage, read> unicode_data: array<u32>;
 
 const FEATURE_EXPLICIT: u32 = 1u;
+// Lookup behavior mirrors HarfBuzz matcher semantics: syllable limits apply only
+// to GSUB; ZWNJ is never skipped in input, while ZWJ skipping is feature-controlled.
+const FEATURE_PER_SYLLABLE: u32 = 2u;
+const FEATURE_MANUAL_ZWNJ: u32 = 4u;
+const FEATURE_MANUAL_ZWJ: u32 = 8u;
+const FEATURE_GPOS_MATCH: u32 = 16u;
 const GLYPH_SUBSTITUTED: u32 = 2u;
 const GLYPH_INVISIBLE: u32 = 4u;
 const FRACTION_NUMERATOR: u32 = 1u;
@@ -2493,9 +2499,23 @@ fn in_mark_filtering_set(lookup_offset: u32, glyph: u32) -> bool {
     return coverage_index(coverage, glyph) >= 0;
 }
 
-fn lookup_ignored(position: u32, lookup_offset: u32, lookup_flags: u32) -> bool {
+fn outside_active_syllable(position: u32) -> bool {
+    return (run_state.reserved2 & FEATURE_PER_SYLLABLE) != 0u &&
+        glyph_states[position].syllable != run_state.reserved1;
+}
+
+fn lookup_ignored_mode(position: u32, lookup_offset: u32, lookup_flags: u32,
+    context_match: bool, gpos_match: bool) -> bool {
     let codepoint = glyphs[position].codepoint;
-    if (is_default_ignorable(codepoint) &&
+    if (codepoint == 0x200cu) {
+        if (gpos_match || (context_match && (run_state.reserved2 & FEATURE_MANUAL_ZWNJ) == 0u)) {
+            return true;
+        }
+    } else if (codepoint == 0x200du) {
+        if (gpos_match || context_match || (run_state.reserved2 & FEATURE_MANUAL_ZWJ) == 0u) {
+            return true;
+        }
+    } else if (is_default_ignorable(codepoint) &&
             (glyph_states[position].internal_flags & GLYPH_SUBSTITUTED) == 0u &&
             (glyph_states[position].feature_mask & HANGUL_FEATURE_MASK) == 0u &&
             !is_visible_shaping_control(codepoint)) { return true; }
@@ -2512,18 +2532,38 @@ fn lookup_ignored(position: u32, lookup_offset: u32, lookup_flags: u32) -> bool 
     return false;
 }
 
+fn lookup_ignored(position: u32, lookup_offset: u32, lookup_flags: u32) -> bool {
+    return lookup_ignored_mode(position, lookup_offset, lookup_flags, false,
+        (run_state.reserved2 & FEATURE_GPOS_MATCH) != 0u);
+}
+
+fn context_lookup_ignored(position: u32, lookup_offset: u32, lookup_flags: u32) -> bool {
+    return lookup_ignored_mode(position, lookup_offset, lookup_flags, true,
+        (run_state.reserved2 & FEATURE_GPOS_MATCH) != 0u);
+}
+
 fn next_eligible(start: u32, lookup_offset: u32, lookup_flags: u32) -> i32 {
     for (var index = start; index < run_state.glyph_count; index++) {
+        if (outside_active_syllable(index)) { return -1; }
         if (!lookup_ignored(index, lookup_offset, lookup_flags)) { return i32(index); }
     }
     return -1;
 }
 
-fn previous_eligible(start: i32, lookup_offset: u32, lookup_flags: u32) -> i32 {
+fn next_context_eligible(start: u32, lookup_offset: u32, lookup_flags: u32) -> i32 {
+    for (var index = start; index < run_state.glyph_count; index++) {
+        if (outside_active_syllable(index)) { return -1; }
+        if (!context_lookup_ignored(index, lookup_offset, lookup_flags)) { return i32(index); }
+    }
+    return -1;
+}
+
+fn previous_context_eligible(start: i32, lookup_offset: u32, lookup_flags: u32) -> i32 {
     var index = start;
     loop {
         if (index < 0) { break; }
-        if (!lookup_ignored(u32(index), lookup_offset, lookup_flags)) { return index; }
+        if (outside_active_syllable(u32(index))) { return -1; }
+        if (!context_lookup_ignored(u32(index), lookup_offset, lookup_flags)) { return index; }
         index -= 1;
     }
     return -1;
@@ -2665,7 +2705,7 @@ fn match_backtrack_glyphs(offset: u32, count: u32, position: u32,
     lookup_offset: u32, lookup_flags: u32, class_def: u32) -> bool {
     var cursor = i32(position) - 1;
     for (var index = 0u; index < count; index++) {
-        cursor = previous_eligible(cursor, lookup_offset, lookup_flags);
+        cursor = previous_context_eligible(cursor, lookup_offset, lookup_flags);
         if (cursor < 0) { return false; }
         let expected = table_u16(offset + index * 2u);
         if (class_def != 0u) {
@@ -2711,7 +2751,7 @@ fn apply_chain_context_subtable(subtable: u32, position: u32, lookup_offset: u32
             cursor += 2u;
             var lookahead = last;
             for (var lookahead_index = 0u; lookahead_index < lookahead_count; lookahead_index++) {
-                lookahead = next_eligible(u32(lookahead) + 1u, lookup_offset, lookup_flags);
+                lookahead = next_context_eligible(u32(lookahead) + 1u, lookup_offset, lookup_flags);
                 if (lookahead < 0 || glyphs[u32(lookahead)].glyph_id != table_u16(cursor + lookahead_index * 2u)) {
                     matched = false;
                     break;
@@ -2762,7 +2802,7 @@ fn apply_chain_context_subtable(subtable: u32, position: u32, lookup_offset: u32
             cursor += 2u;
             var lookahead = last;
             for (var lookahead_index = 0u; lookahead_index < lookahead_count; lookahead_index++) {
-                lookahead = next_eligible(u32(lookahead) + 1u, lookup_offset, lookup_flags);
+                lookahead = next_context_eligible(u32(lookahead) + 1u, lookup_offset, lookup_flags);
                 if (lookahead < 0 || class_value(lookahead_class, glyphs[u32(lookahead)].glyph_id) !=
                         table_u16(cursor + lookahead_index * 2u)) {
                     matched = false;
@@ -2783,7 +2823,7 @@ fn apply_chain_context_subtable(subtable: u32, position: u32, lookup_offset: u32
         var backtrack = i32(position) - 1;
         var matched = true;
         for (var index = 0u; index < backtrack_count; index++) {
-            backtrack = previous_eligible(backtrack, lookup_offset, lookup_flags);
+            backtrack = previous_context_eligible(backtrack, lookup_offset, lookup_flags);
             if (backtrack < 0 || coverage_index(subtable + table_u16(cursor + index * 2u),
                     glyphs[u32(backtrack)].glyph_id) < 0) { matched = false; break; }
             backtrack -= 1;
@@ -2805,7 +2845,7 @@ fn apply_chain_context_subtable(subtable: u32, position: u32, lookup_offset: u32
         cursor += 2u;
         var lookahead = last;
         for (var index = 0u; index < lookahead_count; index++) {
-            lookahead = next_eligible(u32(lookahead) + 1u, lookup_offset, lookup_flags);
+            lookahead = next_context_eligible(u32(lookahead) + 1u, lookup_offset, lookup_flags);
             if (lookahead < 0 || coverage_index(subtable + table_u16(cursor + index * 2u),
                     glyphs[u32(lookahead)].glyph_id) < 0) { matched = false; break; }
         }
@@ -2829,7 +2869,7 @@ fn apply_reverse_chain_subtable(subtable: u32, position: u32,
     cursor += 2u;
     var match_position = i32(position) - 1;
     for (var index = 0u; index < backtrack_count; index++) {
-        match_position = previous_eligible(match_position, lookup_offset, lookup_flags);
+        match_position = previous_context_eligible(match_position, lookup_offset, lookup_flags);
         if (match_position < 0 || coverage_index(subtable + table_u16(cursor + index * 2u),
                 glyphs[u32(match_position)].glyph_id) < 0) { return false; }
         match_position -= 1;
@@ -2839,7 +2879,7 @@ fn apply_reverse_chain_subtable(subtable: u32, position: u32,
     cursor += 2u;
     match_position = i32(position);
     for (var index = 0u; index < lookahead_count; index++) {
-        match_position = next_eligible(u32(match_position) + 1u, lookup_offset, lookup_flags);
+        match_position = next_context_eligible(u32(match_position) + 1u, lookup_offset, lookup_flags);
         if (match_position < 0 || coverage_index(subtable + table_u16(cursor + index * 2u),
                 glyphs[u32(match_position)].glyph_id) < 0) { return false; }
     }
@@ -3105,6 +3145,8 @@ fn execute_lookups(@builtin(global_invocation_id) id: vec3<u32>) {
                 let cluster = u32(max(glyphs[reverse_position].cluster, 0));
                 if (cluster < command.range_start || cluster >= command.range_end ||
                         !feature_allowed(command, reverse_position)) { continue; }
+                run_state.reserved1 = glyph_states[reverse_position].syllable;
+                run_state.reserved2 = command.command_flags;
                 _ = apply_lookup_at(command.lookup_offset, reverse_position, command.feature_value,
                     command.feature_tag, 0u, &tasks, &task_count);
                 if (run_state.status != 0u) { return; }
@@ -3116,6 +3158,8 @@ fn execute_lookups(@builtin(global_invocation_id) id: vec3<u32>) {
             let cluster = u32(max(glyphs[position].cluster, 0));
             if (cluster < command.range_start || cluster >= command.range_end) { continue; }
             if (!feature_allowed(command, position)) { continue; }
+            run_state.reserved1 = glyph_states[position].syllable;
+            run_state.reserved2 = command.command_flags;
             _ = apply_lookup_at(command.lookup_offset, position, command.feature_value,
                 command.feature_tag, 0u, &tasks, &task_count);
             loop {
@@ -3133,6 +3177,8 @@ fn execute_lookups(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
     handle_substitution_stage_transition(active_stage, 0xffffffffu);
+    run_state.reserved1 = 0u;
+    run_state.reserved2 = 0u;
 }
 
 @compute @workgroup_size(1)
@@ -3286,6 +3332,8 @@ fn apply_legacy_kern(table: u32) {
 @compute @workgroup_size(1)
 fn execute_positions(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x != 0u) { return; }
+    run_state.reserved1 = 0u;
+    run_state.reserved2 = FEATURE_GPOS_MATCH;
     var tasks: array<LookupTask, 64>;
     var task_count = 0u;
     for (var command_index = 0u; command_index < params.lookup_count; command_index++) {
@@ -3316,6 +3364,7 @@ fn execute_positions(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
     resolve_attachments();
+    run_state.reserved2 = 0u;
 }
 
 fn value_record_size(format: u32) -> u32 {
