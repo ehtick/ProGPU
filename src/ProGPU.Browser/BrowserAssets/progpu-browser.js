@@ -1103,6 +1103,10 @@ function execute(opcode, view, payload, payloadLength, absoluteBase) {
         view.getUint32(payload + 4, true), view.getUint32(payload + 8, true),
         view.getUint32(payload + 12, true), view.getInt32(payload + 16, true), view.getUint32(payload + 20, true));
       break;
+    case 42:
+      requireResource(view.getUint32(payload, true)).drawIndirect(
+        requireResource(view.getUint32(payload + 4, true)), Number(view.getBigUint64(payload + 8, true)));
+      break;
     case 50: {
       const handle = view.getUint32(payload, true);
       const encoder = requireResource(view.getUint32(payload + 4, true));
@@ -1119,6 +1123,10 @@ function execute(opcode, view, payload, payloadLength, absoluteBase) {
     case 53:
       if (payloadLength === 12) state.computePass.dispatchWorkgroups(view.getUint32(payload, true), view.getUint32(payload + 4, true), view.getUint32(payload + 8, true));
       else requireResource(view.getUint32(payload, true)).dispatchWorkgroups(view.getUint32(payload + 4, true), view.getUint32(payload + 8, true), view.getUint32(payload + 12, true));
+      break;
+    case 54:
+      requireResource(view.getUint32(payload, true)).dispatchWorkgroupsIndirect(
+        requireResource(view.getUint32(payload + 4, true)), Number(view.getBigUint64(payload + 8, true)));
       break;
     case 60:
       requireResource(view.getUint32(payload, true)).copyBufferToBuffer(

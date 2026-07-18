@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using ProGPU.Fonts.Inter;
@@ -16,9 +17,21 @@ namespace ProGPU.Tests;
 public sealed class SamplePerformanceRegressionTests
 {
     [Fact]
+    public void GlyphInstancePacksAtlasPageAndTransformWithoutChangingStride()
+    {
+        float encoded = GlyphInstance.EncodeAtlasHandle(byte.MaxValue, ushort.MaxValue);
+
+        Assert.Equal(96, Marshal.SizeOf<GlyphInstance>());
+        Assert.Equal((uint)byte.MaxValue, GlyphInstance.DecodeAtlasPage(encoded));
+        Assert.Equal((uint)ushort.MaxValue, GlyphInstance.DecodeTransformIndex(encoded));
+        Assert.Throws<ArgumentOutOfRangeException>(() => GlyphInstance.EncodeAtlasHandle(256, 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => GlyphInstance.EncodeAtlasHandle(0, 65536));
+    }
+
+    [Fact]
     public void EmptyGlyphAtlasBatchDoesNotCreateOrSubmitGpuWork()
     {
-        using var atlas = new GlyphAtlas(HeadlessWindow.Shared.Context, atlasSize: 64);
+        using var atlas = new GlyphAtlas(HeadlessWindow.Shared.Context, atlasSize: 64, atlasPageCount: 1);
 
         atlas.BeginBatch();
         atlas.EndBatch();
@@ -45,12 +58,121 @@ public sealed class SamplePerformanceRegressionTests
         scrollViewer.Measure(new Vector2(300f, 200f));
         scrollViewer.Arrange(new Rect(0f, 0f, 300f, 200f));
         var arrangeCount = content.ArrangeCount;
+        var sceneVersion = scrollViewer.ChangeVersion;
 
         scrollViewer.VerticalOffset = 120f;
 
         Assert.Equal(arrangeCount, content.ArrangeCount);
-        Assert.Equal(new Vector2(0f, -120f), content.Offset);
-        Assert.Equal(new Vector2(0f, -120f), content.LayoutTranslation);
+        Assert.Equal(Vector2.Zero, content.Offset);
+        Assert.Equal(Vector2.Zero, content.LayoutTranslation);
+        Assert.Null(content.RetainedTransform);
+        Assert.NotNull(scrollViewer.ChildrenRetainedTransform);
+        Assert.Equal(new Vector2(0f, -120f), scrollViewer.ChildrenRetainedTransform!.Translation);
+        Assert.Equal(sceneVersion, scrollViewer.ChangeVersion);
+        Assert.Equal(
+            new Vector2(0f, -120f),
+            content.TransformToVisual(null).TransformPoint(Vector2.Zero));
+    }
+
+    [Fact]
+    public void DeferredRetainedScrollRecompilesOnlyAtHalfViewportBands()
+    {
+        var content = new StackPanel();
+        content.AddChild(new ViewportDeferredElement
+        {
+            WidthConstraint = 300f,
+            HeightConstraint = 1_000f
+        });
+        var scrollViewer = new ScrollViewer
+        {
+            WidthConstraint = 300f,
+            HeightConstraint = 200f,
+            Content = content
+        };
+
+        scrollViewer.Measure(new Vector2(300f, 200f));
+        scrollViewer.Arrange(new Rect(0f, 0f, 300f, 200f));
+        long initialVersion = scrollViewer.ChangeVersion;
+
+        scrollViewer.VerticalOffset = 50f;
+        Assert.Equal(initialVersion, scrollViewer.ChangeVersion);
+
+        scrollViewer.VerticalOffset = 120f;
+        Assert.True(scrollViewer.ChangeVersion > initialVersion);
+        Assert.NotNull(scrollViewer.ChildrenRetainedTransform);
+        Assert.Equal(new Vector2(0f, -120f), scrollViewer.ChildrenRetainedTransform!.Translation);
+    }
+
+    [Fact]
+    public void DeferredRetainedScrollCompilesOnlyViewportOverscanCommands()
+    {
+        var near = new DeferredRenderCounterVisual();
+        var far = new DeferredRenderCounterVisual();
+        var host = new DeferredViewportHost(near, far);
+        var scrollViewer = new ScrollViewer { Content = host };
+        using var window = new HeadlessWindow(100, 100) { Content = scrollViewer };
+
+        window.Render();
+
+        Assert.Equal(1, near.RenderCount);
+        Assert.Equal(0, far.RenderCount);
+
+        scrollViewer.VerticalOffset = 900f;
+        window.Render();
+
+        Assert.Equal(1, near.RenderCount);
+        Assert.Equal(1, far.RenderCount);
+    }
+
+    [Fact]
+    public void DeferredViewportQueuesOnlyNextHalfViewportWarmupRing()
+    {
+        var visible = new DeferredWarmableCounterVisual();
+        var nextRing = new DeferredWarmableCounterVisual();
+        var far = new DeferredWarmableCounterVisual();
+        var host = new DeferredWarmupHost(visible, nextRing, far);
+        var scrollViewer = new ScrollViewer { Content = host };
+        using var window = new HeadlessWindow(100, 100) { Content = scrollViewer };
+
+        window.Render();
+
+        Assert.Equal(1, visible.RenderCount);
+        Assert.Equal(0, visible.WarmupCount);
+        Assert.Equal(0, nextRing.RenderCount);
+        Assert.Equal(1, nextRing.WarmupCount);
+        Assert.Equal(0, far.RenderCount);
+        Assert.Equal(0, far.WarmupCount);
+    }
+
+    [Fact]
+    public void DataGridSubRowScrollPatchesRetainedTransformsUntilVisibleRangeChanges()
+    {
+        var grid = new DataGrid { Font = LoadTestFont() };
+        grid.Columns.Add(new DataGridColumn("Value", new DataGridLength(1f, DataGridLengthUnitType.Star), "Value"));
+        for (int index = 0; index < 100; index++)
+        {
+            grid.AddItem(new DataGridTestRow(index));
+        }
+        using var window = new HeadlessWindow(300, 200) { Content = grid };
+
+        window.Render();
+        grid.ScrollOffset = 10f;
+        window.Render();
+        long retainedRangeVersion = grid.ChangeVersion;
+        int firstRealizedRow = grid.FirstRealizedRow;
+        int lastRealizedRow = grid.LastRealizedRow;
+        Assert.Equal(0, firstRealizedRow);
+        Assert.Equal(7, lastRealizedRow);
+
+        grid.ScrollOffset = 20f;
+        Assert.Equal(
+            retainedRangeVersion,
+            grid.ChangeVersion);
+        Assert.Equal(firstRealizedRow, grid.FirstRealizedRow);
+        Assert.Equal(lastRealizedRow, grid.LastRealizedRow);
+
+        grid.ScrollOffset = 30f;
+        Assert.True(grid.ChangeVersion > retainedRangeVersion);
     }
 
     [Fact]
@@ -87,6 +209,109 @@ public sealed class SamplePerformanceRegressionTests
         Assert.Contains(boundIndices, index => index > initialMaximum);
         Assert.All(panel.Children, visual => Assert.True(visual.HitTestId > initialMaximum + 1));
         Assert.IsAssignableFrom<IScrollViewportAware>(panel);
+    }
+
+    [Fact]
+    public void OwnerVirtualizedGridUsesRetainedTranslationBetweenRealizationBoundaries()
+    {
+        var panel = new UniformVirtualizingGridPanel
+        {
+            ItemsCount = 1_000,
+            ItemWidth = 80f,
+            ItemHeight = 80f,
+            CreateVisualFactory = static () => new Border(),
+            BindVisualCallback = static (visual, index) => visual.HitTestId = index + 1
+        };
+        var scrollViewer = new ScrollViewer
+        {
+            WidthConstraint = 320f,
+            HeightConstraint = 240f,
+            Content = panel
+        };
+
+        scrollViewer.Measure(new Vector2(320f, 240f));
+        scrollViewer.Arrange(new Rect(0f, 0f, 320f, 240f));
+        scrollViewer.VerticalOffset = 10f;
+        long realizationVersion = scrollViewer.ChangeVersion;
+        ulong reconciliationCount = panel.ViewportReconciliationCount;
+
+        scrollViewer.VerticalOffset = 20f;
+
+        Assert.Null(panel.ClipBounds);
+        Assert.NotNull(scrollViewer.ChildrenRetainedTransform);
+        Assert.Equal(new Vector2(0f, -20f), scrollViewer.ChildrenRetainedTransform!.Translation);
+        Assert.Equal(realizationVersion, scrollViewer.ChangeVersion);
+        Assert.Equal(reconciliationCount, panel.ViewportReconciliationCount);
+
+        scrollViewer.VerticalOffset = 90f;
+        Assert.True(scrollViewer.ChangeVersion > realizationVersion);
+        Assert.True(panel.ViewportReconciliationCount > reconciliationCount);
+    }
+
+    [Fact]
+    public void GlyphGridSubRowScrollReusesCompiledScene()
+    {
+        TtfFont font = LoadTestFont();
+        var panel = new UniformVirtualizingGridPanel
+        {
+            ItemsCount = Math.Min(1_000, (int)font.NumGlyphs),
+            ItemWidth = 80f,
+            ItemHeight = 80f,
+            CreateVisualFactory = () => new Border
+            {
+                Child = new FontIcon
+                {
+                    Font = font,
+                    FontSize = 32f,
+                    WidthConstraint = 48f,
+                    HeightConstraint = 48f
+                }
+            },
+            BindVisualCallback = static (visual, index) =>
+                ((FontIcon)((Border)visual).Child!).GlyphIndex = (ushort)index
+        };
+        var scrollViewer = new ScrollViewer { Content = panel };
+        using var window = new HeadlessWindow(320, 240) { Content = scrollViewer };
+
+        window.Render();
+        scrollViewer.VerticalOffset = 10f;
+        window.Render();
+        Assert.False(window.Compositor.Metrics.SceneCacheHit);
+
+        scrollViewer.VerticalOffset = 20f;
+        window.Render();
+
+        Assert.True(window.Compositor.Metrics.SceneCacheHit);
+    }
+
+    [Fact]
+    public void StandaloneVirtualizingStackPanelPatchesOneRetainedScrollTransform()
+    {
+        var panel = new VirtualizingStackPanel
+        {
+            ItemsCount = 1_000,
+            ItemHeight = 40f,
+            CreateVisualFactory = static () => new Border(),
+            BindVisualCallback = static (visual, index) => visual.HitTestId = index + 1
+        };
+
+        panel.Measure(new Vector2(300f, 200f));
+        panel.Arrange(new Rect(0f, 0f, 300f, 200f));
+        panel.ScrollOffset = 10f;
+
+        var content = panel.Children.First(visual => !visual.ExcludeFromParentRetainedTransform);
+        var contentOffset = content.Offset;
+        var sceneVersion = panel.ChangeVersion;
+        ulong reconciliationCount = panel.ViewportReconciliationCount;
+
+        panel.ScrollOffset = 20f;
+
+        Assert.Same(content, panel.Children.First(visual => visual.HitTestId == content.HitTestId));
+        Assert.Equal(contentOffset, content.Offset);
+        Assert.NotNull(panel.ChildrenRetainedTransform);
+        Assert.Equal(new Vector2(0f, -20f), panel.ChildrenRetainedTransform!.Translation);
+        Assert.Equal(sceneVersion, panel.ChangeVersion);
+        Assert.Equal(reconciliationCount, panel.ViewportReconciliationCount);
     }
 
     [Fact]
@@ -160,6 +385,34 @@ public sealed class SamplePerformanceRegressionTests
         Assert.NotNull(layout);
         Assert.Equal(240f, layout.MaxWidth);
         Assert.Equal(new Vector2(240f, 48f), text.Size);
+    }
+
+    [Fact]
+    public void DeferredTextVisualPublishesBoundedBackgroundLayout()
+    {
+        var text = new TextVisual
+        {
+            Text = "Background prepared retained shaping",
+            Font = LoadTestFont(),
+            FontSize = 18f,
+            WidthConstraint = 240f,
+            HeightConstraint = 48f,
+            DeferLayoutUntilRender = true
+        };
+        text.Measure(new Vector2(240f, 48f));
+        text.Arrange(new Rect(0f, 0f, 240f, 48f));
+        var previousDispatcher = Microsoft.UI.Xaml.Input.InputSystem.DispatcherQueue;
+        Microsoft.UI.Xaml.Input.InputSystem.DispatcherQueue = null;
+        try
+        {
+            Assert.True(text.QueueViewportWarmup());
+            Assert.True(SpinWait.SpinUntil(() => text.HasPreparedLayout, TimeSpan.FromSeconds(5)));
+            Assert.False(text.QueueViewportWarmup());
+        }
+        finally
+        {
+            Microsoft.UI.Xaml.Input.InputSystem.DispatcherQueue = previousDispatcher;
+        }
     }
 
     [Fact]
@@ -251,10 +504,34 @@ public sealed class SamplePerformanceRegressionTests
     }
 
     [Fact]
+    public void GlyphAtlasUsesOneZDispatchForEqualRasterFootprints()
+    {
+        var font = LoadTestFont();
+        using var atlas = new GlyphAtlas(HeadlessWindow.Shared.Context, atlasSize: 512);
+        ushort glyph = font.GetGlyphIndex('A');
+
+        atlas.BeginBatch();
+        try
+        {
+            Assert.True(atlas.GetOrCreateGlyphByIndex(font, glyph, 32f, subpixelX: 0).Width > 0);
+            Assert.True(atlas.GetOrCreateGlyphByIndex(font, glyph, 32f, subpixelX: 1).Width > 0);
+        }
+        finally
+        {
+            atlas.EndBatch();
+        }
+
+        Assert.Equal(2, atlas.RecordedJobsInBatch);
+        Assert.Equal(1, atlas.RecordedDispatchesInBatch);
+        Assert.Equal(1ul, atlas.BatchEncoderCreationCount);
+        Assert.Equal(1ul, atlas.BatchSubmissionCount);
+    }
+
+    [Fact]
     public void PreferredGlyphAtlasReusesLeastRecentlyUsedRegionWithoutClearingAtlas()
     {
         var font = LoadTestFont();
-        using var atlas = new GlyphAtlas(HeadlessWindow.Shared.Context, atlasSize: 64);
+        using var atlas = new GlyphAtlas(HeadlessWindow.Shared.Context, atlasSize: 64, atlasPageCount: 1);
         var glyph = font.GetGlyphIndex('A');
         var generation = atlas.Generation;
 
@@ -938,6 +1215,135 @@ public sealed class SamplePerformanceRegressionTests
         protected override void ArrangeOverride(Rect arrangeRect)
         {
             ArrangeCount++;
+        }
+    }
+
+    private sealed class ViewportDeferredElement : FrameworkElement
+    {
+        public override bool IsViewportDeferred => true;
+
+        protected override Vector2 MeasureOverride(Vector2 availableSize) =>
+            new(WidthConstraint ?? availableSize.X, HeightConstraint ?? availableSize.Y);
+    }
+
+    private sealed class DataGridTestRow(int value) : IDataGridValueProvider
+    {
+        public bool TryGetDataGridValue(string propertyName, out object? result)
+        {
+            result = propertyName == "Value" ? value : null;
+            return propertyName == "Value";
+        }
+
+        public bool TrySetDataGridValue(string propertyName, object? result) => false;
+
+        public Type? GetDataGridValueType(string propertyName) =>
+            propertyName == "Value" ? typeof(int) : null;
+    }
+
+    private sealed class DeferredViewportHost : FrameworkElement
+    {
+        private readonly DeferredRenderCounterVisual _near;
+        private readonly DeferredRenderCounterVisual _far;
+
+        public DeferredViewportHost(
+            DeferredRenderCounterVisual near,
+            DeferredRenderCounterVisual far)
+        {
+            _near = near;
+            _far = far;
+            AddChild(near);
+            AddChild(far);
+        }
+
+        protected override Vector2 MeasureOverride(Vector2 availableSize)
+        {
+            _near.Measure(new Vector2(100f, 40f));
+            _far.Measure(new Vector2(100f, 40f));
+            return new Vector2(100f, 1_200f);
+        }
+
+        protected override void ArrangeOverride(Rect arrangeRect)
+        {
+            _near.Arrange(new Rect(0f, 20f, 100f, 40f));
+            _far.Arrange(new Rect(0f, 1_000f, 100f, 40f));
+        }
+    }
+
+    private sealed class DeferredWarmupHost : FrameworkElement
+    {
+        private readonly DeferredWarmableCounterVisual _visible;
+        private readonly DeferredWarmableCounterVisual _nextRing;
+        private readonly DeferredWarmableCounterVisual _far;
+
+        public DeferredWarmupHost(
+            DeferredWarmableCounterVisual visible,
+            DeferredWarmableCounterVisual nextRing,
+            DeferredWarmableCounterVisual far)
+        {
+            _visible = visible;
+            _nextRing = nextRing;
+            _far = far;
+            AddChild(visible);
+            AddChild(nextRing);
+            AddChild(far);
+        }
+
+        protected override Vector2 MeasureOverride(Vector2 availableSize)
+        {
+            _visible.Measure(new Vector2(100f, 20f));
+            _nextRing.Measure(new Vector2(100f, 20f));
+            _far.Measure(new Vector2(100f, 20f));
+            return new Vector2(100f, 1_200f);
+        }
+
+        protected override void ArrangeOverride(Rect arrangeRect)
+        {
+            _visible.Arrange(new Rect(0f, 20f, 100f, 20f));
+            _nextRing.Arrange(new Rect(0f, 225f, 100f, 20f));
+            _far.Arrange(new Rect(0f, 1_000f, 100f, 20f));
+        }
+    }
+
+    private sealed class DeferredWarmableCounterVisual : FrameworkElement, IViewportDeferredWarmable
+    {
+        public int RenderCount { get; private set; }
+        public int WarmupCount { get; private set; }
+        public override bool IsViewportDeferred => true;
+        public override Rect? LocalRenderBounds => new(Vector2.Zero, Size);
+
+        protected override Vector2 MeasureOverride(Vector2 availableSize) => availableSize;
+
+        public bool QueueViewportWarmup()
+        {
+            WarmupCount++;
+            return true;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            RenderCount++;
+            context.DrawRectangle(
+                new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f)),
+                null,
+                new Rect(Vector2.Zero, Size));
+        }
+    }
+
+    private sealed class DeferredRenderCounterVisual : FrameworkElement
+    {
+        public int RenderCount { get; private set; }
+        public override bool IsViewportDeferred => true;
+        public override Rect? LocalRenderBounds => new(Vector2.Zero, Size);
+
+        protected override Vector2 MeasureOverride(Vector2 availableSize) => availableSize;
+
+        public override void OnRender(DrawingContext context)
+        {
+            RenderCount++;
+            context.DrawRectangle(
+                new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f)),
+                null,
+                new Rect(Vector2.Zero, Size));
         }
     }
 

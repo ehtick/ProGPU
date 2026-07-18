@@ -45,5 +45,6 @@ public sealed class SceneTransformHandle
 
     public long Version => Volatile.Read(ref _version);
 
-    internal Matrix4x4 Matrix => Matrix4x4.CreateTranslation(_translation.X, _translation.Y, 0f);
+    /// <summary>Gets the current translation matrix for input and compositor consumers.</summary>
+    public Matrix4x4 Matrix => Matrix4x4.CreateTranslation(_translation.X, _translation.Y, 0f);
 }

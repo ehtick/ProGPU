@@ -80,6 +80,12 @@ public class Window
     /// </summary>
     public uint GlyphAtlasSize { get; set; } = CompositorOptions.Default.GlyphAtlasSize;
 
+    public uint GlyphAtlasPageCount { get; set; } = CompositorOptions.Default.GlyphAtlasPageCount;
+
+    public bool EnableGpuSceneVisibility { get; set; } = CompositorOptions.Default.EnableGpuSceneVisibility;
+
+    public uint GpuSceneVisibilityMinimumItems { get; set; } = CompositorOptions.Default.GpuSceneVisibilityMinimumItems;
+
     public NativeWindowDecorations Decorations
     {
         get => _decorations;
@@ -393,6 +399,9 @@ public class Window
             {
                 EnableGpuHitTesting = false,
                 GlyphAtlasSize = GlyphAtlasSize,
+                GlyphAtlasPageCount = GlyphAtlasPageCount,
+                EnableGpuSceneVisibility = EnableGpuSceneVisibility,
+                GpuSceneVisibilityMinimumItems = GpuSceneVisibilityMinimumItems,
                 PrimarySampleCount = sampleCount
             });
         ApplySystemBackdrop();
@@ -442,6 +451,9 @@ public class Window
             {
                 EnableGpuHitTesting = false,
                 GlyphAtlasSize = GlyphAtlasSize,
+                GlyphAtlasPageCount = GlyphAtlasPageCount,
+                EnableGpuSceneVisibility = EnableGpuSceneVisibility,
+                GpuSceneVisibilityMinimumItems = GpuSceneVisibilityMinimumItems,
                 PrimarySampleCount = sampleCount
             });
         ApplySystemBackdrop();

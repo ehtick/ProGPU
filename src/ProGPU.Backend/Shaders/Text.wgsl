@@ -1,6 +1,6 @@
-// Algorithm: Transform glyph quads and modulate premultiplied text color by glyph-atlas coverage.
+// Algorithm: Transform glyph quads through either the frame view or a stable indexed retained-fragment transform, then modulate premultiplied text color by glyph-atlas coverage.
 // Time complexity: O(1) per vertex and fragment.
-// Space complexity: O(1) local storage with one atlas sample per fragment.
+// Space complexity: O(1) local storage, one transform-table read per retained vertex, and one atlas sample per fragment.
 struct VertexInput {
     @builtin(vertex_index) vertexIndex: u32,
     @location(0) snappedLogicalPos: vec2<f32>,
@@ -11,6 +11,7 @@ struct VertexInput {
     @location(5) color: vec4<f32>,
     @location(6) scaleBoldItalicUseMvp: vec4<f32>,
     @location(7) brushIndex: f32,
+    @location(8) atlasHandle: f32,
 };
 
 struct VertexOutput {
@@ -20,6 +21,7 @@ struct VertexOutput {
     @location(2) cornerRadius: f32,
     @location(3) strokeThickness: f32,
     @location(4) textMode: f32,
+    @location(5) @interpolate(flat) atlasPage: u32,
 };
 
 struct Uniforms {
@@ -33,8 +35,7 @@ struct Uniforms {
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 
-@vertex
-fn vs_main(input: VertexInput) -> VertexOutput {
+fn text_vs_main(input: VertexInput, view: mat4x4<f32>) -> VertexOutput {
     var output: VertexOutput;
 
     var local_uv = vec2<f32>(0.0, 0.0);
@@ -98,7 +99,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     var finalPosLogical = input.snappedLogicalPos + physicalOffset;
 
     if (useView) {
-        finalPosLogical = (uniforms.view * vec4<f32>(finalPosLogical, 0.0, 1.0)).xy;
+        finalPosLogical = (view * vec4<f32>(finalPosLogical, 0.0, 1.0)).xy;
     } else if (useMvp > 0.5) {
         finalPosLogical = (uniforms.mvp * vec4<f32>(finalPosLogical, 0.0, 1.0)).xy;
     }
@@ -112,11 +113,50 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         select(select(0.0, 2.0, clearTypeText), 1.0, aliasedText),
         3.0,
         colorGlyph);
+    output.atlasPage = u32(round(input.atlasHandle)) & 255u;
     return output;
 }
 
+@vertex
+fn vs_main(input: VertexInput) -> VertexOutput {
+    return text_vs_main(input, uniforms.view);
+}
+
+struct FragmentVertexInput {
+    @builtin(vertex_index) vertexIndex: u32,
+    @location(0) snappedLogicalPos: vec2<f32>,
+    @location(1) basisX: vec2<f32>,
+    @location(2) basisY: vec2<f32>,
+    @location(3) bearSize: vec4<f32>,
+    @location(4) texCoords: vec4<f32>,
+    @location(5) color: vec4<f32>,
+    @location(6) scaleBoldItalicUseMvp: vec4<f32>,
+    @location(7) brushIndex: f32,
+    @location(8) atlasHandle: f32,
+};
+
+@group(0) @binding(1) var<storage, read> fragmentTransforms: array<mat4x4<f32>>;
+
+@vertex
+fn fragment_vs_main(input: FragmentVertexInput) -> VertexOutput {
+    let vertex = VertexInput(
+        input.vertexIndex,
+        input.snappedLogicalPos,
+        input.basisX,
+        input.basisY,
+        input.bearSize,
+        input.texCoords,
+        input.color,
+        input.scaleBoldItalicUseMvp,
+        input.brushIndex,
+        input.atlasHandle);
+    return text_vs_main(
+        vertex,
+        fragmentTransforms[u32(round(input.atlasHandle)) >> 8u]);
+}
+
 @group(1) @binding(0) var atlasSampler: sampler;
-@group(1) @binding(1) var atlasTexture: texture_2d<f32>;
+@group(1) @binding(1) var atlasTexture: texture_2d_array<f32>;
 @group(2) @binding(0) var maskSampler: sampler;
 @group(2) @binding(1) var maskTexture: texture_2d<f32>;
 
@@ -128,7 +168,8 @@ fn text_coverage_to_alpha(alpha: f32, contrast: f32, gamma: f32, aliasedText: bo
 fn text_fs_main(input: VertexOutput) -> vec4<f32> {
     let atlasCoordDx = dpdx(input.texCoord);
     let atlasCoordDy = dpdy(input.texCoord);
-    let atlasColor = textureSample(atlasTexture, atlasSampler, input.texCoord);
+    let atlasLayer = i32(input.atlasPage);
+    let atlasColor = textureSample(atlasTexture, atlasSampler, input.texCoord, atlasLayer);
     let alpha = atlasColor.r;
     let aliasedText = input.cornerRadius < 0.0;
     let screen_uv = input.position.xy / uniforms.canvasSize;
@@ -146,9 +187,9 @@ fn text_fs_main(input: VertexOutput) -> vec4<f32> {
         let atlasDims = textureDimensions(atlasTexture);
         let atlasSize = vec2<f32>(f32(atlasDims.x), f32(atlasDims.y));
         let subpixelOffset = vec2<f32>(1.0 / max(atlasSize.x * 3.0, 1.0), 0.0);
-        let redCoverage = textureSampleGrad(atlasTexture, atlasSampler, input.texCoord - subpixelOffset, atlasCoordDx, atlasCoordDy).r;
+        let redCoverage = textureSampleGrad(atlasTexture, atlasSampler, input.texCoord - subpixelOffset, atlasLayer, atlasCoordDx, atlasCoordDy).r;
         let greenCoverage = alpha;
-        let blueCoverage = textureSampleGrad(atlasTexture, atlasSampler, input.texCoord + subpixelOffset, atlasCoordDx, atlasCoordDy).r;
+        let blueCoverage = textureSampleGrad(atlasTexture, atlasSampler, input.texCoord + subpixelOffset, atlasLayer, atlasCoordDx, atlasCoordDy).r;
         let rgbCoverage = vec3<f32>(
             text_coverage_to_alpha(redCoverage, input.strokeThickness, gamma, false),
             text_coverage_to_alpha(greenCoverage, input.strokeThickness, gamma, false),

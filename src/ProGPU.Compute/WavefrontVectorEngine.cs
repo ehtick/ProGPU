@@ -49,6 +49,21 @@ public struct GpuGridCell
     public uint ShapeCount;
 }
 
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+public struct GpuDispatchIndirectArgs
+{
+    public uint X;
+    public uint Y;
+    public uint Z;
+}
+
+public enum GpuCellShapeClass : uint
+{
+    Edge = 0,
+    Outside = 1,
+    Solid = 2
+}
+
 [StructLayout(LayoutKind.Sequential, Pack = 16)]
 public struct GpuWavefrontUniforms
 {
@@ -61,7 +76,11 @@ public struct GpuWavefrontUniforms
     public float FontWeightOffset;
     public float DpiScale;
     public uint CurveCount;
-    public uint Pad0;
+    public uint CoverageWordCount;
+    public uint WordsPerCell;
+    public uint CellCount;
+    public uint PairCount;
+    public uint CurveStart;
     public uint Pad1;
     public uint Pad2;
 }
@@ -82,12 +101,33 @@ public struct GpuSortParamsAligned
 
 public unsafe class WavefrontVectorEngine : IDisposable
 {
+    public const uint MaximumPortableDispatchDimension = 65535;
+
     private readonly WgpuContext _context;
     private readonly RenderPipelineCache _pipelineCache;
 
     private ComputePipeline* _flattenPipeline;
-    private ComputePipeline* _binShapesPipeline;
+    private ComputePipeline* _clearBinWordsPipeline;
+    private ComputePipeline* _buildBinCoveragePipeline;
+    private ComputePipeline* _countBinWordsPipeline;
+    private ComputePipeline* _scatterBinWordsPipeline;
+    private ComputePipeline* _markActiveCellsPipeline;
+    private ComputePipeline* _scatterActiveCellsPipeline;
+    private ComputePipeline* _finalizeActiveDispatchPipeline;
+    private ComputePipeline* _classifyCellShapesPipeline;
     private ComputePipeline* _renderPipeline;
+    private RenderPipeline* _compositePipeline;
+    private BindGroupLayout* _flattenLayout;
+    private BindGroupLayout* _clearBinWordsLayout;
+    private BindGroupLayout* _buildBinCoverageLayout;
+    private BindGroupLayout* _countBinWordsLayout;
+    private BindGroupLayout* _scatterBinWordsLayout;
+    private BindGroupLayout* _markActiveCellsLayout;
+    private BindGroupLayout* _scatterActiveCellsLayout;
+    private BindGroupLayout* _finalizeActiveDispatchLayout;
+    private BindGroupLayout* _classifyCellShapesLayout;
+    private BindGroupLayout* _renderLayout;
+    private BindGroupLayout* _compositeLayout;
 
     // Global BVH Cache
     private readonly List<GpuBvhNode> _bvhNodes = new();
@@ -105,27 +145,89 @@ public unsafe class WavefrontVectorEngine : IDisposable
     private GpuBuffer? _instancesBuffer;
     private GpuBuffer? _gridCellsBuffer;
     private GpuBuffer? _gridIndicesBuffer;
+    private GpuBuffer? _coverageWordsBuffer;
+    private GpuBuffer? _activeCellIndicesBuffer;
+    private GpuBuffer? _activeDispatchBuffer;
+    private GpuBuffer? _activeDrawBuffer;
+    private GpuBuffer? _cellShapeClassesBuffer;
     private GpuBuffer? _uniformsBuffer;
+    private readonly GpuPrefixScan _binWordScan;
+    private readonly GpuPrefixScan _activeCellScan;
 
-    private GpuTexture? _bgCopyTexture;
+    private BindGroup* _flattenBindGroup;
+    private BindGroup* _clearBinWordsBindGroup;
+    private BindGroup* _buildBinCoverageBindGroup;
+    private BindGroup* _countBinWordsBindGroup;
+    private BindGroup* _scatterBinWordsBindGroup;
+    private BindGroup* _markActiveCellsBindGroup;
+    private BindGroup* _scatterActiveCellsBindGroup;
+    private BindGroup* _finalizeActiveDispatchBindGroup;
+    private BindGroup* _classifyCellShapesBindGroup;
+    private BindGroup* _renderBindGroup;
+    private BindGroup* _compositeBindGroup;
+    private TextureView* _renderBaseView;
+
+    private GpuTexture? _sparseOutputTexture;
 
     private readonly List<GpuShapeInstance> _frameInstances = new();
     private uint _frameNumber = 0;
+    private uint _uploadedBvhNodeCount;
+    private uint _uploadedRawCurveCount;
     private bool _isDisposed;
+
+    public uint LastUploadedBvhNodeCount { get; private set; }
+
+    public uint LastUploadedRawCurveCount { get; private set; }
+
+    public uint LastFlattenedCurveCount { get; private set; }
+
+    public bool LastGeometryArenaReplay { get; private set; }
 
     public WavefrontVectorEngine(WgpuContext context)
     {
         _context = context;
         _pipelineCache = new RenderPipelineCache(_context);
         InitializePipelines();
+        _binWordScan = new GpuPrefixScan(context);
+        _activeCellScan = new GpuPrefixScan(context);
     }
 
     private void InitializePipelines()
     {
         var shaderModule = _pipelineCache.GetOrCreateShader("WavefrontShaders", WavefrontShaders.ShadersSource, "WavefrontShaders");
         _flattenPipeline = _pipelineCache.GetOrCreateComputePipeline("WavefrontFlatten", shaderModule, "flatten_curves");
-        _binShapesPipeline = _pipelineCache.GetOrCreateComputePipeline("WavefrontBin", shaderModule, "bin_shapes");
+        _clearBinWordsPipeline = _pipelineCache.GetOrCreateComputePipeline("WavefrontBinClear", shaderModule, "clear_bin_words");
+        _buildBinCoveragePipeline = _pipelineCache.GetOrCreateComputePipeline("WavefrontBinBuild", shaderModule, "build_bin_coverage");
+        _countBinWordsPipeline = _pipelineCache.GetOrCreateComputePipeline("WavefrontBinCount", shaderModule, "count_bin_words");
+        _scatterBinWordsPipeline = _pipelineCache.GetOrCreateComputePipeline("WavefrontBinScatter", shaderModule, "scatter_bin_words");
+        _markActiveCellsPipeline = _pipelineCache.GetOrCreateComputePipeline("WavefrontMarkActiveCells", shaderModule, "mark_active_cells");
+        _scatterActiveCellsPipeline = _pipelineCache.GetOrCreateComputePipeline("WavefrontScatterActiveCells", shaderModule, "scatter_active_cells");
+        _finalizeActiveDispatchPipeline = _pipelineCache.GetOrCreateComputePipeline("WavefrontFinalizeActiveDispatch", shaderModule, "finalize_active_dispatch");
+        _classifyCellShapesPipeline = _pipelineCache.GetOrCreateComputePipeline("WavefrontClassifyCellShapes", shaderModule, "classify_cell_shapes");
         _renderPipeline = _pipelineCache.GetOrCreateComputePipeline("WavefrontRender", shaderModule, "wavefront_render");
+        var compositeModule = _pipelineCache.GetOrCreateShader(
+            "WavefrontComposite",
+            ComputeShaders.WavefrontComposite,
+            "WavefrontComposite");
+        _compositePipeline = _pipelineCache.GetOrCreateRenderPipeline(
+            "WavefrontCompositeBgra8Unorm",
+            compositeModule,
+            vertexEntry: "vs_sparse_cell",
+            fragmentEntry: "fs_sparse_cell",
+            targetFormat: TextureFormat.Bgra8Unorm,
+            topology: PrimitiveTopology.TriangleList,
+            enableBlend: false);
+        _flattenLayout = _context.Api.ComputePipelineGetBindGroupLayout(_flattenPipeline, 0);
+        _clearBinWordsLayout = _context.Api.ComputePipelineGetBindGroupLayout(_clearBinWordsPipeline, 0);
+        _buildBinCoverageLayout = _context.Api.ComputePipelineGetBindGroupLayout(_buildBinCoveragePipeline, 0);
+        _countBinWordsLayout = _context.Api.ComputePipelineGetBindGroupLayout(_countBinWordsPipeline, 0);
+        _scatterBinWordsLayout = _context.Api.ComputePipelineGetBindGroupLayout(_scatterBinWordsPipeline, 0);
+        _markActiveCellsLayout = _context.Api.ComputePipelineGetBindGroupLayout(_markActiveCellsPipeline, 0);
+        _scatterActiveCellsLayout = _context.Api.ComputePipelineGetBindGroupLayout(_scatterActiveCellsPipeline, 0);
+        _finalizeActiveDispatchLayout = _context.Api.ComputePipelineGetBindGroupLayout(_finalizeActiveDispatchPipeline, 0);
+        _classifyCellShapesLayout = _context.Api.ComputePipelineGetBindGroupLayout(_classifyCellShapesPipeline, 0);
+        _renderLayout = _context.Api.ComputePipelineGetBindGroupLayout(_renderPipeline, 0);
+        _compositeLayout = _context.Api.RenderPipelineGetBindGroupLayout(_compositePipeline, 0);
     }
 
     private (uint BvhOffset, uint CurveOffset, Vector2 Min, Vector2 Max) GetOrAddPathGeometry(PathGeometry path)
@@ -250,6 +352,10 @@ public unsafe class WavefrontVectorEngine : IDisposable
     {
         _frameInstances.Clear();
         _frameNumber++;
+        LastUploadedBvhNodeCount = 0;
+        LastUploadedRawCurveCount = 0;
+        LastFlattenedCurveCount = 0;
+        LastGeometryArenaReplay = false;
     }
 
     public void DrawPath(PathGeometry path, in Matrix4x4 transform, Brush brush)
@@ -303,49 +409,54 @@ public unsafe class WavefrontVectorEngine : IDisposable
         uint width = destination.Width;
         uint height = destination.Height;
 
-        if (_frameInstances.Count == 0) return;
+        if (_frameInstances.Count == 0 || width == 0 || height == 0) return;
 
-        // 1. Build screen grid cells (16x16 pixels)
+        // Build exact, uncapped cell-list capacity from the same transformed bounds used by the
+        // GPU. This is O(I), performs no readback, and makes capacity failure explicit before any
+        // command can observe a partial bin list.
         uint gridCols = (width + 15) / 16;
         uint gridRows = (height + 15) / 16;
         uint gridStride = gridCols;
-        uint cellCount = gridCols * gridRows;
+        uint cellCount = checked(gridCols * gridRows);
+        uint wordsPerCell = checked(((uint)_frameInstances.Count + 31u) / 32u);
+        uint coverageWordCount = checked(cellCount * wordsPerCell);
+        uint pairCount = CountCellOverlaps(width, height, dpiScale, gridStride, gridRows);
 
-        // Allocate index indices buffer with static capacity of cellCount * 64
-        uint maxCellInstances = 64;
-        uint maxGridIndices = cellCount * maxCellInstances;
+        EnsureGpuResources(
+            width,
+            height,
+            cellCount,
+            coverageWordCount,
+            Math.Max(1u, pairCount),
+            destination);
 
-        // 2. Allocate & upload GPU Buffers
-        UpdateGpuBuffers(width, height, gridStride, cellCount, maxGridIndices, destination.Format);
-
-        // Copy cleared destination texture to background copy texture
-        var copySrc = new ImageCopyTexture
+        uint curveStart = _uploadedRawCurveCount;
+        uint pendingCurveCount = checked((uint)_rawCurves.Count - curveStart);
+        bool geometryChanged =
+            _uploadedBvhNodeCount != (uint)_bvhNodes.Count ||
+            pendingCurveCount != 0;
+        if (geometryChanged)
         {
-            Texture = destination.TexturePtr,
-            MipLevel = 0,
-            Origin = new Origin3D { X = 0, Y = 0, Z = 0 },
-            Aspect = TextureAspect.All
-        };
-        var copyDst = new ImageCopyTexture
-        {
-            Texture = _bgCopyTexture!.TexturePtr,
-            MipLevel = 0,
-            Origin = new Origin3D { X = 0, Y = 0, Z = 0 },
-            Aspect = TextureAspect.All
-        };
-        var copySize = new Extent3D
-        {
-            Width = width,
-            Height = height,
-            DepthOrArrayLayers = 1
-        };
-        _context.Api.CommandEncoderCopyTextureToTexture(encoder, &copySrc, &copyDst, &copySize);
+            var bvhNodes = CollectionsMarshal.AsSpan(_bvhNodes);
+            if (_uploadedBvhNodeCount < (uint)bvhNodes.Length)
+            {
+                LastUploadedBvhNodeCount = (uint)bvhNodes.Length - _uploadedBvhNodeCount;
+                _bvhBuffer!.Write(
+                    bvhNodes[(int)_uploadedBvhNodeCount..],
+                    checked(_uploadedBvhNodeCount * (uint)sizeof(GpuBvhNode)));
+            }
 
-        _bvhBuffer!.Write(CollectionsMarshal.AsSpan(_bvhNodes));
-        _rawCurvesBuffer!.Write(CollectionsMarshal.AsSpan(_rawCurves));
+            var rawCurves = CollectionsMarshal.AsSpan(_rawCurves);
+            if (pendingCurveCount != 0)
+            {
+                LastUploadedRawCurveCount = pendingCurveCount;
+                _rawCurvesBuffer!.Write(
+                    rawCurves[(int)curveStart..],
+                    checked(curveStart * (uint)sizeof(GpuBezierCurve)));
+            }
+        }
         _instancesBuffer!.Write(CollectionsMarshal.AsSpan(_frameInstances));
 
-        // Write Uniforms
         var uniforms = new GpuWavefrontUniforms
         {
             ScreenWidth = width,
@@ -356,144 +467,599 @@ public unsafe class WavefrontVectorEngine : IDisposable
             CurrentFrameIndex = _frameNumber,
             FontWeightOffset = fontWeightOffset,
             DpiScale = dpiScale,
-            CurveCount = (uint)_rawCurves.Count
+            CurveCount = pendingCurveCount,
+            CoverageWordCount = coverageWordCount,
+            WordsPerCell = wordsPerCell,
+            CellCount = cellCount,
+            PairCount = pairCount,
+            CurveStart = curveStart
         };
         _uniformsBuffer!.WriteSingle(uniforms);
 
-        // 3. Bind Groups
-
-        // 3.0 Bind Group for Flatten Curves Pipeline
-        var flattenEntries = stackalloc BindGroupEntry[3];
-        flattenEntries[0] = new BindGroupEntry { Binding = 0, Buffer = _uniformsBuffer.BufferPtr, Offset = 0, Size = _uniformsBuffer.Size };
-        flattenEntries[1] = new BindGroupEntry { Binding = 12, Buffer = _rawCurvesBuffer!.BufferPtr, Offset = 0, Size = _rawCurvesBuffer.Size };
-        flattenEntries[2] = new BindGroupEntry { Binding = 9, Buffer = _linesBuffer!.BufferPtr, Offset = 0, Size = _linesBuffer.Size };
-        var flattenLayout = _context.Api.ComputePipelineGetBindGroupLayout(_flattenPipeline, 0);
-        var flattenBgDesc = new BindGroupDescriptor
-        {
-            Layout = flattenLayout,
-            EntryCount = 3,
-            Entries = flattenEntries
-        };
-        var flattenBindGroup = _context.Api.DeviceCreateBindGroup(_context.Device, &flattenBgDesc);
-        _context.Api.BindGroupLayoutRelease(flattenLayout);
-        
-        // 3.1 Bind Group for Bin Shapes Pipeline
-        var binShapesEntries = stackalloc BindGroupEntry[4];
-        binShapesEntries[0] = new BindGroupEntry { Binding = 0, Buffer = _uniformsBuffer.BufferPtr, Offset = 0, Size = _uniformsBuffer.Size };
-        binShapesEntries[1] = new BindGroupEntry { Binding = 4, Buffer = _instancesBuffer!.BufferPtr, Offset = 0, Size = _instancesBuffer.Size };
-        binShapesEntries[2] = new BindGroupEntry { Binding = 5, Buffer = _gridCellsBuffer!.BufferPtr, Offset = 0, Size = _gridCellsBuffer.Size };
-        binShapesEntries[3] = new BindGroupEntry { Binding = 6, Buffer = _gridIndicesBuffer!.BufferPtr, Offset = 0, Size = _gridIndicesBuffer.Size };
-        var binShapesLayout = _context.Api.ComputePipelineGetBindGroupLayout(_binShapesPipeline, 0);
-        var binShapesBgDesc = new BindGroupDescriptor
-        {
-            Layout = binShapesLayout,
-            EntryCount = 4,
-            Entries = binShapesEntries
-        };
-        var binShapesBindGroup = _context.Api.DeviceCreateBindGroup(_context.Device, &binShapesBgDesc);
-        _context.Api.BindGroupLayoutRelease(binShapesLayout);
-
-        // 3.2 Bind Group for Render Pipeline
-        var renderEntries = stackalloc BindGroupEntry[8];
-        renderEntries[0] = new BindGroupEntry { Binding = 0, Buffer = _uniformsBuffer.BufferPtr, Offset = 0, Size = _uniformsBuffer.Size };
-        renderEntries[1] = new BindGroupEntry { Binding = 3, Buffer = _bvhBuffer.BufferPtr, Offset = 0, Size = _bvhBuffer.Size };
-        renderEntries[2] = new BindGroupEntry { Binding = 4, Buffer = _instancesBuffer.BufferPtr, Offset = 0, Size = _instancesBuffer.Size };
-        renderEntries[3] = new BindGroupEntry { Binding = 5, Buffer = _gridCellsBuffer.BufferPtr, Offset = 0, Size = _gridCellsBuffer.Size };
-        renderEntries[4] = new BindGroupEntry { Binding = 6, Buffer = _gridIndicesBuffer.BufferPtr, Offset = 0, Size = _gridIndicesBuffer.Size };
-        renderEntries[5] = new BindGroupEntry { Binding = 8, TextureView = _bgCopyTexture.ViewPtr };
-        renderEntries[6] = new BindGroupEntry { Binding = 9, Buffer = _linesBuffer.BufferPtr, Offset = 0, Size = _linesBuffer.Size };
-        renderEntries[7] = new BindGroupEntry { Binding = 11, TextureView = destination.ViewPtr };
-        var renderLayout = _context.Api.ComputePipelineGetBindGroupLayout(_renderPipeline, 0);
-        var renderBgDesc = new BindGroupDescriptor
-        {
-            Layout = renderLayout,
-            EntryCount = 8,
-            Entries = renderEntries
-        };
-        var renderBindGroup = _context.Api.DeviceCreateBindGroup(_context.Device, &renderBgDesc);
-        _context.Api.BindGroupLayoutRelease(renderLayout);
-
-        // 4. Dispatch Compute Passes
         var passDesc = new ComputePassDescriptor();
 
-        // Pass 0: Flatten curves on the GPU
-        var passFlatten = _context.Api.CommandEncoderBeginComputePass(encoder, &passDesc);
-        _context.Api.ComputePassEncoderSetPipeline(passFlatten, _flattenPipeline);
-        _context.Api.ComputePassEncoderSetBindGroup(passFlatten, 0, flattenBindGroup, 0, null);
-        _context.Api.ComputePassEncoderDispatchWorkgroups(passFlatten, ((uint)_rawCurves.Count + 63) / 64, 1, 1);
-        _context.Api.ComputePassEncoderEnd(passFlatten);
-        _context.Api.ComputePassEncoderRelease(passFlatten);
+        if (pendingCurveCount > 0)
+        {
+            LastFlattenedCurveCount = pendingCurveCount;
+            var passFlatten = _context.Api.CommandEncoderBeginComputePass(encoder, &passDesc);
+            _context.Api.ComputePassEncoderSetPipeline(passFlatten, _flattenPipeline);
+            _context.Api.ComputePassEncoderSetBindGroup(passFlatten, 0, _flattenBindGroup, 0, null);
+            _context.Api.ComputePassEncoderDispatchWorkgroups(passFlatten, DivRoundUp(pendingCurveCount, 64u), 1, 1);
+            _context.Api.ComputePassEncoderEnd(passFlatten);
+            _context.Api.ComputePassEncoderRelease(passFlatten);
+        }
+        if (geometryChanged)
+        {
+            _uploadedBvhNodeCount = (uint)_bvhNodes.Count;
+            _uploadedRawCurveCount = (uint)_rawCurves.Count;
+        }
 
-        // Pass 1: Bin shapes on the GPU
+        // Instance-driven bitmap construction performs O(overlap) writes. Word popcount followed
+        // by the reusable hierarchical scan reserves an exact, stable list for every cell.
         var passBin = _context.Api.CommandEncoderBeginComputePass(encoder, &passDesc);
-        _context.Api.ComputePassEncoderSetPipeline(passBin, _binShapesPipeline);
-        _context.Api.ComputePassEncoderSetBindGroup(passBin, 0, binShapesBindGroup, 0, null);
-        _context.Api.ComputePassEncoderDispatchWorkgroups(passBin, (gridCols + 15) / 16, (gridRows + 15) / 16, 1);
+        _context.Api.ComputePassEncoderSetPipeline(passBin, _clearBinWordsPipeline);
+        _context.Api.ComputePassEncoderSetBindGroup(passBin, 0, _clearBinWordsBindGroup, 0, null);
+        _context.Api.ComputePassEncoderDispatchWorkgroups(passBin, DivRoundUp(coverageWordCount, 256u), 1, 1);
+        _context.Api.ComputePassEncoderSetPipeline(passBin, _buildBinCoveragePipeline);
+        _context.Api.ComputePassEncoderSetBindGroup(passBin, 0, _buildBinCoverageBindGroup, 0, null);
+        _context.Api.ComputePassEncoderDispatchWorkgroups(passBin, DivRoundUp((uint)_frameInstances.Count, 64u), 1, 1);
+        _context.Api.ComputePassEncoderSetPipeline(passBin, _countBinWordsPipeline);
+        _context.Api.ComputePassEncoderSetBindGroup(passBin, 0, _countBinWordsBindGroup, 0, null);
+        _context.Api.ComputePassEncoderDispatchWorkgroups(passBin, DivRoundUp(coverageWordCount, 256u), 1, 1);
         _context.Api.ComputePassEncoderEnd(passBin);
         _context.Api.ComputePassEncoderRelease(passBin);
 
-        // Pass 2: Render directly to destination
+        _binWordScan.RecordExclusiveScan(encoder, coverageWordCount);
+
+        var passScatter = _context.Api.CommandEncoderBeginComputePass(encoder, &passDesc);
+        _context.Api.ComputePassEncoderSetPipeline(passScatter, _scatterBinWordsPipeline);
+        _context.Api.ComputePassEncoderSetBindGroup(passScatter, 0, _scatterBinWordsBindGroup, 0, null);
+        _context.Api.ComputePassEncoderDispatchWorkgroups(passScatter, DivRoundUp(coverageWordCount, 256u), 1, 1);
+        _context.Api.ComputePassEncoderSetPipeline(passScatter, _markActiveCellsPipeline);
+        _context.Api.ComputePassEncoderSetBindGroup(passScatter, 0, _markActiveCellsBindGroup, 0, null);
+        _context.Api.ComputePassEncoderDispatchWorkgroups(passScatter, DivRoundUp(cellCount, 256u), 1, 1);
+        _context.Api.ComputePassEncoderEnd(passScatter);
+        _context.Api.ComputePassEncoderRelease(passScatter);
+
+        _activeCellScan.RecordExclusiveScan(encoder, cellCount);
+
+        var passActiveCells = _context.Api.CommandEncoderBeginComputePass(encoder, &passDesc);
+        _context.Api.ComputePassEncoderSetPipeline(passActiveCells, _scatterActiveCellsPipeline);
+        _context.Api.ComputePassEncoderSetBindGroup(passActiveCells, 0, _scatterActiveCellsBindGroup, 0, null);
+        _context.Api.ComputePassEncoderDispatchWorkgroups(passActiveCells, DivRoundUp(cellCount, 256u), 1, 1);
+        _context.Api.ComputePassEncoderSetPipeline(passActiveCells, _finalizeActiveDispatchPipeline);
+        _context.Api.ComputePassEncoderSetBindGroup(passActiveCells, 0, _finalizeActiveDispatchBindGroup, 0, null);
+        _context.Api.ComputePassEncoderDispatchWorkgroups(passActiveCells, 1, 1, 1);
+        _context.Api.ComputePassEncoderEnd(passActiveCells);
+        _context.Api.ComputePassEncoderRelease(passActiveCells);
+
+        // Coarse work classifies each active cell's candidates once. Only uncertain edge pairs
+        // retain per-pixel BVH traversal; conservative solid/outside pairs become constant work.
+        // The exact active workgroup count is reused without CPU readback.
         var passRender = _context.Api.CommandEncoderBeginComputePass(encoder, &passDesc);
+        _context.Api.ComputePassEncoderSetPipeline(passRender, _classifyCellShapesPipeline);
+        _context.Api.ComputePassEncoderSetBindGroup(passRender, 0, _classifyCellShapesBindGroup, 0, null);
+        _context.Api.ComputePassEncoderDispatchWorkgroupsIndirect(
+            passRender,
+            _activeDispatchBuffer!.BufferPtr,
+            0);
         _context.Api.ComputePassEncoderSetPipeline(passRender, _renderPipeline);
-        _context.Api.ComputePassEncoderSetBindGroup(passRender, 0, renderBindGroup, 0, null);
-        _context.Api.ComputePassEncoderDispatchWorkgroups(passRender, (width + 15) / 16, (height + 15) / 16, 1);
+        _context.Api.ComputePassEncoderSetBindGroup(passRender, 0, _renderBindGroup, 0, null);
+        _context.Api.ComputePassEncoderDispatchWorkgroupsIndirect(
+            passRender,
+            _activeDispatchBuffer!.BufferPtr,
+            0);
         _context.Api.ComputePassEncoderEnd(passRender);
         _context.Api.ComputePassEncoderRelease(passRender);
-
-        // Cleanup local Bind Groups
-        _context.Api.BindGroupRelease(flattenBindGroup);
-        _context.Api.BindGroupRelease(binShapesBindGroup);
-        _context.Api.BindGroupRelease(renderBindGroup);
     }
 
-    private void UpdateGpuBuffers(uint width, uint height, uint gridStride, uint cellCount, uint indexCount, TextureFormat destFormat)
+    /// <summary>
+    /// Replaces only compacted active tiles with the exact pixels produced by the compute stage.
+    /// The caller first draws the unchanged base texture, then records this indirect draw in the
+    /// same render pass. Inactive cells incur no fragment work and require no destination copy.
+    /// </summary>
+    public void RecordSparseComposite(RenderPassEncoder* pass)
     {
-        _bvhBuffer?.Dispose();
-        _bvhBuffer = new GpuBuffer(_context, (uint)(_bvhNodes.Count * sizeof(GpuBvhNode)), BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront BVH Nodes Buffer");
-
-        _rawCurvesBuffer?.Dispose();
-        uint curvesBufferSize = Math.Max(1u, (uint)_rawCurves.Count) * (uint)sizeof(GpuBezierCurve);
-        _rawCurvesBuffer = new GpuBuffer(_context, curvesBufferSize, BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront Raw Curves Buffer");
-
-        _linesBuffer?.Dispose();
-        uint linesBufferSize = Math.Max(1u, _totalLineSegmentsCount) * (uint)sizeof(GpuLineSegment);
-        _linesBuffer = new GpuBuffer(_context, linesBufferSize, BufferUsage.Storage | BufferUsage.CopySrc | BufferUsage.CopyDst, "Wavefront Lines Buffer");
-
-        _instancesBuffer?.Dispose();
-        _instancesBuffer = new GpuBuffer(_context, (uint)(_frameInstances.Count * sizeof(GpuShapeInstance)), BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront Instances Buffer");
-
-        _gridCellsBuffer?.Dispose();
-        _gridCellsBuffer = new GpuBuffer(_context, (uint)(cellCount * sizeof(GpuGridCell)), BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront Grid Cells Buffer");
-
-        _gridIndicesBuffer?.Dispose();
-        _gridIndicesBuffer = new GpuBuffer(_context, (uint)(indexCount * sizeof(uint)), BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront Grid Indices Buffer");
-
-        if (_uniformsBuffer == null)
+        if (pass == null || _compositeBindGroup == null || _activeDrawBuffer == null)
         {
-            _uniformsBuffer = new GpuBuffer(_context, (uint)sizeof(GpuWavefrontUniforms), BufferUsage.Uniform | BufferUsage.CopyDst, "Wavefront Uniforms Buffer");
+            return;
         }
 
-        if (_bgCopyTexture == null || _bgCopyTexture.Width != width || _bgCopyTexture.Height != height || _bgCopyTexture.Format != destFormat)
+        _context.Api.RenderPassEncoderSetPipeline(pass, _compositePipeline);
+        _context.Api.RenderPassEncoderSetBindGroup(pass, 0, _compositeBindGroup, 0, null);
+        _context.Api.RenderPassEncoderDrawIndirect(pass, _activeDrawBuffer.BufferPtr, 0);
+    }
+
+    private void EnsureGpuResources(
+        uint width,
+        uint height,
+        uint cellCount,
+        uint coverageWordCount,
+        uint indexCount,
+        GpuTexture destination)
+    {
+        bool bindingsDirty = false;
+        bool bvhArenaReallocated = EnsureBuffer(ref _bvhBuffer, ByteSize(_bvhNodes.Count, sizeof(GpuBvhNode)), BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront BVH Nodes Buffer");
+        bool rawCurveArenaReallocated = EnsureBuffer(ref _rawCurvesBuffer, ByteSize(_rawCurves.Count, sizeof(GpuBezierCurve)), BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront Raw Curves Buffer");
+        bool lineArenaReallocated = EnsureBuffer(ref _linesBuffer, ByteSize(_totalLineSegmentsCount, sizeof(GpuLineSegment)), BufferUsage.Storage | BufferUsage.CopySrc | BufferUsage.CopyDst, "Wavefront Lines Buffer");
+        bindingsDirty |= bvhArenaReallocated | rawCurveArenaReallocated | lineArenaReallocated;
+        if (bvhArenaReallocated || rawCurveArenaReallocated || lineArenaReallocated)
         {
-            _bgCopyTexture?.Dispose();
-            _bgCopyTexture = new GpuTexture(_context, width, height, destFormat,
-                TextureUsage.TextureBinding | TextureUsage.CopySrc | TextureUsage.CopyDst,
-                "Wavefront Background Copy Texture");
+            // A grow replaces storage, so replay the retained source once into the fresh arenas.
+            // Normal geometry misses append only their new ranges and preserve prior flattening.
+            _uploadedBvhNodeCount = 0;
+            _uploadedRawCurveCount = 0;
+            LastGeometryArenaReplay = true;
+        }
+        bindingsDirty |= EnsureBuffer(ref _instancesBuffer, ByteSize(_frameInstances.Count, sizeof(GpuShapeInstance)), BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront Instances Buffer");
+        bindingsDirty |= EnsureBuffer(ref _gridCellsBuffer, ByteSize(cellCount, sizeof(GpuGridCell)), BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront Grid Cells Buffer");
+        bindingsDirty |= EnsureBuffer(ref _gridIndicesBuffer, ByteSize(indexCount, sizeof(uint)), BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront Grid Indices Buffer");
+        bindingsDirty |= EnsureBuffer(ref _coverageWordsBuffer, ByteSize(coverageWordCount, sizeof(uint)), BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront Coverage Words Buffer");
+        bindingsDirty |= EnsureBuffer(ref _activeCellIndicesBuffer, ByteSize(checked(cellCount + 1u), sizeof(uint)), BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront Active Cell Indices Buffer");
+        bindingsDirty |= EnsureBuffer(ref _cellShapeClassesBuffer, ByteSize(indexCount, sizeof(uint)), BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront Cell Shape Classes Buffer");
+        bindingsDirty |= EnsureBuffer(
+            ref _activeDispatchBuffer,
+            (uint)sizeof(GpuDispatchIndirectArgs),
+            BufferUsage.Storage | BufferUsage.CopyDst | BufferUsage.Indirect,
+            "Wavefront Active Cell Indirect Dispatch Buffer");
+        bindingsDirty |= EnsureBuffer(
+            ref _activeDrawBuffer,
+            (uint)sizeof(GpuDrawIndirectArgs),
+            BufferUsage.Storage | BufferUsage.CopyDst | BufferUsage.Indirect,
+            "Wavefront Active Cell Indirect Draw Buffer");
+        bindingsDirty |= EnsureBuffer(ref _uniformsBuffer, (uint)sizeof(GpuWavefrontUniforms), BufferUsage.Uniform | BufferUsage.CopyDst, "Wavefront Uniforms Buffer");
+
+        uint oldScanCapacity = _binWordScan.Capacity;
+        _binWordScan.EnsureCapacity(coverageWordCount);
+        bindingsDirty |= oldScanCapacity != _binWordScan.Capacity;
+        uint oldActiveScanCapacity = _activeCellScan.Capacity;
+        _activeCellScan.EnsureCapacity(cellCount);
+        bindingsDirty |= oldActiveScanCapacity != _activeCellScan.Capacity;
+
+        if (destination.Format != TextureFormat.Bgra8Unorm)
+        {
+            throw new NotSupportedException(
+                $"Wavefront sparse compositing currently requires {TextureFormat.Bgra8Unorm}; received {destination.Format}.");
+        }
+
+        if (_sparseOutputTexture == null ||
+            _sparseOutputTexture.Width != width ||
+            _sparseOutputTexture.Height != height ||
+            _sparseOutputTexture.Format != destination.Format)
+        {
+            _sparseOutputTexture?.Dispose();
+            _sparseOutputTexture = new GpuTexture(
+                _context,
+                width,
+                height,
+                destination.Format,
+                TextureUsage.TextureBinding | TextureUsage.StorageBinding,
+                "Wavefront Sparse Output Texture",
+                alphaMode: GpuTextureAlphaMode.Premultiplied);
+            bindingsDirty = true;
+        }
+
+        if (_renderBaseView != destination.ViewPtr)
+        {
+            _renderBaseView = destination.ViewPtr;
+            bindingsDirty = true;
+        }
+
+        if (bindingsDirty)
+        {
+            RebuildBindGroups();
         }
     }
+
+    private uint CountCellOverlaps(uint width, uint height, float dpiScale, uint gridStride, uint gridRows)
+    {
+        ulong count = 0;
+        foreach (var instance in _frameInstances)
+        {
+            if (!TryGetCoveredCellRange(instance, width, height, dpiScale, gridStride, gridRows, out var min, out var max))
+            {
+                continue;
+            }
+
+            count += (ulong)(max.X - min.X + 1u) * (max.Y - min.Y + 1u);
+            if (count > uint.MaxValue)
+            {
+                throw new InvalidOperationException(
+                    "Wavefront cell overlap output exceeds WebGPU's 32-bit storage-buffer addressing. " +
+                    "The frame was rejected before encoding; route this workload to retained atlas/static geometry rendering.");
+            }
+        }
+        return (uint)count;
+    }
+
+    internal static bool TryGetCoveredCellRange(
+        in GpuShapeInstance instance,
+        uint width,
+        uint height,
+        float dpiScale,
+        uint gridStride,
+        uint gridRows,
+        out (uint X, uint Y) minCell,
+        out (uint X, uint Y) maxCell)
+    {
+        minCell = default;
+        maxCell = default;
+        if (width == 0 || height == 0 || gridStride == 0 || gridRows == 0 || !float.IsFinite(dpiScale) || dpiScale <= 0f)
+        {
+            return false;
+        }
+
+        Vector4 p0 = Vector4.Transform(new Vector4(instance.MinBounds, 0f, 1f), instance.Transform) * dpiScale;
+        Vector4 p1 = Vector4.Transform(new Vector4(instance.MaxBounds.X, instance.MinBounds.Y, 0f, 1f), instance.Transform) * dpiScale;
+        Vector4 p2 = Vector4.Transform(new Vector4(instance.MinBounds.X, instance.MaxBounds.Y, 0f, 1f), instance.Transform) * dpiScale;
+        Vector4 p3 = Vector4.Transform(new Vector4(instance.MaxBounds, 0f, 1f), instance.Transform) * dpiScale;
+        if (!IsFinite(p0) || !IsFinite(p1) || !IsFinite(p2) || !IsFinite(p3))
+        {
+            return false;
+        }
+
+        float minX = MathF.Min(MathF.Min(p0.X, p1.X), MathF.Min(p2.X, p3.X));
+        float minY = MathF.Min(MathF.Min(p0.Y, p1.Y), MathF.Min(p2.Y, p3.Y));
+        float maxX = MathF.Max(MathF.Max(p0.X, p1.X), MathF.Max(p2.X, p3.X));
+        float maxY = MathF.Max(MathF.Max(p0.Y, p1.Y), MathF.Max(p2.Y, p3.Y));
+        if (maxX < 0f || maxY < 0f || minX > width || minY > height)
+        {
+            return false;
+        }
+
+        float clippedMinX = Math.Clamp(minX, 0f, width - 1f);
+        float clippedMinY = Math.Clamp(minY, 0f, height - 1f);
+        float clippedMaxX = Math.Clamp(maxX, 0f, width - 1f);
+        float clippedMaxY = Math.Clamp(maxY, 0f, height - 1f);
+        minCell = ((uint)clippedMinX / 16u, (uint)clippedMinY / 16u);
+        maxCell = (
+            Math.Min((uint)clippedMaxX / 16u, gridStride - 1u),
+            Math.Min((uint)clippedMaxY / 16u, gridRows - 1u));
+        return minCell.X <= maxCell.X && minCell.Y <= maxCell.Y;
+    }
+
+    public static void BuildStableCellBinsCpu(
+        ReadOnlySpan<(uint MinX, uint MinY, uint MaxX, uint MaxY)> ranges,
+        uint gridStride,
+        uint gridRows,
+        Span<GpuGridCell> cells,
+        Span<uint> indices)
+    {
+        uint cellCount = checked(gridStride * gridRows);
+        if ((uint)cells.Length < cellCount)
+        {
+            throw new ArgumentException("Cell output is too short.", nameof(cells));
+        }
+
+        cells[..(int)cellCount].Clear();
+        foreach (var range in ranges)
+        {
+            if (range.MinX > range.MaxX || range.MinY > range.MaxY || range.MaxX >= gridStride || range.MaxY >= gridRows)
+            {
+                throw new ArgumentOutOfRangeException(nameof(ranges), "A cell range lies outside the grid.");
+            }
+            for (uint y = range.MinY; y <= range.MaxY; y++)
+            {
+                for (uint x = range.MinX; x <= range.MaxX; x++)
+                {
+                    cells[(int)(y * gridStride + x)].ShapeCount++;
+                }
+            }
+        }
+
+        uint total = 0;
+        for (uint cellIndex = 0; cellIndex < cellCount; cellIndex++)
+        {
+            ref var cell = ref cells[(int)cellIndex];
+            cell.ShapeStartOffset = total;
+            total = checked(total + cell.ShapeCount);
+        }
+        if ((uint)indices.Length < total)
+        {
+            throw new ArgumentException("Index output is too short.", nameof(indices));
+        }
+
+        Span<uint> cursors = cellCount <= 256u
+            ? stackalloc uint[(int)cellCount]
+            : new uint[(int)cellCount];
+        for (uint instanceIndex = 0; instanceIndex < (uint)ranges.Length; instanceIndex++)
+        {
+            var range = ranges[(int)instanceIndex];
+            for (uint y = range.MinY; y <= range.MaxY; y++)
+            {
+                for (uint x = range.MinX; x <= range.MaxX; x++)
+                {
+                    uint cellIndex = y * gridStride + x;
+                    uint destination = cells[(int)cellIndex].ShapeStartOffset + cursors[(int)cellIndex]++;
+                    indices[(int)destination] = instanceIndex;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// CPU oracle for the GPU mark/scan/scatter/finalize sequence. Non-empty cells retain
+    /// row-major order and map one-to-one to indirect 16x16 workgroups.
+    /// </summary>
+    public static GpuDispatchIndirectArgs BuildActiveCellListCpu(
+        ReadOnlySpan<GpuGridCell> cells,
+        Span<uint> activeCellIndices)
+    {
+        uint activeCount = 0;
+        for (uint cellIndex = 0; cellIndex < (uint)cells.Length; cellIndex++)
+        {
+            if (cells[(int)cellIndex].ShapeCount == 0)
+            {
+                continue;
+            }
+            if (activeCount >= (uint)activeCellIndices.Length)
+            {
+                throw new ArgumentException("Active-cell output is too short.", nameof(activeCellIndices));
+            }
+            activeCellIndices[(int)activeCount++] = cellIndex;
+        }
+
+        return CreateSparseDispatchArgs(activeCount);
+    }
+
+    public static GpuDispatchIndirectArgs CreateSparseDispatchArgs(uint activeCount)
+    {
+        if (activeCount == 0)
+        {
+            return new GpuDispatchIndirectArgs { Y = 1, Z = 1 };
+        }
+
+        uint width = Math.Min(activeCount, MaximumPortableDispatchDimension);
+        return new GpuDispatchIndirectArgs
+        {
+            X = width,
+            Y = ((activeCount - 1u) / width) + 1u,
+            Z = 1
+        };
+    }
+
+    /// <summary>
+    /// CPU oracle for the conservative coarse-cell classification used by the shader. Distance is
+    /// measured at the cell center in local coordinates and scaled by the affine transform's
+    /// minimum singular value, which is a lower bound in device pixels.
+    /// </summary>
+    public static GpuCellShapeClass ClassifyCellByCenterDistance(
+        float minimumLocalDistance,
+        float minimumDeviceScale,
+        float dpiScale,
+        float cellWidth,
+        float cellHeight,
+        bool centerIsInside)
+    {
+        if (!float.IsFinite(minimumLocalDistance) || minimumLocalDistance < 0f ||
+            !float.IsFinite(minimumDeviceScale) || minimumDeviceScale < 0f ||
+            !float.IsFinite(dpiScale) || dpiScale <= 0f ||
+            !float.IsFinite(cellWidth) || cellWidth <= 0f ||
+            !float.IsFinite(cellHeight) || cellHeight <= 0f)
+        {
+            return GpuCellShapeClass.Edge;
+        }
+
+        float lowerDeviceDistance = minimumLocalDistance * minimumDeviceScale * dpiScale;
+        float safeRadius = MathF.Sqrt(
+            cellWidth * cellWidth * 0.25f + cellHeight * cellHeight * 0.25f) + 0.5f;
+        if (lowerDeviceDistance <= safeRadius)
+        {
+            return GpuCellShapeClass.Edge;
+        }
+        return centerIsInside ? GpuCellShapeClass.Solid : GpuCellShapeClass.Outside;
+    }
+
+    private static bool IsFinite(Vector4 value) =>
+        float.IsFinite(value.X) && float.IsFinite(value.Y) &&
+        float.IsFinite(value.Z) && float.IsFinite(value.W);
+
+    private static uint ByteSize(int count, int elementSize) =>
+        ByteSize(checked((uint)Math.Max(1, count)), elementSize);
+
+    private static uint ByteSize(uint count, int elementSize)
+    {
+        ulong bytes = (ulong)Math.Max(1u, count) * (uint)elementSize;
+        if (bytes > uint.MaxValue)
+        {
+            throw new InvalidOperationException("Wavefront GPU arena exceeds WebGPU's 32-bit buffer size supported by this backend.");
+        }
+        return (uint)bytes;
+    }
+
+    private bool EnsureBuffer(ref GpuBuffer? buffer, uint requiredBytes, BufferUsage usage, string label)
+    {
+        requiredBytes = Math.Max(4u, requiredBytes);
+        if (buffer != null && buffer.Size >= requiredBytes)
+        {
+            return false;
+        }
+
+        uint capacity = buffer?.Size ?? 256u;
+        while (capacity < requiredBytes)
+        {
+            uint next = capacity <= uint.MaxValue / 2u ? capacity * 2u : uint.MaxValue;
+            if (next == capacity)
+            {
+                throw new InvalidOperationException($"{label} cannot grow to {requiredBytes} bytes.");
+            }
+            capacity = next;
+        }
+
+        buffer?.Dispose();
+        buffer = new GpuBuffer(_context, capacity, usage, label);
+        return true;
+    }
+
+    private void RebuildBindGroups()
+    {
+        ReleaseBindGroups();
+
+        var flattenEntries = stackalloc BindGroupEntry[3];
+        flattenEntries[0] = BufferEntry(0, _uniformsBuffer!);
+        flattenEntries[1] = BufferEntry(12, _rawCurvesBuffer!);
+        flattenEntries[2] = BufferEntry(9, _linesBuffer!);
+        _flattenBindGroup = CreateBindGroup(_flattenLayout, flattenEntries, 3, "wavefront flatten");
+
+        var clearEntries = stackalloc BindGroupEntry[2];
+        clearEntries[0] = BufferEntry(0, _uniformsBuffer!);
+        clearEntries[1] = BufferEntry(7, _coverageWordsBuffer!);
+        _clearBinWordsBindGroup = CreateBindGroup(_clearBinWordsLayout, clearEntries, 2, "wavefront bin clear");
+
+        var buildEntries = stackalloc BindGroupEntry[3];
+        buildEntries[0] = BufferEntry(0, _uniformsBuffer!);
+        buildEntries[1] = BufferEntry(4, _instancesBuffer!);
+        buildEntries[2] = BufferEntry(7, _coverageWordsBuffer!);
+        _buildBinCoverageBindGroup = CreateBindGroup(_buildBinCoverageLayout, buildEntries, 3, "wavefront bin coverage");
+
+        var countEntries = stackalloc BindGroupEntry[3];
+        countEntries[0] = BufferEntry(0, _uniformsBuffer!);
+        countEntries[1] = BufferEntry(7, _coverageWordsBuffer!);
+        countEntries[2] = BufferEntry(13, _binWordScan.InputBuffer);
+        _countBinWordsBindGroup = CreateBindGroup(_countBinWordsLayout, countEntries, 3, "wavefront bin count");
+
+        var scatterEntries = stackalloc BindGroupEntry[5];
+        scatterEntries[0] = BufferEntry(0, _uniformsBuffer!);
+        scatterEntries[1] = BufferEntry(5, _gridCellsBuffer!);
+        scatterEntries[2] = BufferEntry(6, _gridIndicesBuffer!);
+        scatterEntries[3] = BufferEntry(7, _coverageWordsBuffer!);
+        scatterEntries[4] = BufferEntry(14, _binWordScan.OutputBuffer);
+        _scatterBinWordsBindGroup = CreateBindGroup(_scatterBinWordsLayout, scatterEntries, 5, "wavefront bin scatter");
+
+        var markActiveEntries = stackalloc BindGroupEntry[3];
+        markActiveEntries[0] = BufferEntry(0, _uniformsBuffer!);
+        markActiveEntries[1] = BufferEntry(5, _gridCellsBuffer!);
+        markActiveEntries[2] = BufferEntry(15, _activeCellScan.InputBuffer);
+        _markActiveCellsBindGroup = CreateBindGroup(_markActiveCellsLayout, markActiveEntries, 3, "wavefront active-cell mark");
+
+        var scatterActiveEntries = stackalloc BindGroupEntry[4];
+        scatterActiveEntries[0] = BufferEntry(0, _uniformsBuffer!);
+        scatterActiveEntries[1] = BufferEntry(15, _activeCellScan.InputBuffer);
+        scatterActiveEntries[2] = BufferEntry(16, _activeCellScan.OutputBuffer);
+        scatterActiveEntries[3] = BufferEntry(17, _activeCellIndicesBuffer!);
+        _scatterActiveCellsBindGroup = CreateBindGroup(_scatterActiveCellsLayout, scatterActiveEntries, 4, "wavefront active-cell scatter");
+
+        var finalizeActiveEntries = stackalloc BindGroupEntry[6];
+        finalizeActiveEntries[0] = BufferEntry(0, _uniformsBuffer!);
+        finalizeActiveEntries[1] = BufferEntry(15, _activeCellScan.InputBuffer);
+        finalizeActiveEntries[2] = BufferEntry(16, _activeCellScan.OutputBuffer);
+        finalizeActiveEntries[3] = BufferEntry(17, _activeCellIndicesBuffer!);
+        finalizeActiveEntries[4] = BufferEntry(18, _activeDispatchBuffer!);
+        finalizeActiveEntries[5] = BufferEntry(20, _activeDrawBuffer!);
+        _finalizeActiveDispatchBindGroup = CreateBindGroup(_finalizeActiveDispatchLayout, finalizeActiveEntries, 6, "wavefront active-cell indirect finalize");
+
+        var classifyEntries = stackalloc BindGroupEntry[8];
+        classifyEntries[0] = BufferEntry(0, _uniformsBuffer!);
+        classifyEntries[1] = BufferEntry(3, _bvhBuffer!);
+        classifyEntries[2] = BufferEntry(4, _instancesBuffer!);
+        classifyEntries[3] = BufferEntry(5, _gridCellsBuffer!);
+        classifyEntries[4] = BufferEntry(6, _gridIndicesBuffer!);
+        classifyEntries[5] = BufferEntry(9, _linesBuffer!);
+        classifyEntries[6] = BufferEntry(17, _activeCellIndicesBuffer!);
+        classifyEntries[7] = BufferEntry(19, _cellShapeClassesBuffer!);
+        _classifyCellShapesBindGroup = CreateBindGroup(_classifyCellShapesLayout, classifyEntries, 8, "wavefront cell-shape classify");
+
+        var renderEntries = stackalloc BindGroupEntry[10];
+        renderEntries[0] = BufferEntry(0, _uniformsBuffer!);
+        renderEntries[1] = BufferEntry(3, _bvhBuffer!);
+        renderEntries[2] = BufferEntry(4, _instancesBuffer!);
+        renderEntries[3] = BufferEntry(5, _gridCellsBuffer!);
+        renderEntries[4] = BufferEntry(6, _gridIndicesBuffer!);
+        renderEntries[5] = new BindGroupEntry { Binding = 8, TextureView = _renderBaseView };
+        renderEntries[6] = BufferEntry(9, _linesBuffer!);
+        renderEntries[7] = new BindGroupEntry { Binding = 11, TextureView = _sparseOutputTexture!.ViewPtr };
+        renderEntries[8] = BufferEntry(17, _activeCellIndicesBuffer!);
+        renderEntries[9] = BufferEntry(19, _cellShapeClassesBuffer!);
+        _renderBindGroup = CreateBindGroup(_renderLayout, renderEntries, 10, "wavefront render");
+
+        var compositeEntries = stackalloc BindGroupEntry[3];
+        compositeEntries[0] = BufferEntry(0, _uniformsBuffer!);
+        compositeEntries[1] = BufferEntry(1, _activeCellIndicesBuffer!);
+        compositeEntries[2] = new BindGroupEntry { Binding = 2, TextureView = _sparseOutputTexture.ViewPtr };
+        _compositeBindGroup = CreateBindGroup(_compositeLayout, compositeEntries, 3, "wavefront sparse composite");
+    }
+
+    private BindGroup* CreateBindGroup(BindGroupLayout* layout, BindGroupEntry* entries, uint count, string operation)
+    {
+        var descriptor = new BindGroupDescriptor
+        {
+            Layout = layout,
+            EntryCount = count,
+            Entries = entries
+        };
+        var bindGroup = _context.Api.DeviceCreateBindGroup(_context.Device, &descriptor);
+        if (bindGroup == null)
+        {
+            throw new InvalidOperationException($"Failed to create the {operation} bind group.");
+        }
+        return bindGroup;
+    }
+
+    private static BindGroupEntry BufferEntry(uint binding, GpuBuffer buffer) => new()
+    {
+        Binding = binding,
+        Buffer = buffer.BufferPtr,
+        Offset = 0,
+        Size = buffer.Size
+    };
+
+    private void ReleaseBindGroups()
+    {
+        ReleaseBindGroup(ref _flattenBindGroup);
+        ReleaseBindGroup(ref _clearBinWordsBindGroup);
+        ReleaseBindGroup(ref _buildBinCoverageBindGroup);
+        ReleaseBindGroup(ref _countBinWordsBindGroup);
+        ReleaseBindGroup(ref _scatterBinWordsBindGroup);
+        ReleaseBindGroup(ref _markActiveCellsBindGroup);
+        ReleaseBindGroup(ref _scatterActiveCellsBindGroup);
+        ReleaseBindGroup(ref _finalizeActiveDispatchBindGroup);
+        ReleaseBindGroup(ref _classifyCellShapesBindGroup);
+        ReleaseBindGroup(ref _renderBindGroup);
+        ReleaseBindGroup(ref _compositeBindGroup);
+    }
+
+    private void ReleaseBindGroup(ref BindGroup* bindGroup)
+    {
+        if (bindGroup == null) return;
+        _context.Api.BindGroupRelease(bindGroup);
+        bindGroup = null;
+    }
+
+    private static uint DivRoundUp(uint value, uint divisor) =>
+        checked((value + divisor - 1u) / divisor);
 
     public void Dispose()
     {
         if (_isDisposed) return;
 
+        ReleaseBindGroups();
+        _binWordScan.Dispose();
+        _activeCellScan.Dispose();
         _bvhBuffer?.Dispose();
         _rawCurvesBuffer?.Dispose();
         _linesBuffer?.Dispose();
         _instancesBuffer?.Dispose();
         _gridCellsBuffer?.Dispose();
         _gridIndicesBuffer?.Dispose();
+        _coverageWordsBuffer?.Dispose();
+        _activeCellIndicesBuffer?.Dispose();
+        _activeDispatchBuffer?.Dispose();
+        _activeDrawBuffer?.Dispose();
+        _cellShapeClassesBuffer?.Dispose();
         _uniformsBuffer?.Dispose();
-        _bgCopyTexture?.Dispose();
+        _sparseOutputTexture?.Dispose();
+        _context.Api.BindGroupLayoutRelease(_flattenLayout);
+        _context.Api.BindGroupLayoutRelease(_clearBinWordsLayout);
+        _context.Api.BindGroupLayoutRelease(_buildBinCoverageLayout);
+        _context.Api.BindGroupLayoutRelease(_countBinWordsLayout);
+        _context.Api.BindGroupLayoutRelease(_scatterBinWordsLayout);
+        _context.Api.BindGroupLayoutRelease(_markActiveCellsLayout);
+        _context.Api.BindGroupLayoutRelease(_scatterActiveCellsLayout);
+        _context.Api.BindGroupLayoutRelease(_finalizeActiveDispatchLayout);
+        _context.Api.BindGroupLayoutRelease(_classifyCellShapesLayout);
+        _context.Api.BindGroupLayoutRelease(_renderLayout);
+        _context.Api.BindGroupLayoutRelease(_compositeLayout);
+        _pipelineCache.Dispose();
 
         _isDisposed = true;
         GC.SuppressFinalize(this);

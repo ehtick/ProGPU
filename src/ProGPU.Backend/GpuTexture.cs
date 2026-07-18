@@ -49,6 +49,7 @@ public unsafe class GpuTexture : IDisposable
     public TextureUsage Usage { get; private set; }
     public uint SampleCount { get; private set; } = 1;
     public GpuTextureAlphaMode AlphaMode { get; set; }
+    public bool Force2DArrayView { get; }
 
     private int _disposeState;
     public bool IsDisposed => Volatile.Read(ref _disposeState) != 0;
@@ -188,7 +189,8 @@ public unsafe class GpuTexture : IDisposable
         GpuTextureAlphaMode alphaMode = GpuTextureAlphaMode.Straight,
         uint depthOrArrayLayers = 1,
         uint mipLevelCount = 1,
-        GpuTextureDimension dimension = GpuTextureDimension.Dimension2D)
+        GpuTextureDimension dimension = GpuTextureDimension.Dimension2D,
+        bool force2DArrayView = false)
     {
         Id = (ulong)Interlocked.Increment(ref s_idCounter);
         _context = context;
@@ -197,6 +199,7 @@ public unsafe class GpuTexture : IDisposable
         DepthOrArrayLayers = depthOrArrayLayers > 0 ? depthOrArrayLayers : 1;
         MipLevelCount = mipLevelCount > 0 ? mipLevelCount : 1;
         Dimension = dimension;
+        Force2DArrayView = force2DArrayView;
         Format = format;
         Usage = usage;
         _label = label;
@@ -245,7 +248,7 @@ public unsafe class GpuTexture : IDisposable
             Format = Format,
             Dimension = Dimension == GpuTextureDimension.Dimension3D
                 ? TextureViewDimension.Dimension3D
-                : DepthOrArrayLayers > 1
+                : DepthOrArrayLayers > 1 || Force2DArrayView
                 ? TextureViewDimension.Dimension2DArray
                 : TextureViewDimension.Dimension2D,
             BaseMipLevel = 0,

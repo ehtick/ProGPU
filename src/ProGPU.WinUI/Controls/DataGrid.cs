@@ -66,10 +66,21 @@ public class DataGrid : Control
     private readonly List<object> _itemsSource = new();
     private readonly GpuPictureRecorder _rowPictureRecorder = new();
     private readonly SceneTransformHandle _rowScrollTransform = new();
+    private readonly GpuPictureRecorder _scrollbarPictureRecorder = new();
+    private readonly SceneTransformHandle _scrollbarThumbTransform = new();
+    private GpuPicture? _scrollbarThumbPicture;
+    private Vector2 _scrollbarThumbPictureSize;
+    private float _scrollbarThumbPictureBodyHeight;
+    private float _scrollbarThumbPictureHeaderHeight;
+    private bool _scrollbarThumbPictureHovered;
+    private ElementTheme _scrollbarThumbPictureTheme;
+    private VisualThemeFamily _scrollbarThumbPictureThemeFamily;
     private SceneFragmentHandle?[] _rowFragmentHandles = [];
     private int[] _rowFragmentRows = [];
     private int[] _rowFragmentState = [];
     private int _itemsVersion;
+    private int _compiledStartRow = -1;
+    private int _compiledEndRow = -1;
     private Func<object, string, string>? _cellValueBinding;
 
     private int _editingRow = -1;
@@ -134,12 +145,27 @@ public class DataGrid : Control
             if (_scrollOffset != clamped)
             {
                 _scrollOffset = clamped;
+                _rowScrollTransform.Translation = new Vector2(0f, -clamped);
+                UpdateScrollbarThumbTransform();
                 if (_editingRow != -1)
                 {
                     UpdateCellEditorLayout();
                 }
-                PopupService.DismissNonDialogPopups();
-                Invalidate();
+                if (PopupService.ActivePopups.Count != 0)
+                {
+                    PopupService.DismissNonDialogPopups();
+                }
+                if (_editingRow == -1 &&
+                    TryGetVisibleRowRange(clamped, out int startRow, out int endRow) &&
+                    startRow == _compiledStartRow &&
+                    endRow == _compiledEndRow)
+                {
+                    InvalidateRetainedTransform();
+                }
+                else
+                {
+                    Invalidate();
+                }
             }
         }
     }
@@ -148,6 +174,8 @@ public class DataGrid : Control
     public float ViewportHeight => Size.Y - _headerHeight;
     public int EditingRow => _editingRow;
     public int EditingCol => _editingCol;
+    public int FirstRealizedRow => _compiledStartRow;
+    public int LastRealizedRow => _compiledEndRow;
 
     public Func<object, string, string>? CellValueBinding
     {
@@ -639,7 +667,11 @@ public class DataGrid : Control
 
     public override void OnPointerReleased(PointerRoutedEventArgs e)
     {
-        _isDraggingScroll = false;
+        if (_isDraggingScroll)
+        {
+            _isDraggingScroll = false;
+            Invalidate();
+        }
         if (_resizingColumnIndex != -1)
         {
             _resizingColumnIndex = -1;
@@ -650,9 +682,16 @@ public class DataGrid : Control
 
     public override void OnPointerExited(PointerRoutedEventArgs e)
     {
+        bool changed = _hoveredRowIndex != -1 ||
+            _hoveredSeparatorIndex != -1 ||
+            _isPointerOverScrollbar;
         _hoveredRowIndex = -1;
         _hoveredSeparatorIndex = -1;
         _isPointerOverScrollbar = false;
+        if (changed)
+        {
+            Invalidate();
+        }
         base.OnPointerExited(e);
     }
 
@@ -660,7 +699,12 @@ public class DataGrid : Control
     {
         if (IsEnabled)
         {
-            _isPointerOverScrollbar = e.Position.X >= Size.X - 12f;
+            bool isPointerOverScrollbar = e.Position.X >= Size.X - 12f;
+            if (_isPointerOverScrollbar != isPointerOverScrollbar)
+            {
+                _isPointerOverScrollbar = isPointerOverScrollbar;
+                Invalidate();
+            }
 
             if (_resizingColumnIndex != -1)
             {
@@ -854,6 +898,27 @@ public class DataGrid : Control
         Size = new Vector2(arrangeRect.Width, arrangeRect.Height);
         ResolveColumnWidths(arrangeRect.Width);
         UpdateCellEditorLayout();
+        UpdateScrollbarThumbTransform();
+    }
+
+    private bool TryGetVisibleRowRange(float scrollOffset, out int startRow, out int endRow)
+    {
+        startRow = -1;
+        endRow = -1;
+        if (_itemsSource.Count == 0 || _rowHeight <= 0f || ViewportHeight <= 0f)
+        {
+            return false;
+        }
+
+        startRow = Math.Clamp(
+            (int)Math.Floor(scrollOffset / _rowHeight),
+            0,
+            _itemsSource.Count - 1);
+        endRow = Math.Clamp(
+            (int)Math.Ceiling((scrollOffset + ViewportHeight) / _rowHeight),
+            0,
+            _itemsSource.Count - 1);
+        return true;
     }
 
     public override void OnRender(DrawingContext context)
@@ -909,15 +974,16 @@ public class DataGrid : Control
         }
 
         // 3. Draw Body Row Cells (Virtualized recycling viewport loop)
-        if (_itemsSource.Count > 0)
+        if (TryGetVisibleRowRange(ScrollOffset, out int startRow, out int endRow))
         {
-            int startRow = (int)Math.Floor(ScrollOffset / _rowHeight);
-            int endRow = (int)Math.Ceiling((ScrollOffset + ViewportHeight) / _rowHeight);
-
-            startRow = Math.Clamp(startRow, 0, _itemsSource.Count - 1);
-            endRow = Math.Clamp(endRow, 0, _itemsSource.Count - 1);
-
+            _compiledStartRow = startRow;
+            _compiledEndRow = endRow;
             DrawRetainedRows(context, activeFont, startRow, endRow);
+        }
+        else
+        {
+            _compiledStartRow = -1;
+            _compiledEndRow = -1;
         }
 
         // 4. Draw Scrollbar track
@@ -927,11 +993,8 @@ public class DataGrid : Control
             float padding = (_isPointerOverScrollbar || _isDraggingScroll) ? 2f : 4f;
             float viewportH = ViewportHeight;
             float thumbHeight = Math.Max(24f, (viewportH / TotalBodyHeight) * viewportH);
-            float scrollableHeight = TotalBodyHeight - viewportH;
-            float thumbY = _headerHeight + (ScrollOffset / scrollableHeight) * (viewportH - thumbHeight);
 
             Rect trackRect = new Rect(Size.X - scrollbarWidth - padding, _headerHeight, scrollbarWidth, viewportH);
-            Rect thumbRect = new Rect(Size.X - scrollbarWidth - padding, thumbY, scrollbarWidth, thumbHeight);
 
             // Draw track (subtle translucent backdrop line)
             Brush trackBg = (_isPointerOverScrollbar || _isDraggingScroll) 
@@ -939,13 +1002,52 @@ public class DataGrid : Control
                 : ThemeManager.GetBrush("ControlBackground");
             context.DrawRectangle(trackBg, null, trackRect);
 
-            // Draw thumb (glassmorphic capsule)
-            Brush thumbBg = (_isPointerOverScrollbar || _isDraggingScroll)
-                ? ThemeManager.GetBrush("ScrollbarThumbHover")
-                : ThemeManager.GetBrush("ScrollbarThumb");
-            
-            context.DrawRoundedRectangle(thumbBg, null, thumbRect, scrollbarWidth / 2f);
+            bool hovered = _isPointerOverScrollbar || _isDraggingScroll;
+            if (_scrollbarThumbPicture == null ||
+                _scrollbarThumbPictureSize != Size ||
+                _scrollbarThumbPictureBodyHeight != TotalBodyHeight ||
+                _scrollbarThumbPictureHeaderHeight != _headerHeight ||
+                _scrollbarThumbPictureHovered != hovered ||
+                _scrollbarThumbPictureTheme != ActualTheme ||
+                _scrollbarThumbPictureThemeFamily != ActualThemeFamily)
+            {
+                _scrollbarThumbPicture?.Dispose();
+                var recorder = _scrollbarPictureRecorder.BeginRecording(
+                    new Rect(Size.X - scrollbarWidth - padding, _headerHeight, scrollbarWidth, thumbHeight));
+                Brush thumbBg = (_isPointerOverScrollbar || _isDraggingScroll)
+                    ? ThemeManager.GetBrush("ScrollbarThumbHover")
+                    : ThemeManager.GetBrush("ScrollbarThumb");
+                recorder.DrawRoundedRectangle(
+                    thumbBg,
+                    null,
+                    new Rect(Size.X - scrollbarWidth - padding, _headerHeight, scrollbarWidth, thumbHeight),
+                    scrollbarWidth / 2f);
+                _scrollbarThumbPicture = _scrollbarPictureRecorder.EndRecording();
+                _scrollbarThumbPictureSize = Size;
+                _scrollbarThumbPictureBodyHeight = TotalBodyHeight;
+                _scrollbarThumbPictureHeaderHeight = _headerHeight;
+                _scrollbarThumbPictureHovered = hovered;
+                _scrollbarThumbPictureTheme = ActualTheme;
+                _scrollbarThumbPictureThemeFamily = ActualThemeFamily;
+            }
+            UpdateScrollbarThumbTransform();
+            context.DrawPicture(_scrollbarThumbPicture, _scrollbarThumbTransform);
         }
+    }
+
+    private void UpdateScrollbarThumbTransform()
+    {
+        float viewportHeight = ViewportHeight;
+        if (TotalBodyHeight <= viewportHeight || viewportHeight <= 0f)
+        {
+            _scrollbarThumbTransform.Translation = Vector2.Zero;
+            return;
+        }
+
+        float thumbHeight = Math.Max(24f, (viewportHeight / TotalBodyHeight) * viewportHeight);
+        float scrollableHeight = TotalBodyHeight - viewportHeight;
+        float thumbOffset = (ScrollOffset / scrollableHeight) * (viewportHeight - thumbHeight);
+        _scrollbarThumbTransform.Translation = new Vector2(0f, thumbOffset);
     }
 
     private void DrawRetainedRows(DrawingContext context, TtfFont activeFont, int startRow, int endRow)
@@ -957,40 +1059,17 @@ public class DataGrid : Control
 
         context.PushClip(new Rect(0, _headerHeight, Size.X, ViewportHeight));
         // Row chrome occupies disjoint horizontal bands, so recording all chrome before the
-        // text fragments preserves the visible painter result while keeping the vector pipeline
-        // contiguous. The second pass can likewise merge adjacent fragment-text arena ranges.
-        // Both passes are O(V) for V visible rows and allocate no per-frame scratch storage.
+        // text in each retained row preserves painter order while allowing sub-row scrolling to
+        // patch one transform. Range/state changes remain O(V); in-range scrolling is O(1).
         for (int row = startRow; row <= endRow; row++)
         {
-            float rowY = _headerHeight + row * _rowHeight - ScrollOffset;
-            Brush? rowBackground = row == SelectedIndex
-                ? ThemeManager.GetBrush("SelectionHighlight")
-                : row == _hoveredRowIndex
-                    ? ThemeManager.GetBrush("ControlBackgroundHover")
-                    : (row & 1) != 0
-                        ? ThemeManager.GetBrush("ControlBackground")
-                        : null;
-            if (rowBackground != null)
-            {
-                context.DrawRectangle(rowBackground, null, new Rect(0f, rowY, Size.X, _rowHeight));
-            }
-            if (row == SelectedIndex)
-            {
-                context.DrawRectangle(
-                    ThemeManager.GetBrush("SystemAccentColor"),
-                    null,
-                    new Rect(0f, rowY + 2f, 3f, _rowHeight - 4f));
-            }
-            context.DrawRectangle(
-                null,
-                new Pen(ThemeManager.GetBrush("ControlBorder"), 0.5f),
-                new Rect(0f, rowY, Size.X, _rowHeight));
-
             int slot = row % _rowFragmentHandles.Length;
             int state = HashCode.Combine(
                 layoutState,
                 _itemsVersion,
-                row == _editingRow ? _editingCol + 1 : 0);
+                row == _editingRow ? _editingCol + 1 : 0,
+                row == SelectedIndex,
+                row == _hoveredRowIndex);
             if (_rowFragmentHandles[slot] == null ||
                 _rowFragmentRows[slot] != row ||
                 _rowFragmentState[slot] != state)
@@ -1020,10 +1099,34 @@ public class DataGrid : Control
 
     private GpuPicture RecordRowPicture(TtfFont activeFont, int row)
     {
-        var rowContext = _rowPictureRecorder.BeginRecording(new Rect(0f, 0f, Size.X, _rowHeight));
+        float rowY = _headerHeight + row * _rowHeight;
+        var rowContext = _rowPictureRecorder.BeginRecording(new Rect(0f, rowY, Size.X, _rowHeight));
+        Brush? rowBackground = row == SelectedIndex
+            ? ThemeManager.GetBrush("SelectionHighlight")
+            : row == _hoveredRowIndex
+                ? ThemeManager.GetBrush("ControlBackgroundHover")
+                : (row & 1) != 0
+                    ? ThemeManager.GetBrush("ControlBackground")
+                    : null;
+        if (rowBackground != null)
+        {
+            rowContext.DrawRectangle(rowBackground, null, new Rect(0f, rowY, Size.X, _rowHeight));
+        }
+        if (row == SelectedIndex)
+        {
+            rowContext.DrawRectangle(
+                ThemeManager.GetBrush("SystemAccentColor"),
+                null,
+                new Rect(0f, rowY + 2f, 3f, _rowHeight - 4f));
+        }
+        rowContext.DrawRectangle(
+            null,
+            new Pen(ThemeManager.GetBrush("ControlBorder"), 0.5f),
+            new Rect(0f, rowY, Size.X, _rowHeight));
+
         var item = _itemsSource[row];
         float columnX = Padding.Left;
-        float textY = _headerHeight + row * _rowHeight + (_rowHeight - FontSize) / 2f;
+        float textY = rowY + (_rowHeight - FontSize) / 2f;
         var textBrush = ThemeManager.GetBrush("TextPrimary");
         for (int columnIndex = 0; columnIndex < Columns.Count; columnIndex++)
         {

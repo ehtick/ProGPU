@@ -24,6 +24,38 @@ public class ShaderResourceTests
     }
 
     [Fact]
+    public void RetainedGlyphShaderSupportsStableCompactedIndirectReplay()
+    {
+        string source = ShaderResource.Load(typeof(Compositor), "RetainedGlyph.wgsl");
+
+        Assert.Contains("@binding(4) var<storage, read> visibleInstanceIndices", source, StringComparison.Ordinal);
+        Assert.Contains("fn vs_compacted(", source, StringComparison.Ordinal);
+        Assert.Contains(
+            "visibleInstanceIndices[compactedInstanceIndex]",
+            source,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void WavefrontShaderCompactsActiveCellsForSparseIndirectFineDispatch()
+    {
+        string source = WavefrontShaders.ShadersSource;
+
+        Assert.Contains("fn mark_active_cells(", source, StringComparison.Ordinal);
+        Assert.Contains("fn scatter_active_cells(", source, StringComparison.Ordinal);
+        Assert.Contains("fn finalize_active_dispatch(", source, StringComparison.Ordinal);
+        Assert.Contains("active_cell_indices[uniforms.cellCount] = active_count", source, StringComparison.Ordinal);
+        Assert.Contains("active_cell_indices[active_idx]", source, StringComparison.Ordinal);
+        Assert.Contains("fn classify_cell_shapes(", source, StringComparison.Ordinal);
+        Assert.Contains("minimum_device_scale(instance.transform)", source, StringComparison.Ordinal);
+        Assert.Contains("cell_shape_classes[pair_idx]", source, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "let cell_idx = (pixel_coord.y / 16u)",
+            source,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TextureShaderSupportsBatchedFixedColorLatticeCells()
     {
         Assert.Contains("@location(3) patchKind: f32", Shaders.TextureShader, StringComparison.Ordinal);
@@ -219,14 +251,22 @@ public class ShaderResourceTests
 
     private static DirectoryInfo FindRepositoryRoot()
     {
-        for (DirectoryInfo? directory = new(AppContext.BaseDirectory);
-             directory != null;
-             directory = directory.Parent)
+        var starts = new[]
         {
-            if (File.Exists(Path.Combine(directory.FullName, "Directory.Build.props")) &&
-                Directory.Exists(Path.Combine(directory.FullName, "src", "ProGPU.Backend")))
+            new DirectoryInfo(AppContext.BaseDirectory),
+            new DirectoryInfo(Environment.CurrentDirectory)
+        };
+        for (int startIndex = 0; startIndex < starts.Length; startIndex++)
+        {
+            for (DirectoryInfo? directory = starts[startIndex];
+                 directory != null;
+                 directory = directory.Parent)
             {
-                return directory;
+                if (File.Exists(Path.Combine(directory.FullName, "Directory.Build.props")) &&
+                    Directory.Exists(Path.Combine(directory.FullName, "src", "ProGPU.Backend")))
+                {
+                    return directory;
+                }
             }
         }
 

@@ -12,6 +12,9 @@ public class UniformVirtualizingGridPanel : VirtualizingPanel
     private int _itemsCount = 0;
     private float _itemWidth = 80f;
     private float _itemHeight = 80f;
+    private readonly SceneTransformHandle _scrollTranslation = new();
+
+    protected override bool UsesRetainedChildTranslation => ScrollViewerOwner == null;
 
     public UniformVirtualizingGridPanel()
     {
@@ -57,6 +60,17 @@ public class UniformVirtualizingGridPanel : VirtualizingPanel
     private readonly Stack<Visual> _recycledVisuals = new();
     private readonly Dictionary<int, Visual> _activeVisuals = new();
     private readonly List<int> _indicesToRecycle = new();
+    private int _realizedStartIndex = -1;
+    private int _realizedEndIndex = -1;
+    private int _realizedColumns = -1;
+    private float _realizedItemWidth = float.NaN;
+    private float _realizedItemHeight = float.NaN;
+
+    /// <summary>
+    /// Counts viewport range reconciliations. Transform-only scrolling within the current
+    /// realized row range does not advance this counter.
+    /// </summary>
+    public ulong ViewportReconciliationCount { get; private set; }
 
     public int ItemsCount
     {
@@ -111,6 +125,8 @@ public class UniformVirtualizingGridPanel : VirtualizingPanel
 
     protected override void OnScrollOffsetChanged(float newOffset)
     {
+        _scrollTranslation.Translation = new Vector2(0f, -newOffset);
+        ChildrenRetainedTransform = ScrollViewerOwner == null ? _scrollTranslation : null;
         UpdateViewport();
     }
 
@@ -150,8 +166,8 @@ public class UniformVirtualizingGridPanel : VirtualizingPanel
             return;
         }
 
-        int cols = ColumnsCount;
-        int rows = RowsCount;
+        int cols = Math.Max(1, (int)Math.Floor(Math.Max(1f, viewportWidth) / ItemWidth));
+        int rows = (int)Math.Ceiling((double)itemsCount / cols);
 
         // 1. Calculate visible item range
         int startRow = (int)Math.Floor(ScrollOffset / ItemHeight);
@@ -165,6 +181,19 @@ public class UniformVirtualizingGridPanel : VirtualizingPanel
 
         startIdx = Math.Clamp(startIdx, 0, itemsCount - 1);
         endIdx = Math.Clamp(endIdx, 0, itemsCount - 1);
+
+        int expectedActiveCount = endIdx - startIdx + 1;
+        if (_realizedStartIndex == startIdx &&
+            _realizedEndIndex == endIdx &&
+            _realizedColumns == cols &&
+            _realizedItemWidth == ItemWidth &&
+            _realizedItemHeight == ItemHeight &&
+            _activeVisuals.Count == expectedActiveCount)
+        {
+            return;
+        }
+
+        ViewportReconciliationCount++;
 
         // 2. Recycle items that scrolled out of view
         _indicesToRecycle.Clear();
@@ -218,10 +247,7 @@ public class UniformVirtualizingGridPanel : VirtualizingPanel
             // Calculate screen position relative to viewport
             float posX = col * ItemWidth;
             float posY = row * ItemHeight;
-            if (ScrollViewerOwner == null)
-            {
-                posY = MathF.Round(posY - ScrollOffset);
-            }
+            visual.RetainedTransform = null;
             
             // Position child visual node
             visual.Offset = new Vector2(posX, posY);
@@ -234,6 +260,12 @@ public class UniformVirtualizingGridPanel : VirtualizingPanel
                 childNode.Arrange(new Rect(posX, posY, ItemWidth, ItemHeight));
             }
         }
+
+        _realizedStartIndex = startIdx;
+        _realizedEndIndex = endIdx;
+        _realizedColumns = cols;
+        _realizedItemWidth = ItemWidth;
+        _realizedItemHeight = ItemHeight;
     }
 
     private void ClearActiveToRecycler()
@@ -244,6 +276,11 @@ public class UniformVirtualizingGridPanel : VirtualizingPanel
             _recycledVisuals.Push(vis);
         }
         _activeVisuals.Clear();
+        _realizedStartIndex = -1;
+        _realizedEndIndex = -1;
+        _realizedColumns = -1;
+        _realizedItemWidth = float.NaN;
+        _realizedItemHeight = float.NaN;
     }
 
     public override void ForceRebind()

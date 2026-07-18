@@ -20,7 +20,7 @@ ProGPU should adopt the transferable ideas from both:
 - From sparse Vello: specialize common rectangles, keep sparse edge coverage rather than rasterizing full path bounds, use CPU SIMD when it is cheaper than a chain of small compute dispatches, separate fast source-over rendering from expensive layer/compositing paths, and cache glyphs in a managed multi-page atlas.
 - From ProGPU's existing architecture: keep retained visual identity, exact invalidation, shaped glyph indices and positions, physical-DPI rasterization, four-way text subpixel snapping, calibrated vector-glyph quality, analytic primitive fast paths, static DXF buffers, and compiled-scene correctness.
 
-The first implementation milestone is therefore not a new full-screen compute rasterizer. It is an incremental retained scene and one-submit frame graph. The experimental `WavefrontVectorEngine` should not become the default in its current form: it recreates large buffers, uploads all cached curves and BVHs, bins with work proportional to screen cells times instances, caps a cell at 64 instances, copies the full target, and performs per-pixel BVH traversal. Those costs and limits conflict with a 1 ms frame budget.
+The first implementation milestone is therefore not a new full-screen compute rasterizer. It is an incremental retained scene and one-submit frame graph. At the start of this work, the experimental `WavefrontVectorEngine` recreated large buffers, uploaded all cached curves and BVHs, binned with work proportional to screen cells times instances, capped a cell at 64 instances, copied the full target, and performed per-pixel BVH traversal. The Phase 4 checkpoints below remove the buffer churn, repeated flatten/upload, cell-by-instance loop, overlap cap, empty-cell fine dispatch, most solid/outside BVH walks, and the full-target copy. Edge cells still use the correctness-first per-pixel BVH fine stage; the engine must not become the default before the remaining Vello-style edge/backdrop coarse work meets the quality and performance gates.
 
 ## What “1000 FPS” must mean
 
@@ -147,14 +147,110 @@ GPU-completed benchmark have not yet qualified this slice.
 Focused CPU/headless coverage currently proves that a retained root transform moves a compiled
 subtree on a whole-scene cache hit, a retained child transform moves content while an excluded
 overlay remains fixed, scroll does not rearrange content, coordinate conversion observes the scroll,
-and representative glyph/data pages still render. These tests establish correctness invariants, not
-the 1000 FPS performance claim. Before integration this slice still requires:
+and the Font Glyph Browser, Data Virtualization, and Inter Typeface pages still produce non-empty
+GPU output. `VirtualizingStackPanel`, `VirtualizingPanel`, and `UniformVirtualizingGridPanel` now use
+the same shared-transform/fallback contract. These tests establish correctness invariants, not the
+1000 FPS performance claim. Before integration this slice still requires:
 
 1. browser AOT shader/pipeline creation with zero uncaptured WebGPU errors;
 2. interactive scroll and hit-test checks on Data Virtualization, Font Glyph Browser, and Inter;
 3. a safe per-panel fallback when a realized child is incompatible with retained translation;
-4. the equivalent shared-transform conversion for `VirtualizingStackPanel`;
-5. process-isolated sustained desktop and browser measurements with valid completion accounting.
+4. process-isolated sustained desktop and browser measurements with valid completion accounting.
+
+### Working-tree checkpoint: one-submit atlas recording
+
+The next Phase 2 slice removes normal-frame atlas submissions without changing raster quality:
+
+- `PathAtlas` retains its immediate API for callers outside a compositor frame, but also accepts a
+  caller-owned command encoder. The compositor records all pending path batches ahead of its mask
+  and color passes in the same command stream, for both onscreen and offscreen rendering. Its job,
+  record, and segment uploads now use geometrically growing persistent storage arenas instead of
+  allocating and retiring three GPU buffers for every cold batch. A persistent fourth arena stores
+  one compact record per occupied 16x16 atlas tile; one flat dispatch maps those records back to path
+  jobs, so mixed raster dimensions no longer require a bind group and dispatch per size class.
+- `GlyphAtlas` now collects visible glyph raster jobs during scene compilation instead of opening a
+  compute pass and creating an encoder at each first use. At frame recording time it writes aligned
+  uniform-ring slices, records all jobs in one compute pass, and lets the compositor submit them with
+  path preparation and final rendering.
+- Nested cached-layer rendering and explicit static compilation retain an immediate flush path,
+  because their atlas writes must be submitted before a separately submitted offscreen render can
+  sample them. That is an exceptional dependency boundary, not the ordinary frame path.
+- Glyph jobs are sorted by stable font-data identity and equal workgroup dimensions. Jobs in each
+  group occupy a tightly packed, 256-byte-aligned storage-buffer slice and execute through the z
+  dispatch dimension, reducing one pass and bind group per glyph to one pass and one bind group per
+  font/footprint group. The remaining Phase 2 work is to replace those per-font bindings with global
+  record/segment arenas and stable font-table indices, or a flat work queue when measurements show
+  that the additional indirection is cheaper.
+- Uniform capacity grows geometrically before recording when a cold batch exceeds the current ring;
+  steady scrolling reuses the existing buffer. Old record/segment buffers are deferred through the
+  context's non-blocking resource-retirement queue rather than destroyed before submission.
+
+This changes command organization only. The existing analytic outline evaluation, physical-DPI
+raster size, subpixel phase, sample grid, premultiplied coverage, and atlas cache keys remain intact.
+The Release `ProGPU.Scene` dependency graph builds with zero errors after this slice. GPU image tests,
+browser AOT pipeline creation, submission counters, and sustained measurements remain required before
+the checkpoint can be promoted to a measured result.
+
+### Working-tree checkpoint: hierarchical scan and stable GPU visibility
+
+The first Phase 3 primitives are implemented independently of renderer routing:
+
+- `GpuPrefixScan` owns geometrically growing input/output and hierarchy buffers. A 256-thread
+  Blelloch stage scans 512 unsigned counters per block, recursively scans block sums, and propagates
+  offsets downward. All levels record into one caller-owned compute pass; unsigned overflow matches
+  WebGPU modulo-2^32 arithmetic.
+- `GpuSceneVisibility` owns persistent draw metadata, transform, visible-index, material-key, count,
+  and indirect-argument buffers. It records conservative four-corner transformed-AABB culling,
+  hierarchical visibility scan, stable scatter, and a homogeneous indirect draw command without CPU
+  readback.
+- The cull contract treats clip bounds as device-space conservative rectangles, preserves input
+  painter order, rejects invalid transform indices and non-finite bounds, and never sorts visible
+  draws by material. Material runs can be derived only where doing so preserves painter semantics.
+- CPU oracles cover empty, singleton, non-power-of-two, in-place, and unsigned-overflow scans plus
+  transformed/rotated/clipped stable visibility. These oracles are the reference for randomized GPU
+  comparison once a usable adapter is available.
+- Native WebGPU readback now validates the exclusive scan at 1, 511, 512, 513, 1,025, and 262,145
+  elements, crossing single-block, two-level, and three-level hierarchy boundaries and explicitly
+  exercising modulo-2^32 overflow. A 1,025-draw GPU visibility test validates transformed/clipped
+  culling, stable source/material scatter, visible count, and all four indirect draw arguments
+  against the CPU oracle. These are executed-result tests, not shader-source assertions.
+
+The next integration step is deliberately gated: the compositor must use compacted indices only for
+a homogeneous storage-backed instance stream or portable indirect path. Merely running cull/scan and
+then encoding the same CPU draws would add latency without reducing work. Small scenes will retain
+compiled replay, while measured large homogeneous batches can opt into compute compaction with
+hysteresis.
+
+The first gated integration is now implemented for static DXF retained outline glyphs:
+
+- `GpuSceneVisibility` composes a per-frame root camera with immutable per-instance transforms. The
+  instance metadata and matrices upload once with the static buffer; pan, zoom, and placement update
+  one 96-byte cull parameter record instead of rewriting all transformed bounds.
+- Static retained-glyph streams with at least 2,048 instances use cull, hierarchical exclusive scan,
+  stable scatter, and one `drawIndirect`. The compacted vertex entry resolves the stable source index
+  before loading the original `RetainedGlyphInstance`; records, segments, painter order, analytic
+  winding, coverage gamma, and sample-grid quality remain unchanged.
+- Smaller streams use the former one-call direct retained replay, avoiding a compute-dispatch chain
+  whose fixed cost can exceed vertex work. `CompositorOptions.EnableGpuSceneVisibility` and
+  `GpuSceneVisibilityMinimumItems` make the route independently configurable; WinUI forwards both.
+- If the same `DxfStaticBuffer` is placed more than once in a frame, the compositor deliberately uses
+  direct replay for every placement. One shared compacted/indirect buffer cannot encode two root
+  cameras before their later render passes without overwriting state, so this is an explicit
+  correctness fallback rather than a race.
+- `CompositorMetrics` reports GPU-visibility batch and input counts, while `DxfStaticBuffer` reports
+  whether it owns the GPU visibility route, its dispatch count, and its viewport-uniform write
+  count. Exact uniform reuse suppresses the otherwise redundant queue write between the visibility
+  prepass and retained draw replay, while any camera, placement, target, or DPI change still uploads.
+  This makes threshold A/B runs observable without readback in the normal frame.
+- CPU tests cover root-camera plus retained-instance composition. Shader tests require the stable
+  source-index binding and compacted vertex entry; the complete shader source/complexity audit and
+  focused in-process suite pass. The native readback tests above now qualify the shared
+  cull/scan/scatter/indirect machinery on the headless adapter; the retained-glyph render route still
+  requires browser AOT and cross-backend image qualification.
+
+This completes a real homogeneous indirect route, but not all Phase 3 exit criteria. Fragment-text
+and analytic primitive batches still need persistent metadata construction and measured routing; GPU
+timestamp qualification is also unresolved on the current Metal/browser environments.
 
 ### Proposed 1 ms throughput budget
 
@@ -699,6 +795,65 @@ Exit criteria:
 
 ### Phase 4: replace the current wavefront binner with sparse tile work
 
+Implementation checkpoint (2026-07-18): Phase 4A and the first sparse-dispatch slice of Phase 4C
+are implemented and CPU-qualified.
+
+- `WavefrontVectorEngine` now uses geometrically growing persistent buffers for BVHs, raw curves, retained flattened lines, frame instances, cells, exact indices, coverage words, and uniforms. Bind groups persist until a backing buffer, scan arena, destination view, or texture generation changes.
+- Geometry uploads and flatten dispatches run only when a new path/glyph geometry revision is added.
+  They are now range-incremental: a cache miss writes only appended BVH nodes and raw curves at
+  their persistent-arena offsets, passes `curveStart + curveCount` to compute, and flattens only the
+  appended range. A geometrically growing buffer replacement resets the uploaded counters and
+  deliberately replays all retained source once into the fresh BVH/curve/line arenas. A native
+  three-frame test proves first upload, zero-work cache hit, and a two-curve append without arena
+  replay. Transform-only frames upload instances but retain BVHs, curves, and flattened lines.
+- The former cell-centric `for every instance` shader and fixed 64-index slab are removed. One invocation per instance transforms its four bounds corners and atomically ORs its painter-index bit into each covered 16 x 16 cell. This performs `O(I + O)` invocation/overlap work for `I` instances and `O` actual overlaps.
+- Coverage words are cell-major and instance-word-minor. A popcount pass writes exact word counts into the reusable hierarchical `GpuPrefixScan`; deterministic scatter enumerates words and set bits in increasing order. Each cell receives one exact contiguous range with source painter order preserved. Atomic scheduling cannot reorder output.
+- The CPU computes only the exact overlap capacity in `O(I)` from transformed rectangles, with no GPU readback. A count beyond the backend's 32-bit buffer addressability rejects the frame explicitly before encoding; it cannot truncate or silently drop shapes.
+- A second hierarchical scan compacts non-empty cells in row-major order. A one-invocation finalize
+  stage writes an exact one- or two-dimensional compute-indirect grid, bounded by WebGPU's portable
+  65,535 workgroups per dimension. A sentinel carries the exact active count so the final partial
+  row is bounds checked. The fine shader maps each indirect workgroup to one compacted 16 x 16 cell.
+  Empty screen cells therefore launch no fine invocations, while edge cells keep bounds checks and
+  the same candidate order.
+- A coarse compute stage now assigns every active cell/shape pair one of three classes in the
+  existing painter-ordered list: edge/uncertain, outside, or solid interior. One 64-lane workgroup
+  handles one active cell through the same indirect grid. Classification evaluates winding and
+  center distance once, multiplies local distance by the affine transform's minimum singular value
+  (a conservative device-space lower bound), and promotes only when that bound exceeds the farthest
+  cell corner plus the half-pixel AA support. Outside pairs disappear from fine work; solid pairs
+  blend constant full coverage; uncertain pairs retain the prior per-pixel BVH path. This is the
+  first edge/interior coarse command and preserves the existing half-open winding and AA equations.
+- Portable compute-indirect dispatch is typed end to end: Silk forwards directly to WebGPU; the
+  browser command packet carries pass, buffer, and offset; JavaScript calls
+  `GPUComputePassEncoder.dispatchWorkgroupsIndirect` without readback. The active-flag, scan,
+  compacted-cell, and indirect buffers are grow-only and their bind groups rebuild only on growth.
+- `WavefrontBinningTests` covers 257 shapes in one cell (past the old cap), sparse multi-cell
+  overlaps, stable active-cell order, and a zero-work indirect dispatch. The browser packet test
+  protects compute-indirect transport, and the shader test requires the complete active-cell route.
+  The browser dependency graph builds without warnings and the focused browser/shader/wavefront
+  suite passes. Native WebGPU pipeline creation, an encoded wavefront frame, and 1x/2x DPI path
+  pixel tests now also pass on the available headless adapter. That runtime gate additionally found
+  and fixed a current-WGSL reserved identifier in the hierarchical scan and an unused auto-layout
+  bind-group entry; neither issue was detectable through managed compilation alone.
+- The full-window destination copy is removed. The ordinary retained render pass leaves its base
+  pixels in the Wavefront intermediate texture. Fine compute reads that base texture but writes
+  only compacted active 16 x 16 cells into a persistent sparse ping-pong texture. The active-count
+  finalize stage writes both the two-dimensional compute dispatch and a six-vertex-per-cell draw
+  command. After the compositor draws the unchanged base once, `WavefrontComposite.wgsl` generates
+  two triangles for each compacted cell and `drawIndirect` replaces those pixels with exact
+  `textureLoad` values. Because the compute result already contains the base pixel wherever a
+  candidate has zero coverage, replacement preserves the prior painter-order and linear-light
+  coverage equations without reading the render attachment or changing alpha math. Inactive cells
+  perform no extra fragment sampling or render-target writes.
+- The sparse-composite shader has no vertex buffer, sampler, or CPU-visible tile list. Its vertex
+  stage reconstructs the cell rectangle from the row-major compacted index, clamps the final row
+  and column to physical framebuffer dimensions, and emits two triangles. The persistent uniform,
+  active-index, indirect-draw, and sparse-texture bindings rebuild only when their grow-only arena
+  or texture generation changes. Native pipeline creation, encoded compute plus indirect render,
+  1x/2x path pixels, and Wavefront glyph pixels pass on the available headless WebGPU adapter.
+
+The retained bitmap uses `G * ceil(I / 32)` 32-bit words. It is a correctness-first portable implementation of Vello's stable coverage-bitmap concept, not the final memory layout. Phase 4C should replace it for very large sparse scenes with block-local bin records or stable radix-grouped overlap pairs selected by measured occupancy. Active-cell compaction eliminates empty-tile fine work, coarse classification removes solid/outside BVH walks, and sparse indirect replacement removes the previous full-target copy. Edge pixels still traverse candidate BVHs, so a Vello-style edge/backdrop coarse command remains required before this can become the default. The router must reject this path when bitmap bytes or expected fine-stage work exceed the atlas/static-geometry alternatives.
+
 Deliverables:
 
 1. Stop recreating wavefront GPU buffers. Convert all geometry, line, instance, bin, and work queues to persistent arenas.
@@ -706,7 +861,7 @@ Deliverables:
 3. Remove the fixed 64-shape cell limit and add explicit capacity accounting.
 4. Replace full-screen per-pixel BVH traversal with tile work that visits only edge segments and solid interior spans.
 5. Add indirect setup stages so path count determines tile/segment/coarse work without CPU readback.
-6. Remove the full-window background copy when source-over rendering can target the destination directly. Keep explicit layer inputs only for blend modes that need destination reads.
+6. Remove the full-window background copy when source-over rendering can target the destination directly. Keep explicit layer inputs only for blend modes that need destination reads. **Implemented for ordinary Wavefront source-over through sparse ping-pong compute plus indirect tile replacement.**
 7. Use adaptive curve flattening and retain flattened geometry until geometry or scale tolerance changes.
 8. Compare three representations per workload: existing coverage atlas, CPU sparse strips, and GPU tile pipeline.
 
@@ -735,6 +890,57 @@ Exit criteria:
 - Precise half-open winding and all path atlas stress tests remain unchanged or gain equivalent tests for the new path.
 
 ### Phase 5: glyph system for instant startup and scrolling
+
+Implementation checkpoint (2026-07-18): bounded multi-page residency and page-aware batched raster/sampling are implemented.
+
+- The compositor defaults to a four-layer `rgba8unorm` 2D texture-array glyph atlas. `CompositorOptions.GlyphAtlasPageCount` and `Window.GlyphAtlasPageCount` bound residency explicitly (1-255); targeted single-page stress tests keep their original capacity behavior.
+- Each page owns independent height-segregated shelves. Allocation searches active pages, activates a fresh page only after existing shelves cannot fit the size class, and starts LRU region reuse only after the configured page bound is reached. No page clear or unrelated UV invalidation occurs during ordinary growth.
+- `GlyphInfo` carries `AtlasPage`; compute jobs carry the layer in the existing 48-byte `GlyphUniforms` record and write `texture_storage_2d_array`. Equal-footprint jobs can still share one z dispatch even when their destination pages differ.
+- The 96-byte `GlyphInstance` ABI is unchanged. Its former padding float stores the exact integer `transformIndex * 256 + atlasPage`, supporting 256 pages and 65,536 retained transforms without NaN payloads or precision loss. Ordinary and retained text vertex paths decode the same handle; fragment sampling uses `texture_2d_array` with a flat page interpolant.
+- CPU tests protect the 96-byte stride, maximum page/transform round trip, and range rejection. A
+  native validation run also found the important one-page case: WebGPU infers a plain 2D default
+  view for a one-layer texture, while the common glyph shader requires `texture_2d_array` even when
+  the configured page bound is one. `GpuTexture` now has an explicit `force2DArrayView` allocation
+  contract and `GlyphAtlas` always uses it; one-page batch raster/readback, bounded-capacity vector
+  fallback, multi-page sampling, and the shader audit pass. Browser runtime qualification remains
+  pending because this sandbox cannot host the local browser/server process.
+- Residency telemetry is constant-time on the hot path: cache hits/misses, rasterized pixels, page activations, evictions, and clears. `GetPageMetrics` performs the intentionally cold O(resident glyphs) diagnostic scan and reports active state, reserved shelf pixels, and resident glyph count per page.
+
+This checkpoint addresses page growth/residency and preserves the prior 8 x 8 coverage, DPI, subpixel phase, color-bitmap, and retained-outline policies. Remaining Phase 5 work is bounded visible-range prefetch and measured eviction routing; font-wide eager enumeration remains prohibited.
+
+The first bounded visible-range preparation route is also implemented for retained scrolling text:
+
+- `TextVisual.DeferLayoutUntilRender` now exposes an engine-neutral viewport-deferred contract.
+  During retained scroll compilation, only those direct text commands are culled against the
+  current viewport plus one full viewport of overscan on every side. Ordinary visuals, static or
+  offscreen compilation, descendants, layout, and non-deferred text retain their former behavior.
+- `ScrollViewer` detects viewport-deferred descendants during arrange. Pixel scrolling inside a
+  half-viewport band updates only the retained transform handle and leaves `ChangeVersion`
+  unchanged. Crossing a band invalidates the scene once, before the visible edge can reach content
+  outside the prior overscan, so newly relevant fixed-height specimens shape and enter residency
+  on demand without a page-wide startup pass.
+- The policy uses no per-frame tree scan: deferred discovery runs with layout/arrange, while band
+  selection is fixed `O(1)` work per offset change. Headless tests prove both the version boundary
+  and actual command behavior: a far deferred visual is not rendered initially and is compiled
+  after scrolling its overscan region into range.
+
+Bounded background preparation is now layered on that demand route:
+
+- When a deferred visual falls outside compiled overscan but intersects the next half-viewport
+  ring, the compositor invokes an engine-neutral `IViewportDeferredWarmable` hook. Farther content
+  is not queued.
+- `TextVisual` captures an immutable text/font/size/width/alignment/feature snapshot and prepares a
+  CPU `TextLayout` without an atlas. At most 16 requests may be pending process-wide and only two
+  execute concurrently, preventing page activation or fast scrolling from flooding the worker pool.
+- Publication returns through the UI dispatcher and is accepted only when the layout revision still
+  matches. Content, font, size, width, alignment, or OpenType-feature changes invalidate the revision;
+  stale worker results are discarded. Atlas residency and GPU upload remain render-thread work.
+- Focused tests prove that visible commands render normally, only the next ring receives a warmup,
+  distant content is untouched, and a background-prepared layout is reusable after publication.
+
+This moves shaping off the boundary frame without restoring eager page-wide shaping. Sustained
+measurement must still determine whether the two-worker limit is appropriate for browser and
+desktop device classes.
 
 Deliverables:
 
@@ -767,6 +973,49 @@ Exit criteria:
 
 ### Phase 6: fast-path controls and virtualization
 
+Implementation checkpoint (2026-07-18): the first sample-level mutation cleanup is implemented.
+
+- Font Glyph Browser cell rebinding now compares the retained font and glyph index before changing
+  the icon or its two label runs. A selection-only `RefreshVisibleItems` updates chrome for the old
+  and new selection without formatting and allocating index/hex strings for every realized cell.
+- Glyph cell selection, hover, and default chrome reuse per-container `ThemeResourceBrush` objects;
+  theme changes still resolve dynamically, while pointer and selection changes no longer construct
+  replacement brushes.
+- `TypographicPreviewBox` retains its grid and axis pens. `DxfCanvasControl` likewise retains its
+  dynamic background, border pen, and warning brush instead of resolving or allocating resources in
+  `OnRender`. These changes do not alter geometry, antialiasing, DPI, or theme behavior.
+- Inter's former page-wide invisible-layout warm loop is removed. It consumed up to 4 ms of UI-thread
+  time per callback—80% of a 200 FPS browser budget and four complete 1000 FPS throughput intervals.
+  Fixed-height specimens now reserve layout space without shaping and shape only when they enter a
+  compiled viewport; the result is retained afterward. Any later prefetch implementation must be
+  bounded to the visible plus overscan range and must yield to input instead of restoring an eager
+  whole-document loop.
+- `GlyphAtlas.IsAlmostFull` now checks the bounded page array with an allocation-free loop rather than
+  constructing a LINQ iterator chain on an atlas-pressure query.
+- `DataGrid` row chrome and shaped cell text now share per-row `SceneFragmentHandle` storage and one
+  retained row transform. The scrollbar thumb is a retained picture with its own transform. When a
+  sub-row offset leaves the realized start/end range unchanged, `ScrollOffset` patches those two
+  handles and calls retained-transform invalidation without advancing `ChangeVersion` or invoking
+  `OnRender`; a range, selection, hover, edit, theme, or layout change still rebuilds the affected
+  fragments. Public first/last realized-row diagnostics make the mutation model observable.
+- A virtualizing panel hosted by `ScrollViewer` no longer installs a redundant second viewport
+  clip. The owner clip remains authoritative, while the content subtree becomes eligible for one
+  retained transform-table entry. Realization boundaries still add/recycle containers and advance
+  scene content versions; sub-row motion between those boundaries patches only the owner transform.
+  A headless glyph-grid test renders real `FontIcon` glyph commands and proves the second sub-row
+  scroll is a compiled-scene cache hit, protecting the Font Glyph Browser's steady path rather than
+  only a synthetic layout invariant. `UniformVirtualizingGridPanel` and
+  `VirtualizingStackPanel` also key their realized range and return before dictionary traversal,
+  placement, measure, or arrange when that key is unchanged. Their reconciliation counters prove
+  sub-item scrolling is O(1). Standalone panels retain their own clip unchanged.
+- Repeated pointer movement that does not cross scrollbar hover state no longer invalidates
+  `ScrollViewer`; `DataGrid` likewise invalidates only when hover/drag state actually changes.
+
+The Release sample project compiles with zero warnings after this slice. Sustained completed-GPU
+measurements remain pending because the managed environment cannot launch a WebGPU browser or bind a
+local server. These source-level wins therefore reduce known work but are not represented as a
+measured FPS result.
+
 Rendering changes cannot compensate for unnecessary control work. Apply these page-level rules:
 
 1. `ScrollViewer` changes a compositor transform and scroll state, not every descendant offset.
@@ -798,6 +1047,23 @@ Exit criteria:
 - Data/glyph realization state is validated throughout the benchmark, not only at the end.
 
 ### Phase 7: browser AOT transport and WebGPU pacing
+
+Implementation checkpoint (2026-07-18): portable indirect draw transport is implemented and
+CPU-qualified. `IWebGpuApi.RenderPassEncoderDrawIndirect` forwards through the Silk backend and the
+browser packet protocol uses a fixed `DrawIndirect` opcode with pass handle, buffer handle, and byte
+offset; JavaScript invokes `GPURenderPassEncoder.drawIndirect` without synchronous readback or object
+serialization. The focused typed-packet test passes.
+
+The browser, sample, and test dependency graphs compile on .NET 10 Release. Earlier working-tree AOT
+publishes closed the retained-transform, scan, stable-binner, browser-indirect, and multi-page-atlas
+managed call graph. A final republish after the sample-only Phase 6 cleanup could not complete in this
+managed environment: the WASM/ILLink task hosts require prohibited local process IPC, and the
+sandbox-only in-process registration attempt made no observable progress before cancellation. The
+temporary override was removed. A second clean Release publish with build servers disabled reached
+the same silent tool-host stall before producing compiler/linker output and was cancelled; build
+servers were then shut down explicitly. This is an environmental validation gap, not an FPS or
+WebGPU runtime success; a clean AOT publish and browser execution remain mandatory before
+integration.
 
 Deliverables:
 

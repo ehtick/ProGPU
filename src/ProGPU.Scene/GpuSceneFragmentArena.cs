@@ -1,3 +1,4 @@
+using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
 using ProGPU.Backend;
@@ -33,7 +34,11 @@ internal sealed class GpuSceneFragmentArena : IDisposable
         public int GradientStart;
         public int GradientCapacity;
         public int GradientCount;
+        public SceneTransformHandle? IndexedTransform;
+        public Matrix4x4 IndexedBaseTransform;
+        public uint TransformIndex;
         public DrawRange[] DrawRanges = [];
+        public int DrawRangeCount;
         public ulong LastUsedFrame;
     }
 
@@ -47,11 +52,14 @@ internal sealed class GpuSceneFragmentArena : IDisposable
     private GlyphInstance[] _textShadow = [];
     private GpuBrush[] _brushShadow = [];
     private GpuGradientStop[] _gradientShadow = [];
+    private Matrix4x4[] _transformShadow = [];
     private int _vectorUsed;
     private int _indexUsed;
     private int _textUsed;
     private int _brushUsed;
     private int _gradientUsed;
+    private int _transformUsed;
+    private readonly Stack<uint> _freeTransformIndices = new();
     private bool _disposed;
 
     private GpuBuffer _vectorBuffer;
@@ -59,11 +67,13 @@ internal sealed class GpuSceneFragmentArena : IDisposable
     private GpuBuffer _textBuffer;
     private GpuBuffer _brushBuffer;
     private GpuBuffer _gradientBuffer;
+    private GpuBuffer _transformBuffer;
     public GpuBuffer VectorBuffer => _vectorBuffer;
     public GpuBuffer IndexBuffer => _indexBuffer;
     public GpuBuffer TextBuffer => _textBuffer;
     public GpuBuffer BrushBuffer => _brushBuffer;
     public GpuBuffer GradientBuffer => _gradientBuffer;
+    public GpuBuffer TransformBuffer => _transformBuffer;
     public ulong BindGroupGeneration { get; private set; } = 1;
 
     public GpuSceneFragmentArena(WgpuContext context)
@@ -74,11 +84,64 @@ internal sealed class GpuSceneFragmentArena : IDisposable
         _textBuffer = CreateBuffer<GlyphInstance>(256, BufferUsage.Vertex, "Scene Fragment Text Arena");
         _brushBuffer = CreateBuffer<GpuBrush>(64, BufferUsage.Storage, "Scene Fragment Brush Arena");
         _gradientBuffer = CreateBuffer<GpuGradientStop>(64, BufferUsage.Storage, "Scene Fragment Gradient Arena");
+        _transformBuffer = CreateBuffer<Matrix4x4>(256, BufferUsage.Storage, "Scene Fragment Transform Arena");
         _vectorShadow = new VectorVertex[256];
         _indexShadow = new uint[512];
         _textShadow = new GlyphInstance[256];
         _brushShadow = new GpuBrush[64];
         _gradientShadow = new GpuGradientStop[64];
+        _transformShadow = new Matrix4x4[256];
+    }
+
+    /// <summary>
+    /// Reserves one stable transform-table entry. Released indices are reused so navigation
+    /// does not make transform storage grow with every page activation.
+    /// </summary>
+    public uint AllocateTransform()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_freeTransformIndices.TryPop(out uint reused))
+        {
+            return reused;
+        }
+
+        uint index = checked((uint)_transformUsed++);
+        EnsureShadowCapacity(ref _transformShadow, _transformUsed);
+        bool grew = EnsureGpuCapacity(
+            ref _transformBuffer,
+            _transformShadow,
+            _transformUsed,
+            BufferUsage.Storage,
+            "Scene Fragment Transform Arena");
+        if (grew)
+        {
+            unchecked { BindGroupGeneration++; }
+        }
+        return index;
+    }
+
+    public void ReleaseTransform(uint index)
+    {
+        if (_disposed || index >= _transformUsed)
+        {
+            return;
+        }
+        _freeTransformIndices.Push(index);
+    }
+
+    public void UpdateTransform(uint index, Matrix4x4 value)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (index >= _transformUsed)
+        {
+            throw new ArgumentOutOfRangeException(nameof(index));
+        }
+        if (_transformShadow[index] == value)
+        {
+            return;
+        }
+        _transformShadow[index] = value;
+        _transformBuffer.WriteSingle(value, checked(index * (uint)Marshal.SizeOf<Matrix4x4>()));
     }
 
     public bool TryGet(SceneFragmentHandle handle, long version, ulong frame, out Allocation allocation)
@@ -103,7 +166,10 @@ internal sealed class GpuSceneFragmentArena : IDisposable
         ReadOnlySpan<GlyphInstance> text,
         ReadOnlySpan<GpuBrush> brushes,
         ReadOnlySpan<GpuGradientStop> gradients,
-        ReadOnlySpan<DrawRange> ranges)
+        ReadOnlySpan<DrawRange> ranges,
+        SceneTransformHandle indexedTransform,
+        Matrix4x4 indexedBaseTransform,
+        uint transformIndex)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (!_allocations.TryGetValue(handle, out var allocation))
@@ -140,6 +206,7 @@ internal sealed class GpuSceneFragmentArena : IDisposable
         {
             var value = text[i];
             value.BrushIndex += allocation.BrushStart;
+            value.Padding = GlyphInstance.EncodeAtlasHandle(value.AtlasPage, transformIndex);
             _textShadow[allocation.TextStart + i] = value;
         }
         for (int i = 0; i < brushes.Length; i++)
@@ -177,7 +244,14 @@ internal sealed class GpuSceneFragmentArena : IDisposable
         allocation.TextCount = text.Length;
         allocation.BrushCount = brushes.Length;
         allocation.GradientCount = gradients.Length;
-        allocation.DrawRanges = new DrawRange[ranges.Length];
+        allocation.IndexedTransform = indexedTransform;
+        allocation.IndexedBaseTransform = indexedBaseTransform;
+        allocation.TransformIndex = transformIndex;
+        if (allocation.DrawRanges.Length < ranges.Length)
+        {
+            allocation.DrawRanges = new DrawRange[RoundUpPowerOfTwo(ranges.Length)];
+        }
+        allocation.DrawRangeCount = ranges.Length;
         for (int i = 0; i < ranges.Length; i++)
         {
             var range = ranges[i];
@@ -258,5 +332,6 @@ internal sealed class GpuSceneFragmentArena : IDisposable
         _textBuffer.Dispose();
         _brushBuffer.Dispose();
         _gradientBuffer.Dispose();
+        _transformBuffer.Dispose();
     }
 }

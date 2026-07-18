@@ -145,6 +145,72 @@ public unsafe sealed class BrowserWebGpuApiTests
             ReadOpcodes(packets[0]));
     }
 
+    [Fact]
+    public void IndirectDrawUsesTypedBrowserCommand()
+    {
+        var packets = new List<byte[]>();
+        using var api = new BrowserWebGpuApi(packet => packets.Add(packet.WrittenSpan.ToArray()));
+        var bufferDescriptor = new BufferDescriptor
+        {
+            Size = 16,
+            Usage = BufferUsage.Indirect | BufferUsage.Storage
+        };
+        var indirect = api.DeviceCreateBuffer(BrowserWebGpuApi.DeviceHandle, &bufferDescriptor);
+        var surfaceTexture = new SurfaceTexture();
+        api.SurfaceGetCurrentTexture(BrowserWebGpuApi.SurfaceHandle, &surfaceTexture);
+        var viewDescriptor = new TextureViewDescriptor
+        {
+            Format = TextureFormat.Bgra8Unorm,
+            Dimension = TextureViewDimension.Dimension2D,
+            MipLevelCount = 1,
+            ArrayLayerCount = 1,
+            Aspect = TextureAspect.All
+        };
+        var view = api.TextureCreateView(surfaceTexture.Texture, &viewDescriptor);
+        var attachment = new RenderPassColorAttachment
+        {
+            View = view,
+            LoadOp = LoadOp.Load,
+            StoreOp = StoreOp.Store
+        };
+        var passDescriptor = new RenderPassDescriptor
+        {
+            ColorAttachmentCount = 1,
+            ColorAttachments = &attachment
+        };
+        var encoder = api.DeviceCreateCommandEncoder(BrowserWebGpuApi.DeviceHandle, null);
+        var pass = api.CommandEncoderBeginRenderPass(encoder, &passDescriptor);
+        api.RenderPassEncoderDrawIndirect(pass, indirect, 0);
+        api.RenderPassEncoderEnd(pass);
+        var commands = api.CommandEncoderFinish(encoder, null);
+        api.QueueSubmit(BrowserWebGpuApi.QueueHandle, 1, &commands);
+
+        Assert.Single(packets);
+        Assert.Contains(BrowserGpuOpcode.DrawIndirect, ReadOpcodes(packets[0]));
+    }
+
+    [Fact]
+    public void IndirectComputeDispatchUsesTypedBrowserCommand()
+    {
+        var packets = new List<byte[]>();
+        using var api = new BrowserWebGpuApi(packet => packets.Add(packet.WrittenSpan.ToArray()));
+        var bufferDescriptor = new BufferDescriptor
+        {
+            Size = 12,
+            Usage = BufferUsage.Indirect | BufferUsage.Storage
+        };
+        var indirect = api.DeviceCreateBuffer(BrowserWebGpuApi.DeviceHandle, &bufferDescriptor);
+        var encoder = api.DeviceCreateCommandEncoder(BrowserWebGpuApi.DeviceHandle, null);
+        var pass = api.CommandEncoderBeginComputePass(encoder, null);
+        api.ComputePassEncoderDispatchWorkgroupsIndirect(pass, indirect, 0);
+        api.ComputePassEncoderEnd(pass);
+        var commands = api.CommandEncoderFinish(encoder, null);
+        api.QueueSubmit(BrowserWebGpuApi.QueueHandle, 1, &commands);
+
+        Assert.Single(packets);
+        Assert.Contains(BrowserGpuOpcode.DispatchWorkgroupsIndirect, ReadOpcodes(packets[0]));
+    }
+
     private static BrowserGpuOpcode[] ReadOpcodes(byte[] packet)
     {
         var result = new List<BrowserGpuOpcode>();

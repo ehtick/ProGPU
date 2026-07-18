@@ -25,6 +25,12 @@ public static class FontGlyphBrowserPage
         private readonly RichTextBlock _label;
         private readonly Run _indexRun;
         private readonly Run _hexRun;
+        private readonly ThemeResourceBrush _selectedBorderBrush = new("SystemAccentColor");
+        private readonly ThemeResourceBrush _hoverBorderBrush = new("ControlBorderHover");
+        private readonly ThemeResourceBrush _defaultBorderBrush = new("ControlBorder");
+        private readonly ThemeResourceBrush _hoverBackgroundBrush = new("ControlBackgroundHover");
+        private readonly ThemeResourceBrush _defaultBackgroundBrush = new("PageBackground");
+        private int _boundGlyphIndex = -1;
         private bool _isSelected;
         private bool _isHovered;
 
@@ -80,21 +86,21 @@ public static class FontGlyphBrowserPage
 
         public void Bind(TtfFont? font, int index, bool isSelected)
         {
-            Tag = index;
-
             if (!ReferenceEquals(_icon.Font, font))
             {
                 _icon.Font = font;
             }
 
-            var glyphIndex = (ushort)index;
-            if (_icon.GlyphIndex != glyphIndex)
+            if (_boundGlyphIndex != index)
             {
+                _boundGlyphIndex = index;
+                Tag = index;
+                var glyphIndex = (ushort)index;
                 _icon.GlyphIndex = glyphIndex;
+                _indexRun.Text = $"Idx: {index}\n";
+                _hexRun.Text = $"0x{index:X3}";
             }
 
-            _indexRun.Text = $"Idx: {index}\n";
-            _hexRun.Text = $"0x{index:X3}";
             SetSelected(isSelected);
         }
 
@@ -135,21 +141,21 @@ public static class FontGlyphBrowserPage
         {
             if (_isSelected)
             {
-                BorderBrush = new ThemeResourceBrush("SystemAccentColor");
+                BorderBrush = _selectedBorderBrush;
                 BorderThickness = new Thickness(1.5f);
-                Background = new ThemeResourceBrush("ControlBackgroundHover");
+                Background = _hoverBackgroundBrush;
             }
             else if (_isHovered)
             {
-                BorderBrush = new ThemeResourceBrush("ControlBorderHover");
+                BorderBrush = _hoverBorderBrush;
                 BorderThickness = new Thickness(1f);
-                Background = new ThemeResourceBrush("ControlBackgroundHover");
+                Background = _hoverBackgroundBrush;
             }
             else
             {
-                BorderBrush = new ThemeResourceBrush("ControlBorder");
+                BorderBrush = _defaultBorderBrush;
                 BorderThickness = new Thickness(1f);
-                Background = new ThemeResourceBrush("PageBackground");
+                Background = _defaultBackgroundBrush;
             }
         }
     }
@@ -850,31 +856,32 @@ public static class FontGlyphBrowserPage
 /// </summary>
 public class TypographicPreviewBox : Border
 {
+    private readonly ThemeResourceBrush _pageBackgroundBrush = new("PageBackground");
+    private readonly Pen _gridPen = new(new ThemeResourceBrush("ControlBorder"), 0.5f);
+    private readonly Pen _axisPen = new(new ThemeResourceBrush("SystemAccentColor"), 1f);
+
     public override void OnRender(DrawingContext context)
     {
         // 1. Draw page background
-        var bg = Background ?? ThemeManager.GetBrush("PageBackground");
+        var bg = Background ?? _pageBackgroundBrush;
         context.DrawRectangle(bg, null, new Rect(Vector2.Zero, Size));
 
         // 2. Draw blueprint grid lines (thin, translucent lines)
-        var gridPen = new Pen(ThemeManager.GetBrush("ControlBorder") ?? new SolidColorBrush(new Vector4(0.2f, 0.2f, 0.2f, 0.3f)), 0.5f);
-        
         float step = 20f;
         for (float y = step; y < Size.Y; y += step)
         {
-            context.DrawLine(gridPen, new Vector2(0, y), new Vector2(Size.X, y));
+            context.DrawLine(_gridPen, new Vector2(0, y), new Vector2(Size.X, y));
         }
         for (float x = step; x < Size.X; x += step)
         {
-            context.DrawLine(gridPen, new Vector2(x, 0), new Vector2(x, Size.Y));
+            context.DrawLine(_gridPen, new Vector2(x, 0), new Vector2(x, Size.Y));
         }
 
         // Draw bold center baseline/midline axes (using theme accent color)
-        var axisPen = new Pen(ThemeManager.GetBrush("SystemAccentColor") ?? new SolidColorBrush(new Vector4(0f, 0.478f, 1f, 1f)), 1f);
         float centerX = Size.X / 2f;
         float centerY = Size.Y / 2f;
-        context.DrawLine(axisPen, new Vector2(0, centerY), new Vector2(Size.X, centerY));
-        context.DrawLine(axisPen, new Vector2(centerX, 0), new Vector2(centerX, Size.Y));
+        context.DrawLine(_axisPen, new Vector2(0, centerY), new Vector2(Size.X, centerY));
+        context.DrawLine(_axisPen, new Vector2(centerX, 0), new Vector2(centerX, Size.Y));
 
         // 3. Draw child visual elements (large FontIcon glyph)
         base.OnRender(context);

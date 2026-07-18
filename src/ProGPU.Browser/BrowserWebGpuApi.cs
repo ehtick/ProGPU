@@ -437,6 +437,14 @@ public unsafe sealed partial class BrowserWebGpuApi : IWebGpuApi, IDisposable
         WriteUInt32(payload, 12, z);
         _commands.CompleteCommand();
     }
+    public void ComputePassEncoderDispatchWorkgroupsIndirect(ComputePassEncoder* pass, WgpuBuffer* indirectBuffer, ulong indirectOffset)
+    {
+        var payload = _commands.BeginCommand(BrowserGpuOpcode.DispatchWorkgroupsIndirect, 16);
+        WriteHandle(payload, 0, HandleOf(pass));
+        WriteHandle(payload, 4, HandleOf(indirectBuffer));
+        WriteUInt64(payload, 8, indirectOffset);
+        _commands.CompleteCommand();
+    }
     public void ComputePassEncoderEnd(ComputePassEncoder* pass) => WriteOneHandle(BrowserGpuOpcode.EndComputePass, HandleOf(pass));
     public void RenderPassEncoderSetPipeline(RenderPassEncoder* pass, RenderPipeline* pipeline) => WriteTwoHandles(BrowserGpuOpcode.SetRenderPipeline, HandleOf(pass), HandleOf(pipeline));
     public void RenderPassEncoderSetBindGroup(RenderPassEncoder* pass, uint groupIndex, BindGroup* group, nuint dynamicOffsetCount, uint* dynamicOffsets) => WriteBindGroup(HandleOf(pass), groupIndex, HandleOf(group), dynamicOffsetCount, dynamicOffsets);
@@ -485,6 +493,14 @@ public unsafe sealed partial class BrowserWebGpuApi : IWebGpuApi, IDisposable
     {
         var payload = _commands.BeginCommand(BrowserGpuOpcode.Draw, 20);
         WriteHandle(payload, 0, HandleOf(pass)); WriteUInt32(payload, 4, vertexCount); WriteUInt32(payload, 8, instanceCount); WriteUInt32(payload, 12, firstVertex); WriteUInt32(payload, 16, firstInstance);
+        _commands.CompleteCommand();
+    }
+    public void RenderPassEncoderDrawIndirect(RenderPassEncoder* pass, WgpuBuffer* indirectBuffer, ulong indirectOffset)
+    {
+        var payload = _commands.BeginCommand(BrowserGpuOpcode.DrawIndirect, 16);
+        WriteHandle(payload, 0, HandleOf(pass));
+        WriteHandle(payload, 4, HandleOf(indirectBuffer));
+        WriteUInt64(payload, 8, indirectOffset);
         _commands.CompleteCommand();
     }
     public void RenderPassEncoderDrawIndexed(RenderPassEncoder* pass, uint indexCount, uint instanceCount, uint firstIndex, int baseVertex, uint firstInstance)

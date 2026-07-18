@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using Xunit;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -10,6 +11,7 @@ using Microsoft.UI.Xaml.Documents;
 using ProGPU.Vector;
 using Silk.NET.WebGPU;
 using ProGPU.Backend;
+using ProGPU.Compute;
 
 [assembly: Xunit.CollectionBehavior(DisableTestParallelization = true)]
 
@@ -228,6 +230,193 @@ public class HeadlessWindowTests : IDisposable
         }
 
         Assert.False(hasError, $"WebGPU validation errors occurred:\n{errorDetails}");
+    }
+
+    [Fact]
+    public unsafe void Test_WavefrontGeometryMissUploadsAndFlattensOnlyAppendedRanges()
+    {
+        var context = HeadlessWindow.Shared.Context;
+        using var engine = new WavefrontVectorEngine(context);
+        using var destination = new GpuTexture(
+            context,
+            128,
+            128,
+            TextureFormat.Bgra8Unorm,
+            TextureUsage.TextureBinding | TextureUsage.StorageBinding,
+            "Wavefront Incremental Geometry Destination");
+        var brush = new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f));
+
+        var firstPath = new PathGeometry();
+        var firstFigure = new PathFigure(new Vector2(4f, 4f), isClosed: false);
+        firstFigure.Segments.Add(new ProGPU.Vector.LineSegment(new Vector2(40f, 4f)));
+        firstFigure.Segments.Add(new ProGPU.Vector.LineSegment(new Vector2(44f, 20f)));
+        firstFigure.Segments.Add(new ProGPU.Vector.LineSegment(new Vector2(28f, 40f)));
+        firstFigure.Segments.Add(new ProGPU.Vector.LineSegment(new Vector2(8f, 32f)));
+        firstFigure.Segments.Add(new ProGPU.Vector.LineSegment(new Vector2(2f, 18f)));
+        firstFigure.Segments.Add(new ProGPU.Vector.LineSegment(new Vector2(4f, 4f)));
+        firstPath.Figures.Add(firstFigure);
+
+        var secondPath = new PathGeometry();
+        var secondFigure = new PathFigure(new Vector2(60f, 8f), isClosed: false);
+        secondFigure.Segments.Add(new ProGPU.Vector.LineSegment(new Vector2(96f, 8f)));
+        secondFigure.Segments.Add(new ProGPU.Vector.LineSegment(new Vector2(60f, 36f)));
+        secondPath.Figures.Add(secondFigure);
+
+        void SubmitFrame()
+        {
+            var encoderDescriptor = new CommandEncoderDescriptor();
+            var encoder = context.Api.DeviceCreateCommandEncoder(context.Device, &encoderDescriptor);
+            Assert.NotEqual(nint.Zero, (nint)encoder);
+            engine.EndFrame(encoder, destination, 1f);
+            var commandDescriptor = new CommandBufferDescriptor();
+            var commandBuffer = context.Api.CommandEncoderFinish(encoder, &commandDescriptor);
+            Assert.NotEqual(nint.Zero, (nint)commandBuffer);
+            context.Api.QueueSubmit(context.Queue, 1, &commandBuffer);
+            context.Api.CommandBufferRelease(commandBuffer);
+            context.Api.CommandEncoderRelease(encoder);
+        }
+
+        engine.BeginFrame();
+        engine.DrawPath(firstPath, Matrix4x4.Identity, brush);
+        SubmitFrame();
+        Assert.Equal(6u, engine.LastUploadedRawCurveCount);
+        Assert.Equal(6u, engine.LastFlattenedCurveCount);
+
+        engine.BeginFrame();
+        engine.DrawPath(firstPath, Matrix4x4.Identity, brush);
+        SubmitFrame();
+        Assert.Equal(0u, engine.LastUploadedBvhNodeCount);
+        Assert.Equal(0u, engine.LastUploadedRawCurveCount);
+        Assert.Equal(0u, engine.LastFlattenedCurveCount);
+
+        engine.BeginFrame();
+        engine.DrawPath(firstPath, Matrix4x4.Identity, brush);
+        engine.DrawPath(secondPath, Matrix4x4.Identity, brush);
+        SubmitFrame();
+        Assert.False(engine.LastGeometryArenaReplay);
+        Assert.Equal(1u, engine.LastUploadedBvhNodeCount);
+        Assert.Equal(2u, engine.LastUploadedRawCurveCount);
+        Assert.Equal(2u, engine.LastFlattenedCurveCount);
+    }
+
+    [Fact]
+    public unsafe void Test_GpuPrefixScan_MatchesCpuOracleAcrossHierarchy()
+    {
+        var context = HeadlessWindow.Shared.Context;
+        using var scan = new GpuPrefixScan(context);
+        int[] counts = [1, 511, 512, 513, 1_025, 262_145];
+
+        foreach (int count in counts)
+        {
+            var input = new uint[count];
+            for (int index = 0; index < count; index++)
+            {
+                input[index] = (uint)((index * 17 + 3) % 11);
+            }
+            if (count == 513)
+            {
+                input[0] = uint.MaxValue;
+                input[1] = 2u;
+            }
+
+            var expected = new uint[count];
+            GpuPrefixScan.ExclusiveScanCpu(input, expected);
+            scan.WriteInput(input);
+
+            var encoderDescriptor = new CommandEncoderDescriptor();
+            var encoder = context.Api.DeviceCreateCommandEncoder(context.Device, &encoderDescriptor);
+            Assert.NotEqual(nint.Zero, (nint)encoder);
+            scan.RecordExclusiveScan(encoder, (uint)count);
+
+            var commandDescriptor = new CommandBufferDescriptor();
+            var commandBuffer = context.Api.CommandEncoderFinish(encoder, &commandDescriptor);
+            Assert.NotEqual(nint.Zero, (nint)commandBuffer);
+            context.Api.QueueSubmit(context.Queue, 1, &commandBuffer);
+            context.Api.CommandBufferRelease(commandBuffer);
+            context.Api.CommandEncoderRelease(encoder);
+
+            byte[] bytes = scan.OutputBuffer.ReadBytes(0, checked((uint)count * sizeof(uint)));
+            uint[] actual = MemoryMarshal.Cast<byte, uint>(bytes).ToArray();
+            Assert.Equal(expected, actual);
+        }
+    }
+
+    [Fact]
+    public unsafe void Test_GpuSceneVisibility_MatchesStableCpuCompaction()
+    {
+        const int drawCount = 1_025;
+        var context = HeadlessWindow.Shared.Context;
+        using var visibility = new GpuSceneVisibility(context);
+        Matrix4x4[] transforms =
+        [
+            Matrix4x4.Identity,
+            Matrix4x4.CreateTranslation(2_000f, 0f, 0f)
+        ];
+        var draws = new GpuSceneDrawMetadata[drawCount];
+        for (int index = 0; index < draws.Length; index++)
+        {
+            float x = index % 80;
+            bool clippedOut = index % 10 == 0;
+            draws[index] = new GpuSceneDrawMetadata
+            {
+                Bounds = new Vector4(x, 10f, x + 4f, 14f),
+                ClipBounds = clippedOut
+                    ? new Vector4(200f, 200f, 210f, 210f)
+                    : new Vector4(0f, 0f, 100f, 100f),
+                TransformIndex = (uint)(index & 1),
+                SourceIndex = (uint)(10_000 + index),
+                MaterialKey = (uint)(index % 7),
+                Flags = GpuSceneVisibility.HasClipFlag
+            };
+        }
+
+        var expectedSources = new uint[drawCount];
+        var expectedMaterials = new uint[drawCount];
+        var viewport = new Vector4(0f, 0f, 100f, 100f);
+        var rootTransform = Matrix4x4.CreateTranslation(2f, 3f, 0f);
+        int expectedCount = GpuSceneVisibility.CompactVisibleCpu(
+            draws,
+            transforms,
+            viewport,
+            rootTransform,
+            expectedSources,
+            expectedMaterials);
+
+        visibility.Upload(draws, transforms);
+        var encoderDescriptor = new CommandEncoderDescriptor();
+        var encoder = context.Api.DeviceCreateCommandEncoder(context.Device, &encoderDescriptor);
+        Assert.NotEqual(nint.Zero, (nint)encoder);
+        visibility.Record(
+            encoder,
+            drawCount,
+            (uint)transforms.Length,
+            viewport,
+            rootTransform,
+            vertexCount: 6,
+            firstVertex: 2,
+            firstInstance: 3);
+        var commandDescriptor = new CommandBufferDescriptor();
+        var commandBuffer = context.Api.CommandEncoderFinish(encoder, &commandDescriptor);
+        Assert.NotEqual(nint.Zero, (nint)commandBuffer);
+        context.Api.QueueSubmit(context.Queue, 1, &commandBuffer);
+        context.Api.CommandBufferRelease(commandBuffer);
+        context.Api.CommandEncoderRelease(encoder);
+
+        uint actualCount = MemoryMarshal.Read<uint>(visibility.VisibleCountBuffer.ReadBytes(0, sizeof(uint)));
+        Assert.Equal((uint)expectedCount, actualCount);
+        uint[] actualSources = MemoryMarshal.Cast<byte, uint>(
+            visibility.VisibleSourceBuffer.ReadBytes(0, actualCount * sizeof(uint))).ToArray();
+        uint[] actualMaterials = MemoryMarshal.Cast<byte, uint>(
+            visibility.VisibleMaterialBuffer.ReadBytes(0, actualCount * sizeof(uint))).ToArray();
+        Assert.Equal(expectedSources.AsSpan(0, expectedCount).ToArray(), actualSources);
+        Assert.Equal(expectedMaterials.AsSpan(0, expectedCount).ToArray(), actualMaterials);
+
+        var indirect = MemoryMarshal.Read<GpuDrawIndirectArgs>(
+            visibility.IndirectBuffer.ReadBytes(0, (uint)Marshal.SizeOf<GpuDrawIndirectArgs>()));
+        Assert.Equal(6u, indirect.VertexCount);
+        Assert.Equal((uint)expectedCount, indirect.InstanceCount);
+        Assert.Equal(2u, indirect.FirstVertex);
+        Assert.Equal(3u, indirect.FirstInstance);
     }
 
     [Fact]

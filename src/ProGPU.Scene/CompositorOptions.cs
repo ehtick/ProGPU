@@ -6,6 +6,8 @@ public sealed record CompositorOptions
 
     public uint GlyphAtlasSize { get; init; } = 2048;
 
+    public uint GlyphAtlasPageCount { get; init; } = 4;
+
     public uint PathAtlasSize { get; init; } = 2048;
 
     public uint InitialVertexCount { get; init; } = 16384;
@@ -23,6 +25,14 @@ public sealed record CompositorOptions
     /// </summary>
     public bool EnableAutomaticTextFragments { get; init; }
 
+    /// <summary>
+    /// Enables stable GPU cull/scan/scatter and indirect replay for sufficiently large,
+    /// homogeneous retained instance streams. Small streams retain direct cached replay.
+    /// </summary>
+    public bool EnableGpuSceneVisibility { get; init; } = true;
+
+    public uint GpuSceneVisibilityMinimumItems { get; init; } = 2048;
+
     public uint PrimarySampleCount { get; init; } = 4;
 
     internal void Validate()
@@ -30,6 +40,10 @@ public sealed record CompositorOptions
         if (GlyphAtlasSize == 0)
         {
             throw new ArgumentOutOfRangeException(nameof(GlyphAtlasSize));
+        }
+        if (GlyphAtlasPageCount == 0 || GlyphAtlasPageCount > 255)
+        {
+            throw new ArgumentOutOfRangeException(nameof(GlyphAtlasPageCount));
         }
         if (PathAtlasSize == 0)
         {
@@ -46,6 +60,10 @@ public sealed record CompositorOptions
         if (PrimarySampleCount is not (1 or 4))
         {
             throw new ArgumentOutOfRangeException(nameof(PrimarySampleCount));
+        }
+        if (GpuSceneVisibilityMinimumItems == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(GpuSceneVisibilityMinimumItems));
         }
     }
 }

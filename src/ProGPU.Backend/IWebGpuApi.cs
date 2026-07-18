@@ -39,6 +39,7 @@ public unsafe interface IWebGpuApi
     void ComputePassEncoderSetPipeline(ComputePassEncoder* pass, ComputePipeline* pipeline);
     void ComputePassEncoderSetBindGroup(ComputePassEncoder* pass, uint groupIndex, BindGroup* group, nuint dynamicOffsetCount, uint* dynamicOffsets);
     void ComputePassEncoderDispatchWorkgroups(ComputePassEncoder* pass, uint x, uint y, uint z);
+    void ComputePassEncoderDispatchWorkgroupsIndirect(ComputePassEncoder* pass, WgpuBuffer* indirectBuffer, ulong indirectOffset);
     void ComputePassEncoderEnd(ComputePassEncoder* pass);
 
     void RenderPassEncoderSetPipeline(RenderPassEncoder* pass, RenderPipeline* pipeline);
@@ -49,6 +50,7 @@ public unsafe interface IWebGpuApi
     void RenderPassEncoderSetStencilReference(RenderPassEncoder* pass, uint reference);
     void RenderPassEncoderSetViewport(RenderPassEncoder* pass, float x, float y, float width, float height, float minDepth, float maxDepth);
     void RenderPassEncoderDraw(RenderPassEncoder* pass, uint vertexCount, uint instanceCount, uint firstVertex, uint firstInstance);
+    void RenderPassEncoderDrawIndirect(RenderPassEncoder* pass, WgpuBuffer* indirectBuffer, ulong indirectOffset);
     void RenderPassEncoderDrawIndexed(RenderPassEncoder* pass, uint indexCount, uint instanceCount, uint firstIndex, int baseVertex, uint firstInstance);
     void RenderPassEncoderEnd(RenderPassEncoder* pass);
 
@@ -132,6 +134,7 @@ internal unsafe sealed class SilkWebGpuApi(WebGPU api) : IWebGpuApi
     public void ComputePassEncoderSetPipeline(ComputePassEncoder* p, ComputePipeline* x) => api.ComputePassEncoderSetPipeline(p, x);
     public void ComputePassEncoderSetBindGroup(ComputePassEncoder* p, uint i, BindGroup* g, nuint c, uint* o) => api.ComputePassEncoderSetBindGroup(p, i, g, c, o);
     public void ComputePassEncoderDispatchWorkgroups(ComputePassEncoder* p, uint x, uint y, uint z) => api.ComputePassEncoderDispatchWorkgroups(p, x, y, z);
+    public void ComputePassEncoderDispatchWorkgroupsIndirect(ComputePassEncoder* p, WgpuBuffer* b, ulong o) => api.ComputePassEncoderDispatchWorkgroupsIndirect(p, b, o);
     public void ComputePassEncoderEnd(ComputePassEncoder* p) => api.ComputePassEncoderEnd(p);
     public void RenderPassEncoderSetPipeline(RenderPassEncoder* p, RenderPipeline* x) => api.RenderPassEncoderSetPipeline(p, x);
     public void RenderPassEncoderSetBindGroup(RenderPassEncoder* p, uint i, BindGroup* g, nuint c, uint* o) => api.RenderPassEncoderSetBindGroup(p, i, g, c, o);
@@ -141,6 +144,7 @@ internal unsafe sealed class SilkWebGpuApi(WebGPU api) : IWebGpuApi
     public void RenderPassEncoderSetStencilReference(RenderPassEncoder* p, uint r) => api.RenderPassEncoderSetStencilReference(p, r);
     public void RenderPassEncoderSetViewport(RenderPassEncoder* p, float x, float y, float w, float h, float n, float f) => api.RenderPassEncoderSetViewport(p, x, y, w, h, n, f);
     public void RenderPassEncoderDraw(RenderPassEncoder* p, uint v, uint i, uint fv, uint fi) => api.RenderPassEncoderDraw(p, v, i, fv, fi);
+    public void RenderPassEncoderDrawIndirect(RenderPassEncoder* p, WgpuBuffer* b, ulong o) => api.RenderPassEncoderDrawIndirect(p, b, o);
     public void RenderPassEncoderDrawIndexed(RenderPassEncoder* p, uint i, uint c, uint f, int b, uint fi) => api.RenderPassEncoderDrawIndexed(p, i, c, f, b, fi);
     public void RenderPassEncoderEnd(RenderPassEncoder* p) => api.RenderPassEncoderEnd(p);
     public void QueueWriteBuffer(Queue* q, WgpuBuffer* b, ulong o, void* d, nuint z) => api.QueueWriteBuffer(q, b, o, d, z);

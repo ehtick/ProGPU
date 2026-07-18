@@ -1658,7 +1658,7 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     public void GlyphAtlasCapacityExhaustionPreservesExistingCoordinates()
     {
         var font = new TtfFont(BuildMissingGlyphOutlineFont());
-        using var atlas = new GlyphAtlas(HeadlessWindow.Shared.Context, atlasSize: 64);
+        using var atlas = new GlyphAtlas(HeadlessWindow.Shared.Context, atlasSize: 64, atlasPageCount: 1);
         GlyphInfo first = atlas.GetOrCreateGlyph(font, 'A', 8f, subpixelX: 0);
         ulong generation = atlas.Generation;
 
@@ -1690,11 +1690,11 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
         var constructor = typeof(GlyphAtlas).GetConstructor(
             BindingFlags.Instance | BindingFlags.NonPublic,
             binder: null,
-            [typeof(WgpuContext), typeof(uint), typeof(uint)],
+            [typeof(WgpuContext), typeof(uint), typeof(uint), typeof(uint)],
             modifiers: null);
         Assert.NotNull(constructor);
         using var atlas = Assert.IsType<GlyphAtlas>(constructor.Invoke(
-            [HeadlessWindow.Shared.Context, atlasSize, ringBufferSize]));
+            [HeadlessWindow.Shared.Context, atlasSize, ringBufferSize, 1u]));
         GlyphInfo first = default;
         GlyphInfo last = default;
 
@@ -1817,6 +1817,7 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
             CompositorOptions.Default with
             {
                 GlyphAtlasSize = 32,
+                GlyphAtlasPageCount = 1,
                 PathAtlasSize = 256
             });
         window.Content = new AtlasOverflowGlyphRunVisual(font);
@@ -2454,7 +2455,9 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
             padding: 0f,
             dpiScale: 1f);
 
-        Assert.NotEmpty(GetPathAtlasTempBuffers(window.Compositor));
+        Assert.All(
+            GetPathAtlasRasterBuffers(window.Compositor),
+            buffer => Assert.True(buffer.Size > 0));
     }
 
     [Fact]
@@ -4087,16 +4090,28 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
         return (result, (uint)args[6]!, (uint)args[7]!, (uint)args[8]!, (uint)args[9]!);
     }
 
-    private static IList GetPathAtlasTempBuffers(Compositor compositor)
+    private static GpuBuffer[] GetPathAtlasRasterBuffers(Compositor compositor)
     {
         var pathAtlasField = typeof(Compositor).GetField("_pathAtlas", BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(pathAtlasField);
         var pathAtlas = pathAtlasField.GetValue(compositor);
         Assert.NotNull(pathAtlas);
 
-        var tempBuffersField = pathAtlas.GetType().GetField("_tempBuffers", BindingFlags.Instance | BindingFlags.NonPublic);
-        Assert.NotNull(tempBuffersField);
-        return Assert.IsAssignableFrom<IList>(tempBuffersField.GetValue(pathAtlas));
+        string[] fieldNames =
+        [
+            "_rasterUniformBuffer",
+            "_rasterRecordsBuffer",
+            "_rasterSegmentsBuffer",
+            "_rasterWorkgroupBuffer"
+        ];
+        var buffers = new GpuBuffer[fieldNames.Length];
+        for (int index = 0; index < fieldNames.Length; index++)
+        {
+            var field = pathAtlas.GetType().GetField(fieldNames[index], BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(field);
+            buffers[index] = Assert.IsType<GpuBuffer>(field.GetValue(pathAtlas));
+        }
+        return buffers;
     }
 
     private static uint GetPathAtlasFrameNumber(Compositor compositor)

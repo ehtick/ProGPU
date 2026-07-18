@@ -8,6 +8,16 @@ using ProGPU.Vector;
 
 namespace ProGPU.Scene;
 
+/// <summary>
+/// Optional hook for viewport-deferred visuals whose immutable CPU preparation can run ahead of
+/// the compiled viewport. Implementations must keep GPU resources and visual invalidation on their
+/// owning thread.
+/// </summary>
+public interface IViewportDeferredWarmable
+{
+    bool QueueViewportWarmup();
+}
+
 public class Visual
 {
     private Vector2 _offset;
@@ -31,6 +41,8 @@ public class Visual
     private Brush? _opacityMask;
     private Rect? _opacityMaskBounds;
     private int _hitTestId;
+    private SceneTransformHandle? _sceneTransform;
+    private bool _excludeFromParentRetainedTransform;
 
     private EffectBase? _effect;
     public EffectBase? Effect
@@ -75,6 +87,38 @@ public class Visual
             if (_offset != value)
             {
                 _offset = value;
+                Invalidate();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Optional retained placement applied after this visual's ordinary ancestry. Updating the
+    /// handle patches GPU placement without changing this visual's geometry version. The
+    /// transformed subtree must use translation-only ancestry and compositor-compatible clips.
+    /// </summary>
+    public SceneTransformHandle? RetainedTransform
+    {
+        get => _sceneTransform;
+        set
+        {
+            if (!ReferenceEquals(_sceneTransform, value))
+            {
+                _sceneTransform = value;
+                Invalidate();
+            }
+        }
+    }
+
+    /// <summary>Leaves this visual in the parent's ordinary coordinate space.</summary>
+    public bool ExcludeFromParentRetainedTransform
+    {
+        get => _excludeFromParentRetainedTransform;
+        set
+        {
+            if (_excludeFromParentRetainedTransform != value)
+            {
+                _excludeFromParentRetainedTransform = value;
                 Invalidate();
             }
         }
@@ -331,6 +375,22 @@ public class Visual
         Parent?.InvalidateDescendant();
     }
 
+    /// <summary>
+    /// Requests compositor replay after a retained transform changed without invalidating the
+    /// compiled scene's immutable geometry, text, paint, or draw-order version.
+    /// </summary>
+    public void InvalidateRetainedTransform()
+    {
+        _isDirty = true;
+        Parent?.InvalidateRetainedTransformDescendant();
+    }
+
+    private void InvalidateRetainedTransformDescendant()
+    {
+        _isDirty = true;
+        Parent?.InvalidateRetainedTransformDescendant();
+    }
+
     public virtual void OnRender(DrawingContext context)
     {
         // Base visual does not record operations directly
@@ -341,6 +401,12 @@ public class Visual
     /// A null value disables clip culling. Descendants are always traversed independently.
     /// </summary>
     public virtual Rect? LocalRenderBounds => null;
+
+    /// <summary>
+    /// Indicates that direct commands may be omitted outside the active viewport and rebuilt at
+    /// coarse retained-scroll boundaries. Layout and descendant traversal remain unaffected.
+    /// </summary>
+    public virtual bool IsViewportDeferred => false;
 
     public Matrix4x4 GetLocalTransform()
     {
@@ -366,9 +432,56 @@ public class Visual
 
     public Matrix4x4 GetGlobalTransformMatrix()
     {
-        var local = GetLocalTransform();
+        var local = GetInputLocalTransform();
         if (Parent == null) return local;
-        return local * Parent.GetGlobalTransformMatrix();
+        var parentTransform = Parent.GetGlobalTransformMatrix();
+        if (!ExcludeFromParentRetainedTransform && Parent.ChildrenRetainedTransform is { } retainedTransform)
+        {
+            parentTransform = retainedTransform.Matrix * parentTransform;
+        }
+        return local * parentTransform;
+    }
+
+    /// <summary>Returns the local transform used by CPU input and public transform queries.</summary>
+    public Matrix4x4 GetInputLocalTransform()
+    {
+        var local = GetLocalTransform();
+        return RetainedTransform == null ? local : local * RetainedTransform.Matrix;
+    }
+
+    /// <summary>
+    /// Returns whether this subtree can currently be replayed through one retained translation.
+    /// Geometry clips, masks, cached/effect surfaces, and nested spatial handles require their
+    /// own transform-indexed clip or surface metadata and therefore stay on the ordinary path.
+    /// </summary>
+    public bool SupportsRetainedTransformSubtree(bool allowRootTransform = true)
+    {
+        if (Effect != null || CacheAsLayer || GeometryClip != null || OpacityMask != null ||
+            ClipBounds.HasValue || OuterClipBounds.HasValue ||
+            (!allowRootTransform && RetainedTransform != null))
+        {
+            return false;
+        }
+
+        if (this is not ContainerVisual container)
+        {
+            return true;
+        }
+
+        if (container.ChildrenRetainedTransform != null)
+        {
+            return false;
+        }
+
+        var children = container.Children;
+        for (int i = 0; i < children.Count; i++)
+        {
+            if (!children[i].SupportsRetainedTransformSubtree(allowRootTransform: false))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     public GeneralTransform TransformToVisual(Visual? visual)
@@ -514,6 +627,24 @@ public class ContainerVisual : Visual
 {
     private readonly List<Visual> _children = new();
     private readonly object _childrenLock = new();
+    private SceneTransformHandle? _childrenRetainedTransform;
+
+    /// <summary>
+    /// Applies one retained translation to non-excluded children while this container's own
+    /// background, viewport clip, and overlay chrome remain fixed.
+    /// </summary>
+    public SceneTransformHandle? ChildrenRetainedTransform
+    {
+        get => _childrenRetainedTransform;
+        set
+        {
+            if (!ReferenceEquals(_childrenRetainedTransform, value))
+            {
+                _childrenRetainedTransform = value;
+                Invalidate();
+            }
+        }
+    }
 
     public IReadOnlyList<Visual> Children => _children;
 

@@ -66,6 +66,100 @@ public sealed class LayerRenderTests
     }
 
     [Fact]
+    public void RetainedVisualTransformMovesWholeSubtreeOnCompiledSceneCacheHit()
+    {
+        using var window = new HeadlessWindow(64, 32);
+        var visual = new RetainedTransformVisual();
+        window.Content = visual;
+
+        try
+        {
+            window.Render();
+            Assert.False(window.Compositor.Metrics.SceneCacheHit);
+            AssertRed(ReadPixel(window.ReadPixels(), window.Width, x: 12, y: 8));
+
+            visual.TransformHandle.Translation = new Vector2(30f, 0f);
+            visual.InvalidateRetainedTransform();
+            window.Render();
+
+            Assert.True(window.Compositor.Metrics.SceneCacheHit);
+            Assert.Equal(1, visual.RenderCount);
+            var pixels = window.ReadPixels();
+            var background = ReadPixel(pixels, window.Width, x: 2, y: 8);
+            AssertColorNear(background, ReadPixel(pixels, window.Width, x: 12, y: 8), tolerance: 2);
+            AssertRed(ReadPixel(pixels, window.Width, x: 32, y: 8));
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
+    [Fact]
+    public void RetainedChildTransformMovesContentButKeepsExcludedOverlayFixed()
+    {
+        using var window = new HeadlessWindow(64, 32);
+        var visual = new RetainedChildrenHost();
+        window.Content = visual;
+
+        try
+        {
+            window.Render();
+            Assert.Equal(1, visual.Content.RenderCount);
+            Assert.Equal(1, visual.Overlay.RenderCount);
+            AssertRed(ReadPixel(window.ReadPixels(), window.Width, x: 12, y: 8));
+            var initialPixels = window.ReadPixels();
+            Assert.True(
+                CountGreenPixels(initialPixels) > 0,
+                $"Expected fixed green overlay; {DescribeBrightestPixel(initialPixels, window.Width)}");
+            Assert.Equal(0, FindGreenMinimumX(initialPixels, window.Width));
+
+            visual.TransformHandle.Translation = new Vector2(30f, 0f);
+            visual.InvalidateRetainedTransform();
+            window.Render();
+
+            Assert.True(window.Compositor.Metrics.SceneCacheHit);
+            var pixels = window.ReadPixels();
+            AssertGreen(ReadPixel(pixels, window.Width, x: 2, y: 8));
+            AssertRed(ReadPixel(pixels, window.Width, x: 32, y: 8));
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
+    [Fact]
+    public void IncompatibleRetainedChildFallsBackWithoutReusingBakedPlacement()
+    {
+        using var window = new HeadlessWindow(64, 32);
+        var visual = new IncompatibleRetainedChildrenHost();
+        window.Content = visual;
+
+        try
+        {
+            window.Render();
+            Assert.False(window.Compositor.Metrics.SceneCacheHit);
+            AssertRed(ReadPixel(window.ReadPixels(), window.Width, x: 12, y: 8));
+
+            visual.TransformHandle.Translation = new Vector2(30f, 0f);
+            visual.InvalidateRetainedTransform();
+            window.Render();
+
+            Assert.False(window.Compositor.Metrics.SceneCacheHit);
+            Assert.Equal(2, visual.Content.RenderCount);
+            var pixels = window.ReadPixels();
+            var background = ReadPixel(pixels, window.Width, x: 2, y: 8);
+            AssertColorNear(background, ReadPixel(pixels, window.Width, x: 12, y: 8), tolerance: 2);
+            AssertRed(ReadPixel(pixels, window.Width, x: 32, y: 8));
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
+    [Fact]
     public void IndependentSceneTransformHandlesKeepTheirOwnBindGroupsOnCacheHit()
     {
         using var window = new HeadlessWindow(64, 32);
@@ -399,6 +493,31 @@ public sealed class LayerRenderTests
         return count;
     }
 
+    private static int CountGreenPixels(byte[] pixels)
+    {
+        int count = 0;
+        for (int index = 0; index < pixels.Length; index += 4)
+        {
+            if (pixels[index + 1] >= 200 && pixels[index] <= 50 && pixels[index + 2] <= 50)
+            {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static int FindGreenMinimumX(byte[] pixels, uint width)
+    {
+        for (int index = 0; index < pixels.Length; index += 4)
+        {
+            if (pixels[index + 1] >= 200 && pixels[index] <= 50 && pixels[index + 2] <= 50)
+            {
+                return (index / 4) % (int)width;
+            }
+        }
+        return -1;
+    }
+
     private static string DescribeBrightestPixel(byte[] pixels, uint width)
     {
         int brightest = -1;
@@ -533,6 +652,83 @@ public sealed class LayerRenderTests
         }
 
         public void Dispose() => _picture.Dispose();
+    }
+
+    private sealed class RetainedTransformVisual : FrameworkElement
+    {
+        private readonly SolidColorBrush _brush = new(new Vector4(1f, 0f, 0f, 1f));
+
+        public RetainedTransformVisual()
+        {
+            Width = 64f;
+            Height = 32f;
+            TransformHandle.Translation = new Vector2(10f, 0f);
+            RetainedTransform = TransformHandle;
+        }
+
+        public SceneTransformHandle TransformHandle { get; } = new();
+        public int RenderCount { get; private set; }
+
+        public override void OnRender(DrawingContext context)
+        {
+            RenderCount++;
+            context.DrawRectangle(_brush, null, new Rect(0f, 0f, 8f, 16f));
+        }
+    }
+
+    private sealed class RetainedChildrenHost : FrameworkElement
+    {
+        public RetainedChildrenHost()
+        {
+            Width = 64f;
+            Height = 32f;
+            TransformHandle.Translation = new Vector2(10f, 0f);
+            ChildrenRetainedTransform = TransformHandle;
+
+            Content = new ColorRectVisual(new Vector4(1f, 0f, 0f, 1f));
+            Overlay = new ColorRectVisual(new Vector4(0f, 1f, 0f, 1f))
+            {
+                Offset = new Vector2(20f, 0f),
+                ExcludeFromParentRetainedTransform = true
+            };
+            AddChild(Content);
+            AddChild(Overlay);
+        }
+
+        public SceneTransformHandle TransformHandle { get; } = new();
+        public ColorRectVisual Content { get; }
+        public ColorRectVisual Overlay { get; }
+    }
+
+    private sealed class IncompatibleRetainedChildrenHost : FrameworkElement
+    {
+        public IncompatibleRetainedChildrenHost()
+        {
+            Width = 64f;
+            Height = 32f;
+            TransformHandle.Translation = new Vector2(10f, 0f);
+            ChildrenRetainedTransform = TransformHandle;
+            Content = new ColorRectVisual(new Vector4(1f, 0f, 0f, 1f))
+            {
+                ClipBounds = new Rect(0f, 0f, 8f, 16f)
+            };
+            AddChild(Content);
+        }
+
+        public SceneTransformHandle TransformHandle { get; } = new();
+        public ColorRectVisual Content { get; }
+    }
+
+    private sealed class ColorRectVisual(Vector4 color) : FrameworkElement
+    {
+        private readonly SolidColorBrush _brush = new(color);
+        public int RenderCount { get; private set; }
+
+        public override void OnRender(DrawingContext context)
+        {
+            RenderCount++;
+            context.DrawRectangle(_brush, null, new Rect(0f, 0f, 8f, 16f));
+        }
     }
 
     private sealed class TwoSceneTransformPicturesVisual : FrameworkElement, IDisposable

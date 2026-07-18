@@ -131,6 +131,8 @@ public struct CompositorMetrics
     public long UploadedTextureBytes;
     public int SceneFragmentReuseCount;
     public int SceneFragmentUpdateCount;
+    public int GpuVisibilityBatchCount;
+    public int GpuVisibilityInputCount;
     public int DrawCallsCount;
     public int VectorVerticesCount;
     public int TextVerticesCount;
@@ -759,14 +761,19 @@ public unsafe class Compositor : IDisposable
     private BindGroup* _textureUniformBindGroup;
     private BindGroupLayout* _vectorUniformBindGroupLayout;
     private BindGroupLayout* _textUniformBindGroupLayout;
+    private BindGroupLayout* _fragmentTextBindGroupLayout;
     private BindGroupLayout* _textureUniformBindGroupLayout;
+    private BindGroup* _fragmentTextBindGroup;
+    private ulong _fragmentTextBindGroupGeneration;
 
     private BindGroup* _vectorUniformBindGroupOffscreen;
     private BindGroup* _textUniformBindGroupOffscreen;
     private BindGroup* _textureUniformBindGroupOffscreen;
     private BindGroupLayout* _vectorUniformBindGroupLayoutOffscreen;
     private BindGroupLayout* _textUniformBindGroupLayoutOffscreen;
+    private BindGroupLayout* _fragmentTextBindGroupLayoutOffscreen;
     private BindGroupLayout* _textureUniformBindGroupLayoutOffscreen;
+    private BindGroup* _fragmentTextBindGroupOffscreen;
     private bool _useGpuTransformsActive;
     private Matrix4x4 _cameraViewMatrix;
     private bool _hasGpuTransformsInFrame;
@@ -828,9 +835,11 @@ public unsafe class Compositor : IDisposable
 
     private PipelineLayout* _vectorPipelineLayout;
     private PipelineLayout* _textPipelineLayout;
+    private PipelineLayout* _fragmentTextPipelineLayout;
     private PipelineLayout* _texturePipelineLayout;
     private PipelineLayout* _vectorPipelineLayoutOffscreen;
     private PipelineLayout* _textPipelineLayoutOffscreen;
+    private PipelineLayout* _fragmentTextPipelineLayoutOffscreen;
     private PipelineLayout* _texturePipelineLayoutOffscreen;
     private BindGroupLayout* _retainedGlyphBindGroupLayout;
     private PipelineLayout* _retainedGlyphPipelineLayout;
@@ -860,6 +869,7 @@ public unsafe class Compositor : IDisposable
         Texture,
         Text,
         FragmentText,
+        FragmentTextIndexed,
         StaticDxf,
         ChartLine,
         ChartScatter,
@@ -913,10 +923,14 @@ public unsafe class Compositor : IDisposable
     private readonly List<VectorVertex> _textureVerticesList = new();
     private readonly List<uint> _textureIndicesList = new();
     private readonly GpuSceneFragmentArena _sceneFragmentArena;
+    private readonly HashSet<DxfStaticBuffer> _staticVisibilityCandidates = new();
+    private readonly HashSet<DxfStaticBuffer> _staticVisibilityDuplicates = new();
     private readonly SceneTransformHandle _identitySceneTransform = new();
     private readonly Dictionary<Visual, AutomaticTextFragment> _automaticTextFragments = new();
     private int _sceneFragmentReusesInFrame;
     private int _sceneFragmentUpdatesInFrame;
+    private int _gpuVisibilityBatchesInFrame;
+    private int _gpuVisibilityInputsInFrame;
     private SceneTransformHandle? _activeSceneTransform;
     private Matrix4x4 _activeSceneTransformBase = Matrix4x4.Identity;
     private readonly Dictionary<SceneTransformKey, SceneTransformResources> _sceneTransformResources = new();
@@ -935,12 +949,14 @@ public unsafe class Compositor : IDisposable
 
     private sealed class SceneTransformResources(
         GpuBuffer uniformBuffer,
+        uint transformIndex,
         nint vectorBindGroup,
         nint vectorBindGroupOffscreen,
         nint textBindGroup,
         nint textBindGroupOffscreen)
     {
         public GpuBuffer UniformBuffer { get; } = uniformBuffer;
+        public uint TransformIndex { get; } = transformIndex;
         public nint VectorBindGroup { get; } = vectorBindGroup;
         public nint VectorBindGroupOffscreen { get; } = vectorBindGroupOffscreen;
         public nint TextBindGroup { get; } = textBindGroup;
@@ -1029,6 +1045,7 @@ public unsafe class Compositor : IDisposable
     private bool _compiledSceneHasGpuTransforms;
     private Matrix4x4 _compiledSceneGpuTransformsCameraView;
     private bool _compiledSceneContainsDrawingVisual;
+    private bool _compiledSceneContainsRetainedTransformFallback;
     private readonly object _offscreenRenderLock = new();
     private int _offscreenRenderDepth;
     private float _totalTime = 0f;
@@ -1193,7 +1210,7 @@ public unsafe class Compositor : IDisposable
         _compute = new ComputeAccelerator(_context);
 
         // 1. Initialize GPU atlases.
-        _atlas = new GlyphAtlas(_context, options.GlyphAtlasSize);
+        _atlas = new GlyphAtlas(_context, options.GlyphAtlasSize, options.GlyphAtlasPageCount);
         _pathAtlas = new PathAtlas(_context, options.PathAtlasSize);
         _hitTestCacheBuilder = new GpuRenderCommandHitTestCacheBuilder(_pathAtlas);
 
@@ -1546,13 +1563,15 @@ public unsafe class Compositor : IDisposable
         _vectorUniformBindGroupLayoutOffscreen = CreateVectorUniformLayout();
         _textUniformBindGroupLayout = CreateUniformOnlyLayout();
         _textUniformBindGroupLayoutOffscreen = CreateUniformOnlyLayout();
+        _fragmentTextBindGroupLayout = CreateFragmentTextLayout();
+        _fragmentTextBindGroupLayoutOffscreen = CreateFragmentTextLayout();
         _textureUniformBindGroupLayout = CreateUniformOnlyLayout();
         _textureUniformBindGroupLayoutOffscreen = CreateUniformOnlyLayout();
 
         _pathAtlasBindGroupLayout = CreateSamplerTextureLayout();
         _pathAtlasBindGroupLayoutOffscreen = CreateSamplerTextureLayout();
-        _atlasBindGroupLayout = CreateSamplerTextureLayout();
-        _atlasBindGroupLayoutOffscreen = CreateSamplerTextureLayout();
+        _atlasBindGroupLayout = CreateSamplerTextureLayout(TextureViewDimension.Dimension2DArray);
+        _atlasBindGroupLayoutOffscreen = CreateSamplerTextureLayout(TextureViewDimension.Dimension2DArray);
         _textureBindGroupLayout = CreateSamplerTextureLayout();
         _textureBindGroupLayoutOffscreen = CreateSamplerTextureLayout();
         _maskBindGroupLayout = CreateSamplerTextureLayout();
@@ -1603,6 +1622,32 @@ public unsafe class Compositor : IDisposable
             BindGroupLayouts = textLayoutsOffscreen
         };
         _textPipelineLayoutOffscreen = _context.Api.DeviceCreatePipelineLayout(_context.Device, &textPipelineLayoutDescOffscreen);
+
+        var fragmentTextLayouts = stackalloc BindGroupLayout*[3];
+        fragmentTextLayouts[0] = _fragmentTextBindGroupLayout;
+        fragmentTextLayouts[1] = _atlasBindGroupLayout;
+        fragmentTextLayouts[2] = _maskBindGroupLayout;
+        var fragmentTextPipelineLayoutDesc = new PipelineLayoutDescriptor
+        {
+            BindGroupLayoutCount = 3,
+            BindGroupLayouts = fragmentTextLayouts
+        };
+        _fragmentTextPipelineLayout = _context.Api.DeviceCreatePipelineLayout(
+            _context.Device,
+            &fragmentTextPipelineLayoutDesc);
+
+        var fragmentTextLayoutsOffscreen = stackalloc BindGroupLayout*[3];
+        fragmentTextLayoutsOffscreen[0] = _fragmentTextBindGroupLayoutOffscreen;
+        fragmentTextLayoutsOffscreen[1] = _atlasBindGroupLayoutOffscreen;
+        fragmentTextLayoutsOffscreen[2] = _maskBindGroupLayoutOffscreen;
+        var fragmentTextPipelineLayoutDescOffscreen = new PipelineLayoutDescriptor
+        {
+            BindGroupLayoutCount = 3,
+            BindGroupLayouts = fragmentTextLayoutsOffscreen
+        };
+        _fragmentTextPipelineLayoutOffscreen = _context.Api.DeviceCreatePipelineLayout(
+            _context.Device,
+            &fragmentTextPipelineLayoutDescOffscreen);
 
         var textureLayouts = stackalloc BindGroupLayout*[3];
         textureLayouts[0] = _textureUniformBindGroupLayout;
@@ -1685,7 +1730,7 @@ public unsafe class Compositor : IDisposable
                 pipelineLayout: _vectorPipelineLayout
             );
 
-            Span<VertexAttribute> textAttrs = stackalloc VertexAttribute[8];
+            Span<VertexAttribute> textAttrs = stackalloc VertexAttribute[9];
             textAttrs[0] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 0, ShaderLocation = 0 }; // SnappedLogicalPos
             textAttrs[1] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 8, ShaderLocation = 1 }; // BasisX
             textAttrs[2] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 16, ShaderLocation = 2 }; // BasisY
@@ -1694,6 +1739,7 @@ public unsafe class Compositor : IDisposable
             textAttrs[5] = new VertexAttribute { Format = VertexFormat.Float32x4, Offset = 56, ShaderLocation = 5 }; // Color
             textAttrs[6] = new VertexAttribute { Format = VertexFormat.Float32x4, Offset = 72, ShaderLocation = 6 }; // ScaleBoldItalicUseMvp
             textAttrs[7] = new VertexAttribute { Format = VertexFormat.Float32, Offset = 88, ShaderLocation = 7 }; // BrushIndex
+            textAttrs[8] = new VertexAttribute { Format = VertexFormat.Float32, Offset = 92, ShaderLocation = 8 }; // Atlas page / retained transform handle
 
             fixed (VertexAttribute* textAttribsPtr = textAttrs)
             {
@@ -1702,7 +1748,7 @@ public unsafe class Compositor : IDisposable
                 {
                     ArrayStride = (uint)Unsafe.SizeOf<GlyphInstance>(),
                     StepMode = VertexStepMode.Instance,
-                    AttributeCount = 8,
+                    AttributeCount = 9,
                     Attributes = textAttribsPtr
                 };
 
@@ -2148,6 +2194,8 @@ public unsafe class Compositor : IDisposable
         var uploadMetricsAtStart = _context.QueueUploadMetrics;
         _sceneFragmentReusesInFrame = 0;
         _sceneFragmentUpdatesInFrame = 0;
+        _gpuVisibilityBatchesInFrame = 0;
+        _gpuVisibilityInputsInFrame = 0;
         var totalSw = System.Diagnostics.Stopwatch.StartNew();
         var compileSw = System.Diagnostics.Stopwatch.StartNew();
         double preRenderTimeMs = 0d;
@@ -2208,6 +2256,7 @@ public unsafe class Compositor : IDisposable
             _hasGpuTransformsInFrame = false;
             _gpuTransformsCameraView = Matrix4x4.Identity;
             _compiledSceneContainsDrawingVisual = false;
+            _compiledSceneContainsRetainedTransformFallback = false;
         }
 
         // 2. Clear CPU collection batch lists and active brushes
@@ -2482,14 +2531,6 @@ public unsafe class Compositor : IDisposable
         }
 
 SceneCompilationComplete:
-        if (glyphBatchActive)
-        {
-            glyphBatchActive = false;
-            phaseStart = System.Diagnostics.Stopwatch.GetTimestamp();
-            _atlas.EndBatch();
-            glyphAtlasTimeMs += System.Diagnostics.Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
-        }
-
         if (_pathAtlas.CapacityExceeded ||
             _pathAtlas.Generation != pathAtlasGenerationAtCompilationStart)
         {
@@ -2581,11 +2622,6 @@ DynamicBufferUploadComplete:
             _gradientStopsStorageBuffer.Write(CollectionsMarshal.AsSpan(_activeGradientStops));
         }
 
-        // Rasterize all pending paths before starting the render pass.
-        long pathAtlasStart = System.Diagnostics.Stopwatch.GetTimestamp();
-        _pathAtlas.RasterizePendingPaths();
-        pathAtlasTimeMs = System.Diagnostics.Stopwatch.GetElapsedTime(pathAtlasStart).TotalMilliseconds;
-
         CaptureCompiledScene(
             root,
             width,
@@ -2623,6 +2659,23 @@ SceneStateUploadComplete:
         SilkMarshal.Free((nint)encoderDesc.Label);
         _context.BeginFrameGpuTimestamp(encoder);
         encoderCreationTimeMs = System.Diagnostics.Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
+
+        if (glyphBatchActive)
+        {
+            phaseStart = System.Diagnostics.Stopwatch.GetTimestamp();
+            _atlas.RecordPendingBatchWork(encoder);
+            _atlas.EndBatch();
+            glyphBatchActive = false;
+            glyphAtlasTimeMs += System.Diagnostics.Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
+        }
+
+        // Record atlas compute into the same command stream as the render pass. WebGPU
+        // command ordering makes the storage writes visible to later atlas sampling.
+        long pathAtlasStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        _pathAtlas.RasterizePendingPaths(encoder);
+        pathAtlasTimeMs = System.Diagnostics.Stopwatch.GetElapsedTime(pathAtlasStart).TotalMilliseconds;
+
+        RecordStaticDxfVisibility(encoder);
 
         // Run mask render passes first!
         phaseStart = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -2693,6 +2746,30 @@ SceneStateUploadComplete:
                 currentMaskTexture = dc.MaskTexture;
                 currentSceneTransform = dc.SceneTransform;
                 currentSceneTransformBase = dc.SceneTransformBase;
+            }
+            else if (dc.Type == DrawCallType.FragmentTextIndexed)
+            {
+                var activePipeline = GetFragmentTextPipeline(dc.BlendMode, isOffscreen: false);
+                var maskBindGroup = GetMaskBindGroup(dc.MaskTexture, isOffscreen: false);
+                _context.Api.RenderPassEncoderSetPipeline(pass, activePipeline);
+                _context.Api.RenderPassEncoderSetBindGroup(
+                    pass,
+                    0,
+                    GetSceneFragmentTextBindGroup(isOffscreen: false),
+                    0,
+                    null);
+                fixed (BindGroup** pAtlas = &_atlasBindGroup)
+                {
+                    _context.Api.RenderPassEncoderSetBindGroup(pass, 1, *pAtlas, 0, null);
+                }
+                _context.Api.RenderPassEncoderSetBindGroup(pass, 2, maskBindGroup, 0, null);
+                _context.Api.RenderPassEncoderSetVertexBuffer(pass, 0, _sceneFragmentArena.TextBuffer.BufferPtr, 0, _sceneFragmentArena.TextBuffer.Size);
+                _context.Api.RenderPassEncoderDraw(pass, 6, dc.IndexCount, 0, dc.IndexStart);
+                currentType = DrawCallType.FragmentTextIndexed;
+                currentBlendMode = dc.BlendMode;
+                currentMaskTexture = dc.MaskTexture;
+                currentSceneTransform = null;
+                currentSceneTransformBase = default;
             }
             else if (dc.Type == DrawCallType.FragmentText)
             {
@@ -2960,6 +3037,7 @@ SceneStateUploadComplete:
                 0,
                 _wavefrontQuadIndexBuffer.Size);
             _context.Api.RenderPassEncoderDrawIndexed(finalPass, 6, 1, 0, 0, 0);
+            _wavefrontEngine.RecordSparseComposite(finalPass);
             _context.Api.RenderPassEncoderEnd(finalPass);
             _context.Api.RenderPassEncoderRelease(finalPass);
         }
@@ -3034,6 +3112,8 @@ SceneStateUploadComplete:
             UploadedTextureBytes = frameUploadMetrics.TextureBytes,
             SceneFragmentReuseCount = _sceneFragmentReusesInFrame,
             SceneFragmentUpdateCount = _sceneFragmentUpdatesInFrame,
+            GpuVisibilityBatchCount = _gpuVisibilityBatchesInFrame,
+            GpuVisibilityInputCount = _gpuVisibilityInputsInFrame,
             DrawCallsCount = _drawCalls.Count,
             VectorVerticesCount = _vectorVerticesList.Count,
             TextVerticesCount = _textVerticesList.Count,
@@ -3153,6 +3233,7 @@ SceneStateUploadComplete:
             !Options.EnableCompiledSceneCache ? "Compiled scene cache disabled" :
             hasDynamicDiagnostics ? "Dynamic diagnostics active" :
             _compiledSceneContainsDrawingVisual ? "Drawing visuals active" :
+            _compiledSceneContainsRetainedTransformFallback ? "Retained transform fallback active" :
             _maskRenderPasses.Count != 0 ? "Mask render passes active" :
             _effectTextures.Count != 0 ? "Effects active" :
             string.Empty;
@@ -3902,7 +3983,8 @@ SceneStateUploadComplete:
         Matrix4x4 parentTransform,
         Vector2? offsetOverride,
         bool includeLocalTransform = true,
-        bool includeLocalVisualState = true)
+        bool includeLocalVisualState = true,
+        bool includeSceneTransform = true)
     {
         if (node is DrawingVisual)
         {
@@ -3914,6 +3996,17 @@ SceneStateUploadComplete:
             || _activeOpacity <= 0.0001f)
         {
             node.IsDirty = false;
+            return;
+        }
+
+        if (includeSceneTransform && node.RetainedTransform != null && _activeSceneTransform == null)
+        {
+            CompileRetainedTransformVisual(
+                node,
+                parentTransform,
+                offsetOverride,
+                includeLocalTransform,
+                includeLocalVisualState);
             return;
         }
 
@@ -3949,12 +4042,7 @@ SceneStateUploadComplete:
         {
             if (node is ContainerVisual container)
             {
-                var children = container.Children;
-                int count = children.Count;
-                for (int i = 0; i < count; i++)
-                {
-                    CompileVisualTree(children[i], globalTransform);
-                }
+                CompileVisualChildren(container, globalTransform);
             }
         }
 
@@ -4186,7 +4274,7 @@ SceneStateUploadComplete:
 
                     AddHitTestDrawCommand(cmd, activeTransform, ctx);
 
-                    if (cmd.UseGpuTransforms)
+                    if (cmd.UseGpuTransforms || _activeSceneTransform != null)
                     {
                         for (int i = vectorStart; i < _vectorVerticesList.Count; i++)
                         {
@@ -4219,18 +4307,205 @@ SceneStateUploadComplete:
         {
             if (node is ContainerVisual container)
             {
-                var children = container.Children;
-                int count = children.Count;
-                for (int i = 0; i < count; i++)
-                {
-                    CompileVisualTree(children[i], globalTransform);
-                }
+                CompileVisualChildren(container, globalTransform);
             }
         }
 
         PopVisualCompositeScope(visualScope);
 
         node.IsDirty = false;
+    }
+
+    private void CompileVisualChildren(ContainerVisual container, Matrix4x4 parentTransform)
+    {
+        var children = container.Children;
+        int count = children.Count;
+        var transform = container.ChildrenRetainedTransform;
+        if (transform == null || _activeSceneTransform != null)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                CompileVisualTree(children[i], parentTransform);
+            }
+            return;
+        }
+
+        bool canUseRetainedTransform =
+            IsTranslationOnly2D(parentTransform) &&
+            _offscreenRenderDepth == 0 &&
+            _elementsRenderingLayers.Count == 0 &&
+            _elementsRenderingEffects.Count == 0 &&
+            _activeBlendMode == GpuBlendMode.SrcOver;
+        for (int i = 0; i < count; i++)
+        {
+            if (!children[i].ExcludeFromParentRetainedTransform &&
+                !children[i].SupportsRetainedTransformSubtree(allowRootTransform: false))
+            {
+                canUseRetainedTransform = false;
+                break;
+            }
+        }
+
+        if (!canUseRetainedTransform)
+        {
+            // Correctness fallback for content that cannot yet index every clip, layer, effect,
+            // or nested spatial node through the retained transform table. Keep viewport-space
+            // exclusions fixed and bake the translation into ordinary compilation. The scene is
+            // intentionally not reusable because a later handle update must rebuild these vertices.
+            _compiledSceneContainsRetainedTransformFallback = true;
+            var transformedParent = transform.Matrix * parentTransform;
+            for (int i = 0; i < count; i++)
+            {
+                var child = children[i];
+                CompileVisualTree(
+                    child,
+                    child.ExcludeFromParentRetainedTransform ? parentTransform : transformedParent);
+            }
+            return;
+        }
+
+        var key = new SceneTransformKey(transform, parentTransform);
+        if (!_sceneTransformResources.ContainsKey(key))
+        {
+            _sceneTransformResources.Add(key, CreateSceneTransformResources());
+        }
+        if (!_activeSceneTransformKeys.Contains(key))
+        {
+            _activeSceneTransformKeys.Add(key);
+        }
+
+        var savedTransform = _activeSceneTransform;
+        var savedBase = _activeSceneTransformBase;
+        bool savedUseGpuTransforms = _useGpuTransformsActive;
+        Matrix4x4 savedCamera = _cameraViewMatrix;
+        bool savedSuspendHitTestCacheWrites = _suspendHitTestCacheWrites;
+        bool transformedRunActive = false;
+        try
+        {
+            for (int i = 0; i < count; i++)
+            {
+                var child = children[i];
+                if (child.ExcludeFromParentRetainedTransform)
+                {
+                    if (transformedRunActive)
+                    {
+                        CommitPendingDrawCalls();
+                        _activeSceneTransform = savedTransform;
+                        _activeSceneTransformBase = savedBase;
+                        _useGpuTransformsActive = savedUseGpuTransforms;
+                        _cameraViewMatrix = savedCamera;
+                        _suspendHitTestCacheWrites = savedSuspendHitTestCacheWrites;
+                        transformedRunActive = false;
+                    }
+                    CompileVisualTree(child, parentTransform);
+                    continue;
+                }
+
+                if (!transformedRunActive)
+                {
+                    CommitPendingDrawCalls();
+                    _activeSceneTransform = transform;
+                    _activeSceneTransformBase = parentTransform;
+                    _useGpuTransformsActive = true;
+                    _cameraViewMatrix = Matrix4x4.Identity;
+                    _suspendHitTestCacheWrites = true;
+                    transformedRunActive = true;
+                }
+                CompileVisualTree(child, Matrix4x4.Identity);
+            }
+            if (transformedRunActive)
+            {
+                CommitPendingDrawCalls();
+            }
+        }
+        finally
+        {
+            _activeSceneTransform = savedTransform;
+            _activeSceneTransformBase = savedBase;
+            _useGpuTransformsActive = savedUseGpuTransforms;
+            _cameraViewMatrix = savedCamera;
+            _suspendHitTestCacheWrites = savedSuspendHitTestCacheWrites;
+        }
+    }
+
+    private void CompileRetainedTransformVisual(
+        Visual node,
+        Matrix4x4 parentTransform,
+        Vector2? offsetOverride,
+        bool includeLocalTransform,
+        bool includeLocalVisualState)
+    {
+        var transform = node.RetainedTransform!;
+
+        var localTransform = includeLocalTransform
+            ? offsetOverride.HasValue
+                ? node.GetLocalTransform(offsetOverride.Value)
+                : node.GetLocalTransform()
+            : Matrix4x4.CreateTranslation(
+                offsetOverride.GetValueOrDefault().X,
+                offsetOverride.GetValueOrDefault().Y,
+                0f);
+        var baseTransform = localTransform * parentTransform;
+        bool canUseRetainedTransform =
+            node.SupportsRetainedTransformSubtree() &&
+            IsTranslationOnly2D(baseTransform) &&
+            _offscreenRenderDepth == 0 &&
+            _elementsRenderingLayers.Count == 0 &&
+            _elementsRenderingEffects.Count == 0 &&
+            _activeBlendMode == GpuBlendMode.SrcOver;
+        if (!canUseRetainedTransform)
+        {
+            _compiledSceneContainsRetainedTransformFallback = true;
+            CompileVisualTree(
+                node,
+                transform.Matrix * parentTransform,
+                offsetOverride,
+                includeLocalTransform,
+                includeLocalVisualState,
+                includeSceneTransform: false);
+            return;
+        }
+
+        var key = new SceneTransformKey(transform, baseTransform);
+        if (!_sceneTransformResources.ContainsKey(key))
+        {
+            _sceneTransformResources.Add(key, CreateSceneTransformResources());
+        }
+        if (!_activeSceneTransformKeys.Contains(key))
+        {
+            _activeSceneTransformKeys.Add(key);
+        }
+
+        CommitPendingDrawCalls();
+        var savedTransform = _activeSceneTransform;
+        var savedBase = _activeSceneTransformBase;
+        bool savedUseGpuTransforms = _useGpuTransformsActive;
+        Matrix4x4 savedCamera = _cameraViewMatrix;
+        bool savedSuspendHitTestCacheWrites = _suspendHitTestCacheWrites;
+        try
+        {
+            _activeSceneTransform = transform;
+            _activeSceneTransformBase = baseTransform;
+            _useGpuTransformsActive = true;
+            _cameraViewMatrix = Matrix4x4.Identity;
+            _suspendHitTestCacheWrites = true;
+            CompileVisualTree(
+                node,
+                Matrix4x4.Identity,
+                offsetOverride: Vector2.Zero,
+                includeLocalTransform: false,
+                includeLocalVisualState: includeLocalVisualState,
+                includeSceneTransform: false);
+            CommitPendingDrawCalls();
+        }
+        finally
+        {
+            _activeSceneTransform = savedTransform;
+            _activeSceneTransformBase = savedBase;
+            _useGpuTransformsActive = savedUseGpuTransforms;
+            _cameraViewMatrix = savedCamera;
+            _suspendHitTestCacheWrites = savedSuspendHitTestCacheWrites;
+        }
     }
 
     private bool TryCompileAutomaticTextFragment(Visual node, Matrix4x4 globalTransform)
@@ -4320,9 +4595,22 @@ SceneStateUploadComplete:
     {
         // Static/offscreen compilation may replay under a different viewport later and
         // therefore must retain the complete command stream.
-        if (!_activeClipRect.HasValue || ActiveCompilationContext != null)
+        bool deferredRetainedViewport =
+            _activeSceneTransform != null &&
+            node.IsViewportDeferred;
+        if (!_activeClipRect.HasValue ||
+            ActiveCompilationContext != null ||
+            (_activeSceneTransform != null && !deferredRetainedViewport))
         {
             return false;
+        }
+
+        if (deferredRetainedViewport)
+        {
+            // Deferred visuals are rebuilt at half-viewport scroll bands. Compile one full
+            // viewport of overscan on every side so transform-only frames between boundaries
+            // cannot expose an omitted command.
+            transform = transform * _activeSceneTransform!.Matrix * _activeSceneTransformBase;
         }
 
         Rect? localBounds = node.LocalRenderBounds;
@@ -4344,9 +4632,38 @@ SceneStateUploadComplete:
         float maxY = MathF.Max(MathF.Max(p0.Y, p1.Y), MathF.Max(p2.Y, p3.Y));
 
         Rect clip = _activeClipRect.Value;
+        if (deferredRetainedViewport)
+        {
+            clip = new Rect(
+                clip.X - clip.Width,
+                clip.Y - clip.Height,
+                clip.Width * 3f,
+                clip.Height * 3f);
+        }
         float clipRight = clip.X + clip.Width;
         float clipBottom = clip.Y + clip.Height;
-        return maxX <= clip.X || minX >= clipRight || maxY <= clip.Y || minY >= clipBottom;
+        bool outside = maxX <= clip.X || minX >= clipRight || maxY <= clip.Y || minY >= clipBottom;
+        if (outside && deferredRetainedViewport && node is IViewportDeferredWarmable warmable)
+        {
+            // Shape only the next half-viewport ring beyond compiled overscan. This keeps worker
+            // preparation bounded while giving the next retained-scroll band time to finish.
+            Rect viewport = _activeClipRect!.Value;
+            float marginX = viewport.Width * 0.5f;
+            float marginY = viewport.Height * 0.5f;
+            Rect prefetch = new Rect(
+                clip.X - marginX,
+                clip.Y - marginY,
+                clip.Width + marginX * 2f,
+                clip.Height + marginY * 2f);
+            float prefetchRight = prefetch.X + prefetch.Width;
+            float prefetchBottom = prefetch.Y + prefetch.Height;
+            if (maxX > prefetch.X && minX < prefetchRight &&
+                maxY > prefetch.Y && minY < prefetchBottom)
+            {
+                warmable.QueueViewportWarmup();
+            }
+        }
+        return outside;
     }
 
     private static bool IsFiniteAffine2D(Matrix4x4 transform)
@@ -4727,9 +5044,10 @@ SceneStateUploadComplete:
         var picture = handle.Picture;
         EnsureSceneTransformCompatible(picture, new HashSet<GpuPicture>());
         var resourceKey = new SceneTransformKey(transform, baseTransform);
-        if (!_sceneTransformResources.ContainsKey(resourceKey))
+        if (!_sceneTransformResources.TryGetValue(resourceKey, out var transformResources))
         {
-            _sceneTransformResources.Add(resourceKey, CreateSceneTransformResources());
+            transformResources = CreateSceneTransformResources();
+            _sceneTransformResources.Add(resourceKey, transformResources);
         }
         if (!_activeSceneTransformKeys.Contains(resourceKey))
         {
@@ -4741,7 +5059,13 @@ SceneStateUploadComplete:
         if (!_sceneFragmentArena.TryGet(handle, version, _frameNumber, out var allocation))
         {
             _sceneFragmentUpdatesInFrame++;
-            allocation = CompileSceneFragmentAllocation(handle, picture, transform, baseTransform, version);
+            allocation = CompileSceneFragmentAllocation(
+                handle,
+                picture,
+                transform,
+                baseTransform,
+                transformResources.TransformIndex,
+                version);
         }
         else
         {
@@ -4749,20 +5073,22 @@ SceneStateUploadComplete:
         }
 
         var ranges = allocation.DrawRanges;
-        for (int i = 0; i < ranges.Length; i++)
+        for (int i = 0; i < allocation.DrawRangeCount; i++)
         {
             var range = ranges[i];
             var type = range.Type == DrawCallType.Vector
                 ? DrawCallType.FragmentVector
-                : DrawCallType.FragmentText;
-            if (type == DrawCallType.FragmentText &&
+                : ReferenceEquals(allocation.IndexedTransform, transform) &&
+                    allocation.IndexedBaseTransform == baseTransform &&
+                    allocation.TransformIndex == transformResources.TransformIndex
+                    ? DrawCallType.FragmentTextIndexed
+                    : DrawCallType.FragmentText;
+            if (type == DrawCallType.FragmentTextIndexed &&
                 _drawCalls.Count > 0 &&
                 _drawCalls[^1] is var previous &&
-                previous.Type == DrawCallType.FragmentText &&
+                previous.Type == DrawCallType.FragmentTextIndexed &&
                 previous.StaticBuffer is GpuSceneFragmentArena.Allocation previousAllocation &&
                 previousAllocation.TextStart + previousAllocation.TextCapacity == allocation.TextStart &&
-                ReferenceEquals(previous.SceneTransform, transform) &&
-                previous.SceneTransformBase == baseTransform &&
                 previous.ClipRect == _activeClipRect &&
                 ReferenceEquals(previous.MaskTexture, _maskStack.Count > 0 ? _maskStack.Peek() : null) &&
                 previous.BlendMode == _activeBlendMode)
@@ -4794,6 +5120,7 @@ SceneStateUploadComplete:
         GpuPicture picture,
         SceneTransformHandle transform,
         Matrix4x4 baseTransform,
+        uint transformIndex,
         long version)
     {
         int vectorStart = _vectorVerticesList.Count;
@@ -4859,7 +5186,10 @@ SceneStateUploadComplete:
                 CollectionsMarshal.AsSpan(_textVerticesList).Slice(textStart),
                 CollectionsMarshal.AsSpan(_activeBrushes),
                 CollectionsMarshal.AsSpan(_activeGradientStops),
-                CollectionsMarshal.AsSpan(ranges));
+                CollectionsMarshal.AsSpan(ranges),
+                transform,
+                baseTransform,
+                transformIndex);
         }
         finally
         {
@@ -9942,7 +10272,7 @@ SceneStateUploadComplete:
                             cmd.TextRenderingMode,
                             info.IsColorBitmap)),
                     BrushIndex = bIdx,
-                    Padding = 0f
+                    Padding = GlyphInstance.EncodeAtlasHandle(info.AtlasPage, 0)
                 });
             }
         }
@@ -10167,7 +10497,7 @@ SceneStateUploadComplete:
                             cmd.TextRenderingMode,
                             info.IsColorBitmap)),
                     BrushIndex = bIdx,
-                    Padding = 0f
+                    Padding = GlyphInstance.EncodeAtlasHandle(info.AtlasPage, 0)
                 });
             }
         }
@@ -10964,6 +11294,43 @@ SceneStateUploadComplete:
             : resources.FragmentVectorBindGroup);
     }
 
+    private BindGroup* GetSceneFragmentTextBindGroup(bool isOffscreen)
+    {
+        if (_fragmentTextBindGroupGeneration != _sceneFragmentArena.BindGroupGeneration)
+        {
+            QueueBindGroupRelease((nint)_fragmentTextBindGroup);
+            QueueBindGroupRelease((nint)_fragmentTextBindGroupOffscreen);
+
+            var entries = stackalloc BindGroupEntry[2];
+            entries[0] = new BindGroupEntry
+            {
+                Binding = 0,
+                Buffer = _uniformBuffer.BufferPtr,
+                Offset = 0,
+                Size = (uint)Marshal.SizeOf<GpuUniforms>()
+            };
+            entries[1] = new BindGroupEntry
+            {
+                Binding = 1,
+                Buffer = _sceneFragmentArena.TransformBuffer.BufferPtr,
+                Offset = 0,
+                Size = _sceneFragmentArena.TransformBuffer.Size
+            };
+            var descriptor = new BindGroupDescriptor
+            {
+                Layout = _fragmentTextBindGroupLayout,
+                EntryCount = 2,
+                Entries = entries
+            };
+            _fragmentTextBindGroup = _context.Api.DeviceCreateBindGroup(_context.Device, &descriptor);
+            descriptor.Layout = _fragmentTextBindGroupLayoutOffscreen;
+            _fragmentTextBindGroupOffscreen = _context.Api.DeviceCreateBindGroup(_context.Device, &descriptor);
+            _fragmentTextBindGroupGeneration = _sceneFragmentArena.BindGroupGeneration;
+        }
+
+        return isOffscreen ? _fragmentTextBindGroupOffscreen : _fragmentTextBindGroup;
+    }
+
     private void UpdateSceneTransformResources(
         Matrix4x4 projection,
         uint renderWidth,
@@ -10992,6 +11359,7 @@ SceneStateUploadComplete:
             float dpiScale = MathF.Max(_currentDpiScale, 0.0001f);
             view.M41 = MathF.Round(view.M41 * dpiScale) / dpiScale;
             view.M42 = MathF.Round(view.M42 * dpiScale) / dpiScale;
+            _sceneFragmentArena.UpdateTransform(resources.TransformIndex, view);
 
             resources.UniformBuffer.WriteSingle(new GpuUniforms
             {
@@ -11011,6 +11379,7 @@ SceneStateUploadComplete:
 
     private SceneTransformResources CreateSceneTransformResources()
     {
+        uint transformIndex = _sceneFragmentArena.AllocateTransform();
         var buffer = new GpuBuffer(
             _context,
             (uint)Marshal.SizeOf<GpuUniforms>(),
@@ -11061,6 +11430,7 @@ SceneStateUploadComplete:
         var textBindGroupOffscreen = _context.Api.DeviceCreateBindGroup(_context.Device, &textDescriptor);
         return new SceneTransformResources(
             buffer,
+            transformIndex,
             (nint)vectorBindGroup,
             (nint)vectorBindGroupOffscreen,
             (nint)textBindGroup,
@@ -11095,6 +11465,7 @@ SceneStateUploadComplete:
         {
             var key = expired[index];
             var resources = _sceneTransformResources[key];
+            _sceneFragmentArena.ReleaseTransform(resources.TransformIndex);
             resources.UniformBuffer.Dispose();
             QueueBindGroupRelease(resources.VectorBindGroup);
             QueueBindGroupRelease(resources.VectorBindGroupOffscreen);
@@ -12764,7 +13135,6 @@ SceneStateUploadComplete:
             _gradientStopsStorageBuffer.Write(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_activeGradientStops));
         }
         UpdateSceneTransformResources(projection, targetTexture.Width, targetTexture.Height);
-        _pathAtlas.RasterizePendingPaths();
 
         // Render target view for offscreen GpuTexture
         var targetView = targetTexture.ViewPtr;
@@ -12773,6 +13143,10 @@ SceneStateUploadComplete:
         var encoderDesc = new CommandEncoderDescriptor { Label = (byte*)SilkMarshal.StringToPtr("Offscreen Compositor Encoder") };
         encoder = _context.Api.DeviceCreateCommandEncoder(_context.Device, &encoderDesc);
         SilkMarshal.Free((nint)encoderDesc.Label);
+
+        // Keep offscreen path preparation and sampling in one submission as well.
+        _pathAtlas.RasterizePendingPaths(encoder);
+        RecordStaticDxfVisibility(encoder);
 
         // Run mask render passes first!
         ExecuteMaskRenderPasses(encoder, isOffscreen: true);
@@ -12876,6 +13250,30 @@ SceneStateUploadComplete:
                 currentMaskTexture = dc.MaskTexture;
                 currentSceneTransform = dc.SceneTransform;
                 currentSceneTransformBase = dc.SceneTransformBase;
+            }
+            else if (dc.Type == DrawCallType.FragmentTextIndexed)
+            {
+                var activePipeline = GetFragmentTextPipeline(dc.BlendMode, isOffscreen: true);
+                var maskBindGroup = GetMaskBindGroup(dc.MaskTexture, isOffscreen: true);
+                _context.Api.RenderPassEncoderSetPipeline(pass, activePipeline);
+                _context.Api.RenderPassEncoderSetBindGroup(
+                    pass,
+                    0,
+                    GetSceneFragmentTextBindGroup(isOffscreen: true),
+                    0,
+                    null);
+                fixed (BindGroup** pAtlas = &_atlasBindGroupOffscreen)
+                {
+                    _context.Api.RenderPassEncoderSetBindGroup(pass, 1, *pAtlas, 0, null);
+                }
+                _context.Api.RenderPassEncoderSetBindGroup(pass, 2, maskBindGroup, 0, null);
+                _context.Api.RenderPassEncoderSetVertexBuffer(pass, 0, _sceneFragmentArena.TextBuffer.BufferPtr, 0, _sceneFragmentArena.TextBuffer.Size);
+                _context.Api.RenderPassEncoderDraw(pass, 6, dc.IndexCount, 0, dc.IndexStart);
+                currentType = DrawCallType.FragmentTextIndexed;
+                currentBlendMode = dc.BlendMode;
+                currentMaskTexture = dc.MaskTexture;
+                currentSceneTransform = null;
+                currentSceneTransformBase = default;
             }
             else if (dc.Type == DrawCallType.FragmentText)
             {
@@ -13556,7 +13954,9 @@ SceneStateUploadComplete:
                 retainedGlyphBuilder.GetInstances(),
                 _activeBrushes.ToArray(),
                 _activeGradientStops.ToArray(),
-                staticDrawCallList.ToArray()
+                staticDrawCallList.ToArray(),
+                Options.EnableGpuSceneVisibility,
+                Options.GpuSceneVisibilityMinimumItems
             );
 
             staticBuffer.TextRecords = _compiledTextRecords.ToArray();
@@ -14069,7 +14469,9 @@ SceneStateUploadComplete:
                 retainedGlyphBuilder.GetInstances(),
                 _activeBrushes.ToArray(),
                 _activeGradientStops.ToArray(),
-                staticDrawCallList.ToArray()
+                staticDrawCallList.ToArray(),
+                Options.EnableGpuSceneVisibility,
+                Options.GpuSceneVisibilityMinimumItems
             );
 
             staticBuffer.TextRecords = _compiledTextRecords.ToArray();
@@ -14209,6 +14611,65 @@ SceneStateUploadComplete:
         }
     }
 
+    private void RecordStaticDxfVisibility(CommandEncoder* encoder)
+    {
+        _staticVisibilityCandidates.Clear();
+        _staticVisibilityDuplicates.Clear();
+
+        int drawCallCount = _drawCalls.Count;
+        for (int drawCallIndex = 0; drawCallIndex < drawCallCount; drawCallIndex++)
+        {
+            var drawCall = _drawCalls[drawCallIndex];
+            if (drawCall.Type != DrawCallType.StaticDxf ||
+                drawCall.StaticBuffer is not DxfStaticBuffer staticBuffer)
+            {
+                continue;
+            }
+
+            staticBuffer.ResetRetainedGlyphVisibilityForFrame();
+            if (staticBuffer.HasRetainedGlyphVisibility &&
+                !_staticVisibilityCandidates.Add(staticBuffer))
+            {
+                // One compacted index/indirect buffer cannot represent two placements
+                // recorded before their render passes. Preserve correctness by keeping
+                // both placements on direct retained replay for this frame.
+                _staticVisibilityDuplicates.Add(staticBuffer);
+            }
+        }
+
+        if (_staticVisibilityCandidates.Count == 0)
+        {
+            return;
+        }
+
+        var canvasSize = new Vector2(_currentWidth, _currentHeight);
+        var viewport = new Vector4(0f, 0f, _currentWidth, _currentHeight);
+        for (int drawCallIndex = 0; drawCallIndex < drawCallCount; drawCallIndex++)
+        {
+            var drawCall = _drawCalls[drawCallIndex];
+            if (drawCall.Type != DrawCallType.StaticDxf ||
+                drawCall.StaticBuffer is not DxfStaticBuffer staticBuffer ||
+                _staticVisibilityDuplicates.Contains(staticBuffer) ||
+                !_staticVisibilityCandidates.Remove(staticBuffer))
+            {
+                continue;
+            }
+
+            staticBuffer.PrepareViewport(
+                _currentProjection,
+                drawCall.Transform,
+                canvasSize,
+                _currentDpiScale);
+            staticBuffer.RecordRetainedGlyphVisibility(encoder, viewport);
+            _gpuVisibilityBatchesInFrame++;
+            _gpuVisibilityInputsInFrame = checked(
+                _gpuVisibilityInputsInFrame + (int)staticBuffer.RetainedGlyphInstanceCount);
+        }
+
+        _staticVisibilityCandidates.Clear();
+        _staticVisibilityDuplicates.Clear();
+    }
+
     internal unsafe void DrawStaticDxfBuffer(
         RenderPassEncoder* pass,
         object staticBufferObj,
@@ -14328,11 +14789,32 @@ SceneStateUploadComplete:
             sb.RetainedGlyphBindGroup != null &&
             sb.RetainedGlyphInstanceBuffer != null)
         {
-            var retainedGlyphPipeline = GetRetainedGlyphPipeline(blendMode, isOffscreen);
+            bool compacted = sb.IsRetainedGlyphVisibilityPrepared &&
+                sb.RetainedGlyphIndirectBindGroup != null &&
+                sb.RetainedGlyphIndirectBuffer != null;
+            var retainedGlyphPipeline = GetRetainedGlyphPipeline(
+                blendMode,
+                isOffscreen,
+                compacted);
             _context.Api.RenderPassEncoderSetPipeline(pass, retainedGlyphPipeline);
-            _context.Api.RenderPassEncoderSetBindGroup(pass, 0, sb.RetainedGlyphBindGroup, 0, null);
+            _context.Api.RenderPassEncoderSetBindGroup(
+                pass,
+                0,
+                compacted ? sb.RetainedGlyphIndirectBindGroup : sb.RetainedGlyphBindGroup,
+                0,
+                null);
             _context.Api.RenderPassEncoderSetBindGroup(pass, 1, maskBg, 0, null);
-            _context.Api.RenderPassEncoderDraw(pass, 6, sb.RetainedGlyphInstanceCount, 0, 0);
+            if (compacted)
+            {
+                _context.Api.RenderPassEncoderDrawIndirect(
+                    pass,
+                    sb.RetainedGlyphIndirectBuffer!.BufferPtr,
+                    0);
+            }
+            else
+            {
+                _context.Api.RenderPassEncoderDraw(pass, 6, sb.RetainedGlyphInstanceCount, 0, 0);
+            }
         }
     }
 
@@ -14934,7 +15416,7 @@ SceneStateUploadComplete:
             var textShaderModule = _pipelineCache.GetOrCreateShader("Text", Shaders.TextShader, "TextShader");
             var textPipelineLayout = isOffscreen ? _textPipelineLayoutOffscreen : _textPipelineLayout;
 
-            Span<VertexAttribute> textAttrs = stackalloc VertexAttribute[8];
+            Span<VertexAttribute> textAttrs = stackalloc VertexAttribute[9];
             textAttrs[0] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 0, ShaderLocation = 0 }; // SnappedLogicalPos
             textAttrs[1] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 8, ShaderLocation = 1 }; // BasisX
             textAttrs[2] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 16, ShaderLocation = 2 }; // BasisY
@@ -14943,6 +15425,7 @@ SceneStateUploadComplete:
             textAttrs[5] = new VertexAttribute { Format = VertexFormat.Float32x4, Offset = 56, ShaderLocation = 5 }; // Color
             textAttrs[6] = new VertexAttribute { Format = VertexFormat.Float32x4, Offset = 72, ShaderLocation = 6 }; // ScaleBoldItalicUseMvp
             textAttrs[7] = new VertexAttribute { Format = VertexFormat.Float32, Offset = 88, ShaderLocation = 7 }; // BrushIndex
+            textAttrs[8] = new VertexAttribute { Format = VertexFormat.Float32, Offset = 92, ShaderLocation = 8 }; // Atlas page / retained transform handle
 
             fixed (VertexAttribute* textAttribsPtr = textAttrs)
             {
@@ -14951,7 +15434,7 @@ SceneStateUploadComplete:
                 {
                     ArrayStride = (uint)Unsafe.SizeOf<GlyphInstance>(),
                     StepMode = VertexStepMode.Instance,
-                    AttributeCount = 8,
+                    AttributeCount = 9,
                     Attributes = textAttribsPtr
                 };
 
@@ -15049,7 +15532,67 @@ SceneStateUploadComplete:
         }
     }
 
-    private RenderPipeline* GetRetainedGlyphPipeline(GpuBlendMode blendMode, bool isOffscreen)
+    private RenderPipeline* GetFragmentTextPipeline(
+        GpuBlendMode blendMode,
+        bool isOffscreen,
+        TextureFormat? overrideFormat = null)
+    {
+        uint sampleCount = isOffscreen ? 1u : Options.PrimarySampleCount;
+        var shader = _pipelineCache.GetOrCreateShader("Text", Shaders.TextShader, "TextShader");
+        Span<VertexAttribute> attributes = stackalloc VertexAttribute[9];
+        attributes[0] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 0, ShaderLocation = 0 };
+        attributes[1] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 8, ShaderLocation = 1 };
+        attributes[2] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 16, ShaderLocation = 2 };
+        attributes[3] = new VertexAttribute { Format = VertexFormat.Float32x4, Offset = 24, ShaderLocation = 3 };
+        attributes[4] = new VertexAttribute { Format = VertexFormat.Float32x4, Offset = 40, ShaderLocation = 4 };
+        attributes[5] = new VertexAttribute { Format = VertexFormat.Float32x4, Offset = 56, ShaderLocation = 5 };
+        attributes[6] = new VertexAttribute { Format = VertexFormat.Float32x4, Offset = 72, ShaderLocation = 6 };
+        attributes[7] = new VertexAttribute { Format = VertexFormat.Float32, Offset = 88, ShaderLocation = 7 };
+        attributes[8] = new VertexAttribute { Format = VertexFormat.Float32, Offset = 92, ShaderLocation = 8 };
+
+        fixed (VertexAttribute* attributesPointer = attributes)
+        {
+            Span<VertexBufferLayout> layouts = stackalloc VertexBufferLayout[1];
+            layouts[0] = new VertexBufferLayout
+            {
+                ArrayStride = (uint)Unsafe.SizeOf<GlyphInstance>(),
+                StepMode = VertexStepMode.Instance,
+                AttributeCount = 9,
+                Attributes = attributesPointer
+            };
+            bool writesMask = overrideFormat == TextureFormat.R8Unorm;
+            string fragmentEntry = GetFragmentEntryPoint(
+                DrawCallType.Text,
+                blendMode,
+                GpuTextureAlphaMode.Straight,
+                writesMask);
+            string suffix = overrideFormat.HasValue ? $"_{overrideFormat.Value}" : string.Empty;
+            return _pipelineCache.GetOrCreateRenderPipeline(
+                $"FragmentTextIndexed_{(isOffscreen ? "Offscreen" : "Primary")}_{blendMode}{suffix}_{fragmentEntry}",
+                shader,
+                layouts,
+                "fragment_vs_main",
+                fragmentEntry,
+                overrideFormat ?? RenderFormat,
+                PrimitiveTopology.TriangleList,
+                enableBlend: true,
+                enableDepthStencil: false,
+                sampleCount: sampleCount,
+                blendMode: blendMode,
+                pipelineLayout: isOffscreen
+                    ? _fragmentTextPipelineLayoutOffscreen
+                    : _fragmentTextPipelineLayout,
+                sourceAlphaMode: GetPipelineSourceAlphaMode(
+                    DrawCallType.Text,
+                    blendMode,
+                    GpuTextureAlphaMode.Straight));
+        }
+    }
+
+    private RenderPipeline* GetRetainedGlyphPipeline(
+        GpuBlendMode blendMode,
+        bool isOffscreen,
+        bool compacted = false)
     {
         if (_retainedGlyphShaderModule == null)
         {
@@ -15060,9 +15603,10 @@ SceneStateUploadComplete:
         }
 
         return _pipelineCache.GetOrCreateRenderPipeline(
-            $"RetainedGlyph_{(isOffscreen ? "Offscreen" : "Primary")}_{blendMode}",
+            $"RetainedGlyph_{(compacted ? "Compacted" : "Direct")}_{(isOffscreen ? "Offscreen" : "Primary")}_{blendMode}",
             _retainedGlyphShaderModule,
             ReadOnlySpan<VertexBufferLayout>.Empty,
+            vertexEntry: compacted ? "vs_compacted" : "vs_main",
             targetFormat: RenderFormat,
             enableBlend: true,
             sampleCount: isOffscreen ? 1u : Options.PrimarySampleCount,
@@ -15471,7 +16015,7 @@ SceneStateUploadComplete:
 
     private unsafe BindGroupLayout* CreateRetainedGlyphLayout()
     {
-        var entries = stackalloc BindGroupLayoutEntry[4];
+        var entries = stackalloc BindGroupLayoutEntry[5];
         entries[0] = new BindGroupLayoutEntry
         {
             Binding = 0,
@@ -15516,10 +16060,21 @@ SceneStateUploadComplete:
                 MinBindingSize = 0
             }
         };
+        entries[4] = new BindGroupLayoutEntry
+        {
+            Binding = 4,
+            Visibility = ShaderStage.Vertex,
+            Buffer = new BufferBindingLayout
+            {
+                Type = BufferBindingType.ReadOnlyStorage,
+                HasDynamicOffset = false,
+                MinBindingSize = 0
+            }
+        };
 
         var descriptor = new BindGroupLayoutDescriptor
         {
-            EntryCount = 4,
+            EntryCount = 5,
             Entries = entries
         };
         return _context.Api.DeviceCreateBindGroupLayout(_context.Device, &descriptor);
@@ -15548,7 +16103,42 @@ SceneStateUploadComplete:
         return _context.Api.DeviceCreateBindGroupLayout(_context.Device, &desc);
     }
 
-    private unsafe BindGroupLayout* CreateSamplerTextureLayout()
+    private unsafe BindGroupLayout* CreateFragmentTextLayout()
+    {
+        var entries = stackalloc BindGroupLayoutEntry[2];
+        entries[0] = new BindGroupLayoutEntry
+        {
+            Binding = 0,
+            Visibility = ShaderStage.Vertex | ShaderStage.Fragment,
+            Buffer = new BufferBindingLayout
+            {
+                Type = BufferBindingType.Uniform,
+                HasDynamicOffset = false,
+                MinBindingSize = 0
+            }
+        };
+        entries[1] = new BindGroupLayoutEntry
+        {
+            Binding = 1,
+            Visibility = ShaderStage.Vertex,
+            Buffer = new BufferBindingLayout
+            {
+                Type = BufferBindingType.ReadOnlyStorage,
+                HasDynamicOffset = false,
+                MinBindingSize = 0
+            }
+        };
+
+        var descriptor = new BindGroupLayoutDescriptor
+        {
+            EntryCount = 2,
+            Entries = entries
+        };
+        return _context.Api.DeviceCreateBindGroupLayout(_context.Device, &descriptor);
+    }
+
+    private unsafe BindGroupLayout* CreateSamplerTextureLayout(
+        TextureViewDimension viewDimension = TextureViewDimension.Dimension2D)
     {
         var entries = stackalloc BindGroupLayoutEntry[2];
         entries[0] = new BindGroupLayoutEntry
@@ -15567,7 +16157,7 @@ SceneStateUploadComplete:
             Texture = new TextureBindingLayout
             {
                 SampleType = TextureSampleType.Float,
-                ViewDimension = TextureViewDimension.Dimension2D,
+                ViewDimension = viewDimension,
                 Multisampled = false
             }
         };
