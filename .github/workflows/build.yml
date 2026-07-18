@@ -121,7 +121,8 @@ jobs:
           if ($IsWindows) {
             # Keep native WebGPU lifetime bounded on the hosted Windows runner.
             # Sample pages share one retained headless device, while ordinary headless,
-            # ShaderToy, and the large multilingual specimen each get a fresh process.
+            # image effects, ShaderToy, and the large multilingual specimen each get a
+            # fresh process. Image effects creates the largest transient texture graph.
             $headlessArgs += @(
               "--filter",
               "FullyQualifiedName!~SamplePagesTests"
@@ -140,7 +141,18 @@ jobs:
               --runtime "${{ matrix.rid }}" `
               --no-build `
               --verbosity normal `
-              --filter "FullyQualifiedName~SamplePagesTests&FullyQualifiedName!~ShaderToy&FullyQualifiedName!~Test_TypographyScriptsPage_Renders"
+              --filter "FullyQualifiedName~SamplePagesTests&FullyQualifiedName!~ShaderToy&FullyQualifiedName!~ImageEffects&FullyQualifiedName!~Test_TypographyScriptsPage_Renders"
+            if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+            }
+
+            dotnet test `
+              src/ProGPU.Tests.Headless/ProGPU.Tests.Headless.csproj `
+              --configuration Release `
+              --runtime "${{ matrix.rid }}" `
+              --no-build `
+              --verbosity normal `
+              --filter "FullyQualifiedName~SamplePagesTests.Test_ImageEffectsPage_Renders"
             if ($LASTEXITCODE -ne 0) {
               exit $LASTEXITCODE
             }
