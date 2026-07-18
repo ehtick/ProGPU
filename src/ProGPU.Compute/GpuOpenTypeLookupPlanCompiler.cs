@@ -446,7 +446,7 @@ public static class GpuOpenTypeLookupPlanCompiler
             if (ReadU32(data, record) == languageTag)
                 languageSystem = script + ReadU16(data, record + 4);
         }
-        if (!CanRead(data, languageSystem, 6) || languageSystem >= tableEnd) return [];
+        if (languageSystem == 0 || !CanRead(data, languageSystem, 6) || languageSystem >= tableEnd) return [];
         required = ReadU16(data, languageSystem + 2);
         ushort count = ReadU16(data, languageSystem + 4);
         var result = new HashSet<ushort>();
