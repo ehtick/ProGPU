@@ -231,6 +231,7 @@ public sealed class ShapingContractsTests
         Assert.Equal(16, Marshal.SizeOf<GpuGlyphMetrics>());
         Assert.Equal(16, Marshal.SizeOf<GpuShapingScalar>());
         Assert.Equal(32, Marshal.SizeOf<GpuOpenTypeTableDirectory>());
+        Assert.Equal(32, Marshal.SizeOf<GpuOpenTypeLookupCommand>());
         foreach (uint codePoint in new uint[] { 'A', 'z', 0x00e9, 0x03a9, 0x20ac, 0x1f642 })
             Assert.Equal(face.GetNominalGlyph(codePoint), plan.GetNominalGlyph(codePoint));
         uint glyph = face.GetNominalGlyph('A');
@@ -266,6 +267,61 @@ public sealed class ShapingContractsTests
         Assert.Equal(face.GetHorizontalAdvance(output[0].GlyphId), output[0].AdvanceX);
         Assert.Equal(face.GetNominalGlyph('z'), output[1].GlyphId);
         Assert.Equal(face.GetHorizontalAdvance(output[1].GlyphId), output[1].AdvanceX);
+    }
+
+    [Fact]
+    public void GpuLookupPlanPreservesHalfOpenFeatureRanges()
+    {
+        var face = new TtfShapingFontFace(InterFontFamily.Regular);
+        GpuOpenTypeShapingPlan plan = GpuOpenTypeShapingPlanCompiler.Compile(face);
+        uint tag = new OpenTypeTag("ss01").Value;
+
+        GpuOpenTypeLookupCommand[] commands = GpuOpenTypeLookupPlanCompiler.Compile(
+            plan,
+            new ShapingRequest(
+                ShapingDirection.LeftToRight,
+                new OpenTypeTag("latn"),
+                features: new[] { new ShapingFeature(new OpenTypeTag("ss01"), 1, 0, 1) }));
+
+        GpuOpenTypeLookupCommand[] stylistic = commands.Where(command => command.FeatureTag == tag).ToArray();
+        Assert.NotEmpty(stylistic);
+        Assert.All(stylistic, command =>
+        {
+            Assert.Equal(0u, command.RangeStart);
+            Assert.Equal(1u, command.RangeEnd);
+            Assert.Equal(1u, command.FeatureValue);
+        });
+    }
+
+    [Fact]
+    public void GpuLookupVmAppliesRangedInterFeature()
+    {
+        var face = new TtfShapingFontFace(InterFontFamily.Regular);
+        GpuOpenTypeShapingPlan plan = GpuOpenTypeShapingPlanCompiler.Compile(face);
+        var request = new ShapingRequest(
+            ShapingDirection.LeftToRight,
+            new OpenTypeTag("latn"),
+            features: new[] { new ShapingFeature(new OpenTypeTag("ss01"), 1, 0, 1) });
+        GpuOpenTypeLookupCommand[] commands = GpuOpenTypeLookupPlanCompiler.Compile(plan, request);
+        commands = commands.Where(command => command.FeatureTag == new OpenTypeTag("ss01").Value).ToArray();
+        using var expected = new ShapingBuffer();
+        CpuOpenTypeShaper.Instance.Shape("33", face, request, expected);
+        using var context = new WgpuContext();
+        context.Initialize(null);
+        using var fontData = new GpuOpenTypeFontData(context, plan);
+        using var pipeline = new GpuOpenTypeRunPipeline(context);
+        using var actual = new ShapingBuffer();
+
+        pipeline.ExecuteRun(
+            [new GpuShapingScalar('3', 0), new GpuShapingScalar('3', 1)],
+            fontData,
+            request.Direction,
+            commands,
+            actual);
+
+        Assert.Equal(expected.Count, actual.Count);
+        Assert.Equal(expected.Glyphs.ToArray().Select(glyph => glyph.GlyphId),
+            actual.Glyphs.ToArray().Select(glyph => glyph.GlyphId));
     }
 
     [Fact]

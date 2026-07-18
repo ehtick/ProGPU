@@ -35,7 +35,7 @@ public sealed class GpuOpenTypeFontData : IDisposable
         uint metricBytes = checked((uint)Math.Max(16, GlyphMetricCount * Marshal.SizeOf<GpuGlyphMetrics>()));
         CmapBuffer = new GpuBuffer(context, cmapBytes, BufferUsage.Storage | BufferUsage.CopyDst, "OpenType cmap ranges");
         MetricsBuffer = new GpuBuffer(context, metricBytes, BufferUsage.Storage | BufferUsage.CopyDst, "OpenType glyph metrics");
-        uint tableBytes = checked((uint)Math.Max(4, plan.TableData.Length));
+        uint tableBytes = checked((uint)Math.Max(4, (plan.TableData.Length + 3) & ~3));
         TablesBuffer = new GpuBuffer(context, tableBytes, BufferUsage.Storage | BufferUsage.CopyDst, "OpenType table bytes");
         TableDirectoryBuffer = new GpuBuffer(context, 32, BufferUsage.Uniform | BufferUsage.CopyDst, "OpenType table directory");
         if (CmapRangeCount != 0) CmapBuffer.Write(plan.Cmap.Span);
@@ -178,7 +178,7 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
         BindGroupLayout* layout = _context.Api.ComputePipelineGetBindGroupLayout(pipeline, 0);
         try
         {
-            BindGroupEntry* entries = stackalloc BindGroupEntry[5];
+            BindGroupEntry* entries = stackalloc BindGroupEntry[6];
             uint count;
             if (stage == 0)
             {
@@ -201,10 +201,11 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
             {
                 entries[0] = Entry(0, _paramsBuffer!);
                 entries[1] = Entry(4, _glyphBuffer!);
-                entries[2] = Entry(6, font.TablesBuffer);
-                entries[3] = Entry(7, _stateBuffer!);
-                entries[4] = Entry(8, _lookupBuffer!);
-                count = 5;
+                entries[2] = Entry(5, font.TableDirectoryBuffer);
+                entries[3] = Entry(6, font.TablesBuffer);
+                entries[4] = Entry(7, _stateBuffer!);
+                entries[5] = Entry(8, _lookupBuffer!);
+                count = 6;
             }
             BindGroupDescriptor descriptor = new() { Layout = layout, EntryCount = count, Entries = entries };
             BindGroup* group = _context.Api.DeviceCreateBindGroup(_context.Device, &descriptor);
@@ -240,7 +241,7 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
             _paramsBuffer = new GpuBuffer(_context, 32, BufferUsage.Uniform | BufferUsage.CopyDst, "OpenType run parameters");
             _stateBuffer = new GpuBuffer(_context, 16, BufferUsage.Storage | BufferUsage.CopySrc | BufferUsage.CopyDst, "OpenType run state");
         }
-        uint lookupBytes = checked((uint)Math.Max(24, lookupCount * Marshal.SizeOf<GpuOpenTypeLookupCommand>()));
+        uint lookupBytes = checked((uint)Math.Max(32, lookupCount * Marshal.SizeOf<GpuOpenTypeLookupCommand>()));
         if (_lookupBuffer is null || _lookupBuffer.Size < lookupBytes)
         {
             _lookupBuffer?.Dispose();
