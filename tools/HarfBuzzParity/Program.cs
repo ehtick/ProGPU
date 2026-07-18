@@ -386,10 +386,11 @@ internal sealed class SuiteRunner : IDisposable
         var input = new List<GpuShapingScalar>(testCase.Text.Length);
         bool characterClusters = request.ClusterLevel is
             ShapingClusterLevel.MonotoneCharacters or ShapingClusterLevel.Characters;
-        bool preserveUseMarkOrder = OpenTypeScriptResolver.UsesUniversalShapingEngine(request.Script);
+        OpenTypeTag layoutScript = GpuOpenTypeLookupPlanCompiler.ResolveLayoutScript(plan, request.Script);
+        bool preserveUseMarkOrder = OpenTypeScriptResolver.UsesUniversalShapingEngine(layoutScript);
         bool preserveDefaultIgnorableCluster = font.GetGlyphIndex(' ') != 0;
         string script = request.Script.ToString();
-        bool indicShaper = IsIndicShaperScript(script);
+        bool indicShaper = !preserveUseMarkOrder && IsIndicShaperScript(script);
         bool khmerShaper = script == "khmr";
         uint indicVirama = GetIndicVirama(script);
         int useCluster = 0;
@@ -656,7 +657,7 @@ internal sealed class SuiteRunner : IDisposable
         {
             return $"glyph count expected {expected.Count}, actual {actual.Count}; " +
                    $"expected [{string.Join(',', expected.Select(static glyph => glyph.Glyph))}], " +
-                   $"actual [{string.Join(',', actual.Select(static glyph => glyph.GlyphIndex))}]";
+                   $"actual [{string.Join('|', actual.Select(static glyph => $"{glyph.GlyphIndex}/{glyph.CodePoint:X}:{Round(glyph.AdvanceX)},{Round(-glyph.AdvanceY)},{Round(glyph.OffsetX)},{Round(-glyph.OffsetY)}"))}]";
         }
 
         for (int index = 0; index < expected.Count; index++)
@@ -667,8 +668,7 @@ internal sealed class SuiteRunner : IDisposable
             {
                 return $"glyph[{index}] expected gid {left.Glyph}, actual {right.GlyphIndex}; " +
                        $"expected [{string.Join(',', expected.Select(static glyph => glyph.Glyph))}], " +
-                       $"actual [{string.Join(',', actual.Select(static glyph => glyph.GlyphIndex))}]; " +
-                       $"actual codepoints [{string.Join(',', actual.Select(static glyph => glyph.CodePoint.ToString("X")))}]";
+                       $"actual [{string.Join('|', actual.Select(static glyph => $"{glyph.GlyphIndex}/{glyph.CodePoint:X}:{Round(glyph.AdvanceX)},{Round(-glyph.AdvanceY)},{Round(glyph.OffsetX)},{Round(-glyph.OffsetY)}"))}]";
             }
             int actualCluster = Utf16ClusterToScalarIndex(text, right.Cluster);
             if (!configuration.IgnoreClusters && left.Cluster != actualCluster)
