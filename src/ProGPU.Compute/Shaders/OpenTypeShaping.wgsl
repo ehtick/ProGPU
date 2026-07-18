@@ -142,18 +142,112 @@ fn apply_single_substitution(subtable: u32, position: u32) -> bool {
     return false;
 }
 
+fn replace_multiple(subtable: u32, position: u32) -> bool {
+    let covered = coverage_index(subtable + table_u16(subtable + 2u), glyphs[position].glyph_id);
+    let sequence_count = table_u16(subtable + 4u);
+    if (covered < 0 || u32(covered) >= sequence_count) { return false; }
+    let sequence = subtable + table_u16(subtable + 6u + u32(covered) * 2u);
+    let replacement_count = table_u16(sequence);
+    if (replacement_count == 0u) {
+        for (var cursor = position + 1u; cursor < run_state.glyph_count; cursor++) {
+            glyphs[cursor - 1u] = glyphs[cursor];
+        }
+        run_state.glyph_count -= 1u;
+        return true;
+    }
+    let extra = replacement_count - 1u;
+    if (run_state.glyph_count + extra > params.capacity) {
+        run_state.status = 1u;
+        return false;
+    }
+    var cursor = run_state.glyph_count;
+    loop {
+        if (cursor <= position + 1u) { break; }
+        cursor -= 1u;
+        glyphs[cursor + extra] = glyphs[cursor];
+    }
+    let source = glyphs[position];
+    for (var replacement = 0u; replacement < replacement_count; replacement++) {
+        glyphs[position + replacement] = source;
+        glyphs[position + replacement].glyph_id = table_u16(sequence + 2u + replacement * 2u);
+    }
+    run_state.glyph_count += extra;
+    return true;
+}
+
+fn apply_alternate(subtable: u32, position: u32, feature_value: u32) -> bool {
+    let covered = coverage_index(subtable + table_u16(subtable + 2u), glyphs[position].glyph_id);
+    let set_count = table_u16(subtable + 4u);
+    if (covered < 0 || u32(covered) >= set_count) { return false; }
+    let alternate_set = subtable + table_u16(subtable + 6u + u32(covered) * 2u);
+    let count = table_u16(alternate_set);
+    if (count == 0u) { return false; }
+    let selected = min(max(feature_value, 1u), count) - 1u;
+    glyphs[position].glyph_id = table_u16(alternate_set + 2u + selected * 2u);
+    return true;
+}
+
+fn apply_ligature(subtable: u32, position: u32) -> bool {
+    let covered = coverage_index(subtable + table_u16(subtable + 2u), glyphs[position].glyph_id);
+    let set_count = table_u16(subtable + 4u);
+    if (covered < 0 || u32(covered) >= set_count) { return false; }
+    let ligature_set = subtable + table_u16(subtable + 6u + u32(covered) * 2u);
+    let ligature_count = table_u16(ligature_set);
+    for (var ligature_index = 0u; ligature_index < ligature_count; ligature_index++) {
+        let ligature = ligature_set + table_u16(ligature_set + 2u + ligature_index * 2u);
+        let component_count = table_u16(ligature + 2u);
+        if (component_count == 0u || position + component_count > run_state.glyph_count) { continue; }
+        var matched = true;
+        for (var component = 1u; component < component_count; component++) {
+            if (glyphs[position + component].glyph_id != table_u16(ligature + 2u + component * 2u)) {
+                matched = false;
+                break;
+            }
+        }
+        if (!matched) { continue; }
+        var cluster = glyphs[position].cluster;
+        for (var component = 1u; component < component_count; component++) {
+            cluster = min(cluster, glyphs[position + component].cluster);
+        }
+        glyphs[position].glyph_id = table_u16(ligature);
+        glyphs[position].cluster = cluster;
+        let removed = component_count - 1u;
+        for (var cursor = position + component_count; cursor < run_state.glyph_count; cursor++) {
+            glyphs[cursor - removed] = glyphs[cursor];
+        }
+        run_state.glyph_count -= removed;
+        return true;
+    }
+    return false;
+}
+
+fn apply_gsub_subtable(lookup_type: u32, subtable: u32, position: u32, value: u32) -> bool {
+    if (lookup_type == 1u) { return apply_single_substitution(subtable, position); }
+    if (lookup_type == 2u && table_u16(subtable) == 1u) { return replace_multiple(subtable, position); }
+    if (lookup_type == 3u && table_u16(subtable) == 1u) { return apply_alternate(subtable, position, value); }
+    if (lookup_type == 4u && table_u16(subtable) == 1u) { return apply_ligature(subtable, position); }
+    return false;
+}
+
 @compute @workgroup_size(1)
 fn execute_lookups(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x != 0u) { return; }
     for (var command_index = 0u; command_index < params.lookup_count; command_index++) {
         let command = lookup_commands[command_index];
-        if (command.table_kind != 1u || command.lookup_type != 1u || command.feature_value == 0u) { continue; }
+        if (command.table_kind != 1u || command.feature_value == 0u) { continue; }
         let subtable_count = table_u16(command.lookup_offset + 4u);
         for (var position = 0u; position < run_state.glyph_count; position++) {
             for (var subtable_index = 0u; subtable_index < subtable_count; subtable_index++) {
                 let subtable = command.lookup_offset + table_u16(command.lookup_offset + 6u + subtable_index * 2u);
-                if (apply_single_substitution(subtable, position)) { break; }
+                var effective_type = command.lookup_type;
+                var effective_subtable = subtable;
+                if (effective_type == 7u && table_u16(subtable) == 1u) {
+                    effective_type = table_u16(subtable + 2u);
+                    effective_subtable = subtable + table_u32(subtable + 4u);
+                }
+                if (apply_gsub_subtable(effective_type, effective_subtable, position, command.feature_value)) { break; }
             }
+            if (run_state.status != 0u) { return; }
         }
     }
 }

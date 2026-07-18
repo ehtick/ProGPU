@@ -72,6 +72,9 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
         uint Reserved0,
         uint Reserved1);
 
+    [StructLayout(LayoutKind.Sequential, Pack = 4)]
+    private readonly record struct RunState(uint GlyphCount, uint Status, uint Reserved0, uint Reserved1);
+
     private readonly WgpuContext _context;
     private readonly RenderPipelineCache _pipelineCache;
     private readonly ComputePipeline* _initializePipeline;
@@ -132,6 +135,7 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
             0,
             0));
         _inputBuffer!.Write(input);
+        _stateBuffer!.WriteSingle(new RunState(checked((uint)input.Length), 0, 0, 0));
         if (!lookups.IsEmpty) _lookupBuffer!.Write(lookups);
 
         BindGroup* initializeGroup = CreateBindGroup(_initializePipeline, font, 0);
@@ -144,7 +148,7 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
         {
             Dispatch(encoder, _initializePipeline, initializeGroup, checked((uint)input.Length));
             if (!lookups.IsEmpty) Dispatch(encoder, _lookupPipeline, lookupGroup, 1);
-            Dispatch(encoder, _metricsPipeline, metricsGroup, checked((uint)input.Length));
+            Dispatch(encoder, _metricsPipeline, metricsGroup, checked((uint)_capacity));
             CommandBufferDescriptor commandDescriptor = default;
             CommandBuffer* command = _context.Api.CommandEncoderFinish(encoder, &commandDescriptor);
             if (command == null) throw new InvalidOperationException("Failed to finish the OpenType shaping command buffer.");
@@ -159,8 +163,13 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
             _context.Api.BindGroupRelease(initializeGroup);
         }
 
-        output.EnsureCapacity(input.Length);
-        byte[] bytes = _glyphBuffer!.ReadBytes(0, checked((uint)(input.Length * Marshal.SizeOf<ShapingGlyph>())));
+        byte[] stateBytes = _stateBuffer!.ReadBytes(0, 16);
+        RunState state = MemoryMarshal.Cast<byte, RunState>(stateBytes)[0];
+        if (state.Status != 0)
+            throw new InvalidOperationException($"The WebGPU shaping VM stopped with status {state.Status}.");
+        int outputCount = checked((int)state.GlyphCount);
+        output.EnsureCapacity(outputCount);
+        byte[] bytes = _glyphBuffer!.ReadBytes(0, checked((uint)(outputCount * Marshal.SizeOf<ShapingGlyph>())));
         output.Append(MemoryMarshal.Cast<byte, ShapingGlyph>(bytes));
     }
 
@@ -238,7 +247,8 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
             _lookupBuffer = new GpuBuffer(_context, lookupBytes, BufferUsage.Storage | BufferUsage.CopyDst, "OpenType lookup commands");
         }
         if (count <= _capacity) return;
-        int capacity = Math.Max(64, checked((int)BitOperations.RoundUpToPowerOf2((uint)count)));
+        uint requested = checked((uint)Math.Max(count, Math.Min(ShapingBuffer.DefaultMaximumGlyphCount, count * 4L)));
+        int capacity = Math.Max(64, checked((int)BitOperations.RoundUpToPowerOf2(requested)));
         _inputBuffer?.Dispose();
         _glyphBuffer?.Dispose();
         _inputBuffer = new GpuBuffer(
