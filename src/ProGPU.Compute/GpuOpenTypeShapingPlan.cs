@@ -35,6 +35,16 @@ public readonly record struct GpuOpenTypeTableDirectory(
     uint KernOffset,
     uint KernLength);
 
+/// <summary>One sanitized lookup selected for a shaping run.</summary>
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+public readonly record struct GpuOpenTypeLookupCommand(
+    uint TableKind,
+    uint LookupOffset,
+    uint LookupType,
+    uint LookupFlags,
+    uint FeatureTag,
+    uint FeatureValue);
+
 /// <summary>
 /// Immutable GPU upload plan for one font face and variation instance. The
 /// arrays are built once, are sorted by code point/glyph ID, and can be shared

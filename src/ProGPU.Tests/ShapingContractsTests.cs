@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using ProGPU.Fonts.Inter;
 using ProGPU.Compute;
+using ProGPU.Backend;
 using ProGPU.Text;
 using ProGPU.Text.Shaping;
 using Xunit;
@@ -242,6 +243,109 @@ public sealed class ShapingContractsTests
         Assert.Equal(gsub.Span, plan.TableData.Span.Slice(
             checked((int)plan.Tables.GsubOffset), checked((int)plan.Tables.GsubLength)));
     }
+
+    [Fact]
+    public void GpuInitializationMatchesFontFace()
+    {
+        var face = new TtfShapingFontFace(InterFontFamily.Regular);
+        GpuOpenTypeShapingPlan plan = GpuOpenTypeShapingPlanCompiler.Compile(face);
+        using var context = new WgpuContext();
+        context.Initialize(null);
+        using var fontData = new GpuOpenTypeFontData(context, plan);
+        using var pipeline = new GpuOpenTypeRunPipeline(context);
+        using var output = new ShapingBuffer();
+
+        pipeline.InitializeRun(
+            [new GpuShapingScalar('A', 0), new GpuShapingScalar('z', 1)],
+            fontData,
+            ShapingDirection.LeftToRight,
+            output);
+
+        Assert.Equal(2, output.Count);
+        Assert.Equal(face.GetNominalGlyph('A'), output[0].GlyphId);
+        Assert.Equal(face.GetHorizontalAdvance(output[0].GlyphId), output[0].AdvanceX);
+        Assert.Equal(face.GetNominalGlyph('z'), output[1].GlyphId);
+        Assert.Equal(face.GetHorizontalAdvance(output[1].GlyphId), output[1].AdvanceX);
+    }
+
+    [Fact]
+    public void GpuLookupVmExecutesSingleSubstitution()
+    {
+        var face = new TtfShapingFontFace(InterFontFamily.Regular);
+        GpuOpenTypeShapingPlan plan = GpuOpenTypeShapingPlanCompiler.Compile(face);
+        (uint lookupOffset, uint inputGlyph, uint expectedGlyph) = FindSingleSubstitution(plan);
+        uint codePoint = FindCodePoint(plan, inputGlyph);
+        Assert.NotEqual(uint.MaxValue, codePoint);
+        using var context = new WgpuContext();
+        context.Initialize(null);
+        using var fontData = new GpuOpenTypeFontData(context, plan);
+        using var pipeline = new GpuOpenTypeRunPipeline(context);
+        using var output = new ShapingBuffer();
+
+        pipeline.ExecuteRun(
+            [new GpuShapingScalar(codePoint, 0)],
+            fontData,
+            ShapingDirection.LeftToRight,
+            [new GpuOpenTypeLookupCommand(1, lookupOffset, 1, 0, 0, 1)],
+            output);
+
+        Assert.Equal(1, output.Count);
+        Assert.Equal(expectedGlyph, output[0].GlyphId);
+    }
+
+    private static (uint LookupOffset, uint InputGlyph, uint ExpectedGlyph) FindSingleSubstitution(
+        GpuOpenTypeShapingPlan plan)
+    {
+        ReadOnlySpan<byte> data = plan.TableData.Span;
+        int table = checked((int)plan.Tables.GsubOffset);
+        int lookupList = table + ReadU16(data, table + 8);
+        int lookupCount = ReadU16(data, lookupList);
+        for (var lookupIndex = 0; lookupIndex < lookupCount; lookupIndex++)
+        {
+            int lookup = lookupList + ReadU16(data, lookupList + 2 + lookupIndex * 2);
+            if (ReadU16(data, lookup) != 1 || ReadU16(data, lookup + 4) == 0) continue;
+            int subtable = lookup + ReadU16(data, lookup + 6);
+            int format = ReadU16(data, subtable);
+            int coverage = subtable + ReadU16(data, subtable + 2);
+            uint input = FirstCoverageGlyph(data, coverage);
+            uint expected = format switch
+            {
+                1 => (uint)((input + unchecked((short)ReadU16(data, subtable + 4))) & 0xffff),
+                2 when ReadU16(data, subtable + 4) != 0 => ReadU16(data, subtable + 6),
+                _ => input
+            };
+            if (expected != input && FindCodePoint(plan, input) != uint.MaxValue)
+                return (checked((uint)lookup), input, expected);
+        }
+        throw new InvalidOperationException("Inter contains no testable direct single-substitution lookup.");
+    }
+
+    private static uint FirstCoverageGlyph(ReadOnlySpan<byte> data, int coverage) =>
+        ReadU16(data, coverage) switch
+        {
+            1 => ReadU16(data, coverage + 4),
+            2 => ReadU16(data, coverage + 4),
+            _ => uint.MaxValue
+        };
+
+    private static uint FindCodePoint(GpuOpenTypeShapingPlan plan, uint glyph)
+    {
+        foreach (GpuCmapRange range in plan.Cmap.Span)
+        {
+            if (range.Kind == GpuCmapRange.Constant)
+            {
+                if (range.Glyph == glyph) return range.Start;
+                continue;
+            }
+            if (glyph < range.Glyph) continue;
+            uint codePoint = range.Start + glyph - range.Glyph;
+            if (codePoint <= range.End) return codePoint;
+        }
+        return uint.MaxValue;
+    }
+
+    private static ushort ReadU16(ReadOnlySpan<byte> data, int offset) =>
+        (ushort)(data[offset] << 8 | data[offset + 1]);
 
     private static ShapingGlyph Glyph(uint glyphId) => new() { GlyphId = glyphId };
 }
