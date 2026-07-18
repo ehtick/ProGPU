@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Numerics;
 using Microsoft.UI.Xaml;
+using ProGPU.Fonts.Inter;
 using ProGPU.Scene;
 using ProGPU.Tests.Headless;
 using ProGPU.Vector;
@@ -28,6 +29,111 @@ public sealed class LayerRenderTests
             Assert.True(window.Compositor.Metrics.SceneCacheHit);
             Assert.Equal(1, visual.RenderCount);
             AssertRed(ReadPixel(window.ReadPixels(), window.Width, 20, 20));
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
+    [Fact]
+    public void SceneTransformHandleMovesRetainedPictureOnCompiledSceneCacheHit()
+    {
+        using var window = new HeadlessWindow(64, 32);
+        using var visual = new SceneTransformPictureVisual();
+        window.Content = visual;
+
+        try
+        {
+            window.Render();
+            Assert.False(window.Compositor.Metrics.SceneCacheHit);
+            AssertRed(ReadPixel(window.ReadPixels(), window.Width, x: 12, y: 8));
+
+            visual.SceneTransform.Translation = new Vector2(30f, 0f);
+            window.Render();
+
+            Assert.True(window.Compositor.Metrics.SceneCacheHit);
+            Assert.Equal(1, visual.RenderCount);
+            var pixels = window.ReadPixels();
+            var background = ReadPixel(pixels, window.Width, x: 2, y: 8);
+            AssertColorNear(background, ReadPixel(pixels, window.Width, x: 12, y: 8), tolerance: 2);
+            AssertRed(ReadPixel(pixels, window.Width, x: 32, y: 8));
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
+    [Fact]
+    public void IndependentSceneTransformHandlesKeepTheirOwnBindGroupsOnCacheHit()
+    {
+        using var window = new HeadlessWindow(64, 32);
+        using var visual = new TwoSceneTransformPicturesVisual();
+        window.Content = visual;
+
+        try
+        {
+            window.Render();
+            AssertRed(ReadPixel(window.ReadPixels(), window.Width, x: 7, y: 8));
+            AssertGreen(ReadPixel(window.ReadPixels(), window.Width, x: 22, y: 8));
+
+            visual.RedTransform.Translation = new Vector2(35f, 0f);
+            window.Render();
+
+            Assert.True(window.Compositor.Metrics.SceneCacheHit);
+            Assert.Equal(1, visual.RenderCount);
+            var pixels = window.ReadPixels();
+            AssertGreen(ReadPixel(pixels, window.Width, x: 22, y: 8));
+            AssertRed(ReadPixel(pixels, window.Width, x: 37, y: 8));
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
+    [Fact]
+    public void SceneTransformHandleMovesAtlasTextThroughViewUniformOnCacheHit()
+    {
+        using var window = new HeadlessWindow(80, 40);
+        using var visual = new SceneTransformTextVisual();
+        window.Content = visual;
+
+        try
+        {
+            window.Render();
+            var initialPixels = window.ReadPixels();
+            Assert.True(
+                CountBrightPixels(initialPixels, window.Width, 8, 0, 24, 40) > 0,
+                DescribeBrightestPixel(initialPixels, window.Width));
+
+            visual.SceneTransform.Translation = new Vector2(40f, 0f);
+            window.Render();
+
+            Assert.True(window.Compositor.Metrics.SceneCacheHit);
+            Assert.Equal(1, visual.RenderCount);
+            var pixels = window.ReadPixels();
+            Assert.Equal(0, CountBrightPixels(pixels, window.Width, 8, 0, 24, 40));
+            Assert.True(CountBrightPixels(pixels, window.Width, 38, 0, 54, 40) > 0);
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
+    [Fact]
+    public void SceneTransformPictureRejectsClipCommandsInsteadOfRenderingStaleClipState()
+    {
+        using var window = new HeadlessWindow(64, 32);
+        using var visual = new UnsupportedSceneTransformPictureVisual();
+        window.Content = visual;
+
+        try
+        {
+            var exception = Assert.Throws<InvalidOperationException>(() => window.Render());
+            Assert.Contains(nameof(RenderCommandType.PushClip), exception.Message, StringComparison.Ordinal);
         }
         finally
         {
@@ -269,6 +375,52 @@ public sealed class LayerRenderTests
             pixels[index + 3]);
     }
 
+    private static int CountBrightPixels(
+        byte[] pixels,
+        uint width,
+        int minX,
+        int minY,
+        int maxX,
+        int maxY)
+    {
+        int count = 0;
+        for (int y = minY; y < maxY; y++)
+        {
+            for (int x = minX; x < maxX; x++)
+            {
+                var pixel = ReadPixel(pixels, width, x, y);
+                if (pixel.R > 60 && pixel.G > 60 && pixel.B > 60)
+                {
+                    count++;
+                }
+            }
+        }
+
+        return count;
+    }
+
+    private static string DescribeBrightestPixel(byte[] pixels, uint width)
+    {
+        int brightest = -1;
+        int brightestX = -1;
+        int brightestY = -1;
+        for (int index = 0; index < pixels.Length; index += 4)
+        {
+            int value = pixels[index] + pixels[index + 1] + pixels[index + 2];
+            if (value <= brightest)
+            {
+                continue;
+            }
+
+            brightest = value;
+            int pixelIndex = index / 4;
+            brightestX = pixelIndex % (int)width;
+            brightestY = pixelIndex / (int)width;
+        }
+
+        return $"Brightest RGB sum {brightest} at ({brightestX}, {brightestY}).";
+    }
+
     private static void AssertRed(RgbaPixel pixel)
     {
         Assert.True(pixel.R >= 220, $"Expected cached layer to render red, found {pixel}.");
@@ -349,6 +501,128 @@ public sealed class LayerRenderTests
                 new Rect(0f, 0f, 64f, 64f));
             AddChild(drawing);
         }
+    }
+
+    private sealed class SceneTransformPictureVisual : FrameworkElement, IDisposable
+    {
+        private readonly GpuPicture _picture;
+
+        public SceneTransformPictureVisual()
+        {
+            Width = 64f;
+            Height = 32f;
+            SceneTransform.Translation = new Vector2(10f, 0f);
+
+            var recorder = new GpuPictureRecorder();
+            var context = recorder.BeginRecording(new Rect(0f, 0f, 8f, 16f));
+            context.DrawRectangle(
+                new SolidColorBrush(new Vector4(1f, 0f, 0f, 1f)),
+                null,
+                new Rect(0f, 0f, 8f, 16f));
+            _picture = recorder.EndRecording();
+        }
+
+        public SceneTransformHandle SceneTransform { get; } = new();
+
+        public int RenderCount { get; private set; }
+
+        public override void OnRender(DrawingContext context)
+        {
+            RenderCount++;
+            context.DrawPicture(_picture, SceneTransform);
+        }
+
+        public void Dispose() => _picture.Dispose();
+    }
+
+    private sealed class TwoSceneTransformPicturesVisual : FrameworkElement, IDisposable
+    {
+        private readonly GpuPicture _redPicture;
+        private readonly GpuPicture _greenPicture;
+
+        public TwoSceneTransformPicturesVisual()
+        {
+            Width = 64f;
+            Height = 32f;
+            RedTransform.Translation = new Vector2(5f, 0f);
+            GreenTransform.Translation = new Vector2(20f, 0f);
+            _redPicture = CreatePicture(new Vector4(1f, 0f, 0f, 1f));
+            _greenPicture = CreatePicture(new Vector4(0f, 1f, 0f, 1f));
+        }
+
+        public SceneTransformHandle RedTransform { get; } = new();
+        public SceneTransformHandle GreenTransform { get; } = new();
+        public int RenderCount { get; private set; }
+
+        public override void OnRender(DrawingContext context)
+        {
+            RenderCount++;
+            context.DrawPicture(_redPicture, RedTransform);
+            context.DrawPicture(_greenPicture, GreenTransform);
+        }
+
+        public void Dispose()
+        {
+            _redPicture.Dispose();
+            _greenPicture.Dispose();
+        }
+
+        private static GpuPicture CreatePicture(Vector4 color)
+        {
+            var recorder = new GpuPictureRecorder();
+            var context = recorder.BeginRecording(new Rect(0f, 0f, 8f, 16f));
+            context.DrawRectangle(new SolidColorBrush(color), null, new Rect(0f, 0f, 8f, 16f));
+            return recorder.EndRecording();
+        }
+    }
+
+    private sealed class UnsupportedSceneTransformPictureVisual : FrameworkElement, IDisposable
+    {
+        private readonly GpuPicture _picture = new(
+            [new RenderCommand { Type = RenderCommandType.PushClip, Rect = new Rect(0f, 0f, 8f, 8f) }],
+            [],
+            [],
+            [],
+            []);
+
+        private readonly SceneTransformHandle _transform = new();
+
+        public override void OnRender(DrawingContext context) => context.DrawPicture(_picture, _transform);
+
+        public void Dispose() => _picture.Dispose();
+    }
+
+    private sealed class SceneTransformTextVisual : FrameworkElement, IDisposable
+    {
+        private readonly GpuPicture _picture;
+
+        public SceneTransformTextVisual()
+        {
+            Width = 80f;
+            Height = 40f;
+            SceneTransform.Translation = new Vector2(10f, 0f);
+
+            var recorder = new GpuPictureRecorder();
+            var context = recorder.BeginRecording(new Rect(0f, 0f, 20f, 36f));
+            context.DrawText(
+                "I",
+                InterFontFamily.Regular,
+                28f,
+                new SolidColorBrush(Vector4.One),
+                new Vector2(0f, 30f));
+            _picture = recorder.EndRecording();
+        }
+
+        public SceneTransformHandle SceneTransform { get; } = new();
+        public int RenderCount { get; private set; }
+
+        public override void OnRender(DrawingContext context)
+        {
+            RenderCount++;
+            context.DrawPicture(_picture, SceneTransform);
+        }
+
+        public void Dispose() => _picture.Dispose();
     }
 
     private sealed class VisualCompositeScopeHost : FrameworkElement

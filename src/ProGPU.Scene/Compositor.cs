@@ -297,6 +297,14 @@ public unsafe class Compositor : IDisposable
             IsColorTextFlags(encodedFlags));
     }
 
+    private static float ForceTextUseView(float encodedFlags)
+    {
+        return EncodeTextFlags(
+                   useMvp: false,
+                   DecodeTextRenderingMode(encodedFlags),
+                   IsColorTextFlags(encodedFlags)) + 16f;
+    }
+
     private static TextRenderingMode DecodeTextRenderingMode(float encodedFlags)
     {
         encodedFlags = DecodeBaseTextFlags(encodedFlags);
@@ -313,10 +321,25 @@ public unsafe class Compositor : IDisposable
         return TextRenderingMode.Grayscale;
     }
 
-    private static bool IsColorTextFlags(float encodedFlags) => encodedFlags > 5.5f;
+    private static bool IsColorTextFlags(float encodedFlags)
+    {
+        if (encodedFlags > 13.5f)
+        {
+            encodedFlags -= 16f;
+        }
 
-    private static float DecodeBaseTextFlags(float encodedFlags) =>
-        IsColorTextFlags(encodedFlags) ? encodedFlags - 8f : encodedFlags;
+        return encodedFlags > 5.5f;
+    }
+
+    private static float DecodeBaseTextFlags(float encodedFlags)
+    {
+        if (encodedFlags > 13.5f)
+        {
+            encodedFlags -= 16f;
+        }
+
+        return encodedFlags > 5.5f ? encodedFlags - 8f : encodedFlags;
+    }
 
     private static (byte SubpixelX, Vector2 SnappedLogicalPos) ResolveTextPlacement(
         Vector2 transformedPosition,
@@ -842,6 +865,8 @@ public unsafe class Compositor : IDisposable
         public TextureSamplingMode TextureSamplingMode;
         public byte TextureMaxAnisotropy;
         public GpuTextureAlphaMode TextureAlphaMode;
+        public SceneTransformHandle? SceneTransform;
+        public Matrix4x4 SceneTransformBase;
 
         // Custom Extension properties
         public int ExtensionId;
@@ -866,6 +891,34 @@ public unsafe class Compositor : IDisposable
     private readonly List<GlyphInstance> _textVerticesList = new();
     private readonly List<VectorVertex> _textureVerticesList = new();
     private readonly List<uint> _textureIndicesList = new();
+    private SceneTransformHandle? _activeSceneTransform;
+    private Matrix4x4 _activeSceneTransformBase = Matrix4x4.Identity;
+    private readonly Dictionary<SceneTransformKey, SceneTransformResources> _sceneTransformResources = new();
+    private readonly List<SceneTransformKey> _activeSceneTransformKeys = new();
+
+    private readonly record struct SceneTransformKey(
+        SceneTransformHandle Handle,
+        Matrix4x4 BaseTransform);
+
+    private sealed class SceneTransformResources(
+        GpuBuffer uniformBuffer,
+        nint vectorBindGroup,
+        nint vectorBindGroupOffscreen,
+        nint textBindGroup,
+        nint textBindGroupOffscreen)
+    {
+        public GpuBuffer UniformBuffer { get; } = uniformBuffer;
+        public nint VectorBindGroup { get; } = vectorBindGroup;
+        public nint VectorBindGroupOffscreen { get; } = vectorBindGroupOffscreen;
+        public nint TextBindGroup { get; } = textBindGroup;
+        public nint TextBindGroupOffscreen { get; } = textBindGroupOffscreen;
+        public long UploadedVersion { get; set; }
+        public Matrix4x4 UploadedBaseTransform { get; set; }
+        public uint UploadedWidth { get; set; }
+        public uint UploadedHeight { get; set; }
+        public float UploadedDpiScale { get; set; }
+        public ulong LastUsedFrame { get; set; }
+    }
     public readonly struct TextureCacheKey : IEquatable<TextureCacheKey>
     {
         public readonly ulong TextureId;
@@ -2114,6 +2167,7 @@ public unsafe class Compositor : IDisposable
             _textureVerticesList.Clear();
             _textureIndicesList.Clear();
             _drawCalls.Clear();
+            _activeSceneTransformKeys.Clear();
             _hitTestCacheBuilder.Clear();
             ClearLastHitTestIndex();
 
@@ -2477,6 +2531,7 @@ DynamicBufferUploadComplete:
             hasDynamicDiagnostics);
 
 SceneStateUploadComplete:
+        UpdateSceneTransformResources(projection, renderWidth, renderHeight);
         uploadSw.Stop();
         passSw = System.Diagnostics.Stopwatch.StartNew();
 
@@ -2534,6 +2589,8 @@ SceneStateUploadComplete:
         DrawCallType? currentType = null;
         GpuBlendMode? currentBlendMode = null;
         GpuTexture? currentMaskTexture = null;
+        SceneTransformHandle? currentSceneTransform = null;
+        Matrix4x4 currentSceneTransformBase = default;
         var textureEntries = stackalloc BindGroupEntry[2];
 
         var drawCallCount = _drawCalls.Count;
@@ -2550,13 +2607,18 @@ SceneStateUploadComplete:
                 var activePipeline = GetPipeline(dc.Type, dc.BlendMode, isOffscreen: false);
                 var maskBindGroup = GetMaskBindGroup(dc.MaskTexture, isOffscreen: false);
 
-                if (currentType != DrawCallType.Vector || currentBlendMode != dc.BlendMode)
+                if (currentType != DrawCallType.Vector ||
+                    currentBlendMode != dc.BlendMode ||
+                    !ReferenceEquals(currentSceneTransform, dc.SceneTransform) ||
+                    currentSceneTransformBase != dc.SceneTransformBase)
                 {
                     _context.Api.RenderPassEncoderSetPipeline(pass, activePipeline);
-                    fixed (BindGroup** pGrp = &_vectorUniformBindGroup)
-                    {
-                        _context.Api.RenderPassEncoderSetBindGroup(pass, 0, *pGrp, 0, null);
-                    }
+                    _context.Api.RenderPassEncoderSetBindGroup(
+                        pass,
+                        0,
+                        GetSceneVectorBindGroup(dc, isOffscreen: false),
+                        0,
+                        null);
                     fixed (BindGroup** pPathAtlas = &_pathAtlasBindGroup)
                     {
                         _context.Api.RenderPassEncoderSetBindGroup(pass, 1, *pPathAtlas, 0, null);
@@ -2565,6 +2627,8 @@ SceneStateUploadComplete:
                     currentType = DrawCallType.Vector;
                     currentBlendMode = dc.BlendMode;
                     currentMaskTexture = dc.MaskTexture;
+                    currentSceneTransform = dc.SceneTransform;
+                    currentSceneTransformBase = dc.SceneTransformBase;
                 }
                 else if (currentMaskTexture != dc.MaskTexture)
                 {
@@ -2582,13 +2646,18 @@ SceneStateUploadComplete:
                 var activePipeline = GetPipeline(dc.Type, dc.BlendMode, isOffscreen: false);
                 var maskBindGroup = GetMaskBindGroup(dc.MaskTexture, isOffscreen: false);
 
-                if (currentType != DrawCallType.Text || currentBlendMode != dc.BlendMode)
+                if (currentType != DrawCallType.Text ||
+                    currentBlendMode != dc.BlendMode ||
+                    !ReferenceEquals(currentSceneTransform, dc.SceneTransform) ||
+                    currentSceneTransformBase != dc.SceneTransformBase)
                 {
                     _context.Api.RenderPassEncoderSetPipeline(pass, activePipeline);
-                    fixed (BindGroup** pGrp = &_textUniformBindGroup)
-                    {
-                        _context.Api.RenderPassEncoderSetBindGroup(pass, 0, *pGrp, 0, null);
-                    }
+                    _context.Api.RenderPassEncoderSetBindGroup(
+                        pass,
+                        0,
+                        GetSceneTextBindGroup(dc, isOffscreen: false),
+                        0,
+                        null);
                     fixed (BindGroup** pAtlas = &_atlasBindGroup)
                     {
                         _context.Api.RenderPassEncoderSetBindGroup(pass, 1, *pAtlas, 0, null);
@@ -2597,6 +2666,8 @@ SceneStateUploadComplete:
                     currentType = DrawCallType.Text;
                     currentBlendMode = dc.BlendMode;
                     currentMaskTexture = dc.MaskTexture;
+                    currentSceneTransform = dc.SceneTransform;
+                    currentSceneTransformBase = dc.SceneTransformBase;
                 }
                 else if (currentMaskTexture != dc.MaskTexture)
                 {
@@ -2634,6 +2705,8 @@ SceneStateUploadComplete:
 
                 currentType = DrawCallType.Texture;
                 currentBlendMode = dc.BlendMode;
+                currentSceneTransform = null;
+                currentSceneTransformBase = default;
 
                 var viewPtr = texture.ViewPtr;
                 var cacheKey = new TextureCacheKey(
@@ -2807,6 +2880,7 @@ SceneStateUploadComplete:
         _frameNumber++;
         _totalTime += 1f / 60f;
         EvictUnusedBindGroups();
+        EvictUnusedSceneTransformResources();
         SweepUnusedLayerTextures(root, externalLayers, activeToolTip);
         SweepUnusedEffectTextures(root, externalLayers, activeToolTip);
         _activeLayerTextureOwners.Clear();
@@ -3943,7 +4017,14 @@ SceneStateUploadComplete:
                         CompileGpuScatterSeriesCommand(ctx, cmd, activeTransform);
                         break;
                     case RenderCommandType.DrawPicture:
-                        CompilePicture(cmd.Picture, activeTransform);
+                        if (cmd.SceneTransform != null)
+                        {
+                            CompileSceneTransformPicture(cmd.Picture, cmd.SceneTransform, activeTransform);
+                        }
+                        else
+                        {
+                            CompilePicture(cmd.Picture, activeTransform);
+                        }
                         break;
                     case RenderCommandType.DrawGlyphRun:
                         CompileGlyphRunCommand(cmd, activeTransform);
@@ -3963,7 +4044,7 @@ SceneStateUploadComplete:
                         for (int i = textStart; i < _textVerticesList.Count; i++)
                         {
                             var v = _textVerticesList[i];
-                            v.ScaleBoldItalicUseMvp.W = ForceTextUseMvp(v.ScaleBoldItalicUseMvp.W);
+                            v.ScaleBoldItalicUseMvp.W = ForceTextUseView(v.ScaleBoldItalicUseMvp.W);
                             _textVerticesList[i] = v;
                         }
                     }
@@ -4084,6 +4165,7 @@ SceneStateUploadComplete:
             var cmd = commands[commandIndex];
             int vectorStart = _vectorVerticesList.Count;
             int textStart = _textVerticesList.Count;
+            bool usesSceneTransform = _activeSceneTransform != null;
             var activeTransform = cmd.UseGpuTransforms ? Matrix4x4.Identity : globalTransform;
             if (cmd.Type != RenderCommandType.DrawPath)
             {
@@ -4268,7 +4350,14 @@ SceneStateUploadComplete:
                     CompileGpuScatterSeriesCommand(picture, cmd, activeTransform);
                     break;
                 case RenderCommandType.DrawPicture:
-                    CompilePicture(cmd.Picture, activeTransform);
+                    if (cmd.SceneTransform != null)
+                    {
+                        CompileSceneTransformPicture(cmd.Picture, cmd.SceneTransform, activeTransform);
+                    }
+                    else
+                    {
+                        CompilePicture(cmd.Picture, activeTransform);
+                    }
                     break;
                 case RenderCommandType.DrawGlyphRun:
                     CompileGlyphRunCommand(cmd, activeTransform);
@@ -4277,7 +4366,7 @@ SceneStateUploadComplete:
 
             AddHitTestDrawCommand(cmd, activeTransform, picture);
 
-            if (cmd.UseGpuTransforms)
+            if (cmd.UseGpuTransforms || usesSceneTransform)
             {
                 for (int i = vectorStart; i < _vectorVerticesList.Count; i++)
                 {
@@ -4288,7 +4377,7 @@ SceneStateUploadComplete:
                 for (int i = textStart; i < _textVerticesList.Count; i++)
                 {
                     var v = _textVerticesList[i];
-                    v.ScaleBoldItalicUseMvp.W = ForceTextUseMvp(v.ScaleBoldItalicUseMvp.W);
+                    v.ScaleBoldItalicUseMvp.W = ForceTextUseView(v.ScaleBoldItalicUseMvp.W);
                     _textVerticesList[i] = v;
                 }
             }
@@ -4296,6 +4385,148 @@ SceneStateUploadComplete:
             _useGpuTransformsActive = savedUseGpuTransformsActive;
             _cameraViewMatrix = savedCameraViewMatrix;
         }
+    }
+
+    private void CompileSceneTransformPicture(
+        GpuPicture? picture,
+        SceneTransformHandle transform,
+        Matrix4x4 baseTransform)
+    {
+        if (picture == null)
+        {
+            return;
+        }
+        if (ActiveCompilationContext != null)
+        {
+            throw new InvalidOperationException(
+                "Retained scene transforms cannot be embedded in a static compiled buffer.");
+        }
+
+        if (!IsTranslationOnly2D(baseTransform))
+        {
+            throw new InvalidOperationException(
+                "Retained scene transforms currently require a translation-only visual ancestry.");
+        }
+        if (VectorEngine == VectorRenderingEngine.Wavefront)
+        {
+            throw new InvalidOperationException(
+                "Retained scene transforms require the instanced vector engine.");
+        }
+        if (_elementsRenderingLayers.Count > 0 || _elementsRenderingEffects.Count > 0)
+        {
+            throw new InvalidOperationException(
+                "Retained scene transforms cannot be baked into a cached layer or effect surface.");
+        }
+        if (_activeBlendMode != GpuBlendMode.SrcOver)
+        {
+            throw new InvalidOperationException(
+                "Retained scene transforms currently require source-over blending.");
+        }
+        EnsureSceneTransformCompatible(picture, new HashSet<GpuPicture>());
+
+        var resourceKey = new SceneTransformKey(transform, baseTransform);
+        if (!_sceneTransformResources.ContainsKey(resourceKey))
+        {
+            _sceneTransformResources.Add(resourceKey, CreateSceneTransformResources());
+        }
+        if (!_activeSceneTransformKeys.Contains(resourceKey))
+        {
+            _activeSceneTransformKeys.Add(resourceKey);
+        }
+
+        CommitPendingDrawCalls();
+        var savedTransform = _activeSceneTransform;
+        var savedBase = _activeSceneTransformBase;
+        bool savedUseGpuTransforms = _useGpuTransformsActive;
+        Matrix4x4 savedCamera = _cameraViewMatrix;
+        bool savedSuspendHitTestCacheWrites = _suspendHitTestCacheWrites;
+        try
+        {
+            _activeSceneTransform = transform;
+            _activeSceneTransformBase = baseTransform;
+            _useGpuTransformsActive = true;
+            _cameraViewMatrix = transform.Matrix * baseTransform;
+            // A mutable transform cannot be baked into the immutable GPU hit-test BVH. WinUI
+            // uses its CPU visual-tree index; omit these primitives instead of exposing stale hits.
+            _suspendHitTestCacheWrites = true;
+            CompilePicture(picture, Matrix4x4.Identity);
+            CommitPendingDrawCalls();
+        }
+        finally
+        {
+            _activeSceneTransform = savedTransform;
+            _activeSceneTransformBase = savedBase;
+            _useGpuTransformsActive = savedUseGpuTransforms;
+            _cameraViewMatrix = savedCamera;
+            _suspendHitTestCacheWrites = savedSuspendHitTestCacheWrites;
+        }
+    }
+
+    private static void EnsureSceneTransformCompatible(
+        GpuPicture picture,
+        HashSet<GpuPicture> visited)
+    {
+        if (!visited.Add(picture))
+        {
+            return;
+        }
+
+        var commands = picture.Commands;
+        for (int index = 0; index < commands.Length; index++)
+        {
+            var command = commands[index];
+            bool supported = command.Type is
+                RenderCommandType.DrawRect or
+                RenderCommandType.DrawPath or
+                RenderCommandType.DrawText or
+                RenderCommandType.DrawLine or
+                RenderCommandType.DrawEllipse or
+                RenderCommandType.DrawCircle or
+                RenderCommandType.DrawRoundedRect or
+                RenderCommandType.DrawBezier or
+                RenderCommandType.DrawCubicBezier or
+                RenderCommandType.DrawPolyline or
+                RenderCommandType.DrawSpline or
+                RenderCommandType.FillTriangle or
+                RenderCommandType.FillQuad or
+                RenderCommandType.DrawGlyphRun or
+                RenderCommandType.DrawVertexMesh or
+                RenderCommandType.DrawPointBatch or
+                RenderCommandType.PushOpacity or
+                RenderCommandType.PopOpacity or
+                RenderCommandType.DrawPicture;
+            if (!supported || command.UseGpuTransforms || command.SceneTransform != null)
+            {
+                throw new InvalidOperationException(
+                    $"Render command '{command.Type}' is not supported inside a retained scene transform picture.");
+            }
+
+            if (command.Type == RenderCommandType.DrawPicture && command.Picture != null)
+            {
+                EnsureSceneTransformCompatible(command.Picture, visited);
+            }
+        }
+    }
+
+    private static bool IsTranslationOnly2D(Matrix4x4 transform)
+    {
+        const float epsilon = 0.00001f;
+        return float.IsFinite(transform.M41) &&
+               float.IsFinite(transform.M42) &&
+               MathF.Abs(transform.M11 - 1f) <= epsilon &&
+               MathF.Abs(transform.M22 - 1f) <= epsilon &&
+               MathF.Abs(transform.M33 - 1f) <= epsilon &&
+               MathF.Abs(transform.M44 - 1f) <= epsilon &&
+               MathF.Abs(transform.M12) <= epsilon &&
+               MathF.Abs(transform.M13) <= epsilon &&
+               MathF.Abs(transform.M14) <= epsilon &&
+               MathF.Abs(transform.M21) <= epsilon &&
+               MathF.Abs(transform.M23) <= epsilon &&
+               MathF.Abs(transform.M24) <= epsilon &&
+               MathF.Abs(transform.M31) <= epsilon &&
+               MathF.Abs(transform.M32) <= epsilon &&
+               MathF.Abs(transform.M34) <= epsilon &&
+               MathF.Abs(transform.M43) <= epsilon;
     }
 
     private static void TransformCommandBrushes(
@@ -10100,7 +10331,9 @@ SceneStateUploadComplete:
                 IndexCount = vecCount,
                 ClipRect = _activeClipRect,
                 MaskTexture = _maskStack.Count > 0 ? _maskStack.Peek() : null,
-                BlendMode = _activeBlendMode
+                BlendMode = _activeBlendMode,
+                SceneTransform = _activeSceneTransform,
+                SceneTransformBase = _activeSceneTransformBase
             });
             _pendingVectorStart = (uint)_vectorIndicesList.Count;
         }
@@ -10118,7 +10351,9 @@ SceneStateUploadComplete:
                 IndexCount = textCount,
                 ClipRect = _activeClipRect,
                 MaskTexture = _maskStack.Count > 0 ? _maskStack.Peek() : null,
-                BlendMode = _activeBlendMode
+                BlendMode = _activeBlendMode,
+                SceneTransform = _activeSceneTransform,
+                SceneTransformBase = _activeSceneTransformBase
             });
             _pendingTextStart = (uint)_textVerticesList.Count;
         }
@@ -10156,6 +10391,176 @@ SceneStateUploadComplete:
             CommitPendingTextDrawCall();
         }
         _currentBatchType = BatchType.None;
+    }
+
+    private BindGroup* GetSceneVectorBindGroup(
+        in CompositorDrawCall drawCall,
+        bool isOffscreen)
+    {
+        if (drawCall.SceneTransform == null)
+        {
+            return isOffscreen ? _vectorUniformBindGroupOffscreen : _vectorUniformBindGroup;
+        }
+
+        var key = new SceneTransformKey(drawCall.SceneTransform, drawCall.SceneTransformBase);
+        return _sceneTransformResources.TryGetValue(key, out var resources)
+            ? (BindGroup*)(isOffscreen ? resources.VectorBindGroupOffscreen : resources.VectorBindGroup)
+            : isOffscreen ? _vectorUniformBindGroupOffscreen : _vectorUniformBindGroup;
+    }
+
+    private BindGroup* GetSceneTextBindGroup(
+        in CompositorDrawCall drawCall,
+        bool isOffscreen)
+    {
+        if (drawCall.SceneTransform == null)
+        {
+            return isOffscreen ? _textUniformBindGroupOffscreen : _textUniformBindGroup;
+        }
+
+        var key = new SceneTransformKey(drawCall.SceneTransform, drawCall.SceneTransformBase);
+        return _sceneTransformResources.TryGetValue(key, out var resources)
+            ? (BindGroup*)(isOffscreen ? resources.TextBindGroupOffscreen : resources.TextBindGroup)
+            : isOffscreen ? _textUniformBindGroupOffscreen : _textUniformBindGroup;
+    }
+
+    private void UpdateSceneTransformResources(
+        Matrix4x4 projection,
+        uint renderWidth,
+        uint renderHeight)
+    {
+        for (int index = 0; index < _activeSceneTransformKeys.Count; index++)
+        {
+            var key = _activeSceneTransformKeys[index];
+            if (!_sceneTransformResources.TryGetValue(key, out var resources))
+            {
+                continue;
+            }
+
+            resources.LastUsedFrame = _frameNumber;
+            long version = key.Handle.Version;
+            if (resources.UploadedVersion == version &&
+                resources.UploadedBaseTransform == key.BaseTransform &&
+                resources.UploadedWidth == renderWidth &&
+                resources.UploadedHeight == renderHeight &&
+                resources.UploadedDpiScale == _currentDpiScale)
+            {
+                continue;
+            }
+
+            var view = key.Handle.Matrix * key.BaseTransform;
+            float dpiScale = MathF.Max(_currentDpiScale, 0.0001f);
+            view.M41 = MathF.Round(view.M41 * dpiScale) / dpiScale;
+            view.M42 = MathF.Round(view.M42 * dpiScale) / dpiScale;
+
+            resources.UniformBuffer.WriteSingle(new GpuUniforms
+            {
+                Projection = projection,
+                Mvp = Matrix4x4.Identity,
+                View = view,
+                CanvasSize = new Vector2(renderWidth, renderHeight),
+                DpiScale = _currentDpiScale
+            });
+            resources.UploadedVersion = version;
+            resources.UploadedBaseTransform = key.BaseTransform;
+            resources.UploadedWidth = renderWidth;
+            resources.UploadedHeight = renderHeight;
+            resources.UploadedDpiScale = _currentDpiScale;
+        }
+    }
+
+    private SceneTransformResources CreateSceneTransformResources()
+    {
+        var buffer = new GpuBuffer(
+            _context,
+            (uint)Marshal.SizeOf<GpuUniforms>(),
+            BufferUsage.Uniform | BufferUsage.CopyDst,
+            "Retained scene transform uniform");
+        var uniformEntry = new BindGroupEntry
+        {
+            Binding = 0,
+            Buffer = buffer.BufferPtr,
+            Offset = 0,
+            Size = (uint)Marshal.SizeOf<GpuUniforms>()
+        };
+        var brushEntry = new BindGroupEntry
+        {
+            Binding = 1,
+            Buffer = _brushesStorageBuffer.BufferPtr,
+            Offset = 0,
+            Size = _brushesStorageBuffer.Size
+        };
+        var gradientEntry = new BindGroupEntry
+        {
+            Binding = 2,
+            Buffer = _gradientStopsStorageBuffer.BufferPtr,
+            Offset = 0,
+            Size = _gradientStopsStorageBuffer.Size
+        };
+        var vectorEntries = stackalloc BindGroupEntry[3];
+        vectorEntries[0] = uniformEntry;
+        vectorEntries[1] = brushEntry;
+        vectorEntries[2] = gradientEntry;
+        var vectorDescriptor = new BindGroupDescriptor
+        {
+            Layout = _vectorUniformBindGroupLayout,
+            EntryCount = 3,
+            Entries = vectorEntries
+        };
+        var vectorBindGroup = _context.Api.DeviceCreateBindGroup(_context.Device, &vectorDescriptor);
+        vectorDescriptor.Layout = _vectorUniformBindGroupLayoutOffscreen;
+        var vectorBindGroupOffscreen = _context.Api.DeviceCreateBindGroup(_context.Device, &vectorDescriptor);
+        var textDescriptor = new BindGroupDescriptor
+        {
+            Layout = _textUniformBindGroupLayout,
+            EntryCount = 1,
+            Entries = &uniformEntry
+        };
+        var textBindGroup = _context.Api.DeviceCreateBindGroup(_context.Device, &textDescriptor);
+        textDescriptor.Layout = _textUniformBindGroupLayoutOffscreen;
+        var textBindGroupOffscreen = _context.Api.DeviceCreateBindGroup(_context.Device, &textDescriptor);
+        return new SceneTransformResources(
+            buffer,
+            (nint)vectorBindGroup,
+            (nint)vectorBindGroupOffscreen,
+            (nint)textBindGroup,
+            (nint)textBindGroupOffscreen);
+    }
+
+    private void EvictUnusedSceneTransformResources()
+    {
+        if (_sceneTransformResources.Count == 0)
+        {
+            return;
+        }
+
+        List<SceneTransformKey>? expired = null;
+        foreach (var pair in _sceneTransformResources)
+        {
+            if (_frameNumber - pair.Value.LastUsedFrame <= 120)
+            {
+                continue;
+            }
+
+            expired ??= new List<SceneTransformKey>();
+            expired.Add(pair.Key);
+        }
+
+        if (expired == null)
+        {
+            return;
+        }
+
+        for (int index = 0; index < expired.Count; index++)
+        {
+            var key = expired[index];
+            var resources = _sceneTransformResources[key];
+            resources.UniformBuffer.Dispose();
+            QueueBindGroupRelease(resources.VectorBindGroup);
+            QueueBindGroupRelease(resources.VectorBindGroupOffscreen);
+            QueueBindGroupRelease(resources.TextBindGroup);
+            QueueBindGroupRelease(resources.TextBindGroupOffscreen);
+            _sceneTransformResources.Remove(key);
+        }
     }
 
     private void EnsureBufferSize(ref GpuBuffer buffer, uint requiredSize, BufferUsage usage)
@@ -10268,6 +10673,16 @@ SceneStateUploadComplete:
             }
 
             ReleaseMsaaResources();
+
+            foreach (var resources in _sceneTransformResources.Values)
+            {
+                resources.UniformBuffer.Dispose();
+                QueueBindGroupRelease(resources.VectorBindGroup);
+                QueueBindGroupRelease(resources.VectorBindGroupOffscreen);
+                QueueBindGroupRelease(resources.TextBindGroup);
+                QueueBindGroupRelease(resources.TextBindGroupOffscreen);
+            }
+            _sceneTransformResources.Clear();
 
             _uniformBuffer.Dispose();
             _brushesStorageBuffer.Dispose();
@@ -11636,6 +12051,7 @@ SceneStateUploadComplete:
         var savedTextureVertices = RentListSnapshot(_textureVerticesList, out var savedTextureVerticesCount);
         var savedTextureIndices = RentListSnapshot(_textureIndicesList, out var savedTextureIndicesCount);
         var savedDrawCalls = RentListSnapshot(_drawCalls, out var savedDrawCallsCount);
+        var savedSceneTransformKeys = RentListSnapshot(_activeSceneTransformKeys, out var savedSceneTransformKeyCount);
         var savedActiveBrushes = RentListSnapshot(_activeBrushes, out var savedActiveBrushesCount);
         var savedActiveGradientStops = RentListSnapshot(_activeGradientStops, out var savedActiveGradientStopsCount);
         var savedClipStack = RentStackSnapshot(_clipStack, out var savedClipStackCount);
@@ -11671,6 +12087,7 @@ SceneStateUploadComplete:
         _textureVerticesList.Clear();
         _textureIndicesList.Clear();
         _drawCalls.Clear();
+        _activeSceneTransformKeys.Clear();
         _activeBrushes.Clear();
         _activeGradientStops.Clear();
         _clipStack.Clear();
@@ -11764,6 +12181,7 @@ SceneStateUploadComplete:
         {
             _gradientStopsStorageBuffer.Write(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_activeGradientStops));
         }
+        UpdateSceneTransformResources(projection, targetTexture.Width, targetTexture.Height);
         _pathAtlas.RasterizePendingPaths();
 
         // Render target view for offscreen GpuTexture
@@ -11807,6 +12225,8 @@ SceneStateUploadComplete:
         DrawCallType? currentType = null;
         GpuBlendMode? currentBlendMode = null;
         GpuTexture? currentMaskTexture = null;
+        SceneTransformHandle? currentSceneTransform = null;
+        Matrix4x4 currentSceneTransformBase = default;
         var textureEntries = stackalloc BindGroupEntry[2];
 
         var drawCallCount = _drawCalls.Count;
@@ -11845,6 +12265,8 @@ SceneStateUploadComplete:
                 currentType = null;
                 currentBlendMode = null;
                 currentMaskTexture = null;
+                currentSceneTransform = null;
+                currentSceneTransformBase = default;
                 continue;
             }
 
@@ -11858,13 +12280,18 @@ SceneStateUploadComplete:
                 var activePipeline = GetPipeline(dc.Type, dc.BlendMode, isOffscreen: true);
                 var maskBindGroup = GetMaskBindGroup(dc.MaskTexture, isOffscreen: true);
 
-                if (currentType != DrawCallType.Vector || currentBlendMode != dc.BlendMode)
+                if (currentType != DrawCallType.Vector ||
+                    currentBlendMode != dc.BlendMode ||
+                    !ReferenceEquals(currentSceneTransform, dc.SceneTransform) ||
+                    currentSceneTransformBase != dc.SceneTransformBase)
                 {
                     _context.Api.RenderPassEncoderSetPipeline(pass, activePipeline);
-                    fixed (BindGroup** pGrp = &_vectorUniformBindGroupOffscreen)
-                    {
-                        _context.Api.RenderPassEncoderSetBindGroup(pass, 0, *pGrp, 0, null);
-                    }
+                    _context.Api.RenderPassEncoderSetBindGroup(
+                        pass,
+                        0,
+                        GetSceneVectorBindGroup(dc, isOffscreen: true),
+                        0,
+                        null);
                     fixed (BindGroup** pPathAtlas = &_pathAtlasBindGroupOffscreen)
                     {
                         _context.Api.RenderPassEncoderSetBindGroup(pass, 1, *pPathAtlas, 0, null);
@@ -11873,6 +12300,8 @@ SceneStateUploadComplete:
                     currentType = DrawCallType.Vector;
                     currentBlendMode = dc.BlendMode;
                     currentMaskTexture = dc.MaskTexture;
+                    currentSceneTransform = dc.SceneTransform;
+                    currentSceneTransformBase = dc.SceneTransformBase;
                 }
                 else if (currentMaskTexture != dc.MaskTexture)
                 {
@@ -11890,13 +12319,18 @@ SceneStateUploadComplete:
                 var activePipeline = GetPipeline(dc.Type, dc.BlendMode, isOffscreen: true);
                 var maskBindGroup = GetMaskBindGroup(dc.MaskTexture, isOffscreen: true);
 
-                if (currentType != DrawCallType.Text || currentBlendMode != dc.BlendMode)
+                if (currentType != DrawCallType.Text ||
+                    currentBlendMode != dc.BlendMode ||
+                    !ReferenceEquals(currentSceneTransform, dc.SceneTransform) ||
+                    currentSceneTransformBase != dc.SceneTransformBase)
                 {
                     _context.Api.RenderPassEncoderSetPipeline(pass, activePipeline);
-                    fixed (BindGroup** pGrp = &_textUniformBindGroupOffscreen)
-                    {
-                        _context.Api.RenderPassEncoderSetBindGroup(pass, 0, *pGrp, 0, null);
-                    }
+                    _context.Api.RenderPassEncoderSetBindGroup(
+                        pass,
+                        0,
+                        GetSceneTextBindGroup(dc, isOffscreen: true),
+                        0,
+                        null);
                     fixed (BindGroup** pAtlas = &_atlasBindGroupOffscreen)
                     {
                         _context.Api.RenderPassEncoderSetBindGroup(pass, 1, *pAtlas, 0, null);
@@ -11905,6 +12339,8 @@ SceneStateUploadComplete:
                     currentType = DrawCallType.Text;
                     currentBlendMode = dc.BlendMode;
                     currentMaskTexture = dc.MaskTexture;
+                    currentSceneTransform = dc.SceneTransform;
+                    currentSceneTransformBase = dc.SceneTransformBase;
                 }
                 else if (currentMaskTexture != dc.MaskTexture)
                 {
@@ -11942,6 +12378,8 @@ SceneStateUploadComplete:
 
                 currentType = DrawCallType.Texture;
                 currentBlendMode = dc.BlendMode;
+                currentSceneTransform = null;
+                currentSceneTransformBase = default;
 
                 var viewPtr = texture.ViewPtr;
                 var cacheKey = new TextureCacheKey(
@@ -12087,6 +12525,7 @@ SceneStateUploadComplete:
             RestoreList(_textureVerticesList, savedTextureVertices, savedTextureVerticesCount);
             RestoreList(_textureIndicesList, savedTextureIndices, savedTextureIndicesCount);
             RestoreList(_drawCalls, savedDrawCalls, savedDrawCallsCount);
+            RestoreList(_activeSceneTransformKeys, savedSceneTransformKeys, savedSceneTransformKeyCount);
             RestoreList(_activeBrushes, savedActiveBrushes, savedActiveBrushesCount);
             RestoreList(_activeGradientStops, savedActiveGradientStops, savedActiveGradientStopsCount);
             RestoreStack(ref _clipStack, savedClipStack, savedClipStackCount);
@@ -12135,6 +12574,7 @@ SceneStateUploadComplete:
             ReturnListSnapshot(savedTextureVertices, savedTextureVerticesCount);
             ReturnListSnapshot(savedTextureIndices, savedTextureIndicesCount);
             ReturnListSnapshot(savedDrawCalls, savedDrawCallsCount);
+            ReturnListSnapshot(savedSceneTransformKeys, savedSceneTransformKeyCount);
             ReturnListSnapshot(savedActiveBrushes, savedActiveBrushesCount);
             ReturnListSnapshot(savedActiveGradientStops, savedActiveGradientStopsCount);
             ReturnListSnapshot(savedMaskRenderPasses, savedMaskRenderPassesCount);

@@ -62,8 +62,10 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let boldOffset = input.scaleBoldItalicUseMvp.y;
     let italicSkew = input.scaleBoldItalicUseMvp.z;
     let encodedTextFlags = input.scaleBoldItalicUseMvp.w;
-    let colorGlyph = encodedTextFlags > 5.5;
-    let textFlags = select(encodedTextFlags, encodedTextFlags - 8.0, colorGlyph);
+    let useView = encodedTextFlags > 13.5;
+    let viewDecodedFlags = select(encodedTextFlags, encodedTextFlags - 16.0, useView);
+    let colorGlyph = viewDecodedFlags > 5.5;
+    let textFlags = select(viewDecodedFlags, viewDecodedFlags - 8.0, colorGlyph);
     let aliasedText = textFlags < -0.5;
     let clearTypeText = textFlags > 1.5;
     let useMvp = select(
@@ -95,7 +97,9 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let physicalOffset = localOffset.x * input.basisX + localOffset.y * input.basisY;
     var finalPosLogical = input.snappedLogicalPos + physicalOffset;
 
-    if (useMvp > 0.5) {
+    if (useView) {
+        finalPosLogical = (uniforms.view * vec4<f32>(finalPosLogical, 0.0, 1.0)).xy;
+    } else if (useMvp > 0.5) {
         finalPosLogical = (uniforms.mvp * vec4<f32>(finalPosLogical, 0.0, 1.0)).xy;
     }
 

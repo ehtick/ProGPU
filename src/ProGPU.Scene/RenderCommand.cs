@@ -630,6 +630,7 @@ public struct RenderCommand
     // GPU Transform properties
     public bool UseGpuTransforms;
     public Matrix4x4 CameraView;
+    public SceneTransformHandle? SceneTransform;
 
     // GPU Chart scaling parameters
     public Vector2 Scale;
@@ -1890,6 +1891,18 @@ public class DrawingContext : IRenderDataProvider
             Picture = picture,
             UseGpuTransforms = true,
             CameraView = cameraView
+        });
+    }
+
+    public void DrawPicture(GpuPicture picture, SceneTransformHandle transform)
+    {
+        ArgumentNullException.ThrowIfNull(transform);
+        RetainPictureResources(picture);
+        Commands.Add(new RenderCommand
+        {
+            Type = RenderCommandType.DrawPicture,
+            Picture = picture,
+            SceneTransform = transform
         });
     }
 
