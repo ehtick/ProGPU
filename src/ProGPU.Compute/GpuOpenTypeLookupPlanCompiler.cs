@@ -170,6 +170,7 @@ public static class GpuOpenTypeLookupPlanCompiler
         foreach (string tag in s_defaultTags) Add(tag, tag == "rand" ? (uint)ushort.MaxValue : 1u);
 
         string script = request.Script.ToString().ToLowerInvariant();
+        if (script == "hang") AddOrReplace(Tag("calt"), 0);
         foreach (string tag in ScriptFeatures(script)) Add(tag, 1);
         foreach (string tag in DirectionFeatures(request.Direction)) Add(tag, 1);
         if (request.Direction is ShapingDirection.TopToBottom or ShapingDirection.BottomToTop)

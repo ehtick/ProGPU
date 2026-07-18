@@ -611,6 +611,27 @@ public sealed class ShapingContractsTests
     }
 
     [Fact]
+    public void GpuHangulLookupPlanRequiresExplicitContextualAlternates()
+    {
+        GpuOpenTypeShapingPlan plan = GpuOpenTypeShapingPlanCompiler.Compile(
+            new IndicShapingFontFace("calt", "hang"));
+        var defaultRequest = new ShapingRequest(
+            ShapingDirection.LeftToRight,
+            new OpenTypeTag("hang"));
+        var explicitRequest = new ShapingRequest(
+            ShapingDirection.LeftToRight,
+            new OpenTypeTag("hang"),
+            features: new[] { new ShapingFeature(new OpenTypeTag("calt"), 1) });
+
+        Assert.DoesNotContain(
+            GpuOpenTypeLookupPlanCompiler.Compile(plan, defaultRequest),
+            static command => command.FeatureTag == new OpenTypeTag("calt").Value);
+        Assert.Contains(
+            GpuOpenTypeLookupPlanCompiler.Compile(plan, explicitRequest),
+            static command => command.FeatureTag == new OpenTypeTag("calt").Value);
+    }
+
+    [Fact]
     public void GpuThaiPreprocessingDecomposesAndReordersSaraAm()
     {
         var face = new ThaiShapingFontFace();
