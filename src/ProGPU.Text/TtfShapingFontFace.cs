@@ -36,7 +36,9 @@ public sealed class TtfShapingFontFace : IShapingFontFace
     public int GetHorizontalAdvance(uint glyphId)
     {
         if (glyphId > ushort.MaxValue) return 0;
-        return checked((int)MathF.Round(Font.GetAdvanceWidth((ushort)glyphId, Font.UnitsPerEm)));
+        return checked((int)MathF.Round(
+            Font.GetAdvanceWidth((ushort)glyphId, Font.UnitsPerEm),
+            MidpointRounding.AwayFromZero));
     }
 
     public int GetVerticalAdvance(uint glyphId)
