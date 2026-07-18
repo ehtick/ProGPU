@@ -184,8 +184,14 @@ fn ligature_component(position: u32) -> u32 {
     return glyph_states[position].ligature_component & 0xffffu;
 }
 
+// Preserve HarfBuzz's independent byte-sized ligature-component count and
+// multiple-substitution component in the existing 32-byte GlyphState record.
 fn ligature_component_count(position: u32) -> u32 {
-    return glyph_states[position].ligature_component >> 16u;
+    return (glyph_states[position].ligature_component >> 16u) & 0xffu;
+}
+
+fn multiple_substitution_component(position: u32) -> u32 {
+    return glyph_states[position].ligature_component >> 24u;
 }
 
 fn set_ligature_component(position: u32, component: u32) {
@@ -195,7 +201,12 @@ fn set_ligature_component(position: u32, component: u32) {
 
 fn set_ligature_component_count(position: u32, count: u32) {
     glyph_states[position].ligature_component =
-        (glyph_states[position].ligature_component & 0xffffu) | ((count & 0xffffu) << 16u);
+        (glyph_states[position].ligature_component & 0xff00ffffu) | ((count & 0xffu) << 16u);
+}
+
+fn set_multiple_substitution_component(position: u32, component: u32) {
+    glyph_states[position].ligature_component =
+        (glyph_states[position].ligature_component & 0x00ffffffu) | ((component & 0xffu) << 24u);
 }
 const USE_CATEGORY_MASK: u32 = 0xffu << USE_CATEGORY_SHIFT;
 const GLYPH_MULTIPLE_COMPONENT: u32 = 8u;
@@ -1642,7 +1653,7 @@ fn handle_substitution_stage_transition(previous: u32, next: u32) {
             if ((glyph_states[position].internal_flags & GLYPH_MULTIPLIED) == 0u) { continue; }
             glyph_states[position].feature_mask |= select(
                 ARABIC_STRETCH_FIXED, ARABIC_STRETCH_REPEATING,
-                (ligature_component(position) & 1u) != 0u);
+                (multiple_substitution_component(position) & 1u) != 0u);
         }
     }
     if (params.script_tag == 0x61726162u && previous <= 160u && next > 160u) {
@@ -3174,7 +3185,7 @@ fn replace_multiple(subtable: u32, position: u32) -> bool {
         glyphs[position + replacement].glyph_id = table_u16(sequence + 2u + replacement * 2u);
         glyph_states[position + replacement] = source_state;
         glyph_states[position + replacement].internal_flags |= GLYPH_SUBSTITUTED | GLYPH_MULTIPLIED;
-        set_ligature_component(position + replacement, replacement);
+        set_multiple_substitution_component(position + replacement, replacement);
         if (replacement != 0u) {
             glyph_states[position + replacement].internal_flags |= GLYPH_MULTIPLE_COMPONENT;
             glyph_states[position + replacement].serial = run_state.next_serial;
@@ -4213,8 +4224,7 @@ fn apply_mark_position(subtable: u32, position: u32, lookup_type: u32,
         let component_count = table_u16(ligature_attach);
         if (component_count == 0u) { return false; }
         var component = component_count - 1u;
-        if (glyph_states[position].ligature_id == glyph_states[attachment_target].ligature_id &&
-                ligature_component(position) != 0u) {
+        if (ligature_component(position) != 0u) {
             component = min(ligature_component(position) - 1u, component);
         }
         return attach_mark(position, attachment_target, u32(mark_covered), 0u, class_count, mark_array,
