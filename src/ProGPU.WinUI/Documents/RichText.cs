@@ -361,6 +361,18 @@ public class RichTextBlock : FrameworkElement
 
     public List<PositionedRichChar> PositionedChars => _positionedChars;
 
+    public override Rect? LocalRenderBounds
+    {
+        get
+        {
+            // Rich runs can have negative bearings, combining marks, and inline font
+            // sizes larger than the block default. The full block height is a bounded,
+            // allocation-free safety margin for those cases.
+            float padding = MathF.Max(FontSize * 2f, Size.Y);
+            return new Rect(-padding, -padding, Size.X + padding * 2f, Size.Y + padding * 2f);
+        }
+    }
+
     private Hyperlink? _hoveredHyperlink = null;
 
     public override void OnPointerMoved(PointerRoutedEventArgs e)

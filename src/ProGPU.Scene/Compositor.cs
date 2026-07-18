@@ -3725,6 +3725,7 @@ SceneStateUploadComplete:
             : VisualCompositeScope.None;
 
         AddVisualHitTestBounds(node, globalTransform);
+        bool compileLocalCommands = !IsLocalRenderOutsideActiveClip(node, globalTransform);
 
         bool isTemplated = node.HasTemplate;
         if (isTemplated)
@@ -3740,40 +3741,44 @@ SceneStateUploadComplete:
             }
         }
 
-        // 2. Playback recorded commands
-        var ctx = GetDrawingContext();
-        try
+        // 2. Playback recorded commands. Bounds-aware visuals can skip their direct
+        // command stream when fully clipped, while descendants remain independently
+        // traversed so overflow content is never dropped.
+        if (compileLocalCommands)
         {
-            node.OnRender(ctx);
-
-            var commands = ctx.Commands;
-            var commandCount = commands.Count;
-            for (var commandIndex = 0; commandIndex < commandCount; commandIndex++)
+            var ctx = GetDrawingContext();
+            try
             {
-                var cmd = commands[commandIndex];
-                int vectorStart = _vectorVerticesList.Count;
-                int textStart = _textVerticesList.Count;
-                var activeTransform = cmd.UseGpuTransforms ? Matrix4x4.Identity : globalTransform;
-                if (cmd.Type != RenderCommandType.DrawPath)
+                node.OnRender(ctx);
+
+                var commands = ctx.Commands;
+                var commandCount = commands.Count;
+                for (var commandIndex = 0; commandIndex < commandCount; commandIndex++)
                 {
-                    activeTransform = (cmd.Transform == default) ? activeTransform : cmd.Transform * activeTransform;
-                }
+                    var cmd = commands[commandIndex];
+                    int vectorStart = _vectorVerticesList.Count;
+                    int textStart = _textVerticesList.Count;
+                    var activeTransform = cmd.UseGpuTransforms ? Matrix4x4.Identity : globalTransform;
+                    if (cmd.Type != RenderCommandType.DrawPath)
+                    {
+                        activeTransform = (cmd.Transform == default) ? activeTransform : cmd.Transform * activeTransform;
+                    }
 
-                bool savedUseGpuTransformsActive = _useGpuTransformsActive;
-                Matrix4x4 savedCameraViewMatrix = _cameraViewMatrix;
+                    bool savedUseGpuTransformsActive = _useGpuTransformsActive;
+                    Matrix4x4 savedCameraViewMatrix = _cameraViewMatrix;
 
-                if (cmd.UseGpuTransforms)
-                {
-                    _useGpuTransformsActive = true;
-                    _cameraViewMatrix = cmd.CameraView * globalTransform;
-                    _hasGpuTransformsInFrame = true;
-                    _gpuTransformsCameraView = cmd.CameraView * globalTransform;
-                }
+                    if (cmd.UseGpuTransforms)
+                    {
+                        _useGpuTransformsActive = true;
+                        _cameraViewMatrix = cmd.CameraView * globalTransform;
+                        _hasGpuTransformsInFrame = true;
+                        _gpuTransformsCameraView = cmd.CameraView * globalTransform;
+                    }
 
-                AddHitTestStateCommand(cmd, activeTransform);
+                    AddHitTestStateCommand(cmd, activeTransform);
 
-                switch (cmd.Type)
-                {
+                    switch (cmd.Type)
+                    {
                     case RenderCommandType.DrawRect:
                         CompileRectCommand(cmd, activeTransform);
                         break;
@@ -3940,34 +3945,35 @@ SceneStateUploadComplete:
                     case RenderCommandType.DrawGlyphRun:
                         CompileGlyphRunCommand(cmd, activeTransform);
                         break;
-                }
-
-                AddHitTestDrawCommand(cmd, activeTransform, ctx);
-
-                if (cmd.UseGpuTransforms)
-                {
-                    for (int i = vectorStart; i < _vectorVerticesList.Count; i++)
-                    {
-                        var v = _vectorVerticesList[i];
-                        v.ShapeType += 100f;
-                        _vectorVerticesList[i] = v;
                     }
-                    for (int i = textStart; i < _textVerticesList.Count; i++)
-                    {
-                        var v = _textVerticesList[i];
-                        v.ScaleBoldItalicUseMvp.W = ForceTextUseMvp(v.ScaleBoldItalicUseMvp.W);
-                        _textVerticesList[i] = v;
-                    }
-                }
 
-                _useGpuTransformsActive = savedUseGpuTransformsActive;
-                _cameraViewMatrix = savedCameraViewMatrix;
+                    AddHitTestDrawCommand(cmd, activeTransform, ctx);
+
+                    if (cmd.UseGpuTransforms)
+                    {
+                        for (int i = vectorStart; i < _vectorVerticesList.Count; i++)
+                        {
+                            var v = _vectorVerticesList[i];
+                            v.ShapeType += 100f;
+                            _vectorVerticesList[i] = v;
+                        }
+                        for (int i = textStart; i < _textVerticesList.Count; i++)
+                        {
+                            var v = _textVerticesList[i];
+                            v.ScaleBoldItalicUseMvp.W = ForceTextUseMvp(v.ScaleBoldItalicUseMvp.W);
+                            _textVerticesList[i] = v;
+                        }
+                    }
+
+                    _useGpuTransformsActive = savedUseGpuTransformsActive;
+                    _cameraViewMatrix = savedCameraViewMatrix;
+                }
             }
-        }
-        finally
-        {
-            ctx.Clear();
-            ReleaseDrawingContext();
+            finally
+            {
+                ctx.Clear();
+                ReleaseDrawingContext();
+            }
         }
 
         if (!isTemplated)
@@ -3987,6 +3993,66 @@ SceneStateUploadComplete:
 
         node.IsDirty = false;
     }
+
+    private bool IsLocalRenderOutsideActiveClip(Visual node, Matrix4x4 transform)
+    {
+        // Static/offscreen compilation may replay under a different viewport later and
+        // therefore must retain the complete command stream.
+        if (!_activeClipRect.HasValue || ActiveCompilationContext != null)
+        {
+            return false;
+        }
+
+        Rect? localBounds = node.LocalRenderBounds;
+        if (!localBounds.HasValue ||
+            !IsFiniteAffine2D(transform) ||
+            !IsFiniteRect(localBounds.Value))
+        {
+            return false;
+        }
+
+        Rect bounds = localBounds.Value;
+        Vector2 p0 = Vector2.Transform(new Vector2(bounds.X, bounds.Y), transform);
+        Vector2 p1 = Vector2.Transform(new Vector2(bounds.X + bounds.Width, bounds.Y), transform);
+        Vector2 p2 = Vector2.Transform(new Vector2(bounds.X, bounds.Y + bounds.Height), transform);
+        Vector2 p3 = Vector2.Transform(new Vector2(bounds.X + bounds.Width, bounds.Y + bounds.Height), transform);
+        float minX = MathF.Min(MathF.Min(p0.X, p1.X), MathF.Min(p2.X, p3.X));
+        float maxX = MathF.Max(MathF.Max(p0.X, p1.X), MathF.Max(p2.X, p3.X));
+        float minY = MathF.Min(MathF.Min(p0.Y, p1.Y), MathF.Min(p2.Y, p3.Y));
+        float maxY = MathF.Max(MathF.Max(p0.Y, p1.Y), MathF.Max(p2.Y, p3.Y));
+
+        Rect clip = _activeClipRect.Value;
+        float clipRight = clip.X + clip.Width;
+        float clipBottom = clip.Y + clip.Height;
+        return maxX <= clip.X || minX >= clipRight || maxY <= clip.Y || minY >= clipBottom;
+    }
+
+    private static bool IsFiniteAffine2D(Matrix4x4 transform)
+    {
+        const float epsilon = 0.0001f;
+        return float.IsFinite(transform.M11) &&
+               float.IsFinite(transform.M12) &&
+               float.IsFinite(transform.M21) &&
+               float.IsFinite(transform.M22) &&
+               float.IsFinite(transform.M41) &&
+               float.IsFinite(transform.M42) &&
+               MathF.Abs(transform.M13) <= epsilon &&
+               MathF.Abs(transform.M14) <= epsilon &&
+               MathF.Abs(transform.M23) <= epsilon &&
+               MathF.Abs(transform.M24) <= epsilon &&
+               MathF.Abs(transform.M31) <= epsilon &&
+               MathF.Abs(transform.M32) <= epsilon &&
+               MathF.Abs(transform.M34) <= epsilon &&
+               MathF.Abs(transform.M44 - 1f) <= epsilon;
+    }
+
+    private static bool IsFiniteRect(Rect rect) =>
+        float.IsFinite(rect.X) &&
+        float.IsFinite(rect.Y) &&
+        float.IsFinite(rect.Width) &&
+        float.IsFinite(rect.Height) &&
+        rect.Width >= 0f &&
+        rect.Height >= 0f;
 
     private void AddVisualHitTestBounds(Visual node, Matrix4x4 globalTransform)
     {

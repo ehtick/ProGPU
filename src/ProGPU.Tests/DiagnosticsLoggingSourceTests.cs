@@ -558,7 +558,8 @@ public class DiagnosticsLoggingSourceTests
         Assert.Contains("var dc = drawCalls[drawCallIndex];", source, StringComparison.Ordinal);
         Assert.Contains("var diagnosticCommands = diagContext.Commands;", source, StringComparison.Ordinal);
         Assert.Contains("var cmd = diagnosticCommands[commandIndex];", source, StringComparison.Ordinal);
-        Assert.Contains("var commands = ctx.Commands;\n            var commandCount = commands.Count;", source, StringComparison.Ordinal);
+        Assert.Contains("var commands = ctx.Commands;", source, StringComparison.Ordinal);
+        Assert.Contains("var commandCount = commands.Count;", source, StringComparison.Ordinal);
         Assert.Contains("var commands = picture.Commands;\n        for (var commandIndex = 0; commandIndex < commands.Length; commandIndex++)", source, StringComparison.Ordinal);
         Assert.Contains("var commands = context.Commands;\n            var commandCount = commands.Count;", source, StringComparison.Ordinal);
         Assert.Contains("var textRecords = staticBuffer.TextRecords;\n            for (var recordIndex = 0; recordIndex < textRecords.Length; recordIndex++)", source, StringComparison.Ordinal);

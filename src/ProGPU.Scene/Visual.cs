@@ -315,6 +315,12 @@ public class Visual
         // Base visual does not record operations directly
     }
 
+    /// <summary>
+    /// Gets conservative local bounds for commands emitted directly by <see cref="OnRender"/>.
+    /// A null value disables clip culling. Descendants are always traversed independently.
+    /// </summary>
+    public virtual Rect? LocalRenderBounds => null;
+
     public Matrix4x4 GetLocalTransform()
     {
         return GetLocalTransform(Offset);
