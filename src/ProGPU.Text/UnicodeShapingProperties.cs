@@ -11,6 +11,8 @@ public static class UnicodeShapingProperties
 {
     public enum SyllableMachine : byte { Indic, Use, Myanmar, Khmer }
 
+    public readonly record struct VowelConstraint(uint ScriptTag, uint First, uint Second, uint Third);
+
     public static byte GetArabicJoiningType(uint codePoint) =>
         IsScalar(codePoint) ? (byte)ArabicJoiningData.GetJoiningType(codePoint) : (byte)0;
 
@@ -36,6 +38,14 @@ public static class UnicodeShapingProperties
 
     public static uint GetVerticalCodePoint(uint codePoint) =>
         IsScalar(codePoint) ? UnicodeDirectionalData.GetVerticalCodePoint(codePoint) : codePoint;
+
+    public static int VowelConstraintCount => VowelConstraintData.Count;
+
+    public static VowelConstraint GetVowelConstraint(int index)
+    {
+        (string script, uint first, uint second, uint third) = VowelConstraintData.GetConstraint(index);
+        return new VowelConstraint(PackTag(script), first, second, third);
+    }
 
     public static int GetSyllableMachineStateCount(SyllableMachine machine) => machine switch
     {
@@ -112,4 +122,7 @@ public static class UnicodeShapingProperties
 
     private static bool IsScalar(uint codePoint) =>
         codePoint <= 0x10ffffu && (codePoint < 0xd800u || codePoint > 0xdfffu);
+
+    private static uint PackTag(string value) =>
+        (uint)value[0] << 24 | (uint)value[1] << 16 | (uint)value[2] << 8 | value[3];
 }

@@ -69,6 +69,14 @@ internal static class VowelConstraintData
 {rows}
     ];
 
+    public static int Count => s_constraints.Length;
+
+    public static (string Script, uint First, uint Second, uint Third) GetConstraint(int index)
+    {{
+        ref readonly Constraint constraint = ref s_constraints[index];
+        return (constraint.Script, constraint.First, constraint.Second, constraint.Third);
+    }}
+
     public static int MatchLength(string script, uint first, uint second, uint third)
     {{
         ReadOnlySpan<Constraint> constraints = s_constraints;

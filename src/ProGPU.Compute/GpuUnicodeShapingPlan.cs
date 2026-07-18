@@ -183,6 +183,17 @@ public static class GpuUnicodeShapingPlan
                 words.Add(eof is { } value ? Pack(value.Target, value.Action) : uint.MaxValue);
             }
         }
+        words[13] = checked((uint)UnicodeShapingProperties.VowelConstraintCount);
+        words[14] = checked((uint)words.Count);
+        for (var index = 0; index < UnicodeShapingProperties.VowelConstraintCount; index++)
+        {
+            UnicodeShapingProperties.VowelConstraint constraint =
+                UnicodeShapingProperties.GetVowelConstraint(index);
+            words.Add(constraint.ScriptTag);
+            words.Add(constraint.First);
+            words.Add(constraint.Second);
+            words.Add(constraint.Third);
+        }
         return words.ToArray();
 
         static uint Pack(int target, int action)

@@ -1,6 +1,6 @@
 // Algorithm: initialize through a compressed nominal cmap, preprocess variation selectors and Unicode joining properties, execute ordered OpenType substitutions/positioning, then load direction-aware design-unit metrics and finalize output order.
-// Time complexity: O(N*(log R + log V + log U + log D + log Q) + S*N + L*N*log C) for typical bounded combining runs, and O(N^2 + S*N + L*N*log C) worst-case when all N scalars form one reverse-ordered combining run; R is cmap ranges, V variation-selector ranges, U Unicode-property ranges, D directional mappings, Q normalization records, S selected deterministic syllable-machine passes (at most one), L ordered ranged lookups, and C coverage size. Initialization, metrics, and output conversion are parallel while order-changing preprocessing and lookup mutation are serial.
-// Space complexity: O(N + R + V + U + D + Q + M + G + L) storage for glyphs plus stable internal identities, cmap/variation/packed Unicode normalization data, M generated Indic/USE/Myanmar/Khmer transition words, G metrics, and lookup commands; each invocation uses O(1) private storage and no textures.
+// Time complexity: O(N*(log R + log V + log U + log D + log Q + log K) + S*N + L*N*log C) for typical bounded combining runs, and O(N^2 + S*N + L*N*log C) worst-case when all N scalars form one reverse-ordered combining run; R is cmap ranges, V variation-selector ranges, U Unicode-property ranges, D directional mappings, Q normalization records, K invalid-vowel constraints, S selected deterministic syllable-machine passes (at most one), L ordered ranged lookups, and C coverage size. Initialization, metrics, and output conversion are parallel while order-changing preprocessing and lookup mutation are serial.
+// Space complexity: O(N + R + V + U + D + Q + K + M + G + L) storage for glyphs plus stable internal identities, cmap/variation/packed Unicode normalization and vowel-constraint data, M generated Indic/USE/Myanmar/Khmer transition words, G metrics, and lookup commands; each invocation uses O(1) private storage and no textures.
 // Workgroups contain 64 independent glyph invocations; Unicode preprocessing and the ordered lookup VM use one invocation because they mutate shared order. The Arabic joining machine has 42 fixed transitions (168 bytes of private state); the generated complex-script machines use uploaded state/category matrices with 256 fixed category entries per state. Runtime loops are bounded by uploaded counts/capacity and OpenType table counts. Lookup flags use GDEF glyph/mark classes and mark-set coverage without auxiliary allocations. All arithmetic is exact 32-bit integer design-unit arithmetic.
 
 struct Params {
@@ -703,6 +703,124 @@ fn remove_record(position: u32) {
         glyph_states[cursor - 1u] = glyph_states[cursor];
     }
     run_state.glyph_count -= 1u;
+}
+
+fn insert_codepoint(position: u32, codepoint: u32, cluster: i32) -> bool {
+    if (run_state.glyph_count >= params.capacity) { run_state.status = 1u; return false; }
+    var cursor = run_state.glyph_count;
+    while (cursor > position) {
+        glyphs[cursor] = glyphs[cursor - 1u];
+        glyph_states[cursor] = glyph_states[cursor - 1u];
+        cursor -= 1u;
+    }
+    glyphs[position] = ShapingGlyph(nominal_glyph(codepoint), codepoint, cluster, 0u, 0, 0, 0, 0);
+    glyph_states[position] = GlyphState(
+        run_state.next_serial, 0u, 0u, 0, 0u, ARABIC_NONE << ARABIC_ACTION_SHIFT, 0u, 0u);
+    run_state.next_serial += 1u;
+    run_state.glyph_count += 1u;
+    return true;
+}
+
+fn vowel_constraint_script() -> u32 {
+    let script = params.script_tag;
+    if (script == 0x626e6732u || script == 0x626e6733u) { return 0x62656e67u; }
+    if (script == 0x64657632u || script == 0x64657633u) { return 0x64657661u; }
+    if (script == 0x676a7232u || script == 0x676a7233u) { return 0x67756a72u; }
+    if (script == 0x67757232u || script == 0x67757233u) { return 0x67757275u; }
+    if (script == 0x6b6e6432u || script == 0x6b6e6433u) { return 0x6b6e6461u; }
+    if (script == 0x6d6c6d32u || script == 0x6d6c6d33u) { return 0x6d6c796du; }
+    if (script == 0x6f727932u || script == 0x6f727933u) { return 0x6f727961u; }
+    if (script == 0x746d6c32u || script == 0x746d6c33u) { return 0x74616d6cu; }
+    if (script == 0x74656c32u || script == 0x74656c33u) { return 0x74656c75u; }
+    return script;
+}
+
+fn compare_vowel_constraint(record: u32, script: u32, first: u32, second: u32) -> i32 {
+    let record_script = unicode_data[record];
+    if (record_script < script) { return -1; }
+    if (record_script > script) { return 1; }
+    let record_first = unicode_data[record + 1u];
+    if (record_first < first) { return -1; }
+    if (record_first > first) { return 1; }
+    let record_second = unicode_data[record + 2u];
+    if (record_second < second) { return -1; }
+    if (record_second > second) { return 1; }
+    return 0;
+}
+
+fn vowel_constraint_match_length(first: u32, second: u32, third: u32) -> u32 {
+    let script = vowel_constraint_script();
+    let count = unicode_data[13u];
+    let base = unicode_data[14u];
+    var low = 0u;
+    var high = count;
+    while (low < high) {
+        let middle = low + ((high - low) >> 1u);
+        let comparison = compare_vowel_constraint(base + middle * 4u, script, first, second);
+        if (comparison < 0) { low = middle + 1u; } else { high = middle; }
+    }
+    var index = low;
+    while (index < count) {
+        let record = base + index * 4u;
+        if (compare_vowel_constraint(record, script, first, second) != 0) { break; }
+        let expected_third = unicode_data[record + 3u];
+        if (expected_third == 0u) { return 2u; }
+        if (expected_third == third) { return 3u; }
+        index += 1u;
+    }
+    return 0u;
+}
+
+fn apply_vowel_constraints() {
+    var index = 0u;
+    while (index + 1u < run_state.glyph_count) {
+        var third = 0u;
+        if (index + 2u < run_state.glyph_count) { third = glyphs[index + 2u].codepoint; }
+        let length = vowel_constraint_match_length(
+            glyphs[index].codepoint, glyphs[index + 1u].codepoint, third);
+        if (length == 0u) { index += 1u; continue; }
+        let final_index = index + length - 1u;
+        if (!insert_codepoint(final_index, 0x25ccu, glyphs[final_index].cluster)) { return; }
+        index += length + 1u;
+    }
+}
+
+fn normalize_use_diacritics() {
+    if (!is_use_syllable_script()) { return; }
+    var position = 0u;
+    while (position < run_state.glyph_count) {
+        let codepoint = glyphs[position].codepoint;
+        let record = canonical_decomposition_record(codepoint);
+        if (record == 0xffffffffu) { position += 1u; continue; }
+        let count = unicode_data[record + 2u];
+        if (count == 0u) { position += 1u; continue; }
+        let first = decomposition_scalar(codepoint, record, 0u);
+        if ((unicode_properties_b(first) & 0x100u) == 0u) { position += 1u; continue; }
+        let extra = count - 1u;
+        if (run_state.glyph_count + extra > params.capacity) { run_state.status = 1u; return; }
+        var cursor = run_state.glyph_count;
+        while (cursor > position + 1u) {
+            cursor -= 1u;
+            glyphs[cursor + extra] = glyphs[cursor];
+            glyph_states[cursor + extra] = glyph_states[cursor];
+        }
+        let source = glyphs[position];
+        let source_state = glyph_states[position];
+        for (var component = 0u; component < count; component++) {
+            let target_index = position + component;
+            let scalar = decomposition_scalar(codepoint, record, component);
+            glyphs[target_index] = source;
+            glyphs[target_index].codepoint = scalar;
+            glyphs[target_index].glyph_id = nominal_glyph(scalar);
+            glyph_states[target_index] = source_state;
+            if (component != 0u) {
+                glyph_states[target_index].serial = run_state.next_serial;
+                run_state.next_serial += 1u;
+            }
+        }
+        run_state.glyph_count += extra;
+        position += count;
+    }
 }
 
 fn reorder_canonical_combining_marks() {
@@ -1866,6 +1984,10 @@ fn preprocess_glyphs(@builtin(global_invocation_id) id: vec3<u32>) {
         }
         run_state.glyph_count -= 1u;
     }
+    apply_vowel_constraints();
+    if (run_state.status != 0u) { return; }
+    normalize_use_diacritics();
+    if (run_state.status != 0u) { return; }
     prepare_hangul_shaping();
     if (run_state.status != 0u) { return; }
     prepare_thai_lao();

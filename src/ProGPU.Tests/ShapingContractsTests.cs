@@ -554,6 +554,53 @@ public sealed class ShapingContractsTests
     }
 
     [Fact]
+    public void GpuPreprocessingInsertsInvalidVowelDottedCircle()
+    {
+        var face = new TtfShapingFontFace(InterFontFamily.Regular);
+        GpuOpenTypeShapingPlan plan = GpuOpenTypeShapingPlanCompiler.Compile(face);
+        using var context = new WgpuContext();
+        context.Initialize(null);
+        using var fontData = new GpuOpenTypeFontData(context, plan);
+        using var pipeline = new GpuOpenTypeRunPipeline(context);
+        using var output = new ShapingBuffer();
+
+        pipeline.ExecuteRun(
+            [new GpuShapingScalar(0x0905, 0), new GpuShapingScalar(0x093e, 1)],
+            fontData,
+            new ShapingRequest(ShapingDirection.LeftToRight, new OpenTypeTag("deva")),
+            [],
+            output);
+
+        Assert.Equal(new uint[] { 0x0905, 0x25cc, 0x093e },
+            output.Glyphs.ToArray().Select(static glyph => glyph.CodePoint));
+        Assert.Equal(output[2].Cluster, output[1].Cluster);
+    }
+
+    [Fact]
+    public void GpuUsePreprocessingDecomposesMarkLeadingDiacritic()
+    {
+        var face = new UseDiacriticFontFace();
+        GpuOpenTypeShapingPlan plan = GpuOpenTypeShapingPlanCompiler.Compile(face);
+        using var context = new WgpuContext();
+        context.Initialize(null);
+        using var fontData = new GpuOpenTypeFontData(context, plan);
+        using var pipeline = new GpuOpenTypeRunPipeline(context);
+        using var output = new ShapingBuffer();
+
+        pipeline.ExecuteRun(
+            [new GpuShapingScalar(0x0f73, 0)],
+            fontData,
+            new ShapingRequest(ShapingDirection.LeftToRight, new OpenTypeTag("tibt")),
+            [],
+            output);
+
+        Assert.Equal(new uint[] { 0x0f71, 0x0f72 },
+            output.Glyphs.ToArray().Select(static glyph => glyph.CodePoint));
+        Assert.Equal(new uint[] { 2, 3 },
+            output.Glyphs.ToArray().Select(static glyph => glyph.GlyphId));
+    }
+
+    [Fact]
     public void GpuLookupPlanPreservesHalfOpenFeatureRanges()
     {
         var face = new TtfShapingFontFace(InterFontFamily.Regular);
@@ -1100,6 +1147,42 @@ public sealed class ShapingContractsTests
             return false;
         }
         public int GetHorizontalAdvance(uint glyphId) => glyphId is 2 or 4 ? 0 : 500;
+        public int GetVerticalAdvance(uint glyphId) => 1000;
+        public int GetHorizontalOrigin(uint glyphId) => 250;
+        public int GetVerticalOrigin(uint glyphId) => 800;
+        public bool TryGetNormalizedVariationCoordinate(uint axisIndex, out short coordinate)
+        {
+            coordinate = 0;
+            return false;
+        }
+        public float GetLayoutVariationDelta(ushort outerIndex, ushort innerIndex) => 0;
+    }
+
+    private sealed class UseDiacriticFontFace : IShapingFontFace
+    {
+        public int FaceIndex => 0;
+        public ushort UnitsPerEm => 1000;
+        public uint GlyphCount => 4;
+        public uint VariationAxisCount => 0;
+        public bool HasActiveVariations => false;
+        public bool TryGetTable(OpenTypeTag tag, out ReadOnlyMemory<byte> table)
+        {
+            table = ReadOnlyMemory<byte>.Empty;
+            return false;
+        }
+        public uint GetNominalGlyph(uint codePoint) => codePoint switch
+        {
+            0x0f73 => 1,
+            0x0f71 => 2,
+            0x0f72 => 3,
+            _ => 0
+        };
+        public bool TryGetVariationGlyph(uint codePoint, uint variationSelector, out uint glyphId)
+        {
+            glyphId = 0;
+            return false;
+        }
+        public int GetHorizontalAdvance(uint glyphId) => glyphId == 0 ? 0 : 500;
         public int GetVerticalAdvance(uint glyphId) => 1000;
         public int GetHorizontalOrigin(uint glyphId) => 250;
         public int GetVerticalOrigin(uint glyphId) => 800;
