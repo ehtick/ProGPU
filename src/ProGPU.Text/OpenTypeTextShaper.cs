@@ -1757,6 +1757,7 @@ public static class OpenTypeTextShaper
         {
             return false;
         }
+        if (glyphs.WasSubstitutedByLookup(position, lookupIndex)) return false;
 
         ushort subtableCount = ReadU16(data, subtableCountOffset);
         ushort lookupFlags = ReadU16(data, lookupOffset + 2);
@@ -1765,6 +1766,7 @@ public static class OpenTypeTextShaper
         if ((lookupFlags & 0x0010) != 0 && CanRead(data, markFilteringSetOffset, 2))
             markFilteringSet = ReadU16(data, markFilteringSetOffset);
         int previousMarkFilteringCoverage = glyphs.SetMarkFilteringSet(markFilteringSet);
+        ushort previousLookup = glyphs.SetActiveLookup(lookupIndex);
         try
         {
             for (var subtableIndex = 0; subtableIndex < subtableCount; subtableIndex++)
@@ -1777,6 +1779,7 @@ public static class OpenTypeTextShaper
         }
         finally
         {
+            glyphs.SetActiveLookup(previousLookup);
             glyphs.RestoreMarkFilteringCoverage(previousMarkFilteringCoverage);
         }
     }
@@ -2300,6 +2303,7 @@ public static class OpenTypeTextShaper
                 out int mark1Array, out int mark2Array)) return false;
         int mark2Index = glyphs.PreviousEligibleIndex(markIndex - 1, lookupFlags, mark2Coverage, data, skipMarks: false);
         if (mark2Index < 0 || glyphs.GetGlyphClassKind(mark2Index) != GlyphClassKind.Mark) return false;
+        if (!glyphs.CanAttachMarkToMark(markIndex, mark2Index)) return false;
         int mark2CoverageIndex = FindCoverage(data, mark2Coverage, glyphs.GetGlyph(mark2Index));
         return ApplyMarkAttachment(data, glyphs, markIndex, mark2Index, markCoverageIndex,
             mark2CoverageIndex, classCount, mark1Array, mark2Array, mark2Array + 2);
@@ -3381,6 +3385,7 @@ public static class OpenTypeTextShaper
         private int _contextMatchEnd;
         private int _markFilteringCoverage = -1;
         private uint _randomState = 1;
+        private ushort _activeLookup = ushort.MaxValue;
 
         private GlyphSubstitutionBuffer(List<GlyphRecord> glyphs, TtfFont font)
         {
@@ -3410,7 +3415,7 @@ public static class OpenTypeTextShaper
         public void ResetContextMatchEnd() => _contextMatchEnd = 0;
 
         public void SetContextMatchEnd(int end) =>
-            _contextMatchEnd = Math.Clamp(end, 0, _glyphs.Count);
+            _contextMatchEnd = Math.Max(_contextMatchEnd, Math.Clamp(end, 0, _glyphs.Count));
 
         public void SetLookupSyllable(int index, bool restrict)
         {
@@ -5821,12 +5826,23 @@ public static class OpenTypeTextShaper
         public void RestoreMarkFilteringCoverage(int coverage) =>
             _markFilteringCoverage = coverage;
 
+        public ushort SetActiveLookup(ushort lookupIndex)
+        {
+            ushort previous = _activeLookup;
+            _activeLookup = lookupIndex;
+            return previous;
+        }
+
+        public bool WasSubstitutedByLookup(int index, ushort lookupIndex) =>
+            (uint)index < (uint)_glyphs.Count && _glyphs[index].LastSubstitutionLookup == lookupIndex;
+
         public void ReplaceLigature(ReadOnlySpan<int> componentIndices, ushort ligatureGlyph)
         {
             if (componentIndices.IsEmpty) return;
             GlyphRecord ligature = _glyphs[componentIndices[0]];
             ligature.GlyphIndex = ligatureGlyph;
             ligature.Substituted = 1;
+            ligature.LastSubstitutionLookup = _activeLookup;
             ligature.Ligated = 1;
             ligature.Multiplied = 0;
             ligature.LigatureComponentCount = checked((byte)Math.Min(componentIndices.Length, byte.MaxValue));
@@ -6096,6 +6112,7 @@ public static class OpenTypeTextShaper
             GlyphRecord record = _glyphs[index];
             record.GlyphIndex = newGlyphIndex;
             record.Substituted = 1;
+            record.LastSubstitutionLookup = _activeLookup;
             _glyphs[index] = record;
         }
 
@@ -6104,6 +6121,7 @@ public static class OpenTypeTextShaper
             GlyphRecord record = _glyphs[index];
             record.GlyphIndex = newGlyphIndex;
             record.Substituted = 1;
+            record.LastSubstitutionLookup = _activeLookup;
             if (removeLen > 1) record.Ligated = 1;
             _glyphs[index] = record;
             if (removeLen > 1)
@@ -6121,12 +6139,41 @@ public static class OpenTypeTextShaper
                 throw new InvalidOperationException($"OpenType substitution exceeds the {MaximumShapedGlyphCount} glyph shaping limit.");
             }
             GlyphRecord record = _glyphs[index];
+            if (record.Ligated != 0 && newGlyphIndices.Length > 1)
+            {
+                int insertionIndex = index + 1;
+                while (insertionIndex < _glyphs.Count &&
+                       _glyphs[insertionIndex].LigatureComponent != byte.MaxValue)
+                {
+                    insertionIndex++;
+                }
+                GlyphRecord first = record;
+                first.GlyphIndex = newGlyphIndices[0];
+                first.Substituted = 1;
+                first.LastSubstitutionLookup = _activeLookup;
+                first.MultipleSubstitutionComponent = 0;
+                first.Multiplied = 1;
+                _glyphs[index] = first;
+                for (var replacementIndex = 1; replacementIndex < newGlyphIndices.Length; replacementIndex++)
+                {
+                    GlyphRecord replacement = record;
+                    replacement.GlyphIndex = newGlyphIndices[replacementIndex];
+                    replacement.Substituted = 1;
+                    replacement.LastSubstitutionLookup = _activeLookup;
+                    replacement.MultipleSubstitutionComponent = checked((byte)Math.Min(replacementIndex, byte.MaxValue));
+                    replacement.Multiplied = 1;
+                    _glyphs.Insert(insertionIndex++, replacement);
+                }
+                _contextMatchEnd = Math.Max(_contextMatchEnd, insertionIndex);
+                return;
+            }
             _glyphs.RemoveAt(index);
             for (var replacementIndex = newGlyphIndices.Length - 1; replacementIndex >= 0; replacementIndex--)
             {
                 GlyphRecord replacement = record;
                 replacement.GlyphIndex = newGlyphIndices[replacementIndex];
                 replacement.Substituted = 1;
+                replacement.LastSubstitutionLookup = _activeLookup;
                 replacement.MultipleSubstitutionComponent = checked((byte)Math.Min(replacementIndex, byte.MaxValue));
                 replacement.Multiplied = 1;
                 _glyphs.Insert(index, replacement);
@@ -6437,6 +6484,13 @@ public static class OpenTypeTextShaper
             }
             int componentCount = _glyphs[ligatureIndex].LigatureComponentCount;
             return componentCount > 0 ? componentCount - 1 : int.MaxValue;
+        }
+
+        public bool CanAttachMarkToMark(int firstMarkIndex, int secondMarkIndex)
+        {
+            byte first = _glyphs[firstMarkIndex].LigatureComponent;
+            byte second = _glyphs[secondMarkIndex].LigatureComponent;
+            return first == byte.MaxValue || second == byte.MaxValue || first == second;
         }
 
         public void Attach(int markIndex, int targetIndex, int anchorDeltaX, int anchorDeltaY)
@@ -7230,6 +7284,7 @@ public static class OpenTypeTextShaper
             ArabicAction = None;
             LigatureComponent = byte.MaxValue;
             AttachmentTarget = -1;
+            LastSubstitutionLookup = ushort.MaxValue;
         }
 
         public ushort GlyphIndex;
@@ -7258,6 +7313,7 @@ public static class OpenTypeTextShaper
         public byte LigatureComponent;
         public byte AttachmentKind;
         public int AttachmentTarget;
+        public ushort LastSubstitutionLookup;
     }
 
     private readonly record struct ArabicStateEntry(byte PreviousAction, byte CurrentAction, byte NextState);
