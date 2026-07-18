@@ -8,5 +8,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\ProGPU.Text.Shaping\ProGPU.Text.Shaping.csproj" />
     <ProjectReference Include="..\..\src\ProGPU.Text\ProGPU.Text.csproj" />
+    <ProjectReference Include="..\..\src\ProGPU.Compute\ProGPU.Compute.csproj" />
+    <ProjectReference Include="..\..\src\ProGPU.Backend\ProGPU.Backend.csproj" />
   </ItemGroup>
 </Project>

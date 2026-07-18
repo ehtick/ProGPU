@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using ProGPU.Backend;
+using ProGPU.Compute;
 using ProGPU.Text;
 using ProGPU.Text.Shaping;
 
@@ -38,7 +40,7 @@ internal static class HarfBuzzParityProgram
             return 2;
         }
 
-        var runner = new SuiteRunner(options);
+        using var runner = new SuiteRunner(options);
         SuiteReport report = await runner.RunAsync();
         PrintSummary(report, options.MaxFailureDetails);
 
@@ -64,7 +66,7 @@ internal static class HarfBuzzParityProgram
               dotnet run --project tools/HarfBuzzParity -- suite \
                 --harfbuzz-root PATH [--hb-shape PATH] [--filter GLOB-TEXT] \
                 [--skip-cases N] [--max-cases N] [--report PATH] \
-                [--max-failure-details N] [--progress-every N]
+                [--backend cpu|gpu|both] [--max-failure-details N] [--progress-every N]
 
             The HarfBuzz root must contain test/shape/data/in-house. Unsupported
             OpenType behavior is reported separately and still makes the command fail.
@@ -98,6 +100,7 @@ internal sealed record SuiteOptions(
     int SkipCases,
     int? MaxCases,
     string? ReportPath,
+    ShapingBackend Backend,
     int MaxFailureDetails,
     int ProgressEvery)
 {
@@ -109,6 +112,7 @@ internal sealed record SuiteOptions(
         int skipCases = 0;
         int? maxCases = null;
         string? report = null;
+        ShapingBackend backend = ShapingBackend.Cpu;
         int maxDetails = 25;
         int progressEvery = 250;
 
@@ -132,6 +136,13 @@ internal sealed record SuiteOptions(
                 case "--skip-cases": skipCases = ParseNonNegative(Value(), option); break;
                 case "--max-cases": maxCases = ParsePositive(Value(), option); break;
                 case "--report": report = Value(); break;
+                case "--backend": backend = Value().ToLowerInvariant() switch
+                {
+                    "cpu" => ShapingBackend.Cpu,
+                    "gpu" => ShapingBackend.Gpu,
+                    "both" => ShapingBackend.Both,
+                    var value => throw new ArgumentException($"Unknown shaping backend '{value}'.")
+                }; break;
                 case "--max-failure-details": maxDetails = ParseNonNegative(Value(), option); break;
                 case "--progress-every": progressEvery = ParsePositive(Value(), option); break;
                 default: throw new ArgumentException($"Unknown option '{option}'.");
@@ -143,7 +154,8 @@ internal sealed record SuiteOptions(
             throw new ArgumentException("--harfbuzz-root is required.");
         }
 
-        return new SuiteOptions(Path.GetFullPath(root), hbShape, filter, skipCases, maxCases, report, maxDetails, progressEvery);
+        return new SuiteOptions(
+            Path.GetFullPath(root), hbShape, filter, skipCases, maxCases, report, backend, maxDetails, progressEvery);
     }
 
     private static int ParsePositive(string value, string option) =>
@@ -157,11 +169,23 @@ internal sealed record SuiteOptions(
             : throw new ArgumentException($"{option} requires a non-negative integer.");
 }
 
-internal sealed class SuiteRunner
+[Flags]
+internal enum ShapingBackend
+{
+    Cpu = 1,
+    Gpu = 2,
+    Both = Cpu | Gpu
+}
+
+internal sealed class SuiteRunner : IDisposable
 {
     private readonly SuiteOptions _options;
     private readonly Dictionary<(string Path, int FaceIndex), TtfFont> _fontCache = new();
     private readonly Dictionary<string, TtfFont> _variationFontCache = new(StringComparer.Ordinal);
+    private readonly Dictionary<TtfFont, GpuOpenTypeFontData> _gpuFontCache = new();
+    private readonly Dictionary<TtfFont, GpuOpenTypeShapingPlan> _gpuPlanCache = new();
+    private WgpuContext? _gpuContext;
+    private GpuOpenTypeRunPipeline? _gpuPipeline;
 
     public SuiteRunner(SuiteOptions options) => _options = options;
 
@@ -300,47 +324,17 @@ internal sealed class SuiteRunner
             ReferenceGlyph[] expected = await ShapeWithHarfBuzzAsync(testCase);
             TtfFont font = GetFont(testCase.FontPath, configuration);
 
-            IReadOnlyList<ShapedGlyph> actual;
-            if (configuration.ClusterLevel is ShapingClusterLevel clusterLevel)
+            string? mismatch = null;
+            if ((_options.Backend & ShapingBackend.Cpu) != 0)
             {
-                using var buffer = new ShapingBuffer();
-                ShapingDirection direction = configuration.Direction == ShapingDirection.Unspecified
-                    ? InferDirection(testCase.Text)
-                    : configuration.Direction;
-                OpenTypeTag script = configuration.Script is { Length: 4 } scriptTag
-                    ? new OpenTypeTag(scriptTag)
-                    : OpenTypeTag.DefaultScript;
-                var request = new ShapingRequest(
-                    direction,
-                    script,
-                    configuration.Language,
-                    clusterLevel);
-                CpuOpenTypeShaper.Instance.Shape(
-                    testCase.Text,
-                    new TtfShapingFontFace(font),
-                    request,
-                    buffer);
-                float scale = (configuration.FontSize ?? font.UnitsPerEm) / font.UnitsPerEm;
-                actual = buffer.Glyphs.ToArray().Select(glyph => new ShapedGlyph(
-                    checked((ushort)glyph.GlyphId),
-                    glyph.Cluster,
-                    glyph.CodePoint,
-                    glyph.AdvanceX * scale,
-                    glyph.AdvanceY * scale,
-                    glyph.OffsetX * scale,
-                    glyph.OffsetY * scale)).ToArray();
+                mismatch = Compare(expected, ShapeCpu(testCase, configuration, font), configuration, testCase.Text);
+                if (mismatch is not null) mismatch = $"CPU: {mismatch}";
             }
-            else
+            if (mismatch is null && (_options.Backend & ShapingBackend.Gpu) != 0)
             {
-                TextShapingOptions shapingOptions = configuration.CreateShapingOptions();
-                actual = OpenTypeTextShaper.Shape(
-                    testCase.Text,
-                    font,
-                    configuration.FontSize ?? font.UnitsPerEm,
-                    shapingOptions);
+                mismatch = Compare(expected, ShapeGpu(testCase, configuration, font), configuration, testCase.Text);
+                if (mismatch is not null) mismatch = $"GPU: {mismatch}";
             }
-
-            string? mismatch = Compare(expected, actual, configuration, testCase.Text);
             return mismatch is null
                 ? CaseResult.Passed(testCase)
                 : CaseResult.Failed(testCase, mismatch);
@@ -351,13 +345,126 @@ internal sealed class SuiteRunner
         }
     }
 
+    private static IReadOnlyList<ShapedGlyph> ShapeCpu(
+        TestCase testCase,
+        CaseConfiguration configuration,
+        TtfFont font)
+    {
+        if (configuration.ClusterLevel is not ShapingClusterLevel clusterLevel)
+        {
+            return OpenTypeTextShaper.Shape(
+                testCase.Text,
+                font,
+                configuration.FontSize ?? font.UnitsPerEm,
+                configuration.CreateShapingOptions());
+        }
+
+        using var buffer = new ShapingBuffer();
+        ShapingRequest request = CreateRequest(testCase, configuration, clusterLevel);
+        CpuOpenTypeShaper.Instance.Shape(testCase.Text, new TtfShapingFontFace(font), request, buffer);
+        return Convert(buffer, configuration.FontSize ?? font.UnitsPerEm, font.UnitsPerEm);
+    }
+
+    private IReadOnlyList<ShapedGlyph> ShapeGpu(
+        TestCase testCase,
+        CaseConfiguration configuration,
+        TtfFont font)
+    {
+        EnsureGpu();
+        if (!_gpuFontCache.TryGetValue(font, out GpuOpenTypeFontData? fontData))
+        {
+            GpuOpenTypeShapingPlan compiled = GpuOpenTypeShapingPlanCompiler.Compile(new TtfShapingFontFace(font));
+            fontData = new GpuOpenTypeFontData(_gpuContext!, compiled);
+            _gpuFontCache.Add(font, fontData);
+            _gpuPlanCache.Add(font, compiled);
+        }
+        GpuOpenTypeShapingPlan plan = _gpuPlanCache[font];
+        ShapingRequest request = CreateRequest(
+            testCase, configuration, configuration.ClusterLevel ?? ShapingClusterLevel.MonotoneGraphemes);
+        GpuOpenTypeLookupCommand[] commands = GpuOpenTypeLookupPlanCompiler.Compile(plan, request);
+        var input = new List<GpuShapingScalar>(testCase.Text.Length);
+        bool characterClusters = request.ClusterLevel is
+            ShapingClusterLevel.MonotoneCharacters or ShapingClusterLevel.Characters;
+        for (int graphemeStart = 0; graphemeStart < testCase.Text.Length;)
+        {
+            int graphemeLength = StringInfo.GetNextTextElementLength(testCase.Text.AsSpan(graphemeStart));
+            int graphemeEnd = checked(graphemeStart + graphemeLength);
+            for (int utf16 = graphemeStart; utf16 < graphemeEnd;)
+            {
+                Rune.DecodeFromUtf16(testCase.Text.AsSpan(utf16), out Rune rune, out int consumed);
+                input.Add(new GpuShapingScalar(
+                    checked((uint)rune.Value), characterClusters ? utf16 : graphemeStart));
+                utf16 += Math.Max(consumed, 1);
+            }
+            graphemeStart = graphemeEnd;
+        }
+        using var buffer = new ShapingBuffer();
+        _gpuPipeline!.ExecuteRun(input.ToArray(), fontData, request, commands, buffer);
+        return Convert(buffer, configuration.FontSize ?? font.UnitsPerEm, font.UnitsPerEm);
+    }
+
+    private static ShapingRequest CreateRequest(
+        TestCase testCase,
+        CaseConfiguration configuration,
+        ShapingClusterLevel clusterLevel)
+    {
+        ShapingDirection direction = configuration.Direction == ShapingDirection.Unspecified
+            ? InferDirection(testCase.Text)
+            : configuration.Direction;
+        OpenTypeTag script = configuration.Script is { Length: 4 } scriptTag
+            ? new OpenTypeTag(scriptTag)
+            : InferScript(testCase.Text);
+        ShapingFeature[] features = configuration.Features.Select(static feature =>
+            new ShapingFeature(new OpenTypeTag(feature.Tag), checked((uint)Math.Max(feature.Value, 0)))).ToArray();
+        return new ShapingRequest(direction, script, configuration.Language, clusterLevel, features: features);
+    }
+
+    private static OpenTypeTag InferScript(string text)
+    {
+        foreach (Rune rune in text.EnumerateRunes())
+        {
+            OpenTypeTag script = OpenTypeScriptResolver.GetScript(checked((uint)rune.Value));
+            if (script != OpenTypeTag.DefaultScript) return script;
+        }
+        return OpenTypeTag.DefaultScript;
+    }
+
+    private static IReadOnlyList<ShapedGlyph> Convert(ShapingBuffer buffer, float size, ushort unitsPerEm)
+    {
+        float scale = size / unitsPerEm;
+        return buffer.Glyphs.ToArray().Select(glyph => new ShapedGlyph(
+            checked((ushort)glyph.GlyphId), glyph.Cluster, glyph.CodePoint,
+            glyph.AdvanceX * scale, glyph.AdvanceY * scale,
+            glyph.OffsetX * scale, glyph.OffsetY * scale)).ToArray();
+    }
+
+    private void EnsureGpu()
+    {
+        if (_gpuContext is not null) return;
+        _gpuContext = new WgpuContext();
+        _gpuContext.Initialize(null);
+        _gpuPipeline = new GpuOpenTypeRunPipeline(_gpuContext);
+    }
+
+    public void Dispose()
+    {
+        foreach (GpuOpenTypeFontData font in _gpuFontCache.Values) font.Dispose();
+        _gpuPipeline?.Dispose();
+        _gpuContext?.Dispose();
+    }
+
     private static ShapingDirection InferDirection(string text)
     {
         foreach (Rune rune in text.EnumerateRunes())
         {
-            if (rune.Value is >= 0x0590 and <= 0x08ff or >= 0xfb1d and <= 0xfdff or
-                >= 0xfe70 and <= 0xfeff or >= 0x10800 and <= 0x10fff)
-                return ShapingDirection.RightToLeft;
+            UnicodeCategory category = Rune.GetUnicodeCategory(rune);
+            if (category is not (UnicodeCategory.UppercaseLetter or UnicodeCategory.LowercaseLetter or
+                UnicodeCategory.TitlecaseLetter or UnicodeCategory.ModifierLetter or UnicodeCategory.OtherLetter))
+                continue;
+            string script = OpenTypeScriptResolver.GetScript(checked((uint)rune.Value)).ToString();
+            return script is "arab" or "hebr" or "syrc" or "thaa" or "nkoo" or "adlm" or "rohg"
+                ? ShapingDirection.RightToLeft
+                : ShapingDirection.LeftToRight;
         }
         return ShapingDirection.LeftToRight;
     }
@@ -497,7 +604,7 @@ internal sealed class SuiteRunner
                 return $"glyph[{index}] position expected ({left.AdvanceX},{left.AdvanceY},{left.OffsetX},{left.OffsetY}), " +
                        $"actual ({Round(right.AdvanceX)},{Round(-right.AdvanceY)},{Round(right.OffsetX)},{Round(-right.OffsetY)}); " +
                        $"expected [{string.Join('|', expected.Select(static glyph => $"{glyph.Glyph}:{glyph.AdvanceX},{glyph.AdvanceY},{glyph.OffsetX},{glyph.OffsetY}"))}], " +
-                       $"actual [{string.Join('|', actual.Select(static glyph => $"{glyph.GlyphIndex}:{Round(glyph.AdvanceX)},{Round(-glyph.AdvanceY)},{Round(glyph.OffsetX)},{Round(-glyph.OffsetY)}"))}]";
+                       $"actual [{string.Join('|', actual.Select(static glyph => $"{glyph.GlyphIndex}/{glyph.CodePoint:X}:{Round(glyph.AdvanceX)},{Round(-glyph.AdvanceY)},{Round(glyph.OffsetX)},{Round(-glyph.OffsetY)}"))}]";
             }
         }
         return null;
