@@ -549,7 +549,7 @@ public static class OpenTypeTextShaper
     private static ShapingDirection ResolveDirection(ShapingDirection requested, string script)
     {
         if (requested != ShapingDirection.Unspecified) return requested;
-        return script is "arab" or "hebr" or "syrc" or "thaa" or "nko " or "adlm" or "rohg"
+        return script is "arab" or "hebr" or "syrc" or "thaa" or "nkoo" or "adlm" or "rohg"
             ? ShapingDirection.RightToLeft
             : ShapingDirection.LeftToRight;
     }

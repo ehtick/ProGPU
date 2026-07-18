@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Numerics;
 using System.Threading;
 using System.Threading.Tasks;
+using ProGPU.Text.Shaping;
 
 namespace ProGPU.Text;
 
@@ -278,7 +279,8 @@ public class TextLayout
         ushort GlyphIndex,
         int Cluster,
         uint CodePoint,
-        float Advance,
+        float AdvanceX,
+        float AdvanceY,
         float OffsetX,
         float OffsetY)
     {
@@ -297,6 +299,12 @@ public class TextLayout
         }
 
         Glyphs.EnsureCapacity(EstimateGlyphCapacity(Text));
+        if (ShapingOptions.Direction is ShapingDirection.TopToBottom or ShapingDirection.BottomToTop)
+        {
+            GenerateVerticalShapedLayout();
+            return;
+        }
+
         float scale = FontSize / Font.UnitsPerEm;
         float lineSpacing = (Font.Ascender - Font.Descender + Font.LineGap) * scale;
         float fontAscent = Font.Ascender * scale;
@@ -334,7 +342,7 @@ public class TextLayout
                         }
 
                         bool exceeds = !float.IsInfinity(MaxWidth) &&
-                                       width + candidate.Advance > MaxWidth &&
+                                       width + candidate.AdvanceX > MaxWidth &&
                                        candidateEnd > candidateStart;
                         if (exceeds)
                         {
@@ -344,7 +352,7 @@ public class TextLayout
                             }
                             break;
                         }
-                        width += candidate.Advance;
+                        width += candidate.AdvanceX;
                     }
 
                     if (candidateEnd == candidateStart)
@@ -357,7 +365,7 @@ public class TextLayout
                     for (var candidateIndex = candidateStart; candidateIndex < candidateEnd; candidateIndex++)
                     {
                         ShapedCandidate candidate = candidates[candidateIndex];
-                        float advance = candidate.Advance;
+                        float advance = candidate.AdvanceX;
                         var glyph = new GlyphInfo
                         {
                             X = 0,
@@ -430,6 +438,80 @@ public class TextLayout
         MeasuredSize = new Vector2(float.IsInfinity(MaxWidth) ? maxLineWidth : MaxWidth, cursorY);
     }
 
+    private void GenerateVerticalShapedLayout()
+    {
+        float scale = FontSize / Font.UnitsPerEm;
+        float columnSpacing = (Font.Ascender - Font.Descender + Font.LineGap) * scale;
+        float columnX = 0f;
+        float maxColumnHeight = 0f;
+        int sourceStart = 0;
+
+        while (sourceStart <= Text.Length)
+        {
+            int newline = Text.IndexOf('\n', sourceStart);
+            int sourceEnd = newline >= 0 ? newline : Text.Length;
+            List<ShapedCandidate> candidates = ShapeRange(sourceStart, sourceEnd - sourceStart);
+            float cursorY = 0f;
+
+            for (var index = 0; index < candidates.Count; index++)
+            {
+                ShapedCandidate candidate = candidates[index];
+                float advance = candidate.AdvanceY;
+                var glyph = new GlyphInfo
+                {
+                    X = 0,
+                    Y = 0,
+                    Width = (uint)Math.Max(0f, MathF.Ceiling(columnSpacing)),
+                    Height = (uint)Math.Max(0f, MathF.Ceiling(MathF.Abs(advance))),
+                    BearX = 0,
+                    BearY = 0,
+                    Advance = advance,
+                    TexCoordMin = Vector2.Zero,
+                    TexCoordMax = Vector2.Zero
+                };
+                int cluster = Math.Clamp(candidate.Cluster, 0, Math.Max(0, Text.Length - 1));
+                Glyphs.Add(new TextRunGlyph
+                {
+                    Character = Text[cluster],
+                    CodePoint = candidate.CodePoint,
+                    GlyphIndex = candidate.GlyphIndex,
+                    Cluster = candidate.Cluster,
+                    Position = new Vector2(
+                        columnX + columnSpacing * 0.5f + candidate.OffsetX,
+                        cursorY + candidate.OffsetY),
+                    Glyph = glyph,
+                    Font = candidate.Font
+                });
+                cursorY += advance;
+            }
+
+            maxColumnHeight = Math.Max(maxColumnHeight, MathF.Abs(cursorY));
+            columnX += columnSpacing;
+            if (newline < 0) break;
+            sourceStart = newline + 1;
+        }
+
+        float contentWidth = columnX;
+        float shiftX = Alignment switch
+        {
+            TextAlignment.Center => (MaxWidth - contentWidth) * 0.5f,
+            TextAlignment.Right => MaxWidth - contentWidth,
+            _ => 0f
+        };
+        if (shiftX > 0f && !float.IsInfinity(shiftX))
+        {
+            for (var index = 0; index < Glyphs.Count; index++)
+            {
+                TextRunGlyph glyph = Glyphs[index];
+                glyph.Position.X += shiftX;
+                Glyphs[index] = glyph;
+            }
+        }
+
+        ContentSize = new Vector2(contentWidth, maxColumnHeight);
+        MeasuredSize = new Vector2(float.IsInfinity(MaxWidth) ? contentWidth : MaxWidth, maxColumnHeight);
+    }
+
     private List<ShapedCandidate> ShapeRange(int start, int length)
     {
         var candidates = new List<ShapedCandidate>(Math.Max(1, length));
@@ -497,6 +579,7 @@ public class TextLayout
                 start + glyph.Cluster,
                 glyph.CodePoint,
                 glyph.AdvanceX,
+                glyph.AdvanceY,
                 glyph.OffsetX,
                 glyph.OffsetY));
         }

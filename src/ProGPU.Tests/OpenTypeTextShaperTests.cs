@@ -205,6 +205,34 @@ public sealed class OpenTypeTextShaperTests
         Assert.Equal(new[] { 2, 1, 0 }, rightToLeft.Select(static glyph => glyph.Cluster));
     }
 
+    [Fact]
+    public void InferredNkoDirectionIsRightToLeft()
+    {
+        IReadOnlyList<ShapedGlyph> glyphs = OpenTypeTextShaper.Shape(
+            "\u07ca\u07cb",
+            InterFontFamily.Regular,
+            32f);
+
+        Assert.Equal(new[] { 1, 0 }, glyphs.Select(static glyph => glyph.Cluster));
+    }
+
+    [Theory]
+    [InlineData(ShapingDirection.TopToBottom)]
+    [InlineData(ShapingDirection.BottomToTop)]
+    public void TextLayoutAdvancesVerticalRunsOnTheYAxis(ShapingDirection direction)
+    {
+        var layout = new TextLayout(
+            "AV",
+            InterFontFamily.Regular,
+            32f,
+            shapingOptions: new TextShapingOptions { Direction = direction });
+
+        Assert.Equal(2, layout.Glyphs.Count);
+        Assert.True(layout.Glyphs[1].Position.Y > layout.Glyphs[0].Position.Y);
+        Assert.True(layout.ContentSize.X > 0f);
+        Assert.True(layout.ContentSize.Y > 0f);
+    }
+
     [Theory]
     [InlineData(0x0627u, 2)]
     [InlineData(0x0628u, 3)]
