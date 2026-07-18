@@ -236,9 +236,13 @@ public static class OpenTypeTextShaper
             substitutions.ApplyArabicFallback(
                 unicodeScript == "arab" && NeedsArabicFallback(substitutionPlan),
                 options);
+            bool reverseArabicContext = direction == ShapingDirection.LeftToRight &&
+                !NeedsArabicFallback(substitutionPlan);
+            if (reverseArabicContext) substitutions.Reverse();
             ApplySubstitutions(font, substitutionPlan, substitutions, options, UseSubstitutionStage.ArabicContextual);
             ApplySubstitutions(font, substitutionPlan, substitutions, options, UseSubstitutionStage.ArabicLigatures);
             ApplySubstitutions(font, substitutionPlan, substitutions, options, UseSubstitutionStage.ArabicPresentation);
+            if (reverseArabicContext) substitutions.Reverse();
         }
         else
         {
@@ -3311,6 +3315,8 @@ public static class OpenTypeTextShaper
 
         public int Count => _glyphs.Count;
 
+        public void Reverse() => _glyphs.Reverse();
+
         public int ContextMatchEnd => _contextMatchEnd;
         public ushort this[int index] =>
             _restrictLookupToSyllable && _glyphs[index].UseSyllable != _lookupSyllable
@@ -5317,11 +5323,11 @@ public static class OpenTypeTextShaper
                 {
                     return -1;
                 }
-                // ZWNJ is default-ignorable for display but remains a shaping
-                // barrier. Skipping it here incorrectly permits ligatures to
-                // form across an explicit non-join request.
+                // CGJ and ZWNJ are default-ignorable for display but remain
+                // shaping barriers. Skipping either permits substitutions to
+                // cross an explicit canonical-order or joining boundary.
                 if (!IsDefaultIgnorable(glyph.CodePoint) || IsVisibleDefaultIgnorable(glyph) ||
-                    glyph.CodePoint == 0x200C || IsMongolianShapingControl(glyph.CodePoint) ||
+                    glyph.CodePoint is 0x034F or 0x200C || IsMongolianShapingControl(glyph.CodePoint) ||
                     IsUnicodeTagCharacter(glyph.CodePoint))
                 {
                     if (!IsGlyphClassIgnored(index, lookupFlags)) return index;
@@ -5351,7 +5357,7 @@ public static class OpenTypeTextShaper
                 if (_restrictLookupToSyllable && glyph.UseSyllable != _lookupSyllable) return -1;
                 if (IsDefaultIgnorable(glyph.CodePoint) && !IsVisibleDefaultIgnorable(glyph))
                 {
-                    if (glyph.GlyphIndex == expectedGlyph || glyph.CodePoint == 0x200C ||
+                    if (glyph.GlyphIndex == expectedGlyph || glyph.CodePoint is 0x034F or 0x200C ||
                         IsMongolianShapingControl(glyph.CodePoint) ||
                         IsUnicodeTagCharacter(glyph.CodePoint)) return index;
                     index++;
@@ -5377,7 +5383,7 @@ public static class OpenTypeTextShaper
         private bool IsLookupIgnored(int index, ushort lookupFlags)
         {
             GlyphRecord glyph = _glyphs[index];
-            if (IsDefaultIgnorable(glyph.CodePoint) && !IsVisibleDefaultIgnorable(glyph) && glyph.CodePoint != 0x200C &&
+            if (IsDefaultIgnorable(glyph.CodePoint) && !IsVisibleDefaultIgnorable(glyph) && glyph.CodePoint is not (0x034F or 0x200C) &&
                 !IsMongolianShapingControl(glyph.CodePoint) &&
                 !IsUnicodeTagCharacter(glyph.CodePoint)) return true;
             return IsGlyphClassIgnored(index, lookupFlags);
