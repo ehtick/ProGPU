@@ -649,13 +649,15 @@ public static class OpenTypeTextShaper
                 bool restrictToSyllable = IsUsePerSyllableFeature(enabled.Tag, stage);
                 if (IsRawReverseLookup(rawTable.Span, lookupIndex))
                 {
-                    ApplyReverseChainingLookup(rawTable.Span, glyphs, lookupIndex, restrictToSyllable, enabled.Tag, options);
+                    ApplyReverseChainingLookup(
+                        rawTable.Span, glyphs, lookupIndex, restrictToSyllable,
+                        enabled.Tag, enabled.Required, options);
                     continue;
                 }
                 for (var position = 0; position < glyphs.Count; position++)
                 {
                     glyphs.SetLookupSyllable(position, restrictToSyllable);
-                    if (!glyphs.IsFeatureEnabled(position, enabled.Tag, options))
+                    if (!enabled.Required && !glyphs.IsFeatureEnabled(position, enabled.Tag, options))
                     {
                         continue;
                     }
@@ -695,7 +697,8 @@ public static class OpenTypeTextShaper
                 glyphs.ClearLookupSyllable();
                 glyphs.SetManualJoiners(false);
 
-                ApplyAlternateLookup(font, glyphs, lookupIndex, enabled.Value, enabled.Tag, options);
+                ApplyAlternateLookup(
+                    font, glyphs, lookupIndex, enabled.Value, enabled.Tag, enabled.Required, options);
             }
         }
 
@@ -710,7 +713,8 @@ public static class OpenTypeTextShaper
                 if (IsRawReverseLookup(rawTable.Span, enabled.LookupIndex))
                 {
                     ApplyReverseChainingLookup(
-                        rawTable.Span, glyphs, enabled.LookupIndex, restrictToSyllable, enabled.Tag, options);
+                        rawTable.Span, glyphs, enabled.LookupIndex, restrictToSyllable,
+                        enabled.Tag, enabled.Required, options);
                     continue;
                 }
                 if (!alternateLookup)
@@ -718,7 +722,7 @@ public static class OpenTypeTextShaper
                     for (var position = 0; position < glyphs.Count; position++)
                     {
                         glyphs.SetLookupSyllable(position, restrictToSyllable);
-                        if (glyphs.IsFeatureEnabled(position, enabled.Tag, options))
+                        if (enabled.Required || glyphs.IsFeatureEnabled(position, enabled.Tag, options))
                         {
                             glyphs.ResetContextMatchEnd();
                             int countBefore = glyphs.Count;
@@ -732,7 +736,8 @@ public static class OpenTypeTextShaper
                 }
                 glyphs.ClearLookupSyllable();
                 glyphs.SetManualJoiners(false);
-                ApplyAlternateLookup(font, glyphs, enabled.LookupIndex, enabled.Value, enabled.Tag, options);
+                ApplyAlternateLookup(
+                    font, glyphs, enabled.LookupIndex, enabled.Value, enabled.Tag, enabled.Required, options);
             }
         }
 
@@ -947,7 +952,8 @@ public static class OpenTypeTextShaper
                 1,
                 result,
                 positions,
-                substitutions);
+                substitutions,
+                required: true);
         }
         foreach (OpenTypeFeatureSetting setting in settings)
         {
@@ -985,7 +991,8 @@ public static class OpenTypeTextShaper
         int value,
         List<EnabledLookup> result,
         Dictionary<ushort, int> positions,
-        Dictionary<ushort, int>? substitutions)
+        Dictionary<ushort, int>? substitutions,
+        bool required = false)
     {
         int recordOffset = featureListOffset + 2 + featureIndex * 6;
         if (!CanRead(data, recordOffset, 6)) return;
@@ -1002,13 +1009,16 @@ public static class OpenTypeTextShaper
             ushort lookupIndex = ReadU16(data, lookupOffset);
             if (positions.TryGetValue(lookupIndex, out int existing))
             {
-                if (!IsGlobalFeatureTag(result[existing].Tag) || IsGlobalFeatureTag(tag))
-                    result[existing] = new EnabledLookup(lookupIndex, value, tag);
+                EnabledLookup current = result[existing];
+                if (current.Required && !required) continue;
+                if (!IsGlobalFeatureTag(current.Tag) || IsGlobalFeatureTag(tag))
+                    result[existing] = new EnabledLookup(
+                        lookupIndex, value, tag, required || current.Required);
             }
             else
             {
                 positions.Add(lookupIndex, result.Count);
-                result.Add(new EnabledLookup(lookupIndex, value, tag));
+                result.Add(new EnabledLookup(lookupIndex, value, tag, required));
             }
         }
     }
@@ -1111,6 +1121,8 @@ public static class OpenTypeTextShaper
         uint requestedScript = ToTag(script);
         int selectedScriptOffset = 0;
         int defaultScriptOffset = 0;
+        int lowercaseDefaultScriptOffset = 0;
+        int latinScriptOffset = 0;
         for (var index = 0; index < scriptCount; index++)
         {
             int record = scriptListOffset + 2 + index * 6;
@@ -1119,8 +1131,12 @@ public static class OpenTypeTextShaper
             int tableOffset = scriptListOffset + ReadU16(data, record + 4);
             if (tag == requestedScript) selectedScriptOffset = tableOffset;
             else if (tag == ToTag("DFLT")) defaultScriptOffset = tableOffset;
+            else if (tag == ToTag("dflt")) lowercaseDefaultScriptOffset = tableOffset;
+            else if (tag == ToTag("latn")) latinScriptOffset = tableOffset;
         }
-        int scriptOffset = selectedScriptOffset != 0 ? selectedScriptOffset : defaultScriptOffset;
+        int scriptOffset = selectedScriptOffset != 0 ? selectedScriptOffset :
+            defaultScriptOffset != 0 ? defaultScriptOffset :
+            lowercaseDefaultScriptOffset != 0 ? lowercaseDefaultScriptOffset : latinScriptOffset;
         if (!CanRead(data, scriptOffset, 4)) return [];
 
         int languageOffset = 0;
@@ -1167,6 +1183,7 @@ public static class OpenTypeTextShaper
         ushort lookupIndex,
         bool restrictToSyllable,
         string featureTag,
+        bool required,
         TextShapingOptions options)
     {
         if (!TryGetLookup(data, lookupIndex, out int lookupOffset, out ushort lookupType, out int subtableCountOffset))
@@ -1183,7 +1200,7 @@ public static class OpenTypeTextShaper
         for (var position = glyphs.Count - 1; position >= 0; position--)
         {
             glyphs.SetLookupSyllable(position, restrictToSyllable);
-            if (!glyphs.IsFeatureEnabled(position, featureTag, options)) continue;
+            if (!required && !glyphs.IsFeatureEnabled(position, featureTag, options)) continue;
             for (var subtableIndex = 0; subtableIndex < subtableCount; subtableIndex++)
             {
                 int offsetPosition = subtableCountOffset + 2 + subtableIndex * 2;
@@ -1299,6 +1316,7 @@ public static class OpenTypeTextShaper
         ushort lookupIndex,
         int featureValue,
         string featureTag,
+        bool required,
         TextShapingOptions options)
     {
         if (featureValue <= 0 || !font.TryGetTable("GSUB", out ReadOnlyMemory<byte> tableMemory))
@@ -1348,8 +1366,11 @@ public static class OpenTypeTextShaper
             ushort setCount = ReadU16(data, subtableOffset + 4);
             for (var position = 0; position < glyphs.Count; position++)
             {
-                int positionValue = options.GetFeatureValue(featureTag, glyphs.GetRecord(position).Cluster);
-                if (positionValue <= 0 || !glyphs.IsFeatureEnabled(position, featureTag, options)) continue;
+                int positionValue = required
+                    ? featureValue
+                    : options.GetFeatureValue(featureTag, glyphs.GetRecord(position).Cluster);
+                if (positionValue <= 0 ||
+                    !required && !glyphs.IsFeatureEnabled(position, featureTag, options)) continue;
                 int coverageIndex = FindCoverage(data, coverageOffset, glyphs[position]);
                 if ((uint)coverageIndex >= setCount ||
                     !CanRead(data, subtableOffset + 6 + coverageIndex * 2, 2))
@@ -2166,6 +2187,9 @@ public static class OpenTypeTextShaper
     private static bool CanRead(ReadOnlySpan<byte> data, int offset, int length) =>
         offset >= 0 && length >= 0 && offset <= data.Length - length;
 
+    private static int GetTableLength(TtfFont font, string tag) =>
+        font.TryGetTable(tag, out ReadOnlyMemory<byte> table) ? table.Length : 0;
+
     private static ushort ReadU16(ReadOnlySpan<byte> data, int offset) =>
         (ushort)((data[offset] << 8) | data[offset + 1]);
 
@@ -2192,7 +2216,8 @@ public static class OpenTypeTextShaper
                 out _);
             foreach (EnabledLookup enabled in rawLookups)
             {
-                ApplyRawPositionLookup(rawTable.Span, glyphs, enabled.LookupIndex, enabled.Tag, options);
+                ApplyRawPositionLookup(
+                    rawTable.Span, glyphs, enabled.LookupIndex, enabled.Tag, enabled.Required, options);
                 ApplyPositionVariations(font, glyphs, enabled.LookupIndex);
             }
             return rawLookups.Any(static lookup => lookup.Tag is "kern" or "dist");
@@ -2217,6 +2242,7 @@ public static class OpenTypeTextShaper
         GlyphPositionBuffer glyphs,
         ushort lookupIndex,
         string featureTag,
+        bool required,
         TextShapingOptions options)
     {
         if (!TryGetLookup(data, lookupIndex, out int lookupOffset, out ushort lookupType, out int subtableCountOffset))
@@ -2227,7 +2253,7 @@ public static class OpenTypeTextShaper
         ushort lookupFlags = ReadU16(data, lookupOffset + 2);
         for (var position = 0; position < glyphs.Count; position++)
         {
-            if (options.GetFeatureValue(featureTag, glyphs[position].Cluster) == 0) continue;
+            if (!required && options.GetFeatureValue(featureTag, glyphs[position].Cluster) == 0) continue;
             ApplyRawPositionLookupAt(data, glyphs, lookupIndex, position);
         }
     }
@@ -3185,7 +3211,11 @@ public static class OpenTypeTextShaper
         return count * 2;
     }
 
-    private readonly record struct EnabledLookup(ushort LookupIndex, int Value, string Tag);
+    private readonly record struct EnabledLookup(
+        ushort LookupIndex,
+        int Value,
+        string Tag,
+        bool Required = false);
     private readonly record struct SubstitutionPlan(
         GSUB? Table,
         ReadOnlyMemory<byte> RawTable,
@@ -3255,7 +3285,7 @@ public static class OpenTypeTextShaper
         var lookupPositions = new Dictionary<ushort, int>();
         if (requiredFeatureIndex is ushort required && required < features.Length)
         {
-            AddFeatureLookups(features[required], 1, lookups, lookupPositions);
+            AddFeatureLookups(features[required], 1, lookups, lookupPositions, required: true);
         }
         foreach (OpenTypeFeatureSetting setting in options.Features)
         {
@@ -3296,20 +3326,24 @@ public static class OpenTypeTextShaper
         FeatureList.FeatureTable feature,
         int value,
         List<EnabledLookup> lookups,
-        Dictionary<ushort, int> lookupPositions)
+        Dictionary<ushort, int> lookupPositions,
+        bool required = false)
     {
         for (var lookupIndex = 0; lookupIndex < feature.LookupListIndices.Length; lookupIndex++)
         {
             ushort index = feature.LookupListIndices[lookupIndex];
             if (lookupPositions.TryGetValue(index, out int existing))
             {
-                if (!IsGlobalFeatureTag(lookups[existing].Tag) || IsGlobalFeatureTag(feature.TagName))
-                    lookups[existing] = new EnabledLookup(index, value, feature.TagName);
+                EnabledLookup current = lookups[existing];
+                if (current.Required && !required) continue;
+                if (!IsGlobalFeatureTag(current.Tag) || IsGlobalFeatureTag(feature.TagName))
+                    lookups[existing] = new EnabledLookup(
+                        index, value, feature.TagName, required || current.Required);
             }
             else
             {
                 lookupPositions[index] = lookups.Count;
-                lookups.Add(new EnabledLookup(index, value, feature.TagName));
+                lookups.Add(new EnabledLookup(index, value, feature.TagName, required));
             }
         }
     }
@@ -3557,6 +3591,11 @@ public static class OpenTypeTextShaper
             _bufferFlags = bufferFlags;
             _typeface = font.LayoutTypeface;
             font.TryGetTable("GDEF", out _gdefTable);
+            if (OpenTypeGdefPolicy.IsBlocklisted(
+                    _gdefTable.Length,
+                    GetTableLength(font, "GSUB"),
+                    GetTableLength(font, "GPOS")))
+                _gdefTable = default;
         }
 
         public int Count => _glyphs.Count;
@@ -6409,6 +6448,11 @@ public static class OpenTypeTextShaper
             _typeface = font.LayoutTypeface;
             _direction = direction;
             font.TryGetTable("GDEF", out _gdefTable);
+            if (OpenTypeGdefPolicy.IsBlocklisted(
+                    _gdefTable.Length,
+                    GetTableLength(font, "GSUB"),
+                    GetTableLength(font, "GPOS")))
+                _gdefTable = default;
             bool preserveDefaultIgnorables =
                 (bufferFlags & ShapingBufferFlags.PreserveDefaultIgnorables) != 0;
             bool removeDefaultIgnorables =
@@ -6491,8 +6535,7 @@ public static class OpenTypeTextShaper
                         short.MaxValue));
                 }
                 ApplySpaceFallback(font, vertical, ref record);
-                if (zeroMarkAdvancesEarly &&
-                    GetGlyphClassKind(record) == GlyphClassKind.Mark)
+                if (zeroMarkAdvancesEarly && GetGlyphClassKind(record) == GlyphClassKind.Mark)
                 {
                     if (!font.TryGetTable("GPOS", out _) &&
                         direction is ShapingDirection.LeftToRight or ShapingDirection.TopToBottom)

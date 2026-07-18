@@ -33,6 +33,20 @@ public sealed class ShapingContractsTests
         Assert.False(feature.AppliesTo(5));
     }
 
+    [Theory]
+    [InlineData(588, 5078, 14418)]
+    [InlineData(588, 5078, 14238)]
+    [InlineData(442, 2874, 42038)]
+    [InlineData(816, 7868, 17138)]
+    public void KnownBrokenGdefTableCombinationsAreIgnored(
+        int gdefLength,
+        int gsubLength,
+        int gposLength)
+    {
+        Assert.True(OpenTypeGdefPolicy.IsBlocklisted(gdefLength, gsubLength, gposLength));
+        Assert.False(OpenTypeGdefPolicy.IsBlocklisted(gdefLength, gsubLength, gposLength + 1));
+    }
+
     [Fact]
     public void GlyphRecordHasStableShaderInterchangeLayout()
     {

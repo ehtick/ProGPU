@@ -272,21 +272,29 @@ public static class GpuOpenTypeShapingPlanCompiler
     private static byte[] CompileTables(IShapingFontFace font, out GpuOpenTypeTableDirectory directory)
     {
         var bytes = new List<byte>();
-        (uint gdefOffset, uint gdefLength) = Append(new OpenTypeTag("GDEF"));
-        (uint gsubOffset, uint gsubLength) = Append(new OpenTypeTag("GSUB"));
-        (uint gposOffset, uint gposLength) = Append(new OpenTypeTag("GPOS"));
-        (uint kernOffset, uint kernLength) = Append(new OpenTypeTag("kern"));
+        ReadOnlyMemory<byte> gdef = GetTable(new OpenTypeTag("GDEF"));
+        ReadOnlyMemory<byte> gsub = GetTable(new OpenTypeTag("GSUB"));
+        ReadOnlyMemory<byte> gpos = GetTable(new OpenTypeTag("GPOS"));
+        ReadOnlyMemory<byte> kern = GetTable(new OpenTypeTag("kern"));
+        if (OpenTypeGdefPolicy.IsBlocklisted(gdef.Length, gsub.Length, gpos.Length))
+            gdef = default;
+        (uint gdefOffset, uint gdefLength) = Append(gdef);
+        (uint gsubOffset, uint gsubLength) = Append(gsub);
+        (uint gposOffset, uint gposLength) = Append(gpos);
+        (uint kernOffset, uint kernLength) = Append(kern);
         directory = new GpuOpenTypeTableDirectory(
             gdefOffset, gdefLength, gsubOffset, gsubLength,
             gposOffset, gposLength, kernOffset, kernLength);
         return bytes.ToArray();
 
-        (uint Offset, uint Length) Append(OpenTypeTag tag)
+        ReadOnlyMemory<byte> GetTable(OpenTypeTag tag) =>
+            font.TryGetTable(tag, out ReadOnlyMemory<byte> table) ? table : default;
+
+        (uint Offset, uint Length) Append(ReadOnlyMemory<byte> table)
         {
             while ((bytes.Count & 3) != 0) bytes.Add(0);
             uint offset = checked((uint)bytes.Count);
-            if (!font.TryGetTable(tag, out ReadOnlyMemory<byte> table) || table.IsEmpty)
-                return (offset, 0);
+            if (table.IsEmpty) return (offset, 0);
             bytes.AddRange(table.Span);
             return (offset, checked((uint)table.Length));
         }
