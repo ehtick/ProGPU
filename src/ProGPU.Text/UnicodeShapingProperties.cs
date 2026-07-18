@@ -33,6 +33,10 @@ public static class UnicodeShapingProperties
             UnicodeCategory.SpacingCombiningMark or UnicodeCategory.EnclosingMark;
     }
 
+    public static byte GetGeneralCategory(uint codePoint) => IsScalar(codePoint)
+        ? (byte)Rune.GetUnicodeCategory(new Rune(checked((int)codePoint)))
+        : (byte)UnicodeCategory.OtherNotAssigned;
+
     public static uint GetMirroredCodePoint(uint codePoint) =>
         IsScalar(codePoint) ? UnicodeDirectionalData.GetMirroredCodePoint(codePoint) : codePoint;
 

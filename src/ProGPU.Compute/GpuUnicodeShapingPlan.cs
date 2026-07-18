@@ -74,7 +74,8 @@ public static class GpuUnicodeShapingPlan
             ((uint)UnicodeShapingProperties.GetCanonicalCombiningClass(codePoint) << 8) |
             ((uint)UnicodeShapingProperties.GetIndicProperties(codePoint) << 16);
         uint propertiesB = UnicodeShapingProperties.GetUseCategory(codePoint) |
-            (UnicodeShapingProperties.IsMark(codePoint) ? 1u << 8 : 0u);
+            (UnicodeShapingProperties.IsMark(codePoint) ? 1u << 8 : 0u) |
+            (uint)UnicodeShapingProperties.GetGeneralCategory(codePoint) << 9;
         return (propertiesA, propertiesB);
     }
 

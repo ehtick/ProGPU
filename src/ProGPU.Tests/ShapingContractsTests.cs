@@ -675,6 +675,33 @@ public sealed class ShapingContractsTests
     }
 
     [Fact]
+    public void GpuIndicTwoPassReorderingMatchesManagedRules()
+    {
+        var face = new IndicShapingFontFace();
+        GpuOpenTypeShapingPlan plan = GpuOpenTypeShapingPlanCompiler.Compile(face);
+        var request = new ShapingRequest(ShapingDirection.LeftToRight, new OpenTypeTag("deva"));
+        using var context = new WgpuContext();
+        context.Initialize(null);
+        using var fontData = new GpuOpenTypeFontData(context, plan);
+        using var pipeline = new GpuOpenTypeRunPipeline(context);
+
+        foreach ((string Text, uint[] Expected) item in new[]
+                 {
+                     ("\u0915\u093f", new uint[] { 0x093f, 0x0915 }),
+                     ("\u093f", new uint[] { 0x093f, 0x25cc }),
+                     ("\u0915\u094d\u0937", new uint[] { 0x0915, 0x094d, 0x0937 })
+                 })
+        {
+            using var actual = new ShapingBuffer();
+            pipeline.ExecuteRun(
+                item.Text.Select((character, index) => new GpuShapingScalar(character, index)).ToArray(),
+                fontData, request, [], actual);
+            Assert.Equal(item.Expected,
+                actual.Glyphs.ToArray().Select(static glyph => glyph.CodePoint));
+        }
+    }
+
+    [Fact]
     public void GpuLookupPlanPreservesHalfOpenFeatureRanges()
     {
         var face = new TtfShapingFontFace(InterFontFamily.Regular);
@@ -1295,6 +1322,44 @@ public sealed class ShapingContractsTests
             return false;
         }
         public int GetHorizontalAdvance(uint glyphId) => glyphId == 0 ? 0 : 500;
+        public int GetVerticalAdvance(uint glyphId) => 1000;
+        public int GetHorizontalOrigin(uint glyphId) => 250;
+        public int GetVerticalOrigin(uint glyphId) => 800;
+        public bool TryGetNormalizedVariationCoordinate(uint axisIndex, out short coordinate)
+        {
+            coordinate = 0;
+            return false;
+        }
+        public float GetLayoutVariationDelta(ushort outerIndex, ushort innerIndex) => 0;
+    }
+
+    private sealed class IndicShapingFontFace : IShapingFontFace
+    {
+        public int FaceIndex => 0;
+        public ushort UnitsPerEm => 1000;
+        public uint GlyphCount => 6;
+        public uint VariationAxisCount => 0;
+        public bool HasActiveVariations => false;
+        public bool TryGetTable(OpenTypeTag tag, out ReadOnlyMemory<byte> table)
+        {
+            table = ReadOnlyMemory<byte>.Empty;
+            return false;
+        }
+        public uint GetNominalGlyph(uint codePoint) => codePoint switch
+        {
+            0x0915 => 1,
+            0x0937 => 2,
+            0x093f => 3,
+            0x094d => 4,
+            0x25cc => 5,
+            _ => 0
+        };
+        public bool TryGetVariationGlyph(uint codePoint, uint variationSelector, out uint glyphId)
+        {
+            glyphId = 0;
+            return false;
+        }
+        public int GetHorizontalAdvance(uint glyphId) => glyphId is 3 or 4 ? 0 : glyphId == 0 ? 0 : 500;
         public int GetVerticalAdvance(uint glyphId) => 1000;
         public int GetHorizontalOrigin(uint glyphId) => 250;
         public int GetVerticalOrigin(uint glyphId) => 800;

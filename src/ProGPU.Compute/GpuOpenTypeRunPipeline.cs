@@ -75,6 +75,8 @@ public sealed class GpuOpenTypeFontData : IDisposable
 /// </summary>
 public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
 {
+    private static readonly HashSet<uint> s_stagedScriptTags = CreateStagedScriptTags();
+
     [StructLayout(LayoutKind.Sequential, Pack = 4)]
     private readonly record struct RunParams(
         uint InputCount,
@@ -228,7 +230,8 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
         {
             Dispatch(encoder, _initializePipeline, initializeGroup, checked((uint)input.Length));
             Dispatch(encoder, _preprocessPipeline, preprocessGroup, 1);
-            if (!lookups.IsEmpty) Dispatch(encoder, _lookupPipeline, lookupGroup, 1);
+            if (!lookups.IsEmpty || s_stagedScriptTags.Contains(scriptTag))
+                Dispatch(encoder, _lookupPipeline, lookupGroup, 1);
             Dispatch(encoder, _substitutionFinalizePipeline, substitutionFinalizeGroup, 1);
             Dispatch(encoder, _metricsPipeline, metricsGroup, checked((uint)_capacity));
             if (!lookups.IsEmpty) Dispatch(encoder, _positionPipeline, positionGroup, 1);
@@ -416,5 +419,20 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
         _lookupBuffer?.Dispose();
         _unicodeDataBuffer.Dispose();
         _pipelineCache.Dispose();
+    }
+
+    private static HashSet<uint> CreateStagedScriptTags()
+    {
+        const string tags =
+            "beng bng2 deva dev2 gujr gjr2 guru gur2 knda knd2 mlym mlm2 orya ory2 taml tml2 telu tel2 " +
+            "bng3 dev3 gjr3 gur3 knd3 mlm3 ory3 tml3 tel3 mymr mym2 " +
+            "tibt mong sinh java marc limb tale bugi khar sylo tfng bali nkoo phag cham kali lepc rjng saur sund " +
+            "egyp kthi mtei lana tavt batk brah mand cakm plrd shrd takr dupl gran khoj sind mahj mani modi hmng " +
+            "phlp sidd tirh ahom mult adlm bhks newa gonm soyo zanb dogr gong rohg maka medf sogo sogd elym nand " +
+            "hmnp wcho chrs diak kits yezi cpmn ougr tnsa toto vith kawi nagm";
+        var result = new HashSet<uint>();
+        foreach (string tag in tags.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            result.Add(new OpenTypeTag(tag).Value);
+        return result;
     }
 }

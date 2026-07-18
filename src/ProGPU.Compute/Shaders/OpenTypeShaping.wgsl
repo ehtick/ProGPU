@@ -1,4 +1,4 @@
-// Algorithm: initialize through a compressed nominal cmap, preprocess variation selectors and Unicode joining properties, execute ordered OpenType substitutions/positioning, then load direction-aware design-unit metrics and finalize output order.
+// Algorithm: initialize through a compressed nominal cmap, preprocess Unicode and deterministic complex-script syllables, execute stage-aware OpenType substitutions with Indic/USE/Myanmar/Khmer reordering, execute positioning, then load direction-aware design-unit metrics and finalize output order.
 // Time complexity: O(N*(log R + log V + log U + log D + log Q + log K) + S*N + L*N*log C) for typical bounded combining runs, and O(N^2 + S*N + L*N*log C) worst-case when all N scalars form one reverse-ordered combining run; R is cmap ranges, V variation-selector ranges, U Unicode-property ranges, D directional mappings, Q normalization records, K invalid-vowel constraints, S selected deterministic syllable-machine passes (at most one), L ordered ranged lookups, and C coverage size. Initialization, metrics, and output conversion are parallel while order-changing preprocessing and lookup mutation are serial.
 // Space complexity: O(N + R + V + U + D + Q + K + M + G + L) storage for glyphs plus stable internal identities, cmap/variation/packed Unicode normalization and vowel-constraint data, M generated Indic/USE/Myanmar/Khmer transition words, G metrics, and lookup commands; each invocation uses O(1) private storage and no textures.
 // Workgroups contain 64 independent glyph invocations; Unicode preprocessing and the ordered lookup VM use one invocation because they mutate shared order. The Arabic joining machine has 42 fixed transitions (168 bytes of private state); the generated complex-script machines use uploaded state/category matrices with 256 fixed category entries per state. Runtime loops are bounded by uploaded counts/capacity and OpenType table counts. Lookup flags use GDEF glyph/mark classes and mark-set coverage without auxiliary allocations. All arithmetic is exact 32-bit integer design-unit arithmetic.
@@ -163,6 +163,14 @@ const USE_RPHF_ELIGIBLE: u32 = 1u << 16u;
 const USE_CATEGORY_SHIFT: u32 = 24u;
 const USE_CATEGORY_MASK: u32 = 0xffu << USE_CATEGORY_SHIFT;
 const GLYPH_MULTIPLE_COMPONENT: u32 = 8u;
+const GLYPH_MULTIPLIED: u32 = 16u;
+const INDIC_RPHF: u32 = 1u << 24u;
+const INDIC_PREF: u32 = 1u << 25u;
+const INDIC_BLWF: u32 = 1u << 26u;
+const INDIC_ABVF: u32 = 1u << 27u;
+const INDIC_HALF: u32 = 1u << 28u;
+const INDIC_PSTF: u32 = 1u << 29u;
+const INDIC_INIT: u32 = 1u << 30u;
 var<private> arabic_state_table: array<u32, 42> = array<u32, 42>(
     0x00000707u, 0x00020007u, 0x00010007u, 0x00020007u, 0x00010007u, 0x00060007u,
     0x00000707u, 0x00020007u, 0x00010007u, 0x00020007u, 0x00050207u, 0x00060007u,
@@ -680,7 +688,19 @@ fn prepare_khmer_reordering() {
 }
 
 fn indic_category(position: u32) -> u32 {
+    if (is_indic_syllable_script()) {
+        return (glyph_states[position].internal_flags & USE_CATEGORY_MASK) >> USE_CATEGORY_SHIFT;
+    }
     return (unicode_properties_a(glyphs[position].codepoint) >> 16u) & 0xffu;
+}
+
+fn initialize_indic_shaping_state() {
+    if (!is_indic_syllable_script()) { return; }
+    for (var position = 0u; position < run_state.glyph_count; position++) {
+        let properties = unicode_properties_a(glyphs[position].codepoint);
+        set_use_category(position, (properties >> 16u) & 0xffu);
+        set_indic_position(position, (properties >> 24u) & 0xffu);
+    }
 }
 
 fn set_indic_position(position: u32, value: u32) {
@@ -1000,6 +1020,585 @@ fn reorder_use() {
     }
 }
 
+fn indic_base_script() -> u32 {
+    let script = params.script_tag;
+    if (script == 0x626e6732u) { return 0x62656e67u; }
+    if (script == 0x64657632u) { return 0x64657661u; }
+    if (script == 0x676a7232u) { return 0x67756a72u; }
+    if (script == 0x67757232u) { return 0x67757275u; }
+    if (script == 0x6b6e6432u) { return 0x6b6e6461u; }
+    if (script == 0x6d6c6d32u) { return 0x6d6c796du; }
+    if (script == 0x6f727932u) { return 0x6f727961u; }
+    if (script == 0x746d6c32u) { return 0x74616d6cu; }
+    if (script == 0x74656c32u) { return 0x74656c75u; }
+    return script;
+}
+
+fn indic_old_spec() -> bool {
+    let script = params.script_tag;
+    return script != 0x626e6732u && script != 0x64657632u && script != 0x676a7232u &&
+        script != 0x67757232u && script != 0x6b6e6432u && script != 0x6d6c6d32u &&
+        script != 0x6f727932u && script != 0x746d6c32u && script != 0x74656c32u;
+}
+
+fn is_indic_joiner(position: u32) -> bool {
+    let category = indic_category(position);
+    return glyph_states[position].ligature_id == 0u && (category == 5u || category == 6u);
+}
+
+fn is_indic_halant(position: u32) -> bool {
+    return glyph_states[position].ligature_id == 0u && indic_category(position) == 4u;
+}
+
+fn is_indic_consonant(position: u32) -> bool {
+    if (glyph_states[position].ligature_id != 0u) { return false; }
+    let category = indic_category(position);
+    return category == 1u || category == 18u || category == 15u || category == 16u ||
+        category == 2u || category == 10u || category == 11u;
+}
+
+fn indic_ligature_subtable_matches(subtable: u32, first: u32, second: u32, third: u32,
+        input_count: u32) -> bool {
+    let covered = coverage_index(subtable + table_u16(subtable + 2u), first);
+    if (covered < 0 || u32(covered) >= table_u16(subtable + 4u)) { return false; }
+    let ligature_set = subtable + table_u16(subtable + 6u + u32(covered) * 2u);
+    let count = table_u16(ligature_set);
+    for (var index = 0u; index < count; index++) {
+        let ligature = ligature_set + table_u16(ligature_set + 2u + index * 2u);
+        let components = table_u16(ligature + 2u);
+        if (components != input_count) { continue; }
+        if (components >= 2u && table_u16(ligature + 4u) != second) { continue; }
+        if (components >= 3u && table_u16(ligature + 6u) != third) { continue; }
+        return true;
+    }
+    return false;
+}
+
+fn feature_would_substitute(tag: u32, first: u32, second: u32, third: u32, input_count: u32) -> bool {
+    for (var command_index = 0u; command_index < params.lookup_count; command_index++) {
+        let command = lookup_commands[command_index];
+        if (command.table_kind != 1u || command.feature_tag != tag || command.feature_value == 0u) { continue; }
+        let lookup = command.lookup_offset;
+        var lookup_type = table_u16(lookup);
+        let subtable_count = table_u16(lookup + 4u);
+        for (var subtable_index = 0u; subtable_index < subtable_count; subtable_index++) {
+            var subtable = lookup + table_u16(lookup + 6u + subtable_index * 2u);
+            var effective_type = lookup_type;
+            if (effective_type == 7u && table_u16(subtable) == 1u) {
+                effective_type = table_u16(subtable + 2u);
+                subtable += table_u32(subtable + 4u);
+            }
+            if (effective_type == 4u && table_u16(subtable) == 1u &&
+                    indic_ligature_subtable_matches(subtable, first, second, third, input_count)) {
+                return true;
+            }
+            if ((effective_type == 1u || effective_type == 2u || effective_type == 3u ||
+                    effective_type == 5u || effective_type == 6u || effective_type == 8u) &&
+                    coverage_index(subtable + table_u16(subtable + 2u), first) >= 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn indic_virama() -> u32 {
+    switch indic_base_script() {
+        case 0x64657661u: { return 0x094du; }
+        case 0x62656e67u: { return 0x09cdu; }
+        case 0x67757275u: { return 0x0a4du; }
+        case 0x67756a72u: { return 0x0acdu; }
+        case 0x6f727961u: { return 0x0b4du; }
+        case 0x74616d6cu: { return 0x0bcdu; }
+        case 0x74656c75u: { return 0x0c4du; }
+        case 0x6b6e6461u: { return 0x0ccdu; }
+        case 0x6d6c796du: { return 0x0d4du; }
+        default: { return 0u; }
+    }
+}
+
+fn update_indic_consonant_positions() {
+    let virama_glyph = nominal_glyph(indic_virama());
+    if (virama_glyph == 0u) { return; }
+    for (var position = 0u; position < run_state.glyph_count; position++) {
+        if (get_indic_position(position) != 4u) { continue; }
+        let glyph = glyphs[position].glyph_id;
+        if (feature_would_substitute(0x626c7766u, virama_glyph, glyph, 0u, 2u) ||
+                feature_would_substitute(0x626c7766u, glyph, virama_glyph, 0u, 2u) ||
+                feature_would_substitute(0x76617475u, virama_glyph, glyph, 0u, 2u) ||
+                feature_would_substitute(0x76617475u, glyph, virama_glyph, 0u, 2u)) {
+            set_indic_position(position, 8u);
+        } else if (feature_would_substitute(0x70737466u, virama_glyph, glyph, 0u, 2u) ||
+                feature_would_substitute(0x70737466u, glyph, virama_glyph, 0u, 2u) ||
+                feature_would_substitute(0x70726566u, virama_glyph, glyph, 0u, 2u) ||
+                feature_would_substitute(0x70726566u, glyph, virama_glyph, 0u, 2u)) {
+            set_indic_position(position, 11u);
+        }
+    }
+}
+
+fn insert_broken_indic_dotted_circles() {
+    if ((params.request_flags & 0x10u) != 0u || nominal_glyph(0x25ccu) == 0u) { return; }
+    var previous = 0u;
+    var position = 0u;
+    while (position < run_state.glyph_count) {
+        let syllable = glyph_states[position].syllable;
+        if (syllable == previous || (syllable & 0x0fu) != 4u) {
+            previous = syllable;
+            position += 1u;
+            continue;
+        }
+        previous = syllable;
+        let source = position;
+        while (position < run_state.glyph_count && glyph_states[position].syllable == syllable &&
+                indic_category(position) == 14u) { position += 1u; }
+        if (!insert_codepoint(position, 0x25ccu, glyphs[source].cluster)) { return; }
+        glyph_states[position].syllable = syllable;
+        set_use_category(position, 11u);
+        set_indic_position(position, 14u);
+        position += 1u;
+    }
+}
+
+fn attach_indic_mark_positions(start: u32, end: u32, base_index: u32) {
+    var last_position = 0u;
+    for (var position = start; position < end; position++) {
+        let category = indic_category(position);
+        if (is_indic_joiner(position) || category == 3u || category == 12u ||
+                category == 16u || category == 4u) {
+            var attached_position = last_position;
+            if (category == 4u && attached_position == 2u) {
+                var prior = position;
+                while (prior > start) {
+                    prior -= 1u;
+                    if (get_indic_position(prior) != 2u) {
+                        attached_position = get_indic_position(prior);
+                        break;
+                    }
+                }
+            }
+            set_indic_position(position, attached_position);
+        } else if (get_indic_position(position) != 13u) {
+            if (category == 13u && position > start && indic_category(position - 1u) == 8u) {
+                set_indic_position(position - 1u, get_indic_position(position));
+            }
+            last_position = get_indic_position(position);
+        }
+    }
+    if (end == start) { return; }
+    var last = min(base_index, end - 1u);
+    var position = last + 1u;
+    while (position < end) {
+        if (is_indic_consonant(position)) {
+            for (var mark = last + 1u; mark < position; mark++) {
+                if (get_indic_position(mark) < 13u) {
+                    set_indic_position(mark, get_indic_position(position));
+                }
+            }
+            last = position;
+        } else if (indic_category(position) == 7u || indic_category(position) == 13u) {
+            last = position;
+        }
+        position += 1u;
+    }
+}
+
+fn reverse_indic_left_matras(start: u32, end: u32) {
+    var first = end;
+    var last = end;
+    for (var position = start; position < end; position++) {
+        if (get_indic_position(position) == 4u) { break; }
+        if (get_indic_position(position) != 2u) { continue; }
+        if (first == end) { first = position; }
+        last = position;
+    }
+    if (first >= last) { return; }
+    reverse_records(first, last + 1u);
+    var group_start = first;
+    for (var position = first; position <= last; position++) {
+        let category = indic_category(position);
+        if (category != 7u && category != 13u) { continue; }
+        reverse_records(group_start, position + 1u);
+        group_start = position + 1u;
+    }
+}
+
+fn find_indic_base(start: u32, end: u32) -> u32 {
+    for (var position = start; position < end; position++) {
+        if (get_indic_position(position) == 4u) { return position; }
+    }
+    return end;
+}
+
+fn merge_indic_sort_clusters(start: u32, end: u32, base_index: u32, old_spec: bool) {
+    if (base_index >= end) { return; }
+    if (old_spec || end - start > 127u) { _ = merge_cluster(base_index, end); return; }
+    for (var position = base_index; position < end; position++) {
+        if ((glyph_states[position].attachment_type & 0xffu) == 0xffu) { continue; }
+        var minimum = position;
+        var maximum = position;
+        var cursor = start + (glyph_states[position].attachment_type & 0xffu);
+        var steps = 0u;
+        while (cursor != position && cursor >= start && cursor < end && steps <= end - start) {
+            minimum = min(minimum, cursor);
+            maximum = max(maximum, cursor);
+            let next = start + (glyph_states[cursor].attachment_type & 0xffu);
+            glyph_states[cursor].attachment_type =
+                (glyph_states[cursor].attachment_type & 0xffffff00u) | 0xffu;
+            cursor = next;
+            steps += 1u;
+        }
+        _ = merge_cluster(max(base_index, minimum), maximum + 1u);
+    }
+}
+
+fn add_indic_mask(position: u32, mask: u32) { glyph_states[position].feature_mask |= mask; }
+fn remove_indic_mask(position: u32, mask: u32) { glyph_states[position].feature_mask &= ~mask; }
+
+fn setup_indic_feature_masks(start: u32, end: u32, base_index: u32, old_spec: bool) {
+    var position = start;
+    while (position < end && get_indic_position(position) == 1u) {
+        add_indic_mask(position, INDIC_RPHF);
+        position += 1u;
+    }
+    var pre_mask = INDIC_HALF;
+    let script = indic_base_script();
+    if (!old_spec && script != 0x74656c75u && script != 0x6b6e6461u) { pre_mask |= INDIC_BLWF; }
+    for (position = start; position < base_index; position++) { add_indic_mask(position, pre_mask); }
+    if (base_index < end) {
+        for (position = base_index + 1u; position < end; position++) {
+            add_indic_mask(position, INDIC_BLWF | INDIC_ABVF | INDIC_PSTF);
+        }
+    }
+    if (base_index + 2u < end) {
+        for (position = base_index + 1u; position + 1u < end; position++) {
+            if (!feature_would_substitute(0x70726566u, glyphs[position].glyph_id,
+                    glyphs[position + 1u].glyph_id, 0u, 2u)) { continue; }
+            add_indic_mask(position, INDIC_PREF);
+            add_indic_mask(position + 1u, INDIC_PREF);
+            break;
+        }
+    }
+    position = start + 1u;
+    while (position < end) {
+        if (indic_category(position) == 5u && is_indic_joiner(position)) {
+            var prior = position;
+            while (prior > start) {
+                prior -= 1u;
+                remove_indic_mask(prior, INDIC_HALF);
+                if (is_indic_consonant(prior)) { break; }
+            }
+        }
+        position += 1u;
+    }
+}
+
+fn initial_reorder_indic_syllable(start: u32, end: u32, old_spec: bool) {
+    let script = indic_base_script();
+    if (script == 0x6b6e6461u && end >= start + 3u && indic_category(start) == 15u &&
+            indic_category(start + 1u) == 4u && indic_category(start + 2u) == 6u) {
+        _ = merge_cluster(start + 1u, start + 3u);
+        let value = glyphs[start + 1u];
+        let value_state = glyph_states[start + 1u];
+        glyphs[start + 1u] = glyphs[start + 2u];
+        glyph_states[start + 1u] = glyph_states[start + 2u];
+        glyphs[start + 2u] = value;
+        glyph_states[start + 2u] = value_state;
+    }
+    var limit = start;
+    var base_index = end;
+    var has_reph = false;
+    let logical_reph = script == 0x6d6c796du;
+    let explicit_reph = script == 0x74656c75u;
+    if (end >= start + 3u &&
+            ((!logical_reph && !explicit_reph && !is_indic_joiner(start + 2u)) ||
+             (explicit_reph && indic_category(start + 2u) == 6u))) {
+        let length = select(2u, 3u, explicit_reph);
+        if (feature_would_substitute(0x72706866u, glyphs[start].glyph_id,
+                glyphs[start + 1u].glyph_id, glyphs[start + 2u].glyph_id, length)) {
+            limit += 2u;
+            while (limit < end && is_indic_joiner(limit)) { limit += 1u; }
+            base_index = start;
+            has_reph = true;
+        }
+    } else if (logical_reph && indic_category(start) == 14u) {
+        limit += 1u;
+        while (limit < end && is_indic_joiner(limit)) { limit += 1u; }
+        base_index = start;
+        has_reph = true;
+    }
+    var seen_below = false;
+    var reverse = end;
+    while (reverse > limit) {
+        reverse -= 1u;
+        if (is_indic_consonant(reverse)) {
+            let indic_position = get_indic_position(reverse);
+            if (indic_position != 8u && (indic_position != 11u || seen_below)) {
+                base_index = reverse;
+                break;
+            }
+            if (indic_position == 8u) { seen_below = true; }
+            base_index = reverse;
+        } else if (reverse > start && indic_category(reverse) == 6u &&
+                indic_category(reverse - 1u) == 4u) { break; }
+    }
+    if (has_reph && base_index == start && limit - base_index <= 2u) { has_reph = false; }
+    for (var position = start; position < base_index; position++) {
+        set_indic_position(position, min(3u, get_indic_position(position)));
+    }
+    if (base_index < end) { set_indic_position(base_index, 4u); }
+    if (has_reph) { set_indic_position(start, 1u); }
+
+    if (old_spec && base_index < end) {
+        var position = base_index + 1u;
+        while (position < end) {
+            if (indic_category(position) != 4u) { position += 1u; continue; }
+            var destination = end - 1u;
+            while (destination > position && !is_indic_consonant(destination) &&
+                    !(script == 0x6b6e6461u && indic_category(destination) == 4u)) {
+                destination -= 1u;
+            }
+            if (indic_category(destination) != 4u && destination > position) {
+                move_record(position, destination);
+            }
+            break;
+        }
+    }
+    attach_indic_mark_positions(start, end, base_index);
+    for (var position = start; position < end; position++) {
+        glyph_states[position].attachment_type = min(position - start, 255u);
+    }
+    stable_sort_indic_positions(start, end);
+    reverse_indic_left_matras(start, end);
+    base_index = find_indic_base(start, end);
+    merge_indic_sort_clusters(start, end, base_index, old_spec);
+    setup_indic_feature_masks(start, end, base_index, old_spec);
+}
+
+fn initial_reorder_indic() {
+    update_indic_consonant_positions();
+    insert_broken_indic_dotted_circles();
+    if (run_state.status != 0u) { return; }
+    let old_spec = indic_old_spec();
+    var start = 0u;
+    while (start < run_state.glyph_count) {
+        let syllable = glyph_states[start].syllable;
+        var end = start + 1u;
+        while (end < run_state.glyph_count && glyph_states[end].syllable == syllable) { end += 1u; }
+        let syllable_type = syllable & 0x0fu;
+        if (syllable_type == 0u || syllable_type == 1u || syllable_type == 2u || syllable_type == 4u) {
+            initial_reorder_indic_syllable(start, end, old_spec);
+        }
+        start = end;
+    }
+}
+
+fn indic_reph_position() -> u32 {
+    switch indic_base_script() {
+        case 0x62656e67u: { return 9u; }
+        case 0x67757275u: { return 7u; }
+        case 0x6f727961u, 0x6d6c796du: { return 5u; }
+        case 0x74616d6cu, 0x74656c75u, 0x6b6e6461u: { return 12u; }
+        default: { return 10u; }
+    }
+}
+
+fn find_indic_reph_destination(start: u32, end: u32, base_index: u32) -> u32 {
+    let desired = indic_reph_position();
+    if (desired != 12u) {
+        var explicit_halant = start + 1u;
+        while (explicit_halant < base_index && !is_indic_halant(explicit_halant)) {
+            explicit_halant += 1u;
+        }
+        if (explicit_halant < base_index) {
+            if (explicit_halant + 1u < base_index && is_indic_joiner(explicit_halant + 1u)) {
+                explicit_halant += 1u;
+            }
+            return explicit_halant;
+        }
+    }
+    if (desired == 5u) {
+        var destination = base_index;
+        while (destination + 1u < end && get_indic_position(destination + 1u) <= 5u) {
+            destination += 1u;
+        }
+        if (destination < end) { return destination; }
+    }
+    if (desired == 9u) {
+        var destination = base_index;
+        while (destination + 1u < end && get_indic_position(destination + 1u) != 11u &&
+                get_indic_position(destination + 1u) != 12u &&
+                get_indic_position(destination + 1u) != 13u) { destination += 1u; }
+        if (destination < end) { return destination; }
+    }
+    var destination = end - 1u;
+    while (destination > start && get_indic_position(destination) == 13u) { destination -= 1u; }
+    if (is_indic_halant(destination)) {
+        for (var position = base_index + 1u; position < destination; position++) {
+            let category = indic_category(position);
+            if (category == 7u || category == 13u) { destination -= 1u; break; }
+        }
+    }
+    return destination;
+}
+
+fn is_indic_word_boundary(codepoint: u32) -> bool {
+    let category = (unicode_properties_b(codepoint) >> 9u) & 0x1fu;
+    return category == 11u || category == 12u || category == 13u || category == 14u ||
+        category == 15u || (category >= 18u && category <= 24u);
+}
+
+fn final_reorder_indic_syllable(start: u32, end: u32) {
+    if (start >= end) { return; }
+    var reordered = false;
+    let virama_glyph = nominal_glyph(indic_virama());
+    if (virama_glyph != 0u) {
+        for (var position = start; position < end; position++) {
+            if (glyphs[position].glyph_id == virama_glyph && glyph_states[position].ligature_id != 0u &&
+                    (glyph_states[position].internal_flags & GLYPH_MULTIPLIED) != 0u) {
+                set_use_category(position, 4u);
+                glyph_states[position].ligature_id = 0u;
+                glyph_states[position].internal_flags &= ~GLYPH_MULTIPLIED;
+            }
+        }
+    }
+    var try_prebase = false;
+    for (var position = start; position < end; position++) {
+        if ((glyph_states[position].feature_mask & INDIC_PREF) != 0u) { try_prebase = true; break; }
+    }
+    var base_index = start;
+    while (base_index < end && get_indic_position(base_index) < 4u) { base_index += 1u; }
+    if (try_prebase && base_index + 1u < end) {
+        for (var position = base_index + 1u; position < end; position++) {
+            if ((glyph_states[position].feature_mask & INDIC_PREF) == 0u) { continue; }
+            let formed = (glyph_states[position].internal_flags & GLYPH_SUBSTITUTED) != 0u &&
+                glyph_states[position].ligature_id != 0u &&
+                (glyph_states[position].internal_flags & GLYPH_MULTIPLIED) == 0u;
+            if (!formed) {
+                base_index = position;
+                while (base_index < end && is_indic_halant(base_index)) { base_index += 1u; }
+                if (base_index < end) { set_indic_position(base_index, 4u); }
+                try_prebase = false;
+            }
+            break;
+        }
+    }
+    if (indic_base_script() == 0x6d6c796du && base_index < end) {
+        var position = base_index + 1u;
+        while (position < end) {
+            while (position < end && is_indic_joiner(position)) { position += 1u; }
+            if (position == end || !is_indic_halant(position)) { break; }
+            position += 1u;
+            while (position < end && is_indic_joiner(position)) { position += 1u; }
+            if (position < end && is_indic_consonant(position) && get_indic_position(position) == 8u) {
+                base_index = position;
+                set_indic_position(base_index, 4u);
+            }
+            position += 1u;
+        }
+    }
+    if (base_index < end && base_index > start && get_indic_position(base_index) > 4u) {
+        base_index -= 1u;
+    }
+    if (base_index == end && end > start && indic_category(end - 1u) == 6u) { base_index -= 1u; }
+    while (base_index > start && base_index < end &&
+            ((glyph_states[base_index].ligature_id == 0u && indic_category(base_index) == 3u) ||
+             is_indic_halant(base_index))) { base_index -= 1u; }
+
+    let script = indic_base_script();
+    if (start + 1u < end && start < base_index) {
+        var destination = select(base_index - 1u, base_index - 2u, base_index == end);
+        if (script != 0x6d6c796du && script != 0x74616d6cu) {
+            loop {
+                while (destination > start && indic_category(destination) != 7u &&
+                        indic_category(destination) != 13u && indic_category(destination) != 4u) {
+                    destination -= 1u;
+                }
+                if (!is_indic_halant(destination) || get_indic_position(destination) == 2u) {
+                    destination = start;
+                    break;
+                }
+                if (destination + 1u < end && indic_category(destination + 1u) == 6u &&
+                        destination > start) {
+                    destination -= 1u;
+                    continue;
+                }
+                break;
+            }
+        }
+        if (destination > start && get_indic_position(destination) != 2u) {
+            var position = destination;
+            while (position > start) {
+                if (get_indic_position(position - 1u) == 2u) {
+                    move_record(position - 1u, destination);
+                    _ = merge_cluster(destination, min(end, base_index + 1u));
+                    reordered = true;
+                    destination -= 1u;
+                }
+                position -= 1u;
+            }
+        } else {
+            for (var position = start; position < base_index; position++) {
+                if (get_indic_position(position) == 2u) {
+                    _ = merge_cluster(position, min(end, base_index + 1u));
+                    break;
+                }
+            }
+        }
+    }
+
+    if (start + 1u < end && get_indic_position(start) == 1u) {
+        let category_is_repha = indic_category(start) == 14u;
+        let formed_reph = glyph_states[start].ligature_id != 0u &&
+            (glyph_states[start].internal_flags & GLYPH_MULTIPLIED) == 0u;
+        if (category_is_repha != formed_reph) {
+            let destination = find_indic_reph_destination(start, end, base_index);
+            _ = merge_cluster(start, destination + 1u);
+            move_record(start, destination);
+            reordered = true;
+            if (start < base_index && base_index <= destination) { base_index -= 1u; }
+        }
+    }
+
+    if (try_prebase && base_index + 1u < end) {
+        for (var position = base_index + 1u; position < end; position++) {
+            if ((glyph_states[position].feature_mask & INDIC_PREF) == 0u) { continue; }
+            if (glyph_states[position].ligature_id != 0u &&
+                    (glyph_states[position].internal_flags & GLYPH_MULTIPLIED) == 0u) {
+                var destination = base_index;
+                if (script != 0x6d6c796du && script != 0x74616d6cu) {
+                    while (destination > start && indic_category(destination - 1u) != 7u &&
+                            indic_category(destination - 1u) != 13u &&
+                            indic_category(destination - 1u) != 4u) { destination -= 1u; }
+                }
+                if (destination > start && is_indic_halant(destination - 1u) &&
+                        destination < end && is_indic_joiner(destination)) { destination += 1u; }
+                _ = merge_cluster(destination, position + 1u);
+                move_record(position, destination);
+                reordered = true;
+                if (destination <= base_index && base_index < position) { base_index += 1u; }
+            }
+            break;
+        }
+    }
+    if (reordered || get_indic_position(start) == 2u) { _ = merge_cluster(start, end); }
+    if (get_indic_position(start) == 2u &&
+            (start == 0u || is_indic_word_boundary(glyphs[start - 1u].codepoint))) {
+        add_indic_mask(start, INDIC_INIT);
+    }
+}
+
+fn final_reorder_indic() {
+    var start = 0u;
+    while (start < run_state.glyph_count) {
+        let syllable = glyph_states[start].syllable;
+        var end = start + 1u;
+        while (end < run_state.glyph_count && glyph_states[end].syllable == syllable) { end += 1u; }
+        final_reorder_indic_syllable(start, end);
+        start = end;
+    }
+}
+
 fn handle_substitution_stage_transition(previous: u32, next: u32) {
     let myanmar = params.script_tag == 0x6d796d72u || params.script_tag == 0x6d796d32u;
     if (myanmar && previous <= 10u && next > 10u) { reorder_myanmar(); }
@@ -1011,6 +1610,8 @@ fn handle_substitution_stage_transition(previous: u32, next: u32) {
     }
     if (is_use_syllable_script() && previous <= 30u && next > 30u) { record_use_prebase(); }
     if (is_use_syllable_script() && previous <= 40u && next > 40u) { reorder_use(); }
+    if (is_indic_syllable_script() && previous <= 60u && next > 60u) { initial_reorder_indic(); }
+    if (is_indic_syllable_script() && previous <= 170u && next > 170u) { final_reorder_indic(); }
 }
 
 fn directional_mapping(codepoint: u32, vertical: bool) -> u32 {
@@ -1772,6 +2373,29 @@ fn feature_allowed(command: LookupCommand, position: u32) -> bool {
     if (command.feature_tag == 0x63666172u && params.script_tag == 0x6b686d72u) {
         return (glyph_states[position].feature_mask & KHMER_CFAR) != 0u;
     }
+    if (is_indic_syllable_script()) {
+        if (command.feature_tag == 0x72706866u) {
+            return (glyph_states[position].feature_mask & INDIC_RPHF) != 0u;
+        }
+        if (command.feature_tag == 0x70726566u) {
+            return (glyph_states[position].feature_mask & INDIC_PREF) != 0u;
+        }
+        if (command.feature_tag == 0x626c7766u) {
+            return (glyph_states[position].feature_mask & INDIC_BLWF) != 0u;
+        }
+        if (command.feature_tag == 0x61627666u) {
+            return (glyph_states[position].feature_mask & INDIC_ABVF) != 0u;
+        }
+        if (command.feature_tag == 0x68616c66u) {
+            return (glyph_states[position].feature_mask & INDIC_HALF) != 0u;
+        }
+        if (command.feature_tag == 0x70737466u) {
+            return (glyph_states[position].feature_mask & INDIC_PSTF) != 0u;
+        }
+        if (command.feature_tag == 0x696e6974u) {
+            return (glyph_states[position].feature_mask & INDIC_INIT) != 0u;
+        }
+    }
     let arabic_action = (glyph_states[position].feature_mask & ARABIC_ACTION_MASK) >> ARABIC_ACTION_SHIFT;
     if (command.feature_tag == 0x69736f6cu) { return arabic_action == ARABIC_ISOLATED; }
     if (command.feature_tag == 0x66696e61u) { return arabic_action == ARABIC_FINAL; }
@@ -2285,7 +2909,7 @@ fn replace_multiple(subtable: u32, position: u32) -> bool {
         glyphs[position + replacement] = source;
         glyphs[position + replacement].glyph_id = table_u16(sequence + 2u + replacement * 2u);
         glyph_states[position + replacement] = source_state;
-        glyph_states[position + replacement].internal_flags |= GLYPH_SUBSTITUTED;
+        glyph_states[position + replacement].internal_flags |= GLYPH_SUBSTITUTED | GLYPH_MULTIPLIED;
         if (replacement != 0u) {
             glyph_states[position + replacement].internal_flags |= GLYPH_MULTIPLE_COMPONENT;
             glyph_states[position + replacement].serial = run_state.next_serial;
@@ -2451,13 +3075,10 @@ fn preprocess_glyphs(@builtin(global_invocation_id) id: vec3<u32>) {
     reorder_modified_combining_marks();
     prepare_complex_syllables();
     if (run_state.status != 0u) { return; }
+    initialize_indic_shaping_state();
     initialize_use_shaping_state();
     prepare_khmer_reordering();
     if (run_state.status != 0u) { return; }
-    if (params.lookup_count == 0u) {
-        handle_substitution_stage_transition(0u, 0xffffffffu);
-        if (run_state.status != 0u) { return; }
-    }
     assign_arabic_joining_actions();
 }
 
