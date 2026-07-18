@@ -1,6 +1,6 @@
 // Algorithm: initialize a shaping run by binary-searching a compressed nominal cmap, then load direction-aware design-unit metrics by glyph ID.
-// Time complexity: O(N log R + L*N*log C) for N scalars, R cmap ranges, L ordered ranged lookups, and coverage size C; initialization, metrics, and output conversion are parallel while lookup mutation is serial.
-// Space complexity: O(N + R + G + L) storage for glyphs plus stable internal identities, cmap ranges, G metrics, and lookup commands; each invocation uses O(1) private storage and no textures.
+// Time complexity: O(N log R + N log V + L*N*log C) for N scalars, R cmap ranges, V variation-selector ranges, L ordered ranged lookups, and coverage size C; initialization, metrics, and output conversion are parallel while order-changing preprocessing and lookup mutation are serial.
+// Space complexity: O(N + R + V + G + L) storage for glyphs plus stable internal identities, cmap/variation ranges, G metrics, and lookup commands; each invocation uses O(1) private storage and no textures.
 // Workgroups contain 64 independent glyph invocations; the ordered lookup VM uses one invocation because substitutions mutate shared order. Runtime loops are bounded by uploaded counts/capacity and OpenType table counts. Lookup flags use GDEF glyph/mark classes and mark-set coverage without auxiliary allocations. All arithmetic is exact 32-bit integer design-unit arithmetic.
 
 struct Params {
@@ -14,7 +14,7 @@ struct Params {
     request_flags: u32,
     cluster_level: u32,
     script_tag: u32,
-    reserved0: u32,
+    variation_mapping_count: u32,
     reserved1: u32,
 };
 
@@ -42,6 +42,13 @@ struct GlyphMetric {
 struct LayoutVariationDelta {
     key: u32,
     delta: f32,
+};
+
+struct VariationMapping {
+    start: u32,
+    end: u32,
+    selector: u32,
+    glyph: u32,
 };
 
 struct ShapingGlyph {
@@ -119,8 +126,11 @@ struct LookupTask {
 @group(0) @binding(8) var<storage, read> lookup_commands: array<LookupCommand>;
 @group(0) @binding(9) var<storage, read_write> glyph_states: array<GlyphState>;
 @group(0) @binding(10) var<storage, read> variation_deltas: array<LayoutVariationDelta>;
+@group(0) @binding(11) var<storage, read> variation_mappings: array<VariationMapping>;
 
 const FEATURE_EXPLICIT: u32 = 1u;
+const GLYPH_SUBSTITUTED: u32 = 2u;
+const GLYPH_INVISIBLE: u32 = 4u;
 const FRACTION_NUMERATOR: u32 = 1u;
 const FRACTION_DENOMINATOR: u32 = 2u;
 const FRACTION_SLASH: u32 = 4u;
@@ -192,6 +202,49 @@ fn is_decimal(codepoint: u32) -> bool {
         (codepoint >= 0x1e4f0u && codepoint <= 0x1e4f9u) ||
         (codepoint >= 0x1e5f1u && codepoint <= 0x1e5fau) ||
         (codepoint >= 0x1e950u && codepoint <= 0x1e959u);
+}
+
+fn is_default_ignorable(codepoint: u32) -> bool {
+    return codepoint == 0x00adu || codepoint == 0x034fu || codepoint == 0x061cu ||
+        codepoint == 0x115fu || codepoint == 0x1160u || codepoint == 0x17b4u || codepoint == 0x17b5u ||
+        (codepoint >= 0x180bu && codepoint <= 0x180fu) ||
+        (codepoint >= 0x200bu && codepoint <= 0x200fu) ||
+        (codepoint >= 0x202au && codepoint <= 0x202eu) ||
+        (codepoint >= 0x2060u && codepoint <= 0x206fu) || codepoint == 0x3164u ||
+        codepoint == 0xfeffu || codepoint == 0xffa0u ||
+        (codepoint >= 0xfff0u && codepoint <= 0xfff8u) ||
+        (codepoint >= 0xfe00u && codepoint <= 0xfe0fu) ||
+        (codepoint >= 0x1bca0u && codepoint <= 0x1bcafu) ||
+        (codepoint >= 0x1d173u && codepoint <= 0x1d17au) ||
+        (codepoint >= 0xe0000u && codepoint <= 0xe0fffu);
+}
+
+fn is_variation_selector(codepoint: u32) -> bool {
+    return (codepoint >= 0xfe00u && codepoint <= 0xfe0fu) ||
+        (codepoint >= 0xe0100u && codepoint <= 0xe01efu);
+}
+
+fn variation_glyph(codepoint: u32, selector: u32) -> u32 {
+    var low = 0u;
+    var high = params.variation_mapping_count;
+    loop {
+        if (low >= high) { break; }
+        let middle = low + ((high - low) >> 1u);
+        let item = variation_mappings[middle];
+        if (selector < item.selector || (selector == item.selector && codepoint < item.start)) {
+            high = middle;
+        } else if (selector > item.selector || codepoint > item.end) {
+            low = middle + 1u;
+        } else {
+            return item.glyph;
+        }
+    }
+    return 0xfffffffeu;
+}
+
+fn is_visible_shaping_control(codepoint: u32) -> bool {
+    return codepoint == 0x200cu || (codepoint >= 0x180bu && codepoint <= 0x180eu) ||
+        (codepoint >= 0xe0000u && codepoint <= 0xe007fu);
 }
 
 fn prepare_fraction_masks() {
@@ -317,6 +370,10 @@ fn in_mark_filtering_set(lookup_offset: u32, glyph: u32) -> bool {
 }
 
 fn lookup_ignored(position: u32, lookup_offset: u32, lookup_flags: u32) -> bool {
+    let codepoint = glyphs[position].codepoint;
+    if (is_default_ignorable(codepoint) &&
+            (glyph_states[position].internal_flags & GLYPH_SUBSTITUTED) == 0u &&
+            !is_visible_shaping_control(codepoint)) { return true; }
     let glyph = glyphs[position].glyph_id;
     let glyph_class = gdef_class(4u, glyph);
     if ((lookup_flags & 2u) != 0u && glyph_class == 1u) { return true; }
@@ -665,6 +722,7 @@ fn apply_reverse_chain_subtable(subtable: u32, position: u32,
     let glyph_count = table_u16(cursor);
     if (u32(covered) >= glyph_count) { return false; }
     glyphs[position].glyph_id = table_u16(cursor + 2u + u32(covered) * 2u);
+    glyph_states[position].internal_flags |= GLYPH_SUBSTITUTED;
     return true;
 }
 
@@ -683,10 +741,12 @@ fn apply_single_substitution(subtable: u32, position: u32) -> bool {
     if (format == 1u) {
         let delta = i32(table_u16(subtable + 4u) << 16u) >> 16;
         glyphs[position].glyph_id = u32(i32(glyphs[position].glyph_id) + delta) & 0xffffu;
+        glyph_states[position].internal_flags |= GLYPH_SUBSTITUTED;
         return true;
     }
     if (format == 2u && u32(covered) < table_u16(subtable + 4u)) {
         glyphs[position].glyph_id = table_u16(subtable + 6u + u32(covered) * 2u);
+        glyph_states[position].internal_flags |= GLYPH_SUBSTITUTED;
         return true;
     }
     return false;
@@ -724,6 +784,7 @@ fn replace_multiple(subtable: u32, position: u32) -> bool {
         glyphs[position + replacement] = source;
         glyphs[position + replacement].glyph_id = table_u16(sequence + 2u + replacement * 2u);
         glyph_states[position + replacement] = source_state;
+        glyph_states[position + replacement].internal_flags |= GLYPH_SUBSTITUTED;
         if (replacement != 0u) {
             glyph_states[position + replacement].serial = run_state.next_serial;
             run_state.next_serial += 1u;
@@ -746,6 +807,7 @@ fn apply_alternate(subtable: u32, position: u32, feature_value: u32, feature_tag
         selected = run_state.random_state % count;
     }
     glyphs[position].glyph_id = table_u16(alternate_set + 2u + selected * 2u);
+    glyph_states[position].internal_flags |= GLYPH_SUBSTITUTED;
     return true;
 }
 
@@ -775,6 +837,7 @@ fn apply_ligature(subtable: u32, position: u32, lookup_offset: u32, lookup_flags
             cluster = min(cluster, glyphs[cursor].cluster);
         }
         glyphs[position].glyph_id = table_u16(ligature);
+        glyph_states[position].internal_flags |= GLYPH_SUBSTITUTED;
         glyphs[position].cluster = cluster;
         let ligature_id = run_state.reserved0 + 1u;
         run_state.reserved0 = ligature_id;
@@ -850,6 +913,31 @@ fn apply_lookup_at(lookup_offset: u32, position: u32, feature_value: u32, featur
 }
 
 @compute @workgroup_size(1)
+fn preprocess_glyphs(@builtin(global_invocation_id) id: vec3<u32>) {
+    if (id.x != 0u || params.variation_mapping_count == 0u) { return; }
+    var index = 1u;
+    loop {
+        if (index >= run_state.glyph_count) { break; }
+        let selector = glyphs[index].codepoint;
+        if (!is_variation_selector(selector)) {
+            index += 1u;
+            continue;
+        }
+        let selected = variation_glyph(glyphs[index - 1u].codepoint, selector);
+        if (selected == 0xfffffffeu) {
+            index += 1u;
+            continue;
+        }
+        if (selected != 0xffffffffu) { glyphs[index - 1u].glyph_id = selected; }
+        for (var cursor = index + 1u; cursor < run_state.glyph_count; cursor++) {
+            glyphs[cursor - 1u] = glyphs[cursor];
+            glyph_states[cursor - 1u] = glyph_states[cursor];
+        }
+        run_state.glyph_count -= 1u;
+    }
+}
+
+@compute @workgroup_size(1)
 fn execute_lookups(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x != 0u) { return; }
     prepare_fraction_masks();
@@ -892,6 +980,54 @@ fn execute_lookups(@builtin(global_invocation_id) id: vec3<u32>) {
             if (run_state.status != 0u) { return; }
             position += run_state.skip_count;
         }
+    }
+}
+
+@compute @workgroup_size(1)
+fn finalize_substitutions(@builtin(global_invocation_id) id: vec3<u32>) {
+    if (id.x != 0u) { return; }
+    let preserve = (params.request_flags & 4u) != 0u;
+    let remove = (params.request_flags & 8u) != 0u;
+    if (preserve) { return; }
+    let invisible_glyph = select(nominal_glyph(0x20u), 0u, remove);
+    var index = 0u;
+    loop {
+        if (index >= run_state.glyph_count) { break; }
+        if (!is_default_ignorable(glyphs[index].codepoint) ||
+                (glyph_states[index].internal_flags & GLYPH_SUBSTITUTED) != 0u) {
+            index += 1u;
+            continue;
+        }
+        if (invisible_glyph != 0u) {
+            glyphs[index].glyph_id = invisible_glyph;
+            glyph_states[index].internal_flags |= GLYPH_INVISIBLE;
+            index += 1u;
+            continue;
+        }
+        let removed_cluster = glyphs[index].cluster;
+        if (index > 0u && (index + 1u >= run_state.glyph_count ||
+                glyphs[index + 1u].cluster != removed_cluster) &&
+                removed_cluster < glyphs[index - 1u].cluster) {
+            let previous_cluster = glyphs[index - 1u].cluster;
+            var previous = index;
+            loop {
+                if (previous == 0u || glyphs[previous - 1u].cluster != previous_cluster) { break; }
+                previous -= 1u;
+                glyphs[previous].cluster = removed_cluster;
+            }
+        } else if (index == 0u && run_state.glyph_count > 1u) {
+            let source_cluster = glyphs[1u].cluster;
+            let merged_cluster = min(removed_cluster, source_cluster);
+            for (var following = 1u; following < run_state.glyph_count; following++) {
+                if (glyphs[following].cluster != source_cluster) { break; }
+                glyphs[following].cluster = merged_cluster;
+            }
+        }
+        for (var cursor = index + 1u; cursor < run_state.glyph_count; cursor++) {
+            glyphs[cursor - 1u] = glyphs[cursor];
+            glyph_states[cursor - 1u] = glyph_states[cursor];
+        }
+        run_state.glyph_count -= 1u;
     }
 }
 
@@ -1326,6 +1462,7 @@ fn load_metrics(@builtin(global_invocation_id) id: vec3<u32>) {
     if (index >= run_state.glyph_count) { return; }
     let glyph_id = glyphs[index].glyph_id;
     if (glyph_id >= params.metric_count) { return; }
+    if ((glyph_states[index].internal_flags & GLYPH_INVISIBLE) != 0u) { return; }
     let metric = glyph_metrics[glyph_id];
     if (params.direction == 3u || params.direction == 4u) {
         glyphs[index].advance_y = -metric.advance_y;

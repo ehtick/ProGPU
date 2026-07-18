@@ -27,6 +27,13 @@ public readonly record struct GpuGlyphMetrics(
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
 public readonly record struct GpuLayoutVariationDelta(uint Key, float Delta);
 
+/// <summary>A cmap format-14 default range or non-default UVS mapping.</summary>
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+public readonly record struct GpuVariationMapping(uint Start, uint End, uint Selector, uint Glyph)
+{
+    public const uint DefaultGlyph = uint.MaxValue;
+}
+
 /// <summary>Byte ranges for raw big-endian OpenType tables in one upload.</summary>
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
 public readonly record struct GpuOpenTypeTableDirectory(
@@ -62,6 +69,7 @@ public sealed class GpuOpenTypeShapingPlan
     internal GpuOpenTypeShapingPlan(
         GpuCmapRange[] cmap,
         GpuGlyphMetrics[] metrics,
+        GpuVariationMapping[] variationMappings,
         short[] normalizedVariationCoordinates,
         GpuLayoutVariationDelta[] variations,
         GpuOpenTypeTableDirectory tables,
@@ -69,6 +77,7 @@ public sealed class GpuOpenTypeShapingPlan
     {
         Cmap = cmap;
         Metrics = metrics;
+        VariationMappings = variationMappings;
         NormalizedVariationCoordinates = normalizedVariationCoordinates;
         Variations = variations;
         Tables = tables;
@@ -77,6 +86,7 @@ public sealed class GpuOpenTypeShapingPlan
 
     public ReadOnlyMemory<GpuCmapRange> Cmap { get; }
     public ReadOnlyMemory<GpuGlyphMetrics> Metrics { get; }
+    public ReadOnlyMemory<GpuVariationMapping> VariationMappings { get; }
     public ReadOnlyMemory<short> NormalizedVariationCoordinates { get; }
     public ReadOnlyMemory<GpuLayoutVariationDelta> Variations { get; }
     public GpuOpenTypeTableDirectory Tables { get; }
@@ -117,10 +127,74 @@ public static class GpuOpenTypeShapingPlanCompiler
                 font.GetHorizontalOrigin(glyph),
                 font.GetVerticalOrigin(glyph));
         }
+        GpuVariationMapping[] variationMappings = CompileVariationMappings(font);
         short[] coordinates = CompileVariationCoordinates(font);
         byte[] tableData = CompileTables(font, out GpuOpenTypeTableDirectory tables);
         GpuLayoutVariationDelta[] variations = CompileVariations(font, tableData, tables);
-        return new GpuOpenTypeShapingPlan(cmap, metrics, coordinates, variations, tables, tableData);
+        return new GpuOpenTypeShapingPlan(cmap, metrics, variationMappings, coordinates, variations, tables, tableData);
+    }
+
+    private static GpuVariationMapping[] CompileVariationMappings(IShapingFontFace font)
+    {
+        if (!font.TryGetTable(new OpenTypeTag("cmap"), out ReadOnlyMemory<byte> memory)) return [];
+        ReadOnlySpan<byte> data = memory.Span;
+        if (!CanRead(data, 0, 4)) return [];
+        ushort tableCount = ReadU16(data, 2);
+        if (!CanRead(data, 4, tableCount * 8)) return [];
+        var result = new Dictionary<(uint Selector, uint Start), GpuVariationMapping>();
+        var visited = new HashSet<uint>();
+        for (var tableIndex = 0; tableIndex < tableCount; tableIndex++)
+        {
+            uint relative = ReadU32(data, 4 + tableIndex * 8 + 4);
+            if (!visited.Add(relative) || relative > int.MaxValue) continue;
+            int subtable = checked((int)relative);
+            if (!CanRead(data, subtable, 10) || ReadU16(data, subtable) != 14) continue;
+            uint length = ReadU32(data, subtable + 2);
+            uint selectorCount = ReadU32(data, subtable + 6);
+            if (length > int.MaxValue || selectorCount > int.MaxValue / 11 ||
+                !CanRead(data, subtable, checked((int)length)) ||
+                !CanRead(data, subtable + 10, checked((int)selectorCount * 11))) continue;
+            for (var selectorIndex = 0; selectorIndex < (int)selectorCount; selectorIndex++)
+            {
+                int record = subtable + 10 + selectorIndex * 11;
+                uint selector = ReadU24(data, record);
+                uint defaultRelative = ReadU32(data, record + 3);
+                uint nonDefaultRelative = ReadU32(data, record + 7);
+                if (defaultRelative != 0 && defaultRelative <= int.MaxValue)
+                {
+                    int ranges = checked(subtable + (int)defaultRelative);
+                    if (CanRead(data, ranges, 4))
+                    {
+                        uint count = ReadU32(data, ranges);
+                        if (count <= int.MaxValue / 4 && CanRead(data, ranges + 4, checked((int)count * 4)))
+                        {
+                            for (var index = 0; index < (int)count; index++)
+                            {
+                                int item = ranges + 4 + index * 4;
+                                uint start = ReadU24(data, item);
+                                uint end = start + data[item + 3];
+                                result[(selector, start)] = new GpuVariationMapping(
+                                    start, end, selector, GpuVariationMapping.DefaultGlyph);
+                            }
+                        }
+                    }
+                }
+                if (nonDefaultRelative == 0 || nonDefaultRelative > int.MaxValue) continue;
+                int mappings = checked(subtable + (int)nonDefaultRelative);
+                if (!CanRead(data, mappings, 4)) continue;
+                uint mappingCount = ReadU32(data, mappings);
+                if (mappingCount > int.MaxValue / 5 ||
+                    !CanRead(data, mappings + 4, checked((int)mappingCount * 5))) continue;
+                for (var index = 0; index < (int)mappingCount; index++)
+                {
+                    int item = mappings + 4 + index * 5;
+                    uint codePoint = ReadU24(data, item);
+                    result[(selector, codePoint)] = new GpuVariationMapping(
+                        codePoint, codePoint, selector, ReadU16(data, item + 3));
+                }
+            }
+        }
+        return result.Values.OrderBy(static item => item.Selector).ThenBy(static item => item.Start).ToArray();
     }
 
     private static short[] CompileVariationCoordinates(IShapingFontFace font)
@@ -242,4 +316,6 @@ public static class GpuOpenTypeShapingPlanCompiler
         (ushort)(data[offset] << 8 | data[offset + 1]);
     private static uint ReadU32(ReadOnlySpan<byte> data, int offset) =>
         (uint)(data[offset] << 24 | data[offset + 1] << 16 | data[offset + 2] << 8 | data[offset + 3]);
+    private static uint ReadU24(ReadOnlySpan<byte> data, int offset) =>
+        (uint)(data[offset] << 16 | data[offset + 1] << 8 | data[offset + 2]);
 }

@@ -547,6 +547,126 @@ public sealed class ShapingContractsTests
             $"a=({glyph.AdvanceX},{glyph.AdvanceY}),o=({glyph.OffsetX},{glyph.OffsetY})";
     }
 
+    [Theory]
+    [InlineData(ShapingBufferFlags.None)]
+    [InlineData(ShapingBufferFlags.PreserveDefaultIgnorables)]
+    [InlineData(ShapingBufferFlags.RemoveDefaultIgnorables)]
+    public void GpuDefaultIgnorablePolicyMatchesCpuExecutor(ShapingBufferFlags flags)
+    {
+        const string text = "\u200d";
+        var face = new TtfShapingFontFace(InterFontFamily.Regular);
+        GpuOpenTypeShapingPlan plan = GpuOpenTypeShapingPlanCompiler.Compile(face);
+        var request = new ShapingRequest(
+            ShapingDirection.LeftToRight,
+            new OpenTypeTag("latn"),
+            flags: flags);
+        GpuOpenTypeLookupCommand[] commands = GpuOpenTypeLookupPlanCompiler.Compile(plan, request);
+        using var expected = new ShapingBuffer();
+        CpuOpenTypeShaper.Instance.Shape(text, face, request, expected);
+        using var context = new WgpuContext();
+        context.Initialize(null);
+        using var fontData = new GpuOpenTypeFontData(context, plan);
+        using var pipeline = new GpuOpenTypeRunPipeline(context);
+        using var actual = new ShapingBuffer();
+
+        pipeline.ExecuteRun([new GpuShapingScalar(0x200d, 0)], fontData, request, commands, actual);
+
+        Assert.Equal(expected.Glyphs.ToArray(), actual.Glyphs.ToArray());
+    }
+
+    [Theory]
+    [InlineData(0xfe0e, 1)]
+    [InlineData(0xfe0f, 2)]
+    public void GpuPreprocessingConsumesSupportedVariationSelectors(uint selector, uint expectedGlyph)
+    {
+        var face = new VariationSelectorFontFace();
+        GpuOpenTypeShapingPlan plan = GpuOpenTypeShapingPlanCompiler.Compile(face);
+        Assert.Equal(2, plan.VariationMappings.Length);
+        var request = new ShapingRequest(
+            ShapingDirection.LeftToRight,
+            OpenTypeTag.DefaultScript,
+            flags: ShapingBufferFlags.PreserveDefaultIgnorables);
+        using var context = new WgpuContext();
+        context.Initialize(null);
+        using var fontData = new GpuOpenTypeFontData(context, plan);
+        using var pipeline = new GpuOpenTypeRunPipeline(context);
+        using var actual = new ShapingBuffer();
+
+        pipeline.ExecuteRun(
+            [new GpuShapingScalar('A', 0), new GpuShapingScalar(selector, 0)],
+            fontData,
+            request,
+            [],
+            actual);
+
+        Assert.Equal(1, actual.Count);
+        Assert.Equal(expectedGlyph, actual[0].GlyphId);
+        Assert.Equal((uint)'A', actual[0].CodePoint);
+        Assert.Equal(expectedGlyph == 1 ? 500 : 600, actual[0].AdvanceX);
+    }
+
+    private sealed class VariationSelectorFontFace : IShapingFontFace
+    {
+        private static readonly byte[] s_cmap = CreateCmap();
+        public int FaceIndex => 0;
+        public ushort UnitsPerEm => 1000;
+        public uint GlyphCount => 3;
+        public uint VariationAxisCount => 0;
+        public bool HasActiveVariations => false;
+        public bool TryGetTable(OpenTypeTag tag, out ReadOnlyMemory<byte> table)
+        {
+            table = tag == new OpenTypeTag("cmap") ? s_cmap : ReadOnlyMemory<byte>.Empty;
+            return !table.IsEmpty;
+        }
+        public uint GetNominalGlyph(uint codePoint) => codePoint == 'A' ? 1u : 0u;
+        public bool TryGetVariationGlyph(uint codePoint, uint variationSelector, out uint glyphId)
+        {
+            glyphId = variationSelector == 0xfe0f ? 2u : 1u;
+            return codePoint == 'A' && variationSelector is 0xfe0e or 0xfe0f;
+        }
+        public int GetHorizontalAdvance(uint glyphId) => glyphId == 1 ? 500 : glyphId == 2 ? 600 : 0;
+        public int GetVerticalAdvance(uint glyphId) => 1000;
+        public int GetHorizontalOrigin(uint glyphId) => GetHorizontalAdvance(glyphId) / 2;
+        public int GetVerticalOrigin(uint glyphId) => 800;
+        public bool TryGetNormalizedVariationCoordinate(uint axisIndex, out short coordinate)
+        {
+            coordinate = 0;
+            return false;
+        }
+        public float GetLayoutVariationDelta(ushort outerIndex, ushort innerIndex) => 0;
+
+        private static byte[] CreateCmap()
+        {
+            var data = new byte[61];
+            U16(0, 0); U16(2, 1); U16(4, 0); U16(6, 5); U32(8, 12);
+            U16(12, 14); U32(14, 49); U32(18, 2);
+            U24(22, 0xfe0e); U32(25, 32); U32(29, 0);
+            U24(33, 0xfe0f); U32(36, 0); U32(40, 40);
+            U32(44, 1); U24(48, 'A'); data[51] = 0;
+            U32(52, 1); U24(56, 'A'); U16(59, 2);
+            return data;
+
+            void U16(int offset, uint value)
+            {
+                data[offset] = (byte)(value >> 8);
+                data[offset + 1] = (byte)value;
+            }
+            void U24(int offset, uint value)
+            {
+                data[offset] = (byte)(value >> 16);
+                data[offset + 1] = (byte)(value >> 8);
+                data[offset + 2] = (byte)value;
+            }
+            void U32(int offset, uint value)
+            {
+                data[offset] = (byte)(value >> 24);
+                data[offset + 1] = (byte)(value >> 16);
+                data[offset + 2] = (byte)(value >> 8);
+                data[offset + 3] = (byte)value;
+            }
+        }
+    }
+
     private sealed class FeatureVariationFontFace(short coordinate) : IShapingFontFace
     {
         private static readonly byte[] s_gsub = CreateGsub();
