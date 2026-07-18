@@ -322,8 +322,13 @@ internal sealed class SuiteRunner : IDisposable
 
         try
         {
-            ReferenceGlyph[] expected = await ShapeWithHarfBuzzAsync(testCase);
             TtfFont font = GetFont(testCase.FontPath, configuration);
+            if ((font.TryGetTable("morx", out _) || font.TryGetTable("mort", out _)) &&
+                !font.TryGetTable("GSUB", out _))
+            {
+                return CaseResult.NonOpenType(testCase, "AAT substitution table without GSUB");
+            }
+            ReferenceGlyph[] expected = await ShapeWithHarfBuzzAsync(testCase);
 
             string? mismatch = null;
             if ((_options.Backend & ShapingBackend.Cpu) != 0)
