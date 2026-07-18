@@ -178,6 +178,24 @@ const INDIC_POSITION_SHIFT: u32 = 8u;
 const INDIC_POSITION_MASK: u32 = 0xffu << INDIC_POSITION_SHIFT;
 const USE_RPHF_ELIGIBLE: u32 = 1u << 16u;
 const USE_CATEGORY_SHIFT: u32 = 24u;
+
+fn ligature_component(position: u32) -> u32 {
+    return glyph_states[position].ligature_component & 0xffffu;
+}
+
+fn ligature_component_count(position: u32) -> u32 {
+    return glyph_states[position].ligature_component >> 16u;
+}
+
+fn set_ligature_component(position: u32, component: u32) {
+    glyph_states[position].ligature_component =
+        (glyph_states[position].ligature_component & 0xffff0000u) | (component & 0xffffu);
+}
+
+fn set_ligature_component_count(position: u32, count: u32) {
+    glyph_states[position].ligature_component =
+        (glyph_states[position].ligature_component & 0xffffu) | ((count & 0xffffu) << 16u);
+}
 const USE_CATEGORY_MASK: u32 = 0xffu << USE_CATEGORY_SHIFT;
 const GLYPH_MULTIPLE_COMPONENT: u32 = 8u;
 const GLYPH_MULTIPLIED: u32 = 16u;
@@ -1623,7 +1641,7 @@ fn handle_substitution_stage_transition(previous: u32, next: u32) {
             if ((glyph_states[position].internal_flags & GLYPH_MULTIPLIED) == 0u) { continue; }
             glyph_states[position].feature_mask |= select(
                 ARABIC_STRETCH_FIXED, ARABIC_STRETCH_REPEATING,
-                (glyph_states[position].ligature_component & 1u) != 0u);
+                (ligature_component(position) & 1u) != 0u);
         }
     }
     if (params.script_tag == 0x61726162u && previous <= 160u && next > 160u) {
@@ -2706,22 +2724,19 @@ fn apply_arabic_fallback_ligature_table(count_field: u32, offset_field: u32,
             }
             let ligature = nominal_glyph(unicode_data[table + row + 1u + additional_components]);
             if (!matched || ligature == 0u) { row += stride; continue; }
-            var cluster = glyphs[position].cluster;
-            for (var component = 1u; component <= additional_components; component++) {
-                cluster = min(cluster, glyphs[components[component]].cluster);
-            }
+            let cluster = merge_cluster(position, candidate + 1u);
             glyphs[position].glyph_id = ligature;
             glyphs[position].cluster = cluster;
             glyph_states[position].internal_flags |= GLYPH_SUBSTITUTED;
             let ligature_id = run_state.reserved0 + 1u;
             run_state.reserved0 = ligature_id;
             glyph_states[position].ligature_id = ligature_id;
-            glyph_states[position].ligature_component = additional_components + 1u;
+            set_ligature_component_count(position, additional_components + 1u);
             var component_number = 1u;
             for (var cursor = position + 1u; cursor <= candidate; cursor++) {
                 if (ignore_marks && fallback_mark_glyph(cursor)) {
                     glyph_states[cursor].ligature_id = ligature_id;
-                    glyph_states[cursor].ligature_component = component_number;
+                    set_ligature_component(cursor, component_number);
                 } else { component_number += 1u; }
             }
             var component = additional_components;
@@ -3109,7 +3124,7 @@ fn replace_multiple(subtable: u32, position: u32) -> bool {
         glyphs[position + replacement].glyph_id = table_u16(sequence + 2u + replacement * 2u);
         glyph_states[position + replacement] = source_state;
         glyph_states[position + replacement].internal_flags |= GLYPH_SUBSTITUTED | GLYPH_MULTIPLIED;
-        glyph_states[position + replacement].ligature_component = replacement;
+        set_ligature_component(position + replacement, replacement);
         if (replacement != 0u) {
             glyph_states[position + replacement].internal_flags |= GLYPH_MULTIPLE_COMPONENT;
             glyph_states[position + replacement].serial = run_state.next_serial;
@@ -3158,22 +3173,19 @@ fn apply_ligature(subtable: u32, position: u32, lookup_offset: u32, lookup_flags
             match_position = u32(next);
         }
         if (!matched) { continue; }
-        var cluster = glyphs[position].cluster;
-        for (var cursor = position + 1u; cursor <= match_position; cursor++) {
-            cluster = min(cluster, glyphs[cursor].cluster);
-        }
+        let cluster = merge_cluster(position, match_position + 1u);
         glyphs[position].glyph_id = table_u16(ligature);
         glyph_states[position].internal_flags |= GLYPH_SUBSTITUTED;
         glyphs[position].cluster = cluster;
         let ligature_id = run_state.reserved0 + 1u;
         run_state.reserved0 = ligature_id;
         glyph_states[position].ligature_id = ligature_id;
-        glyph_states[position].ligature_component = component_count;
+        set_ligature_component_count(position, component_count);
         var component_number = 1u;
         for (var cursor = position + 1u; cursor <= match_position; cursor++) {
             if (lookup_ignored(cursor, lookup_offset, lookup_flags)) {
                 glyph_states[cursor].ligature_id = ligature_id;
-                glyph_states[cursor].ligature_component = component_number;
+                set_ligature_component(cursor, component_number);
             } else {
                 component_number += 1u;
             }
@@ -3620,7 +3632,7 @@ fn position_fallback_marks_around_base(base_index: u32, end: u32) {
     var last_component = 0xffffffffu;
     var class_extents = base;
     var component_extents = base;
-    let component_count = glyph_states[base_index].ligature_component;
+    let component_count = ligature_component_count(base_index);
     for (var position = base_index + 1u; position < end; position++) {
         let combining = fallback_combining_class(glyphs[position].codepoint);
         if (combining == 0u) {
@@ -3634,9 +3646,9 @@ fn position_fallback_marks_around_base(base_index: u32, end: u32) {
             continue;
         }
         if (component_count > 1u) {
-            var component = glyph_states[position].ligature_component;
+            var component = ligature_component(position);
             if (component == 0u) { component = component_count - 1u; }
-            component = min(component, component_count - 1u);
+            else { component = min(component - 1u, component_count - 1u); }
             if (last_component != component) {
                 last_component = component;
                 last_class = 255u;
@@ -4126,9 +4138,9 @@ fn apply_mark_position(subtable: u32, position: u32, lookup_type: u32,
     if (lookup_type == 4u && target_class != 0u && target_class != 1u) { return false; }
     if (lookup_type == 5u && target_class != 2u) { return false; }
     if (lookup_type == 6u && target_class != 3u) { return false; }
-    if (lookup_type == 6u && glyph_states[position].ligature_component != 0u &&
-            glyph_states[attachment_target].ligature_component != 0u &&
-            glyph_states[position].ligature_component != glyph_states[attachment_target].ligature_component) { return false; }
+    if (lookup_type == 6u && ligature_component(position) != 0u &&
+            ligature_component(attachment_target) != 0u &&
+            ligature_component(position) != ligature_component(attachment_target)) { return false; }
     let target_covered = coverage_index(target_coverage, glyphs[attachment_target].glyph_id);
     if (target_covered < 0) { return false; }
     if (lookup_type == 5u) {
@@ -4137,8 +4149,8 @@ fn apply_mark_position(subtable: u32, position: u32, lookup_type: u32,
         if (component_count == 0u) { return false; }
         var component = component_count - 1u;
         if (glyph_states[position].ligature_id == glyph_states[attachment_target].ligature_id &&
-                glyph_states[position].ligature_component != 0u) {
-            component = min(glyph_states[position].ligature_component - 1u, component);
+                ligature_component(position) != 0u) {
+            component = min(ligature_component(position) - 1u, component);
         }
         return attach_mark(position, attachment_target, u32(mark_covered), 0u, class_count, mark_array,
             ligature_attach, ligature_attach + 2u + component * class_count * 2u);
