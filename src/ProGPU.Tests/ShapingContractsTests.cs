@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using ProGPU.Fonts.Inter;
+using ProGPU.Compute;
 using ProGPU.Text;
 using ProGPU.Text.Shaping;
 using Xunit;
@@ -217,6 +218,23 @@ public sealed class ShapingContractsTests
         Assert.Equal(0, graphemes[1].Cluster);
         Assert.Equal(0, characters[0].Cluster);
         Assert.Equal(1, characters[1].Cluster);
+    }
+
+    [Fact]
+    public void GpuPlanPreservesNominalMappingAndDesignMetrics()
+    {
+        var face = new TtfShapingFontFace(InterFontFamily.Regular);
+        GpuOpenTypeShapingPlan plan = GpuOpenTypeShapingPlanCompiler.Compile(face);
+
+        Assert.Equal(16, Marshal.SizeOf<GpuCmapRange>());
+        Assert.Equal(16, Marshal.SizeOf<GpuGlyphMetrics>());
+        foreach (uint codePoint in new uint[] { 'A', 'z', 0x00e9, 0x03a9, 0x20ac, 0x1f642 })
+            Assert.Equal(face.GetNominalGlyph(codePoint), plan.GetNominalGlyph(codePoint));
+        uint glyph = face.GetNominalGlyph('A');
+        GpuGlyphMetrics metric = plan.Metrics.Span[checked((int)glyph)];
+        Assert.Equal(face.GetHorizontalAdvance(glyph), metric.AdvanceX);
+        Assert.Equal(face.GetVerticalAdvance(glyph), metric.AdvanceY);
+        Assert.Equal(face.GetVerticalOrigin(glyph), metric.OriginY);
     }
 
     private static ShapingGlyph Glyph(uint glyphId) => new() { GlyphId = glyphId };
