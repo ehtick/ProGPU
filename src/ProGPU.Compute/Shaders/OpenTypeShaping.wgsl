@@ -1666,6 +1666,19 @@ fn final_reorder_indic() {
     }
 }
 
+fn should_reverse_arabic_context() -> bool {
+    if (params.direction != 1u || !uses_arabic_joining()) { return false; }
+    for (var index = 0u; index < params.lookup_count; index++) {
+        let command = lookup_commands[index];
+        if (command.table_kind != 1u) { continue; }
+        if (command.feature_tag == 0x69736f6cu || command.feature_tag == 0x66696e61u ||
+                command.feature_tag == 0x66696e32u || command.feature_tag == 0x66696e33u ||
+                command.feature_tag == 0x6d656469u || command.feature_tag == 0x6d656432u ||
+                command.feature_tag == 0x696e6974u) { return true; }
+    }
+    return false;
+}
+
 fn handle_substitution_stage_transition(previous: u32, next: u32) {
     let myanmar = params.script_tag == 0x6d796d72u || params.script_tag == 0x6d796d32u;
     if (uses_arabic_joining() && previous <= 10u && next > 10u) {
@@ -1676,7 +1689,7 @@ fn handle_substitution_stage_transition(previous: u32, next: u32) {
                 (multiple_substitution_component(position) & 1u) != 0u);
         }
     }
-    if (params.script_tag == 0x61726162u && previous <= 160u && next > 160u) {
+    if (params.script_tag == 0x61726162u && previous <= 150u && next > 150u) {
         apply_arabic_fallback();
     }
     if (myanmar && previous <= 10u && next > 10u) { reorder_myanmar(); }
@@ -3421,12 +3434,19 @@ fn execute_lookups(@builtin(global_invocation_id) id: vec3<u32>) {
     var tasks: array<LookupTask, 64>;
     var task_count = 0u;
     var active_stage = 0u;
+    let reverse_arabic_context = should_reverse_arabic_context();
+    var arabic_context_reversed = false;
     for (var command_index = 0u; command_index < params.lookup_count; command_index++) {
         let command = lookup_commands[command_index];
         if (command.table_kind != 1u || command.feature_value == 0u) { continue; }
         if (command.stage != active_stage) {
             handle_substitution_stage_transition(active_stage, command.stage);
             if (run_state.status != 0u) { return; }
+            if (!arabic_context_reversed && reverse_arabic_context &&
+                    active_stage <= 150u && command.stage > 150u) {
+                reverse_shaping_records();
+                arabic_context_reversed = true;
+            }
             active_stage = command.stage;
         }
         if (is_reverse_lookup(command.lookup_offset, command.lookup_type)) {
@@ -3473,6 +3493,11 @@ fn execute_lookups(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
     handle_substitution_stage_transition(active_stage, 0xffffffffu);
+    if (!arabic_context_reversed && reverse_arabic_context && active_stage <= 150u) {
+        reverse_shaping_records();
+        arabic_context_reversed = true;
+    }
+    if (arabic_context_reversed) { reverse_shaping_records(); }
     run_state.reserved1 = 0u;
     run_state.reserved2 = 0u;
 }
