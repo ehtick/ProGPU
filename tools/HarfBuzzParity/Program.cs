@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using ProGPU.Text;
+using ProGPU.Text.Shaping;
 
 return await HarfBuzzParityProgram.RunAsync(args);
 
@@ -299,12 +300,45 @@ internal sealed class SuiteRunner
             ReferenceGlyph[] expected = await ShapeWithHarfBuzzAsync(testCase);
             TtfFont font = GetFont(testCase.FontPath, configuration);
 
-            TextShapingOptions shapingOptions = configuration.CreateShapingOptions();
-            IReadOnlyList<ShapedGlyph> actual = OpenTypeTextShaper.Shape(
-                testCase.Text,
-                font,
-                configuration.FontSize ?? font.UnitsPerEm,
-                shapingOptions);
+            IReadOnlyList<ShapedGlyph> actual;
+            if (configuration.ClusterLevel is ShapingClusterLevel clusterLevel)
+            {
+                using var buffer = new ShapingBuffer();
+                ShapingDirection direction = configuration.Direction == ShapingDirection.Unspecified
+                    ? InferDirection(testCase.Text)
+                    : configuration.Direction;
+                OpenTypeTag script = configuration.Script is { Length: 4 } scriptTag
+                    ? new OpenTypeTag(scriptTag)
+                    : OpenTypeTag.DefaultScript;
+                var request = new ShapingRequest(
+                    direction,
+                    script,
+                    configuration.Language,
+                    clusterLevel);
+                CpuOpenTypeShaper.Instance.Shape(
+                    testCase.Text,
+                    new TtfShapingFontFace(font),
+                    request,
+                    buffer);
+                float scale = (configuration.FontSize ?? font.UnitsPerEm) / font.UnitsPerEm;
+                actual = buffer.Glyphs.ToArray().Select(glyph => new ShapedGlyph(
+                    checked((ushort)glyph.GlyphId),
+                    glyph.Cluster,
+                    glyph.CodePoint,
+                    glyph.AdvanceX * scale,
+                    glyph.AdvanceY * scale,
+                    glyph.OffsetX * scale,
+                    glyph.OffsetY * scale)).ToArray();
+            }
+            else
+            {
+                TextShapingOptions shapingOptions = configuration.CreateShapingOptions();
+                actual = OpenTypeTextShaper.Shape(
+                    testCase.Text,
+                    font,
+                    configuration.FontSize ?? font.UnitsPerEm,
+                    shapingOptions);
+            }
 
             string? mismatch = Compare(expected, actual, configuration, testCase.Text);
             return mismatch is null
@@ -315,6 +349,17 @@ internal sealed class SuiteRunner
         {
             return CaseResult.Error(testCase, exception.ToString());
         }
+    }
+
+    private static ShapingDirection InferDirection(string text)
+    {
+        foreach (Rune rune in text.EnumerateRunes())
+        {
+            if (rune.Value is >= 0x0590 and <= 0x08ff or >= 0xfb1d and <= 0xfdff or
+                >= 0xfe70 and <= 0xfeff or >= 0x10800 and <= 0x10fff)
+                return ShapingDirection.RightToLeft;
+        }
+        return ShapingDirection.LeftToRight;
     }
 
     private TtfFont GetFont(string path, CaseConfiguration configuration)
@@ -431,14 +476,16 @@ internal sealed class SuiteRunner
             {
                 return $"glyph[{index}] expected gid {left.Glyph}, actual {right.GlyphIndex}; " +
                        $"expected [{string.Join(',', expected.Select(static glyph => glyph.Glyph))}], " +
-                       $"actual [{string.Join(',', actual.Select(static glyph => glyph.GlyphIndex))}]";
+                       $"actual [{string.Join(',', actual.Select(static glyph => glyph.GlyphIndex))}]; " +
+                       $"actual codepoints [{string.Join(',', actual.Select(static glyph => glyph.CodePoint.ToString("X")))}]";
             }
             int actualCluster = Utf16ClusterToScalarIndex(text, right.Cluster);
             if (!configuration.IgnoreClusters && left.Cluster != actualCluster)
             {
                 return $"glyph[{index}] cluster expected {left.Cluster}, actual {actualCluster}; " +
                        $"expected [{string.Join(',', expected.Select(static glyph => glyph.Cluster))}], " +
-                       $"actual [{string.Join(',', actual.Select(glyph => Utf16ClusterToScalarIndex(text, glyph.Cluster)))}]";
+                       $"actual [{string.Join(',', actual.Select(glyph => Utf16ClusterToScalarIndex(text, glyph.Cluster)))}]; " +
+                       $"actual glyph/codepoint [{string.Join(',', actual.Select(static glyph => $"{glyph.GlyphIndex}/{glyph.CodePoint:X}"))}]";
             }
             if (!configuration.IgnorePositions &&
                 ((!configuration.IgnoreAdvances &&
@@ -499,6 +546,7 @@ internal sealed class CaseConfiguration
     public bool IgnorePositions { get; private set; }
     public bool IgnoreAdvances { get; private set; }
     public bool IgnoreClusters { get; private set; }
+    public ShapingClusterLevel? ClusterLevel { get; private set; }
 
     public static CaseConfiguration Parse(string options)
     {
@@ -590,9 +638,15 @@ internal sealed class CaseConfiguration
                 }
                 continue;
             }
+            if (TryValue(option, "--cluster-level=", out string? clusterLevel) &&
+                int.TryParse(clusterLevel, NumberStyles.None, CultureInfo.InvariantCulture, out int parsedClusterLevel) &&
+                Enum.IsDefined((ShapingClusterLevel)parsedClusterLevel))
+            {
+                result.ClusterLevel = (ShapingClusterLevel)parsedClusterLevel;
+                continue;
+            }
 
-            if (option.StartsWith("--cluster-level=", StringComparison.Ordinal)) AddUnsupported(result, "cluster-level");
-            else if (option is "--bot" or "--eot") AddUnsupported(result, "item-context-flags");
+            if (option is "--bot" or "--eot") AddUnsupported(result, "item-context-flags");
             else if (option.Contains("default-ignorables", StringComparison.Ordinal)) AddUnsupported(result, "default-ignorables");
             else if (option.StartsWith("--unicodes-before=", StringComparison.Ordinal) || option.StartsWith("--unicodes-after=", StringComparison.Ordinal)) AddUnsupported(result, "item-context");
             else if (option is "--unsafe-to-concat" or "--safe-to-insert-tatweel" or "--show-flags") AddUnsupported(result, "glyph-flags");

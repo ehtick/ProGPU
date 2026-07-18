@@ -193,5 +193,31 @@ public sealed class ShapingContractsTests
         Assert.NotEqual(normal[0].GlyphId, preserved[0].GlyphId);
     }
 
+    [Fact]
+    public void CpuExecutorHonorsCharacterClusterLevels()
+    {
+        var face = new TtfShapingFontFace(InterFontFamily.Regular);
+        using var graphemes = new ShapingBuffer();
+        using var characters = new ShapingBuffer();
+        const string text = "x\u030a";
+        CpuOpenTypeShaper.Instance.Shape(text, face,
+            new ShapingRequest(
+                ShapingDirection.LeftToRight,
+                new OpenTypeTag("latn"),
+                clusterLevel: ShapingClusterLevel.Graphemes), graphemes);
+        CpuOpenTypeShaper.Instance.Shape(text, face,
+            new ShapingRequest(
+                ShapingDirection.LeftToRight,
+                new OpenTypeTag("latn"),
+                clusterLevel: ShapingClusterLevel.Characters), characters);
+
+        Assert.Equal(2, graphemes.Count);
+        Assert.Equal(2, characters.Count);
+        Assert.Equal(0, graphemes[0].Cluster);
+        Assert.Equal(0, graphemes[1].Cluster);
+        Assert.Equal(0, characters[0].Cluster);
+        Assert.Equal(1, characters[1].Cluster);
+    }
+
     private static ShapingGlyph Glyph(uint glyphId) => new() { GlyphId = glyphId };
 }

@@ -102,13 +102,30 @@ public sealed class TextShapingOptions
     {
         IReadOnlyList<OpenTypeFeatureSetting> baseline = BaseFeatures ?? Features;
         int value = 0;
+        bool foundBaseline = false;
         for (var index = baseline.Count - 1; index >= 0; index--)
         {
             if (baseline[index].Tag != tag) continue;
             value = baseline[index].Value;
+            foundBaseline = true;
             break;
         }
         ReadOnlySpan<ShapingFeature> ranges = RangedFeatures.Span;
+        if (!foundBaseline)
+        {
+            bool hasRange = false;
+            for (var index = 0; index < ranges.Length; index++)
+                hasRange |= ranges[index].Tag.ToString() == tag;
+            if (!hasRange)
+            {
+                for (var index = Features.Count - 1; index >= 0; index--)
+                {
+                    if (Features[index].Tag != tag) continue;
+                    value = Features[index].Value;
+                    break;
+                }
+            }
+        }
         uint position = checked((uint)Math.Max(inputIndex, 0));
         for (var index = 0; index < ranges.Length; index++)
         {
@@ -269,7 +286,12 @@ public static class OpenTypeTextShaper
         Typeface? typeface = font.LayoutTypeface;
         SubstitutionPlan substitutionPlan = CreateSubstitutionPlan(font, typeface?.GSUBTable, options, script);
 
-        var substitutions = GlyphSubstitutionBuffer.Create(text, font, unicodeScript, options.BufferFlags);
+        var substitutions = GlyphSubstitutionBuffer.Create(
+            text,
+            font,
+            unicodeScript,
+            options.ClusterLevel,
+            options.BufferFlags);
         substitutions.ApplyDirectionalCodePointFallback(
             font,
             direction,
@@ -383,6 +405,7 @@ public static class OpenTypeTextShaper
             font,
             direction,
             zeroMarkAdvancesEarly: useShaper || myanmarShaper,
+            clusterLevel: options.ClusterLevel,
             bufferFlags: options.BufferFlags);
         bool hasGpos = font.TryGetTable("GPOS", out _);
         bool hasGposKerning = ApplyPositions(font, typeface?.GPOSTable, positions, options, script);
@@ -409,6 +432,8 @@ public static class OpenTypeTextShaper
         if (direction is ShapingDirection.RightToLeft or ShapingDirection.BottomToTop)
         {
             positions.Reverse();
+            if (options.ClusterLevel == ShapingClusterLevel.MonotoneCharacters)
+                positions.ReverseClustersWithinCombiningRuns();
         }
         if (arabicShaper)
         {
@@ -3510,6 +3535,7 @@ public static class OpenTypeTextShaper
         private readonly Typeface? _typeface;
         private readonly TtfFont _font;
         private readonly ReadOnlyMemory<byte> _gdefTable;
+        private readonly ShapingClusterLevel _clusterLevel;
         private readonly ShapingBufferFlags _bufferFlags;
         private byte _lookupSyllable;
         private bool _restrictLookupToSyllable;
@@ -3522,10 +3548,12 @@ public static class OpenTypeTextShaper
         private GlyphSubstitutionBuffer(
             List<GlyphRecord> glyphs,
             TtfFont font,
+            ShapingClusterLevel clusterLevel = ShapingClusterLevel.MonotoneGraphemes,
             ShapingBufferFlags bufferFlags = ShapingBufferFlags.None)
         {
             _glyphs = glyphs;
             _font = font;
+            _clusterLevel = clusterLevel;
             _bufferFlags = bufferFlags;
             _typeface = font.LayoutTypeface;
             font.TryGetTable("GDEF", out _gdefTable);
@@ -3607,9 +3635,9 @@ public static class OpenTypeTextShaper
             if (!enabled) return;
             for (var start = 0; start < _glyphs.Count;)
             {
-                int cluster = _glyphs[start].Cluster;
+                int cluster = _glyphs[start].GraphemeCluster;
                 int end = start + 1;
-                while (end < _glyphs.Count && _glyphs[end].Cluster == cluster) end++;
+                while (end < _glyphs.Count && _glyphs[end].GraphemeCluster == cluster) end++;
                 int starter = start;
                 while (starter < end && !IsHebrewStarter(_glyphs[starter].CodePoint)) starter++;
                 if (starter < end)
@@ -3636,37 +3664,43 @@ public static class OpenTypeTextShaper
 
         public void ReorderModifiedCombiningMarks(string script)
         {
-            for (var start = 0; start < _glyphs.Count;)
+            int segmentStart = 0;
+            while (segmentStart < _glyphs.Count)
             {
-                int cluster = _glyphs[start].Cluster;
-                int end = start + 1;
-                while (end < _glyphs.Count && _glyphs[end].Cluster == cluster) end++;
-                int segmentStart = start;
-                while (segmentStart < end)
+                while (segmentStart < _glyphs.Count &&
+                       GetModifiedCombiningClass(_glyphs[segmentStart].CodePoint) == 0)
+                    segmentStart++;
+                int segmentEnd = segmentStart;
+                while (segmentEnd < _glyphs.Count &&
+                       GetModifiedCombiningClass(_glyphs[segmentEnd].CodePoint) != 0)
+                    segmentEnd++;
+                for (var index = segmentStart + 1; index < segmentEnd; index++)
                 {
-                    while (segmentStart < end && GetModifiedCombiningClass(_glyphs[segmentStart].CodePoint) == 0)
-                        segmentStart++;
-                    int segmentEnd = segmentStart;
-                    while (segmentEnd < end && GetModifiedCombiningClass(_glyphs[segmentEnd].CodePoint) != 0)
-                        segmentEnd++;
-                    for (var index = segmentStart + 1; index < segmentEnd; index++)
+                    GlyphRecord value = _glyphs[index];
+                    int valueClass = GetModifiedCombiningClass(value.CodePoint);
+                    int destination = index;
+                    int crossedCluster = int.MaxValue;
+                    while (destination > segmentStart &&
+                           GetModifiedCombiningClass(_glyphs[destination - 1].CodePoint) > valueClass)
                     {
-                        GlyphRecord value = _glyphs[index];
-                        int valueClass = GetModifiedCombiningClass(value.CodePoint);
-                        int destination = index;
-                        while (destination > segmentStart &&
-                               GetModifiedCombiningClass(_glyphs[destination - 1].CodePoint) > valueClass)
-                        {
-                            _glyphs[destination] = _glyphs[destination - 1];
-                            destination--;
-                        }
-                        _glyphs[destination] = value;
+                        crossedCluster = Math.Min(crossedCluster, _glyphs[destination - 1].Cluster);
+                        _glyphs[destination] = _glyphs[destination - 1];
+                        destination--;
                     }
-                    if (UsesArabicJoining(script))
-                        ReorderArabicModifierMarks(segmentStart, segmentEnd);
-                    segmentStart = segmentEnd + 1;
+                    _glyphs[destination] = value;
+                    if (_clusterLevel == ShapingClusterLevel.MonotoneCharacters && destination < index)
+                    {
+                        for (int crossed = destination + 1; crossed <= index; crossed++)
+                        {
+                            GlyphRecord glyph = _glyphs[crossed];
+                            glyph.Cluster = crossedCluster;
+                            _glyphs[crossed] = glyph;
+                        }
+                    }
                 }
-                start = end;
+                if (UsesArabicJoining(script))
+                    ReorderArabicModifierMarks(segmentStart, segmentEnd);
+                segmentStart = segmentEnd + 1;
             }
         }
 
@@ -3906,7 +3940,10 @@ public static class OpenTypeTextShaper
                     _glyphs.Insert(start, nikhahitGlyph);
                 }
                 int end = index + 2;
-                if (start > 0) MergeCluster(start - 1, end);
+                if (_clusterLevel is ShapingClusterLevel.MonotoneGraphemes or ShapingClusterLevel.Graphemes)
+                    MergeCluster(start - 1, end);
+                else if (_clusterLevel == ShapingClusterLevel.MonotoneCharacters)
+                    MergeCluster(start, end);
                 index++;
             }
         }
@@ -6025,6 +6062,7 @@ public static class OpenTypeTextShaper
             string text,
             TtfFont font,
             string script,
+            ShapingClusterLevel clusterLevel,
             ShapingBufferFlags bufferFlags)
         {
             if (text.Length > MaximumShapedGlyphCount)
@@ -6054,8 +6092,10 @@ public static class OpenTypeTextShaper
                 int indicCluster = graphemeStart;
                 uint previousCodePoint = 0;
                 bool splitAfterIndicZwnj = false;
+                bool hasIndicSplitMatra = false;
                 for (var index = 0; index < grapheme.Length;)
                 {
+                    int appendedStart = glyphs.Count;
                     Rune.DecodeFromUtf16(grapheme[index..], out Rune rune, out int consumed);
                     uint followingCodePoint = 0;
                     if (index + consumed < grapheme.Length &&
@@ -6080,9 +6120,13 @@ public static class OpenTypeTextShaper
                     {
                         indicCluster = graphemeStart + index;
                     }
-                    int cluster = (separateClusters || script == "hang") && normalizedGrapheme is null
+                    bool characterClusters = clusterLevel is
+                        ShapingClusterLevel.MonotoneCharacters or ShapingClusterLevel.Characters;
+                    int cluster = characterClusters
                         ? graphemeStart + index
-                        : IsIndicShaperScript(script) || script == "khmr" ? indicCluster : graphemeStart;
+                        : (separateClusters || script == "hang") && normalizedGrapheme is null
+                            ? graphemeStart + index
+                            : IsIndicShaperScript(script) || script == "khmr" ? indicCluster : graphemeStart;
                     if (preserveUseMarkOrder)
                     {
                         if (preserveDefaultIgnorableCluster && rune.Value is 0x200C or 0x200D)
@@ -6114,16 +6158,33 @@ public static class OpenTypeTextShaper
                     {
                         AppendMappedRune(glyphs, font, new Rune(0x17C1), cluster);
                     }
-                    if (!TryAppendIndicSplitMatra(glyphs, font, rune, cluster, script))
+                    bool appendedSplitMatra = TryAppendIndicSplitMatra(glyphs, font, rune, cluster, script);
+                    if (!appendedSplitMatra)
                     {
                         AppendNormalizedRune(glyphs, font, rune, cluster);
+                    }
+                    else if (!hasIndicSplitMatra)
+                    {
+                        for (int appended = appendedStart; appended < glyphs.Count; appended++)
+                        {
+                            GlyphRecord glyph = glyphs[appended];
+                            glyph.HasCharacterCluster = 0;
+                            glyphs[appended] = glyph;
+                        }
+                        hasIndicSplitMatra = true;
+                    }
+                    for (int appended = appendedStart; appended < glyphs.Count; appended++)
+                    {
+                        GlyphRecord glyph = glyphs[appended];
+                        glyph.GraphemeCluster = graphemeStart;
+                        glyphs[appended] = glyph;
                     }
                     previousCodePoint = (uint)rune.Value;
                     index += consumed;
                 }
                 graphemeStart = graphemeEnd;
             }
-            return new GlyphSubstitutionBuffer(glyphs, font, bufferFlags);
+            return new GlyphSubstitutionBuffer(glyphs, font, clusterLevel, bufferFlags);
         }
 
         private static bool IsKhmerBaseCategory(uint codePoint)
@@ -6156,8 +6217,16 @@ public static class OpenTypeTextShaper
             UnicodeCategory category = Rune.GetUnicodeCategory(first);
             if (category is not (UnicodeCategory.NonSpacingMark or UnicodeCategory.SpacingCombiningMark or
                 UnicodeCategory.EnclosingMark)) return false;
+            int firstComponent = glyphs.Count;
             foreach (Rune component in decomposed.EnumerateRunes())
                 AppendMappedRune(glyphs, font, component, cluster);
+            for (int index = firstComponent; index < glyphs.Count; index++)
+            {
+                GlyphRecord glyph = glyphs[index];
+                glyph.CharacterCluster = cluster;
+                glyph.HasCharacterCluster = 1;
+                glyphs[index] = glyph;
+            }
             return true;
         }
 
@@ -6334,6 +6403,7 @@ public static class OpenTypeTextShaper
             TtfFont font,
             ShapingDirection direction,
             bool zeroMarkAdvancesEarly,
+            ShapingClusterLevel clusterLevel,
             ShapingBufferFlags bufferFlags)
         {
             _typeface = font.LayoutTypeface;
@@ -6439,6 +6509,28 @@ public static class OpenTypeTextShaper
                     record.AdvanceY = 0;
                 }
                 _glyphs[outputIndex++] = record;
+            }
+            RestoreSplitMatraCharacterClusters(clusterLevel);
+        }
+
+        private void RestoreSplitMatraCharacterClusters(ShapingClusterLevel clusterLevel)
+        {
+            if (clusterLevel != ShapingClusterLevel.MonotoneCharacters) return;
+            bool changed = false;
+            for (var index = 0; index < _glyphs.Length; index++)
+            {
+                if (_glyphs[index].HasCharacterCluster == 0) continue;
+                _glyphs[index].Cluster = _glyphs[index].CharacterCluster;
+                changed = true;
+            }
+            if (!changed) return;
+            for (var index = 1; index < _glyphs.Length; index++)
+            {
+                int cluster = _glyphs[index].Cluster;
+                for (int previous = index - 1;
+                     previous >= 0 && _glyphs[previous].Cluster > cluster;
+                     previous--)
+                    _glyphs[previous].Cluster = cluster;
             }
         }
 
@@ -7238,6 +7330,24 @@ public static class OpenTypeTextShaper
 
         public void Reverse() => Array.Reverse(_glyphs);
 
+        public void ReverseClustersWithinCombiningRuns()
+        {
+            for (var start = 0; start < _glyphs.Length;)
+            {
+                while (start < _glyphs.Length &&
+                       GlyphSubstitutionBuffer.GetModifiedCombiningClass(_glyphs[start].CodePoint) == 0)
+                    start++;
+                int end = start;
+                while (end < _glyphs.Length &&
+                       GlyphSubstitutionBuffer.GetModifiedCombiningClass(_glyphs[end].CodePoint) != 0)
+                    end++;
+                for (int left = start, right = end - 1; left < right; left++, right--)
+                    (_glyphs[left].Cluster, _glyphs[right].Cluster) =
+                        (_glyphs[right].Cluster, _glyphs[left].Cluster);
+                start = end + 1;
+            }
+        }
+
         public void ApplyArabicStretch(TtfFont font, bool rightToLeft)
         {
             if (!Array.Exists(_glyphs, static glyph => IsStretchAction(glyph.ArabicAction))) return;
@@ -7429,6 +7539,7 @@ public static class OpenTypeTextShaper
         {
             GlyphIndex = glyphIndex;
             Cluster = cluster;
+            GraphemeCluster = cluster;
             CodePoint = codePoint;
             ArabicAction = None;
             LigatureComponent = byte.MaxValue;
@@ -7437,6 +7548,8 @@ public static class OpenTypeTextShaper
 
         public ushort GlyphIndex;
         public int Cluster;
+        public int GraphemeCluster;
+        public int CharacterCluster;
         public uint CodePoint;
         public short AdvanceX;
         public short AdvanceY;
@@ -7459,6 +7572,7 @@ public static class OpenTypeTextShaper
         public byte Multiplied;
         public byte LigatureComponentCount;
         public byte LigatureComponent;
+        public byte HasCharacterCluster;
         public byte AttachmentKind;
         public int AttachmentTarget;
     }
