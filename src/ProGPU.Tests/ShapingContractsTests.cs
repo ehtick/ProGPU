@@ -714,6 +714,29 @@ public sealed class ShapingContractsTests
     }
 
     [Fact]
+    public void GpuLigatureMatchingCanConsumeAnExplicitDefaultIgnorableComponent()
+    {
+        var face = new IndicShapingFontFace("ltrm", "phag", mapVariationSelector: true);
+        GpuOpenTypeShapingPlan plan = GpuOpenTypeShapingPlanCompiler.Compile(face);
+        var request = new ShapingRequest(ShapingDirection.LeftToRight, new OpenTypeTag("phag"));
+        GpuOpenTypeLookupCommand command = Assert.Single(
+            GpuOpenTypeLookupPlanCompiler.Compile(plan, request),
+            static value => value.FeatureTag == new OpenTypeTag("ltrm").Value);
+        using var context = new WgpuContext();
+        context.Initialize(null);
+        using var fontData = new GpuOpenTypeFontData(context, plan);
+        using var pipeline = new GpuOpenTypeRunPipeline(context);
+        using var output = new ShapingBuffer();
+
+        pipeline.ExecuteRun(
+            [new GpuShapingScalar(0xa849, 0), new GpuShapingScalar(0xfe00, 1)],
+            fontData, request, [command], output);
+
+        ShapingGlyph ligature = Assert.Single(output.Glyphs.ToArray());
+        Assert.Equal(5u, ligature.GlyphId);
+    }
+
+    [Fact]
     public void GpuIndicTwoPassReorderingMatchesManagedRules()
     {
         var face = new IndicShapingFontFace();
@@ -1513,7 +1536,10 @@ public sealed class ShapingContractsTests
         public float GetLayoutVariationDelta(ushort outerIndex, ushort innerIndex) => 0;
     }
 
-    private sealed class IndicShapingFontFace(string? featureTag = null, string scriptTag = "dev2") : IShapingFontFace
+    private sealed class IndicShapingFontFace(
+        string? featureTag = null,
+        string scriptTag = "dev2",
+        bool mapVariationSelector = false) : IShapingFontFace
     {
         private readonly byte[]? _gsub = featureTag is null ? null : CreateGsub(featureTag, scriptTag);
 
@@ -1531,6 +1557,8 @@ public sealed class ShapingContractsTests
         }
         public uint GetNominalGlyph(uint codePoint) => codePoint switch
         {
+            0xa849 when mapVariationSelector => 1,
+            0xfe00 when mapVariationSelector => 1,
             0x0915 => 1,
             0x0937 => 2,
             0x093f => 3,

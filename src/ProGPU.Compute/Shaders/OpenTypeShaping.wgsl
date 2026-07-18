@@ -2590,6 +2590,27 @@ fn next_eligible(start: u32, lookup_offset: u32, lookup_flags: u32) -> i32 {
     return -1;
 }
 
+fn next_ligature_component(start: u32, expected_glyph: u32,
+    lookup_offset: u32, lookup_flags: u32) -> i32 {
+    for (var index = start; index < run_state.glyph_count; index++) {
+        if (outside_active_syllable(index)) { return -1; }
+        let codepoint = glyphs[index].codepoint;
+        let visible = (glyph_states[index].internal_flags & GLYPH_SUBSTITUTED) != 0u ||
+            (glyph_states[index].feature_mask & HANGUL_FEATURE_MASK) != 0u;
+        if (is_default_ignorable(codepoint) && !visible) {
+            let explicit_component = glyphs[index].glyph_id == expected_glyph ||
+                codepoint == 0x034fu || codepoint == 0x200cu ||
+                (codepoint == 0x200du && (run_state.reserved2 & FEATURE_MANUAL_ZWJ) != 0u) ||
+                (codepoint >= 0x180bu && codepoint <= 0x180eu) ||
+                (codepoint >= 0xe0000u && codepoint <= 0xe007fu);
+            if (explicit_component) { return i32(index); }
+            continue;
+        }
+        if (!lookup_ignored(index, lookup_offset, lookup_flags)) { return i32(index); }
+    }
+    return -1;
+}
+
 fn next_context_eligible(start: u32, lookup_offset: u32, lookup_flags: u32) -> i32 {
     for (var index = start; index < run_state.glyph_count; index++) {
         if (outside_active_syllable(index)) { return -1; }
@@ -3165,8 +3186,10 @@ fn apply_ligature(subtable: u32, position: u32, lookup_offset: u32, lookup_flags
         var matched = true;
         var match_position = position;
         for (var component = 1u; component < component_count; component++) {
-            let next = next_eligible(match_position + 1u, lookup_offset, lookup_flags);
-            if (next < 0 || glyphs[u32(next)].glyph_id != table_u16(ligature + 2u + component * 2u)) {
+            let expected = table_u16(ligature + 2u + component * 2u);
+            let next = next_ligature_component(
+                match_position + 1u, expected, lookup_offset, lookup_flags);
+            if (next < 0 || glyphs[u32(next)].glyph_id != expected) {
                 matched = false;
                 break;
             }
@@ -3182,16 +3205,28 @@ fn apply_ligature(subtable: u32, position: u32, lookup_offset: u32, lookup_flags
         glyph_states[position].ligature_id = ligature_id;
         set_ligature_component_count(position, component_count);
         var component_number = 1u;
+        var component_index = 1u;
+        var next_component_position = -1;
+        if (component_count > 1u) {
+            next_component_position = next_ligature_component(
+                position + 1u, table_u16(ligature + 4u), lookup_offset, lookup_flags);
+        }
         for (var cursor = position + 1u; cursor <= match_position; cursor++) {
-            if (lookup_ignored(cursor, lookup_offset, lookup_flags)) {
+            if (i32(cursor) == next_component_position) {
+                component_number += 1u;
+                component_index += 1u;
+                if (component_index < component_count) {
+                    next_component_position = next_ligature_component(cursor + 1u,
+                        table_u16(ligature + 2u + component_index * 2u), lookup_offset, lookup_flags);
+                }
+            } else {
                 glyph_states[cursor].ligature_id = ligature_id;
                 set_ligature_component(cursor, component_number);
-            } else {
-                component_number += 1u;
             }
         }
         for (var component = 1u; component < component_count; component++) {
-            let remove_at = next_eligible(position + 1u, lookup_offset, lookup_flags);
+            let expected = table_u16(ligature + 2u + component * 2u);
+            let remove_at = next_ligature_component(position + 1u, expected, lookup_offset, lookup_flags);
             if (remove_at < 0) { break; }
             for (var cursor = u32(remove_at) + 1u; cursor < run_state.glyph_count; cursor++) {
                 glyphs[cursor - 1u] = glyphs[cursor];
