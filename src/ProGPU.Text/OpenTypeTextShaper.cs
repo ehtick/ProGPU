@@ -157,8 +157,15 @@ public static class OpenTypeTextShaper
         ShapingDirection direction = ResolveDirection(options.Direction, unicodeScript);
         options = AddScriptFeatures(options, script, useShaper, indicShaper);
         options = AddDirectionalFeatures(options, direction);
+        Typeface? typeface = font.LayoutTypeface;
+        SubstitutionPlan substitutionPlan = CreateSubstitutionPlan(font, typeface?.GSUBTable, options, script);
 
         var substitutions = GlyphSubstitutionBuffer.Create(text, font, unicodeScript);
+        substitutions.ApplyDirectionalCodePointFallback(
+            font,
+            direction,
+            substitutionPlan.Lookups.Any(static lookup => lookup.Tag is "vert" or "vrt2") ||
+            substitutionPlan.RawLookups.Any(static lookup => lookup.Tag is "vert" or "vrt2"));
         substitutions.PrepareHangulShaping(unicodeScript == "hang", font);
         substitutions.ReorderModifiedCombiningMarks(unicodeScript);
         substitutions.ComposeHebrewPresentationForms(
@@ -171,8 +178,6 @@ public static class OpenTypeTextShaper
         substitutions.PrepareIndicShaping(indicShaper);
         substitutions.PrepareUseShaping(useShaper, unicodeScript);
         substitutions.AssignArabicJoiningActions(unicodeScript);
-        Typeface? typeface = font.LayoutTypeface;
-        SubstitutionPlan substitutionPlan = CreateSubstitutionPlan(font, typeface?.GSUBTable, options, script);
         if (useShaper || indicShaper || khmerShaper || arabicShaper)
         {
             ApplySubstitutions(font, substitutionPlan, substitutions, options, UseSubstitutionStage.Directional);
@@ -252,7 +257,8 @@ public static class OpenTypeTextShaper
         }
         bool usesFallbackMarkPositioning = UsesFallbackMarkPositioning(
             unicodeScript, useShaper, indicShaper, khmerShaper);
-        if (usesFallbackMarkPositioning)
+        bool zeroMarkAdvancesLate = usesFallbackMarkPositioning || unicodeScript is "thai" or "lao ";
+        if (zeroMarkAdvancesLate)
         {
             positions.ZeroMarkAdvancesLate(
                 adjustOffsets: !hasGpos && direction is ShapingDirection.LeftToRight or ShapingDirection.TopToBottom);
@@ -813,7 +819,7 @@ public static class OpenTypeTextShaper
             ushort lookupIndex = ReadU16(data, lookupOffset);
             if (positions.TryGetValue(lookupIndex, out int existing))
             {
-                if (!IsHangulJamoFeature(result[existing].Tag) || IsHangulJamoFeature(tag))
+                if (!IsGlobalFeatureTag(result[existing].Tag) || IsGlobalFeatureTag(tag))
                     result[existing] = new EnabledLookup(lookupIndex, value, tag);
             }
             else
@@ -3045,9 +3051,15 @@ public static class OpenTypeTextShaper
     }
 
     private static bool IsGlobalShaperFeature(string script, string tag) =>
-        script == "hang" && IsHangulJamoFeature(tag);
+        IsDirectionalShaperFeature(tag) || script == "hang" && IsHangulJamoFeature(tag);
 
     private static bool IsHangulJamoFeature(string tag) => tag is "ljmo" or "vjmo" or "tjmo";
+
+    private static bool IsDirectionalShaperFeature(string tag) =>
+        tag is "ltra" or "ltrm" or "rtla" or "rtlm" or "vert" or "vrt2";
+
+    private static bool IsGlobalFeatureTag(string tag) =>
+        IsHangulJamoFeature(tag) || IsDirectionalShaperFeature(tag);
 
     private static void AddFeatureLookups(
         FeatureList.FeatureTable feature,
@@ -3060,7 +3072,7 @@ public static class OpenTypeTextShaper
             ushort index = feature.LookupListIndices[lookupIndex];
             if (lookupPositions.TryGetValue(index, out int existing))
             {
-                if (!IsHangulJamoFeature(lookups[existing].Tag) || IsHangulJamoFeature(feature.TagName))
+                if (!IsGlobalFeatureTag(lookups[existing].Tag) || IsGlobalFeatureTag(feature.TagName))
                     lookups[existing] = new EnabledLookup(index, value, feature.TagName);
             }
             else
@@ -3778,6 +3790,39 @@ public static class OpenTypeTextShaper
                         }
                     }
                 }
+            }
+        }
+
+        public void ApplyDirectionalCodePointFallback(
+            TtfFont font,
+            ShapingDirection direction,
+            bool hasVerticalSubstitution)
+        {
+            bool backward = direction is ShapingDirection.RightToLeft or ShapingDirection.BottomToTop;
+            bool verticalFallback = !hasVerticalSubstitution &&
+                direction is ShapingDirection.TopToBottom or ShapingDirection.BottomToTop;
+            if (!backward && !verticalFallback) return;
+
+            for (var index = 0; index < _glyphs.Count; index++)
+            {
+                GlyphRecord glyph = _glyphs[index];
+                uint codePoint = glyph.CodePoint;
+                if (backward)
+                {
+                    uint mirrored = UnicodeDirectionalData.GetMirroredCodePoint(codePoint);
+                    if (mirrored != codePoint && font.GetGlyphIndex(mirrored) != 0)
+                        codePoint = mirrored;
+                }
+                if (verticalFallback)
+                {
+                    uint vertical = UnicodeDirectionalData.GetVerticalCodePoint(codePoint);
+                    if (vertical != codePoint && font.GetGlyphIndex(vertical) != 0)
+                        codePoint = vertical;
+                }
+                if (codePoint == glyph.CodePoint) continue;
+                glyph.CodePoint = codePoint;
+                glyph.GlyphIndex = font.GetGlyphIndex(codePoint);
+                _glyphs[index] = glyph;
             }
         }
 
@@ -5595,6 +5640,12 @@ public static class OpenTypeTextShaper
         {
             uint codePoint = (uint)rune.Value;
             ushort glyphIndex = font.GetGlyphIndex(codePoint);
+            if (glyphIndex == 0 && codePoint == 0x2011)
+            {
+                codePoint = 0x2010;
+                rune = new Rune((int)codePoint);
+                glyphIndex = font.GetGlyphIndex(codePoint);
+            }
             if (glyphIndex == 0)
             {
                 string scalar = rune.ToString();
