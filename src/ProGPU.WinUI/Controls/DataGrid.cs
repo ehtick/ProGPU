@@ -956,6 +956,10 @@ public class DataGrid : Control
         _rowScrollTransform.Translation = new Vector2(0f, -ScrollOffset);
 
         context.PushClip(new Rect(0, _headerHeight, Size.X, ViewportHeight));
+        // Row chrome occupies disjoint horizontal bands, so recording all chrome before the
+        // text fragments preserves the visible painter result while keeping the vector pipeline
+        // contiguous. The second pass can likewise merge adjacent fragment-text arena ranges.
+        // Both passes are O(V) for V visible rows and allocate no per-frame scratch storage.
         for (int row = startRow; row <= endRow; row++)
         {
             float rowY = _headerHeight + row * _rowHeight - ScrollOffset;
@@ -1004,9 +1008,12 @@ public class DataGrid : Control
                 _rowFragmentState[slot] = state;
             }
 
-            context.DrawSceneFragment(
-                _rowFragmentHandles[slot]!,
-                _rowScrollTransform);
+        }
+
+        for (int row = startRow; row <= endRow; row++)
+        {
+            int slot = row % _rowFragmentHandles.Length;
+            context.DrawSceneFragment(_rowFragmentHandles[slot]!, _rowScrollTransform);
         }
         context.PopClip();
     }
