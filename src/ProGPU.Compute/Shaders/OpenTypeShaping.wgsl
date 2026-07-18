@@ -739,6 +739,65 @@ fn prepare_hangul_shaping() {
     }
 }
 
+fn is_thai_lao_above_base_mark(codepoint: u32) -> bool {
+    let thai = codepoint & ~0x80u;
+    return (thai >= 0x0e34u && thai <= 0x0e37u) ||
+        (thai >= 0x0e47u && thai <= 0x0e4eu) || thai == 0x0e31u || thai == 0x0e3bu;
+}
+
+fn prepare_thai_lao() {
+    let thai_script = params.script_tag == 0x74686169u;
+    let lao_script = params.script_tag == 0x6c616f20u;
+    if (!thai_script && !lao_script) { return; }
+    let sara_am = select(0x0eb3u, 0x0e33u, thai_script);
+    let nikhahit = select(0x0ecdu, 0x0e4du, thai_script);
+    let sara_aa = sara_am - 1u;
+    var position = 0u;
+    while (position < run_state.glyph_count) {
+        if (glyphs[position].codepoint != sara_am) { position += 1u; continue; }
+        if (run_state.glyph_count + 1u > params.capacity) {
+            run_state.status = 1u;
+            return;
+        }
+        var cursor = run_state.glyph_count;
+        while (cursor > position + 1u) {
+            cursor -= 1u;
+            glyphs[cursor + 1u] = glyphs[cursor];
+            glyph_states[cursor + 1u] = glyph_states[cursor];
+        }
+        let source = glyphs[position];
+        let source_state = glyph_states[position];
+        glyphs[position].codepoint = nikhahit;
+        glyphs[position].glyph_id = nominal_glyph(nikhahit);
+        glyphs[position + 1u] = source;
+        glyphs[position + 1u].codepoint = sara_aa;
+        glyphs[position + 1u].glyph_id = nominal_glyph(sara_aa);
+        glyph_states[position + 1u] = source_state;
+        glyph_states[position + 1u].serial = run_state.next_serial;
+        run_state.next_serial += 1u;
+        run_state.glyph_count += 1u;
+        var start = position;
+        while (start > 0u && is_thai_lao_above_base_mark(glyphs[start - 1u].codepoint)) { start -= 1u; }
+        if (start < position) {
+            let nikhahit_glyph = glyphs[position];
+            let nikhahit_state = glyph_states[position];
+            for (var move_index = position; move_index > start; move_index--) {
+                glyphs[move_index] = glyphs[move_index - 1u];
+                glyph_states[move_index] = glyph_states[move_index - 1u];
+            }
+            glyphs[start] = nikhahit_glyph;
+            glyph_states[start] = nikhahit_state;
+        }
+        let end = position + 2u;
+        if (params.cluster_level == 0u || params.cluster_level == 3u) {
+            _ = merge_cluster(select(start, start - 1u, start > 0u), end);
+        } else if (params.cluster_level == 1u) {
+            _ = merge_cluster(start, end);
+        }
+        position += 2u;
+    }
+}
+
 fn reverse_records(start_value: u32, end_value: u32) {
     var start = start_value;
     var end = end_value;
@@ -1549,6 +1608,8 @@ fn preprocess_glyphs(@builtin(global_invocation_id) id: vec3<u32>) {
         run_state.glyph_count -= 1u;
     }
     prepare_hangul_shaping();
+    if (run_state.status != 0u) { return; }
+    prepare_thai_lao();
     if (run_state.status != 0u) { return; }
     apply_directional_codepoint_fallback();
     reorder_modified_combining_marks();
