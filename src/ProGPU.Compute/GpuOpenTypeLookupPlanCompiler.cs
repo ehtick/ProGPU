@@ -37,7 +37,13 @@ public static class GpuOpenTypeLookupPlanCompiler
         {
             if (lookup.Required)
             {
-                commands.Add(lookup.Command with { FeatureValue = 1, RangeStart = 0, RangeEnd = uint.MaxValue });
+                commands.Add(lookup.Command with
+                {
+                    FeatureValue = 1,
+                    RangeStart = 0,
+                    RangeEnd = uint.MaxValue,
+                    Stage = checked((uint)lookup.Stage)
+                });
                 continue;
             }
             foreach (FeatureInterval interval in ResolveIntervals(request.Features.Span, lookup.FeatureTag, lookup.BaseValue))
@@ -48,7 +54,8 @@ public static class GpuOpenTypeLookupPlanCompiler
                     FeatureValue = interval.Value,
                     RangeStart = interval.Start,
                     RangeEnd = interval.End,
-                    CommandFlags = lookup.Explicit ? 1u : 0u
+                    CommandFlags = lookup.Explicit ? 1u : 0u,
+                    Stage = checked((uint)lookup.Stage)
                 });
             }
         }
@@ -398,31 +405,49 @@ public static class GpuOpenTypeLookupPlanCompiler
     {
         string script = scriptTag.ToString().ToLowerInvariant();
         string feature = new OpenTypeTag(tag).ToString();
+        if (feature is "ltra" or "ltrm" or "rtla" or "rtlm") return 0;
         if (IsArabicScript(script))
         {
             string[] order = ["stch", "rvrn", "frac", "numr", "dnom", "ccmp", "locl", "isol", "fina",
                 "fin2", "fin3", "medi", "med2", "init", "rlig", "calt", "rclt", "liga", "clig", "mset"];
             int index = Array.IndexOf(order, feature);
-            return index < 0 ? 18 : index;
+            return index < 0 ? 190 : 10 + index * 10;
         }
         if (IsIndicScript(script))
         {
             string[] order = ["rvrn", "frac", "numr", "dnom", "locl", "ccmp", "nukt", "akhn", "rphf",
                 "rkrf", "pref", "blwf", "abvf", "half", "pstf", "vatu", "cjct"];
             int index = Array.IndexOf(order, feature);
-            return index < 0 ? 17 : index;
+            return index < 0 ? 180 : 10 + index * 10;
+        }
+        if (IsUseScript(script))
+        {
+            return feature switch
+            {
+                "rvrn" or "frac" or "numr" or "dnom" or "locl" or "ccmp" or "nukt" or "akhn" => 10,
+                "rphf" => 20,
+                "pref" => 30,
+                "rkrf" or "abvf" or "blwf" or "half" or "pstf" or "vatu" or "cjct" => 40,
+                "isol" or "init" or "medi" or "fina" => 50,
+                _ => 60
+            };
         }
         if (script == "khmr")
         {
-            string[] order = ["rvrn", "frac", "numr", "dnom", "locl", "ccmp", "pref", "blwf", "abvf", "pstf", "cfar"];
-            int index = Array.IndexOf(order, feature);
-            return index < 0 ? 11 : index;
+            return feature is "rvrn" or "frac" or "numr" or "dnom" or "locl" or "ccmp" or
+                "pref" or "blwf" or "abvf" or "pstf" or "cfar" ? 10 : 20;
         }
         if (script is "mymr" or "mym2")
         {
-            string[] order = ["rvrn", "frac", "numr", "dnom", "locl", "ccmp", "rphf", "pref", "blwf", "pstf"];
-            int index = Array.IndexOf(order, feature);
-            return index < 0 ? 10 : index;
+            return feature switch
+            {
+                "rvrn" or "frac" or "numr" or "dnom" or "locl" or "ccmp" => 10,
+                "rphf" => 20,
+                "pref" => 30,
+                "blwf" => 40,
+                "pstf" => 50,
+                _ => 60
+            };
         }
         return 0;
     }
@@ -442,17 +467,29 @@ public static class GpuOpenTypeLookupPlanCompiler
         _ when IsIndicScript(script) =>
             ["nukt", "akhn", "rphf", "rkrf", "pref", "blwf", "abvf", "half", "pstf", "vatu", "cjct",
              "init", "pres", "abvs", "blws", "psts", "haln"],
+        _ when IsUseScript(script) =>
+            ["nukt", "akhn", "rphf", "pref", "rkrf", "abvf", "blwf", "half", "pstf", "vatu", "cjct",
+             "isol", "init", "medi", "fina", "abvs", "blws", "haln", "pres", "psts"],
         _ when IsArabicScript(script) =>
             ["stch", "isol", "fina", "fin2", "fin3", "medi", "med2", "init", "mset"],
         _ => []
     };
 
     private static bool IsIndicScript(string script) => script is
-        "beng" or "bng2" or "bng3" or "deva" or "dev2" or "dev3" or
-        "gujr" or "gjr2" or "gjr3" or "guru" or "gur2" or "gur3" or
-        "knda" or "knd2" or "knd3" or "mlym" or "mlm2" or "mlm3" or
-        "orya" or "ory2" or "ory3" or "taml" or "tml2" or "tml3" or
-        "telu" or "tel2" or "tel3";
+        "beng" or "bng2" or "deva" or "dev2" or "gujr" or "gjr2" or
+        "guru" or "gur2" or "knda" or "knd2" or "mlym" or "mlm2" or
+        "orya" or "ory2" or "taml" or "tml2" or "telu" or "tel2";
+
+    private static bool IsUseScript(string script) => script is
+        "bng3" or "dev3" or "gjr3" or "gur3" or "knd3" or "mlm3" or "ory3" or "tml3" or "tel3" or
+        "tibt" or "mong" or "sinh" or "java" or "marc" or "limb" or "tale" or "bugi" or "khar" or
+        "sylo" or "tfng" or "bali" or "nkoo" or "phag" or "cham" or "kali" or "lepc" or "rjng" or
+        "saur" or "sund" or "egyp" or "kthi" or "mtei" or "lana" or "tavt" or "batk" or "brah" or
+        "mand" or "cakm" or "plrd" or "shrd" or "takr" or "dupl" or "gran" or "khoj" or "sind" or
+        "mahj" or "mani" or "modi" or "hmng" or "phlp" or "sidd" or "tirh" or "ahom" or "mult" or
+        "adlm" or "bhks" or "newa" or "gonm" or "soyo" or "zanb" or "dogr" or "gong" or "rohg" or
+        "maka" or "medf" or "sogo" or "sogd" or "elym" or "nand" or "hmnp" or "wcho" or "chrs" or
+        "diak" or "kits" or "yezi" or "cpmn" or "ougr" or "tnsa" or "toto" or "vith" or "kawi" or "nagm";
 
     private static bool IsArabicScript(string script) => script is
         "arab" or "syrc" or "nkoo" or "adlm" or "rohg" or "mand" or "mong" or "phlp" or "sogd";

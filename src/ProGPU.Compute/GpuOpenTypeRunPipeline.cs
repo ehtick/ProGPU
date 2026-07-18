@@ -296,7 +296,9 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
                 entries[4] = Entry(7, _stateBuffer!);
                 entries[5] = Entry(8, _lookupBuffer!);
                 entries[6] = Entry(9, _glyphStateBuffer!);
-                count = 7;
+                entries[7] = Entry(2, font.CmapBuffer);
+                entries[8] = Entry(12, _unicodeDataBuffer);
+                count = 9;
             }
             else if (stage == 3)
             {
@@ -372,7 +374,7 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
             _paramsBuffer = new GpuBuffer(_context, 64, BufferUsage.Uniform | BufferUsage.CopyDst, "OpenType run parameters");
             _stateBuffer = new GpuBuffer(_context, 32, BufferUsage.Storage | BufferUsage.CopySrc | BufferUsage.CopyDst, "OpenType run state");
         }
-        uint lookupBytes = checked((uint)Math.Max(36, lookupCount * Marshal.SizeOf<GpuOpenTypeLookupCommand>()));
+        uint lookupBytes = checked((uint)Math.Max(40, lookupCount * Marshal.SizeOf<GpuOpenTypeLookupCommand>()));
         if (_lookupBuffer is null || _lookupBuffer.Size < lookupBytes)
         {
             _lookupBuffer?.Dispose();

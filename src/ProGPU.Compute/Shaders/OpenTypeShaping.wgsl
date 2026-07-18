@@ -109,6 +109,7 @@ struct LookupCommand {
     range_start: u32,
     range_end: u32,
     command_flags: u32,
+    stage: u32,
 };
 
 struct LookupTask {
@@ -153,6 +154,15 @@ const HANGUL_LJMO: u32 = 1u << 16u;
 const HANGUL_VJMO: u32 = 1u << 17u;
 const HANGUL_TJMO: u32 = 1u << 18u;
 const HANGUL_FEATURE_MASK: u32 = HANGUL_LJMO | HANGUL_VJMO | HANGUL_TJMO;
+const KHMER_PREF: u32 = 1u << 20u;
+const KHMER_POST_BASE: u32 = 1u << 21u;
+const KHMER_CFAR: u32 = 1u << 22u;
+const INDIC_POSITION_SHIFT: u32 = 8u;
+const INDIC_POSITION_MASK: u32 = 0xffu << INDIC_POSITION_SHIFT;
+const USE_RPHF_ELIGIBLE: u32 = 1u << 16u;
+const USE_CATEGORY_SHIFT: u32 = 24u;
+const USE_CATEGORY_MASK: u32 = 0xffu << USE_CATEGORY_SHIFT;
+const GLYPH_MULTIPLE_COMPONENT: u32 = 8u;
 var<private> arabic_state_table: array<u32, 42> = array<u32, 42>(
     0x00000707u, 0x00020007u, 0x00010007u, 0x00020007u, 0x00010007u, 0x00060007u,
     0x00000707u, 0x00020007u, 0x00010007u, 0x00020007u, 0x00050207u, 0x00060007u,
@@ -570,6 +580,437 @@ fn prepare_complex_syllables() {
     else if (params.script_tag == 0x6d796d72u || params.script_tag == 0x6d796d32u) {
         run_syllable_machine(2u);
     } else if (params.script_tag == 0x6b686d72u) { run_syllable_machine(3u); }
+}
+
+fn insert_broken_dotted_circles(broken_type: u32) {
+    if ((params.request_flags & 0x10u) != 0u) { return; }
+    if (nominal_glyph(0x25ccu) == 0u) { return; }
+    var previous = 0u;
+    var index = 0u;
+    while (index < run_state.glyph_count) {
+        let syllable = glyph_states[index].syllable;
+        if (syllable == previous || (syllable & 0x0fu) != broken_type) {
+            previous = syllable;
+            index += 1u;
+            continue;
+        }
+        previous = syllable;
+        let cluster = glyphs[index].cluster;
+        if (!insert_codepoint(index, 0x25ccu, cluster)) { return; }
+        glyph_states[index].syllable = syllable;
+        index += 2u;
+    }
+}
+
+fn move_record_to_start(start: u32, position: u32) {
+    if (position <= start) { return; }
+    let value = glyphs[position];
+    let value_state = glyph_states[position];
+    var cursor = position;
+    while (cursor > start) {
+        glyphs[cursor] = glyphs[cursor - 1u];
+        glyph_states[cursor] = glyph_states[cursor - 1u];
+        cursor -= 1u;
+    }
+    glyphs[start] = value;
+    glyph_states[start] = value_state;
+}
+
+fn move_pair_to_start(start: u32, position: u32) {
+    if (position <= start) { return; }
+    let first = glyphs[position];
+    let first_state = glyph_states[position];
+    let second = glyphs[position + 1u];
+    let second_state = glyph_states[position + 1u];
+    var cursor = position;
+    while (cursor > start) {
+        glyphs[cursor + 1u] = glyphs[cursor - 1u];
+        glyph_states[cursor + 1u] = glyph_states[cursor - 1u];
+        cursor -= 1u;
+    }
+    glyphs[start] = first;
+    glyph_states[start] = first_state;
+    glyphs[start + 1u] = second;
+    glyph_states[start + 1u] = second_state;
+}
+
+fn prepare_khmer_syllable(start: u32, end: u32) {
+    if (end <= start + 1u) { return; }
+    for (var position = start + 1u; position < end; position++) {
+        glyph_states[position].feature_mask |= KHMER_POST_BASE;
+    }
+    var coeng_count = 0u;
+    var position = start + 1u;
+    while (position < end) {
+        let category = (unicode_properties_a(glyphs[position].codepoint) >> 16u) & 0xffu;
+        if (category == 4u && coeng_count <= 2u && position + 1u < end) {
+            coeng_count += 1u;
+            let next_category = (unicode_properties_a(glyphs[position + 1u].codepoint) >> 16u) & 0xffu;
+            if (next_category == 15u) {
+                glyph_states[position].feature_mask |= KHMER_PREF;
+                glyph_states[position + 1u].feature_mask |= KHMER_PREF;
+                _ = merge_cluster(start, position + 2u);
+                move_pair_to_start(start, position);
+                for (var following = position + 2u; following < end; following++) {
+                    glyph_states[following].feature_mask |= KHMER_CFAR;
+                }
+                coeng_count = 2u;
+            }
+        } else if (category == 22u) {
+            glyphs[position].cluster = merge_cluster(start, position + 1u);
+            move_record_to_start(start, position);
+        }
+        position += 1u;
+    }
+}
+
+fn prepare_khmer_reordering() {
+    if (params.script_tag != 0x6b686d72u) { return; }
+    insert_broken_dotted_circles(1u);
+    if (run_state.status != 0u) { return; }
+    var start = 0u;
+    while (start < run_state.glyph_count) {
+        let syllable = glyph_states[start].syllable;
+        var end = start + 1u;
+        while (end < run_state.glyph_count && glyph_states[end].syllable == syllable) { end += 1u; }
+        let syllable_type = syllable & 0x0fu;
+        if (syllable_type == 0u || syllable_type == 1u) { prepare_khmer_syllable(start, end); }
+        start = end;
+    }
+}
+
+fn indic_category(position: u32) -> u32 {
+    return (unicode_properties_a(glyphs[position].codepoint) >> 16u) & 0xffu;
+}
+
+fn set_indic_position(position: u32, value: u32) {
+    glyph_states[position].internal_flags =
+        (glyph_states[position].internal_flags & ~INDIC_POSITION_MASK) |
+        ((value & 0xffu) << INDIC_POSITION_SHIFT);
+}
+
+fn get_indic_position(position: u32) -> u32 {
+    return (glyph_states[position].internal_flags & INDIC_POSITION_MASK) >> INDIC_POSITION_SHIFT;
+}
+
+fn is_myanmar_consonant(position: u32) -> bool {
+    if (glyph_states[position].ligature_id != 0u) { return false; }
+    let category = indic_category(position);
+    return category == 1u || category == 18u || category == 15u || category == 2u ||
+        category == 10u || category == 11u;
+}
+
+fn move_record(position: u32, destination: u32) {
+    if (position == destination) { return; }
+    let value = glyphs[position];
+    let value_state = glyph_states[position];
+    if (destination < position) {
+        var cursor = position;
+        while (cursor > destination) {
+            glyphs[cursor] = glyphs[cursor - 1u];
+            glyph_states[cursor] = glyph_states[cursor - 1u];
+            cursor -= 1u;
+        }
+    } else {
+        var cursor = position;
+        while (cursor < destination) {
+            glyphs[cursor] = glyphs[cursor + 1u];
+            glyph_states[cursor] = glyph_states[cursor + 1u];
+            cursor += 1u;
+        }
+    }
+    glyphs[destination] = value;
+    glyph_states[destination] = value_state;
+}
+
+fn stable_sort_indic_positions(start: u32, end: u32) {
+    var write = start;
+    for (var desired = 0u; desired <= 14u; desired++) {
+        var scan = write;
+        while (scan < end) {
+            if (min(get_indic_position(scan), 14u) == desired) {
+                move_record(scan, write);
+                write += 1u;
+            }
+            scan += 1u;
+        }
+    }
+}
+
+fn reorder_myanmar_syllable(start: u32, end: u32) {
+    let has_reph = end >= start + 3u && indic_category(start) == 15u &&
+        indic_category(start + 1u) == 32u && indic_category(start + 2u) == 4u;
+    let limit = select(start, start + 3u, has_reph);
+    var base_index = select(limit, start, has_reph);
+    if (!has_reph) {
+        for (var position = limit; position < end; position++) {
+            if (is_myanmar_consonant(position)) { base_index = position; break; }
+        }
+    }
+    var cursor = start;
+    let reph_end = start + select(0u, 3u, has_reph);
+    while (cursor < reph_end) { set_indic_position(cursor, 5u); cursor += 1u; }
+    while (cursor < base_index) { set_indic_position(cursor, 3u); cursor += 1u; }
+    if (cursor < end) { set_indic_position(cursor, 4u); cursor += 1u; }
+    var current_position = 5u;
+    while (cursor < end) {
+        let category = indic_category(cursor);
+        if (category == 36u) { set_indic_position(cursor, 3u); cursor += 1u; continue; }
+        if (category == 22u) { set_indic_position(cursor, 2u); cursor += 1u; continue; }
+        if (category == 40u) {
+            set_indic_position(cursor, get_indic_position(cursor - 1u));
+            cursor += 1u;
+            continue;
+        }
+        if (current_position == 5u && category == 21u) {
+            current_position = 8u;
+            set_indic_position(cursor, current_position);
+            cursor += 1u;
+            continue;
+        }
+        if (current_position == 8u && category == 9u) {
+            set_indic_position(cursor, 7u);
+            cursor += 1u;
+            continue;
+        }
+        if (current_position == 8u && category == 21u) {
+            set_indic_position(cursor, current_position);
+            cursor += 1u;
+            continue;
+        }
+        if (current_position == 8u && category != 9u) { current_position = 9u; }
+        set_indic_position(cursor, current_position);
+        cursor += 1u;
+    }
+    _ = merge_cluster(start, end);
+    stable_sort_indic_positions(start, end);
+
+    var first_left = end;
+    var last_left = end;
+    for (var position = start; position < end; position++) {
+        if (get_indic_position(position) != 2u) { continue; }
+        if (first_left == end) { first_left = position; }
+        last_left = position;
+    }
+    if (first_left < last_left) {
+        reverse_records(first_left, last_left + 1u);
+        var segment_start = first_left;
+        for (var position = segment_start; position <= last_left; position++) {
+            if (indic_category(position) != 22u) { continue; }
+            reverse_records(segment_start, position + 1u);
+            segment_start = position + 1u;
+        }
+    }
+}
+
+fn reorder_myanmar() {
+    if (params.script_tag != 0x6d796d72u && params.script_tag != 0x6d796d32u) { return; }
+    insert_broken_dotted_circles(1u);
+    if (run_state.status != 0u) { return; }
+    var start = 0u;
+    while (start < run_state.glyph_count) {
+        let syllable = glyph_states[start].syllable;
+        var end = start + 1u;
+        while (end < run_state.glyph_count && glyph_states[end].syllable == syllable) { end += 1u; }
+        let syllable_type = syllable & 0x0fu;
+        if (syllable_type == 0u || syllable_type == 1u) { reorder_myanmar_syllable(start, end); }
+        start = end;
+    }
+}
+
+fn clear_syllables() {
+    for (var position = 0u; position < run_state.glyph_count; position++) {
+        glyph_states[position].syllable = 0u;
+    }
+}
+
+fn use_category(position: u32) -> u32 {
+    return (glyph_states[position].internal_flags & USE_CATEGORY_MASK) >> USE_CATEGORY_SHIFT;
+}
+
+fn set_use_category(position: u32, category: u32) {
+    glyph_states[position].internal_flags =
+        (glyph_states[position].internal_flags & ~USE_CATEGORY_MASK) |
+        ((category & 0xffu) << USE_CATEGORY_SHIFT);
+}
+
+fn set_arabic_action_range(start: u32, end: u32, action: u32) {
+    for (var position = start; position < end; position++) { set_arabic_action(position, action); }
+}
+
+fn initialize_use_shaping_state() {
+    if (!is_use_syllable_script()) { return; }
+    for (var position = 0u; position < run_state.glyph_count; position++) {
+        set_use_category(position, unicode_properties_b(glyphs[position].codepoint) & 0xffu);
+    }
+    var start = 0u;
+    while (start < run_state.glyph_count) {
+        let syllable = glyph_states[start].syllable;
+        var end = start + 1u;
+        while (end < run_state.glyph_count && glyph_states[end].syllable == syllable) { end += 1u; }
+        let limit = select(min(3u, end - start), 1u, use_category(start) == 18u);
+        for (var position = start; position < start + limit; position++) {
+            glyph_states[position].internal_flags |= USE_RPHF_ELIGIBLE;
+        }
+        start = end;
+    }
+    if (uses_arabic_joining()) { return; }
+    var previous_start = 0u;
+    var previous_form = ARABIC_NONE;
+    start = 0u;
+    while (start < run_state.glyph_count) {
+        let syllable = glyph_states[start].syllable;
+        var end = start + 1u;
+        while (end < run_state.glyph_count && glyph_states[end].syllable == syllable) { end += 1u; }
+        let syllable_type = syllable & 0x0fu;
+        if (syllable_type == 6u || syllable_type == 8u) {
+            previous_form = ARABIC_NONE;
+        } else {
+            let joins = previous_form == ARABIC_FINAL || previous_form == ARABIC_ISOLATED;
+            if (joins) {
+                previous_form = select(ARABIC_INITIAL, ARABIC_MEDIAL, previous_form == ARABIC_FINAL);
+                set_arabic_action_range(previous_start, start, previous_form);
+            }
+            previous_form = select(ARABIC_ISOLATED, ARABIC_FINAL, joins);
+            set_arabic_action_range(start, end, previous_form);
+        }
+        previous_start = start;
+        start = end;
+    }
+}
+
+fn clear_substitution_flags() {
+    for (var position = 0u; position < run_state.glyph_count; position++) {
+        glyph_states[position].internal_flags &= ~GLYPH_SUBSTITUTED;
+    }
+}
+
+fn record_use_repha() {
+    var start = 0u;
+    while (start < run_state.glyph_count) {
+        let syllable = glyph_states[start].syllable;
+        var end = start + 1u;
+        while (end < run_state.glyph_count && glyph_states[end].syllable == syllable) { end += 1u; }
+        var position = start;
+        while (position < end && (glyph_states[position].internal_flags & USE_RPHF_ELIGIBLE) != 0u) {
+            if ((glyph_states[position].internal_flags & GLYPH_SUBSTITUTED) != 0u) {
+                set_use_category(position, 18u);
+                break;
+            }
+            position += 1u;
+        }
+        start = end;
+    }
+}
+
+fn record_use_prebase() {
+    var start = 0u;
+    while (start < run_state.glyph_count) {
+        let syllable = glyph_states[start].syllable;
+        var end = start + 1u;
+        while (end < run_state.glyph_count && glyph_states[end].syllable == syllable) { end += 1u; }
+        for (var position = start; position < end; position++) {
+            if ((glyph_states[position].internal_flags & GLYPH_SUBSTITUTED) != 0u) {
+                set_use_category(position, 22u);
+                break;
+            }
+        }
+        start = end;
+    }
+}
+
+fn is_use_postbase(category: u32) -> bool {
+    return category == 24u || category == 25u || category == 26u ||
+        category == 45u || category == 46u || category == 47u ||
+        category == 27u || category == 28u || category == 29u || category == 30u ||
+        category == 33u || category == 34u || category == 35u || category == 22u ||
+        category == 37u || category == 38u || category == 39u || category == 23u;
+}
+
+fn is_use_halant(position: u32) -> bool {
+    let category = use_category(position);
+    return category == 12u || category == 53u ||
+        (category == 44u && glyph_states[position].ligature_id == 0u);
+}
+
+fn insert_broken_use_dotted_circles() {
+    if ((params.request_flags & 0x10u) != 0u || nominal_glyph(0x25ccu) == 0u) { return; }
+    var previous = 0u;
+    var position = 0u;
+    while (position < run_state.glyph_count) {
+        let syllable = glyph_states[position].syllable;
+        if (syllable == previous || (syllable & 0x0fu) != 7u) {
+            previous = syllable;
+            position += 1u;
+            continue;
+        }
+        previous = syllable;
+        let source_position = position;
+        while (position < run_state.glyph_count && glyph_states[position].syllable == syllable &&
+                use_category(position) == 18u) { position += 1u; }
+        if (!insert_codepoint(position, 0x25ccu, glyphs[source_position].cluster)) { return; }
+        glyph_states[position].syllable = syllable;
+        set_use_category(position, 1u);
+        set_arabic_action(position,
+            (glyph_states[source_position].feature_mask & ARABIC_ACTION_MASK) >> ARABIC_ACTION_SHIFT);
+        position += 1u;
+    }
+}
+
+fn reorder_use_syllable(start: u32, end: u32, syllable_type: u32) {
+    if (syllable_type != 0u && syllable_type != 1u && syllable_type != 2u &&
+            syllable_type != 5u && syllable_type != 7u) { return; }
+    if (use_category(start) == 18u && end > start + 1u) {
+        for (var position = start + 1u; position < end; position++) {
+            let postbase = is_use_postbase(use_category(position)) || is_use_halant(position);
+            if (postbase || position == end - 1u) {
+                let destination = select(position, position - 1u, postbase);
+                _ = merge_cluster(start, destination + 1u);
+                move_record(start, destination);
+                break;
+            }
+        }
+    }
+    var target_position = start;
+    var position = start;
+    while (position < end) {
+        let category = use_category(position);
+        if (is_use_halant(position)) {
+            target_position = position + 1u;
+        } else if ((category == 22u || category == 23u) &&
+                (glyph_states[position].internal_flags & GLYPH_MULTIPLE_COMPONENT) == 0u &&
+                target_position < position) {
+            _ = merge_cluster(target_position, position + 1u);
+            move_record(position, target_position);
+        }
+        position += 1u;
+    }
+}
+
+fn reorder_use() {
+    insert_broken_use_dotted_circles();
+    if (run_state.status != 0u) { return; }
+    var start = 0u;
+    while (start < run_state.glyph_count) {
+        let syllable = glyph_states[start].syllable;
+        var end = start + 1u;
+        while (end < run_state.glyph_count && glyph_states[end].syllable == syllable) { end += 1u; }
+        reorder_use_syllable(start, end, syllable & 0x0fu);
+        start = end;
+    }
+}
+
+fn handle_substitution_stage_transition(previous: u32, next: u32) {
+    let myanmar = params.script_tag == 0x6d796d72u || params.script_tag == 0x6d796d32u;
+    if (myanmar && previous <= 10u && next > 10u) { reorder_myanmar(); }
+    if (myanmar && previous <= 50u && next > 50u) { clear_syllables(); }
+    if (is_use_syllable_script() && previous <= 10u && next > 10u) { clear_substitution_flags(); }
+    if (is_use_syllable_script() && previous <= 20u && next > 20u) {
+        record_use_repha();
+        clear_substitution_flags();
+    }
+    if (is_use_syllable_script() && previous <= 30u && next > 30u) { record_use_prebase(); }
+    if (is_use_syllable_script() && previous <= 40u && next > 40u) { reorder_use(); }
 }
 
 fn directional_mapping(codepoint: u32, vertical: bool) -> u32 {
@@ -1302,7 +1743,10 @@ fn assign_arabic_joining_actions() {
 
 fn feature_allowed(command: LookupCommand, position: u32) -> bool {
     if ((command.command_flags & FEATURE_EXPLICIT) != 0u) { return true; }
-    if (command.feature_tag == 0x66726163u) { return glyph_states[position].feature_mask != 0u; }
+    if (command.feature_tag == 0x66726163u) {
+        return (glyph_states[position].feature_mask &
+            (FRACTION_NUMERATOR | FRACTION_DENOMINATOR | FRACTION_SLASH)) != 0u;
+    }
     if (command.feature_tag == 0x6e756d72u) {
         return (glyph_states[position].feature_mask & FRACTION_NUMERATOR) != 0u;
     }
@@ -1317,6 +1761,16 @@ fn feature_allowed(command: LookupCommand, position: u32) -> bool {
     }
     if (command.feature_tag == 0x746a6d6fu) {
         return (glyph_states[position].feature_mask & HANGUL_TJMO) != 0u;
+    }
+    if (command.feature_tag == 0x70726566u && params.script_tag == 0x6b686d72u) {
+        return (glyph_states[position].feature_mask & KHMER_PREF) != 0u;
+    }
+    if ((command.feature_tag == 0x626c7766u || command.feature_tag == 0x61627666u ||
+            command.feature_tag == 0x70737466u) && params.script_tag == 0x6b686d72u) {
+        return (glyph_states[position].feature_mask & KHMER_POST_BASE) != 0u;
+    }
+    if (command.feature_tag == 0x63666172u && params.script_tag == 0x6b686d72u) {
+        return (glyph_states[position].feature_mask & KHMER_CFAR) != 0u;
     }
     let arabic_action = (glyph_states[position].feature_mask & ARABIC_ACTION_MASK) >> ARABIC_ACTION_SHIFT;
     if (command.feature_tag == 0x69736f6cu) { return arabic_action == ARABIC_ISOLATED; }
@@ -1833,6 +2287,7 @@ fn replace_multiple(subtable: u32, position: u32) -> bool {
         glyph_states[position + replacement] = source_state;
         glyph_states[position + replacement].internal_flags |= GLYPH_SUBSTITUTED;
         if (replacement != 0u) {
+            glyph_states[position + replacement].internal_flags |= GLYPH_MULTIPLE_COMPONENT;
             glyph_states[position + replacement].serial = run_state.next_serial;
             run_state.next_serial += 1u;
         }
@@ -1996,6 +2451,13 @@ fn preprocess_glyphs(@builtin(global_invocation_id) id: vec3<u32>) {
     reorder_modified_combining_marks();
     prepare_complex_syllables();
     if (run_state.status != 0u) { return; }
+    initialize_use_shaping_state();
+    prepare_khmer_reordering();
+    if (run_state.status != 0u) { return; }
+    if (params.lookup_count == 0u) {
+        handle_substitution_stage_transition(0u, 0xffffffffu);
+        if (run_state.status != 0u) { return; }
+    }
     assign_arabic_joining_actions();
 }
 
@@ -2005,9 +2467,15 @@ fn execute_lookups(@builtin(global_invocation_id) id: vec3<u32>) {
     prepare_fraction_masks();
     var tasks: array<LookupTask, 64>;
     var task_count = 0u;
+    var active_stage = 0u;
     for (var command_index = 0u; command_index < params.lookup_count; command_index++) {
         let command = lookup_commands[command_index];
         if (command.table_kind != 1u || command.feature_value == 0u) { continue; }
+        if (command.stage != active_stage) {
+            handle_substitution_stage_transition(active_stage, command.stage);
+            if (run_state.status != 0u) { return; }
+            active_stage = command.stage;
+        }
         if (is_reverse_lookup(command.lookup_offset, command.lookup_type)) {
             var reverse_position = run_state.glyph_count;
             loop {
@@ -2043,6 +2511,7 @@ fn execute_lookups(@builtin(global_invocation_id) id: vec3<u32>) {
             position += run_state.skip_count;
         }
     }
+    handle_substitution_stage_transition(active_stage, 0xffffffffu);
 }
 
 @compute @workgroup_size(1)

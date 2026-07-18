@@ -231,7 +231,7 @@ public sealed class ShapingContractsTests
         Assert.Equal(16, Marshal.SizeOf<GpuGlyphMetrics>());
         Assert.Equal(16, Marshal.SizeOf<GpuShapingScalar>());
         Assert.Equal(32, Marshal.SizeOf<GpuOpenTypeTableDirectory>());
-        Assert.Equal(36, Marshal.SizeOf<GpuOpenTypeLookupCommand>());
+        Assert.Equal(40, Marshal.SizeOf<GpuOpenTypeLookupCommand>());
         foreach (uint codePoint in new uint[] { 'A', 'z', 0x00e9, 0x03a9, 0x20ac, 0x1f642 })
             Assert.Equal(face.GetNominalGlyph(codePoint), plan.GetNominalGlyph(codePoint));
         uint glyph = face.GetNominalGlyph('A');
@@ -336,8 +336,6 @@ public sealed class ShapingContractsTests
     [Theory]
     [InlineData("deva", 0x0915u, 0x094du, 0x0937u)]
     [InlineData("dev3", 0x0915u, 0x094du, 0x0937u)]
-    [InlineData("mymr", 0x1000u, 0x1039u, 0x1001u)]
-    [InlineData("khmr", 0x1780u, 0x17d2u, 0x179au)]
     public void GpuRunsAuthoritativeComplexScriptSyllableMachines(
         string script,
         uint first,
@@ -365,6 +363,59 @@ public sealed class ShapingContractsTests
 
         Assert.Equal(new[] { first, second, third },
             output.Glyphs.ToArray().Select(static glyph => glyph.CodePoint));
+    }
+
+    [Fact]
+    public void GpuMyanmarStageReordersPrebaseVowel()
+    {
+        var face = new TtfShapingFontFace(InterFontFamily.Regular);
+        GpuOpenTypeShapingPlan plan = GpuOpenTypeShapingPlanCompiler.Compile(face);
+        using var context = new WgpuContext();
+        context.Initialize(null);
+        using var fontData = new GpuOpenTypeFontData(context, plan);
+        using var pipeline = new GpuOpenTypeRunPipeline(context);
+        using var output = new ShapingBuffer();
+
+        pipeline.ExecuteRun(
+            [new GpuShapingScalar(0x1000, 0), new GpuShapingScalar(0x1031, 1)],
+            fontData,
+            new ShapingRequest(ShapingDirection.LeftToRight, new OpenTypeTag("mymr")),
+            [],
+            output);
+
+        Assert.Equal(new uint[] { 0x1031, 0x1000 },
+            output.Glyphs.ToArray().Select(static glyph => glyph.CodePoint));
+        Assert.All(output.Glyphs.ToArray(), static glyph => Assert.Equal(0, glyph.Cluster));
+    }
+
+    [Fact]
+    public void GpuKhmerPreprocessingReordersCoengRaAndBrokenClusters()
+    {
+        var face = new KhmerShapingFontFace();
+        GpuOpenTypeShapingPlan plan = GpuOpenTypeShapingPlanCompiler.Compile(face);
+        using var context = new WgpuContext();
+        context.Initialize(null);
+        using var fontData = new GpuOpenTypeFontData(context, plan);
+        using var pipeline = new GpuOpenTypeRunPipeline(context);
+        using var consonant = new ShapingBuffer();
+        using var broken = new ShapingBuffer();
+        var request = new ShapingRequest(ShapingDirection.LeftToRight, new OpenTypeTag("khmr"));
+
+        pipeline.ExecuteRun(
+            [
+                new GpuShapingScalar(0x1780, 0),
+                new GpuShapingScalar(0x17d2, 1),
+                new GpuShapingScalar(0x179a, 2)
+            ],
+            fontData, request, [], consonant);
+        pipeline.ExecuteRun(
+            [new GpuShapingScalar(0x17b6, 0)],
+            fontData, request, [], broken);
+
+        Assert.Equal(new uint[] { 0x17d2, 0x179a, 0x1780 },
+            consonant.Glyphs.ToArray().Select(static glyph => glyph.CodePoint));
+        Assert.Equal(new uint[] { 0x25cc, 0x17b6 },
+            broken.Glyphs.ToArray().Select(static glyph => glyph.CodePoint));
     }
 
     [Fact]
@@ -598,6 +649,29 @@ public sealed class ShapingContractsTests
             output.Glyphs.ToArray().Select(static glyph => glyph.CodePoint));
         Assert.Equal(new uint[] { 2, 3 },
             output.Glyphs.ToArray().Select(static glyph => glyph.GlyphId));
+    }
+
+    [Fact]
+    public void GpuUseStageReordersPrebaseVowel()
+    {
+        var face = new TtfShapingFontFace(InterFontFamily.Regular);
+        GpuOpenTypeShapingPlan plan = GpuOpenTypeShapingPlanCompiler.Compile(face);
+        using var context = new WgpuContext();
+        context.Initialize(null);
+        using var fontData = new GpuOpenTypeFontData(context, plan);
+        using var pipeline = new GpuOpenTypeRunPipeline(context);
+        using var output = new ShapingBuffer();
+
+        pipeline.ExecuteRun(
+            [new GpuShapingScalar(0x0915, 0), new GpuShapingScalar(0x093f, 1)],
+            fontData,
+            new ShapingRequest(ShapingDirection.LeftToRight, new OpenTypeTag("dev3")),
+            [],
+            output);
+
+        Assert.Equal(new uint[] { 0x093f, 0x0915 },
+            output.Glyphs.ToArray().Select(static glyph => glyph.CodePoint));
+        Assert.All(output.Glyphs.ToArray(), static glyph => Assert.Equal(0, glyph.Cluster));
     }
 
     [Fact]
@@ -1175,6 +1249,44 @@ public sealed class ShapingContractsTests
             0x0f73 => 1,
             0x0f71 => 2,
             0x0f72 => 3,
+            _ => 0
+        };
+        public bool TryGetVariationGlyph(uint codePoint, uint variationSelector, out uint glyphId)
+        {
+            glyphId = 0;
+            return false;
+        }
+        public int GetHorizontalAdvance(uint glyphId) => glyphId == 0 ? 0 : 500;
+        public int GetVerticalAdvance(uint glyphId) => 1000;
+        public int GetHorizontalOrigin(uint glyphId) => 250;
+        public int GetVerticalOrigin(uint glyphId) => 800;
+        public bool TryGetNormalizedVariationCoordinate(uint axisIndex, out short coordinate)
+        {
+            coordinate = 0;
+            return false;
+        }
+        public float GetLayoutVariationDelta(ushort outerIndex, ushort innerIndex) => 0;
+    }
+
+    private sealed class KhmerShapingFontFace : IShapingFontFace
+    {
+        public int FaceIndex => 0;
+        public ushort UnitsPerEm => 1000;
+        public uint GlyphCount => 6;
+        public uint VariationAxisCount => 0;
+        public bool HasActiveVariations => false;
+        public bool TryGetTable(OpenTypeTag tag, out ReadOnlyMemory<byte> table)
+        {
+            table = ReadOnlyMemory<byte>.Empty;
+            return false;
+        }
+        public uint GetNominalGlyph(uint codePoint) => codePoint switch
+        {
+            0x1780 => 1,
+            0x17d2 => 2,
+            0x179a => 3,
+            0x17b6 => 4,
+            0x25cc => 5,
             _ => 0
         };
         public bool TryGetVariationGlyph(uint codePoint, uint variationSelector, out uint glyphId)
