@@ -16,6 +16,18 @@ namespace ProGPU.Tests;
 public sealed class SamplePerformanceRegressionTests
 {
     [Fact]
+    public void EmptyGlyphAtlasBatchDoesNotCreateOrSubmitGpuWork()
+    {
+        using var atlas = new GlyphAtlas(HeadlessWindow.Shared.Context, atlasSize: 64);
+
+        atlas.BeginBatch();
+        atlas.EndBatch();
+
+        Assert.Equal(0ul, atlas.BatchEncoderCreationCount);
+        Assert.Equal(0ul, atlas.BatchSubmissionCount);
+    }
+
+    [Fact]
     public void ScrollOffsetsTranslateRetainedContentWithoutRearrangingIt()
     {
         var content = new ArrangeCounter

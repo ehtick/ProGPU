@@ -88,6 +88,10 @@ public unsafe class GlyphAtlas : IDisposable
     private uint _ringOffset;
     private ulong _frameNumber;
 
+    public ulong BatchEncoderCreationCount { get; private set; }
+
+    public ulong BatchSubmissionCount { get; private set; }
+
     public void BeginBatch()
     {
         if (_isDisposed) return;
@@ -95,8 +99,7 @@ public unsafe class GlyphAtlas : IDisposable
         if (_batchDepth > 1) return;
 
         _frameNumber++;
-
-        CreateBatchEncoder();
+        _ringOffset = 0;
     }
 
     private void CreateBatchEncoder()
@@ -110,6 +113,7 @@ public unsafe class GlyphAtlas : IDisposable
             throw new InvalidOperationException("Failed to create the glyph rasterizer batch encoder.");
         }
 
+        BatchEncoderCreationCount++;
         _ringOffset = 0;
     }
 
@@ -147,6 +151,7 @@ public unsafe class GlyphAtlas : IDisposable
         SilkMarshal.Free((nint)cmdDesc.Label);
 
         _context.Api.QueueSubmit(_context.Queue, 1, &cmdBuffer);
+        BatchSubmissionCount++;
 
         _context.Api.CommandBufferRelease(cmdBuffer);
         _context.Api.CommandEncoderRelease(_batchEncoder);
@@ -472,8 +477,13 @@ public unsafe class GlyphAtlas : IDisposable
                             var bindGroupLayout = _context.Api.ComputePipelineGetBindGroupLayout(_computePipeline, 0);
                             uint alignedSize = (uint)((Marshal.SizeOf<GlyphUniforms>() + 255) & ~255);
 
-                            if (_batchEncoder != null)
+                            if (_batchDepth > 0)
                             {
+                                if (_batchEncoder == null)
+                                {
+                                    CreateBatchEncoder();
+                                }
+
                                 // Ring buffer slice allocation
                                 if (_ringOffset + alignedSize > _uniformRingBuffer.Size)
                                 {
