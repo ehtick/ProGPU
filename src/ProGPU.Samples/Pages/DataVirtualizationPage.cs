@@ -23,8 +23,40 @@ namespace ProGPU.Samples;
 
 public static class DataVirtualizationPage
 {
+        private static DataGrid? s_dataGrid;
+        private static float s_benchmarkScrollDirection = 1f;
+
+        internal static void AdvanceBenchmarkScroll(float step)
+        {
+            if (s_dataGrid == null)
+            {
+                return;
+            }
+
+            float maxOffset = Math.Max(0f, s_dataGrid.TotalBodyHeight - s_dataGrid.ViewportHeight);
+            if (maxOffset <= 0f)
+            {
+                return;
+            }
+
+            float nextOffset = s_dataGrid.ScrollOffset + s_benchmarkScrollDirection * step;
+            if (nextOffset >= maxOffset)
+            {
+                nextOffset = maxOffset;
+                s_benchmarkScrollDirection = -1f;
+            }
+            else if (nextOffset <= 0f)
+            {
+                nextOffset = 0f;
+                s_benchmarkScrollDirection = 1f;
+            }
+
+            s_dataGrid.ScrollOffset = nextOffset;
+        }
+
         public static FrameworkElement Create()
         {
+            s_benchmarkScrollDirection = 1f;
             var grid = new Microsoft.UI.Xaml.Controls.Grid();
             grid.RowDefinitions.Add(new GridLength(70, GridUnitType.Absolute));   // Header
             grid.RowDefinitions.Add(new GridLength(1, GridUnitType.Star));       // Recycled Grid
@@ -54,6 +86,7 @@ public static class DataVirtualizationPage
                 VerticalAlignment = VerticalAlignment.Stretch,
                 Margin = new Thickness(4)
             };
+            s_dataGrid = dataGrid;
     
             // Define columns
             dataGrid.Columns.Add(new DataGridColumn("ID", 70f, "Id"));

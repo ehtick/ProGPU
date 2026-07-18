@@ -124,6 +124,10 @@ internal static class SamplePerformanceBenchmark
             {
                 InterShowcasePage.AdvanceBenchmarkScroll(s_scrollStep);
             }
+            else if (string.Equals(RequestedPage, "Data Virtualization", StringComparison.OrdinalIgnoreCase))
+            {
+                DataVirtualizationPage.AdvanceBenchmarkScroll(s_scrollStep);
+            }
         }
 
         s_frame++;

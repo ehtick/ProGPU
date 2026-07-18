@@ -6229,6 +6229,11 @@ public static class OpenTypeTextShaper
 
         private bool IsGlyphClassIgnored(int index, ushort lookupFlags)
         {
+            // RightToLeft changes lookup interpretation, but it cannot exclude a glyph.
+            // Most Latin lookups carry no glyph-filtering flags, so avoid repeatedly
+            // resolving GDEF/Unicode glyph classes while matching contextual rules.
+            if ((lookupFlags & 0xFF1E) == 0) return false;
+
             GlyphRecord glyph = _glyphs[index];
             GlyphClassKind glyphClass = GetGlyphClassKind(glyph);
             if (glyphClass == GlyphClassKind.Mark)
@@ -6976,6 +6981,10 @@ public static class OpenTypeTextShaper
         private bool IsIgnored(int index, ushort lookupFlags)
         {
             if (GlyphSubstitutionBuffer.IsDefaultIgnorable(_glyphs[index].CodePoint)) return true;
+            // Preserve default-ignorable handling above, but skip GDEF classification
+            // when no lookup flag can filter base, ligature, mark, or attachment classes.
+            if ((lookupFlags & 0xFF1E) == 0) return false;
+
             GlyphClassKind glyphClass = GetGlyphClassKind(index);
             if (glyphClass == GlyphClassKind.Mark)
             {
