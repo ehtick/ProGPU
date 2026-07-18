@@ -20,10 +20,20 @@ public static class GpuOpenTypeLookupPlanCompiler
         in ShapingRequest request)
     {
         ArgumentNullException.ThrowIfNull(plan);
-        FeaturePlan features = CreateFeaturePlan(request);
+        OpenTypeTag layoutScript = ResolveLayoutScript(plan, request.Script);
+        ShapingRequest effectiveRequest = layoutScript == request.Script
+            ? request
+            : new ShapingRequest(
+                request.Direction,
+                layoutScript,
+                request.Language,
+                request.ClusterLevel,
+                request.Flags,
+                request.Features);
+        FeaturePlan features = CreateFeaturePlan(effectiveRequest);
         var resolved = new List<ResolvedLookup>();
-        AddTable(plan, request, plan.Tables.GsubOffset, plan.Tables.GsubLength, 1, features, resolved);
-        AddTable(plan, request, plan.Tables.GposOffset, plan.Tables.GposLength, 2, features, resolved);
+        AddTable(plan, effectiveRequest, plan.Tables.GsubOffset, plan.Tables.GsubLength, 1, features, resolved);
+        AddTable(plan, effectiveRequest, plan.Tables.GposOffset, plan.Tables.GposLength, 2, features, resolved);
         resolved.Sort(static (left, right) =>
         {
             int table = left.Command.TableKind.CompareTo(right.Command.TableKind);
@@ -63,7 +73,7 @@ public static class GpuOpenTypeLookupPlanCompiler
             lookup.Command.TableKind == 2 && lookup.FeatureTag is 0x6b65726eu or 0x64697374u);
         if (!hasGposKerning && plan.Tables.KernLength != 0 &&
             request.Direction is ShapingDirection.LeftToRight or ShapingDirection.RightToLeft &&
-            !IsIndicScript(request.Script.ToString().ToLowerInvariant()))
+            !IsIndicScript(layoutScript.ToString().ToLowerInvariant()))
         {
             uint kernTag = Tag("kern");
             foreach (FeatureInterval interval in ResolveIntervals(
@@ -76,6 +86,56 @@ public static class GpuOpenTypeLookupPlanCompiler
             }
         }
         return commands.ToArray();
+    }
+
+    /// <summary>
+    /// Resolves a Unicode script tag to the newest generation-specific OpenType
+    /// layout script supported by the font, falling back to the requested tag.
+    /// </summary>
+    public static OpenTypeTag ResolveLayoutScript(
+        GpuOpenTypeShapingPlan plan,
+        OpenTypeTag requestedScript)
+    {
+        uint third = requestedScript.Value switch
+        {
+            0x62656e67 => 0x626e6733, 0x64657661 => 0x64657633,
+            0x67756a72 => 0x676a7233, 0x67757275 => 0x67757233,
+            0x6b6e6461 => 0x6b6e6433, 0x6d6c796d => 0x6d6c6d33,
+            0x6f727961 => 0x6f727933, 0x74616d6c => 0x746d6c33,
+            0x74656c75 => 0x74656c33,
+            _ => 0
+        };
+        if (third != 0 && HasGsubScript(plan, third)) return new OpenTypeTag(third);
+        uint second = requestedScript.Value switch
+        {
+            0x62656e67 => 0x626e6732, 0x64657661 => 0x64657632,
+            0x67756a72 => 0x676a7232, 0x67757275 => 0x67757232,
+            0x6b6e6461 => 0x6b6e6432, 0x6d6c796d => 0x6d6c6d32,
+            0x6d796d72 => 0x6d796d32, 0x6f727961 => 0x6f727932,
+            0x74616d6c => 0x746d6c32, 0x74656c75 => 0x74656c32,
+            _ => 0
+        };
+        return second != 0 && HasGsubScript(plan, second)
+            ? new OpenTypeTag(second)
+            : requestedScript;
+    }
+
+    private static bool HasGsubScript(GpuOpenTypeShapingPlan plan, uint requested)
+    {
+        if (plan.Tables.GsubLength < 10 || plan.Tables.GsubOffset > int.MaxValue) return false;
+        ReadOnlySpan<byte> data = plan.TableData.Span;
+        int table = checked((int)plan.Tables.GsubOffset);
+        if (!CanRead(data, table, 10)) return false;
+        int scriptList = table + ReadU16(data, table + 4);
+        if (!CanRead(data, scriptList, 2)) return false;
+        ushort count = ReadU16(data, scriptList);
+        for (var index = 0; index < count; index++)
+        {
+            int record = scriptList + 2 + index * 6;
+            if (!CanRead(data, record, 6)) break;
+            if (ReadU32(data, record) == requested) return true;
+        }
+        return false;
     }
 
     private static FeaturePlan CreateFeaturePlan(in ShapingRequest request)

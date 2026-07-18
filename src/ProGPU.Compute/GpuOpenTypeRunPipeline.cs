@@ -18,6 +18,7 @@ public readonly record struct GpuShapingScalar(
 /// <summary>GPU-resident immutable data for one compiled font plan.</summary>
 public sealed class GpuOpenTypeFontData : IDisposable
 {
+    private readonly Dictionary<uint, uint> _resolvedLayoutScripts;
     internal GpuBuffer CmapBuffer { get; }
     internal GpuBuffer MetricsBuffer { get; }
     internal GpuBuffer TablesBuffer { get; }
@@ -37,6 +38,7 @@ public sealed class GpuOpenTypeFontData : IDisposable
         GlyphMetricCount = plan.Metrics.Length;
         VariationCount = plan.Variations.Length;
         VariationMappingCount = plan.VariationMappings.Length;
+        _resolvedLayoutScripts = CreateResolvedLayoutScripts(plan);
         uint cmapBytes = checked((uint)Math.Max(16, CmapRangeCount * Marshal.SizeOf<GpuCmapRange>()));
         uint metricBytes = checked((uint)Math.Max(16, GlyphMetricCount * Marshal.SizeOf<GpuGlyphMetrics>()));
         CmapBuffer = new GpuBuffer(context, cmapBytes, BufferUsage.Storage | BufferUsage.CopyDst, "OpenType cmap ranges");
@@ -54,6 +56,26 @@ public sealed class GpuOpenTypeFontData : IDisposable
         if (VariationCount != 0) VariationBuffer.Write(plan.Variations.Span);
         if (VariationMappingCount != 0) VariationMappingBuffer.Write(plan.VariationMappings.Span);
         TableDirectoryBuffer.WriteSingle(plan.Tables);
+    }
+
+    internal uint ResolveLayoutScript(uint requested) =>
+        _resolvedLayoutScripts.GetValueOrDefault(requested, requested);
+
+    private static Dictionary<uint, uint> CreateResolvedLayoutScripts(GpuOpenTypeShapingPlan plan)
+    {
+        uint[] scripts =
+        [
+            0x62656e67, 0x64657661, 0x67756a72, 0x67757275, 0x6b6e6461,
+            0x6d6c796d, 0x6d796d72, 0x6f727961, 0x74616d6c, 0x74656c75
+        ];
+        var result = new Dictionary<uint, uint>(scripts.Length);
+        foreach (uint script in scripts)
+        {
+            uint resolved = GpuOpenTypeLookupPlanCompiler.ResolveLayoutScript(
+                plan, new OpenTypeTag(script)).Value;
+            if (resolved != script) result.Add(script, resolved);
+        }
+        return result;
     }
 
     public void Dispose()
@@ -198,6 +220,7 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
         output.Clear();
         if (input.IsEmpty) return;
         EnsureCapacity(input.Length, lookups.Length);
+        uint resolvedScriptTag = font.ResolveLayoutScript(scriptTag);
 
         _paramsBuffer!.WriteSingle(new RunParams(
             checked((uint)input.Length),
@@ -209,7 +232,7 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
             checked((uint)font.VariationCount),
             (uint)requestFlags,
             (uint)clusterLevel,
-            scriptTag,
+            resolvedScriptTag,
             checked((uint)font.VariationMappingCount),
             0, 0, 0, 0, 0));
         _inputBuffer!.Write(input);
@@ -230,7 +253,7 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
         {
             Dispatch(encoder, _initializePipeline, initializeGroup, checked((uint)input.Length));
             Dispatch(encoder, _preprocessPipeline, preprocessGroup, 1);
-            if (!lookups.IsEmpty || s_stagedScriptTags.Contains(scriptTag))
+            if (!lookups.IsEmpty || s_stagedScriptTags.Contains(resolvedScriptTag))
                 Dispatch(encoder, _lookupPipeline, lookupGroup, 1);
             Dispatch(encoder, _substitutionFinalizePipeline, substitutionFinalizeGroup, 1);
             Dispatch(encoder, _metricsPipeline, metricsGroup, checked((uint)_capacity));

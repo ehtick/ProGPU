@@ -267,6 +267,23 @@ public sealed class ShapingContractsTests
     }
 
     [Fact]
+    public void GpuLookupPlanSelectsNewestSupportedIndicScriptGeneration()
+    {
+        GpuOpenTypeShapingPlan thirdGeneration = GpuOpenTypeShapingPlanCompiler.Compile(
+            new LayoutScriptFontFace("dev3"));
+        GpuOpenTypeShapingPlan secondGeneration = GpuOpenTypeShapingPlanCompiler.Compile(
+            new LayoutScriptFontFace("dev2"));
+        var deva = new OpenTypeTag("deva");
+
+        Assert.Equal(new OpenTypeTag("dev3"),
+            GpuOpenTypeLookupPlanCompiler.ResolveLayoutScript(thirdGeneration, deva));
+        Assert.Equal(new OpenTypeTag("dev2"),
+            GpuOpenTypeLookupPlanCompiler.ResolveLayoutScript(secondGeneration, deva));
+        Assert.Equal(deva, GpuOpenTypeLookupPlanCompiler.ResolveLayoutScript(
+            GpuOpenTypeShapingPlanCompiler.Compile(new LayoutScriptFontFace("latn")), deva));
+    }
+
+    [Fact]
     public void GpuInitializationMatchesFontFace()
     {
         var face = new TtfShapingFontFace(InterFontFamily.Regular);
@@ -1500,6 +1517,62 @@ public sealed class ShapingContractsTests
             void Tag(int offset, string value)
             {
                 for (var index = 0; index < 4; index++) data[offset + index] = (byte)value[index];
+            }
+        }
+    }
+
+    private sealed class LayoutScriptFontFace(string scriptTag) : IShapingFontFace
+    {
+        private readonly byte[] _gsub = CreateGsub(scriptTag);
+
+        public int FaceIndex => 0;
+        public ushort UnitsPerEm => 1000;
+        public uint GlyphCount => 1;
+        public uint VariationAxisCount => 0;
+        public bool HasActiveVariations => false;
+        public bool TryGetTable(OpenTypeTag tag, out ReadOnlyMemory<byte> table)
+        {
+            table = tag == new OpenTypeTag("GSUB") ? _gsub : ReadOnlyMemory<byte>.Empty;
+            return !table.IsEmpty;
+        }
+        public uint GetNominalGlyph(uint codePoint) => 0;
+        public bool TryGetVariationGlyph(uint codePoint, uint variationSelector, out uint glyphId)
+        {
+            glyphId = 0;
+            return false;
+        }
+        public int GetHorizontalAdvance(uint glyphId) => 0;
+        public int GetVerticalAdvance(uint glyphId) => 0;
+        public int GetHorizontalOrigin(uint glyphId) => 0;
+        public int GetVerticalOrigin(uint glyphId) => 0;
+        public bool TryGetNormalizedVariationCoordinate(uint axisIndex, out short value)
+        {
+            value = 0;
+            return false;
+        }
+        public float GetLayoutVariationDelta(ushort outerIndex, ushort innerIndex) => 0;
+
+        private static byte[] CreateGsub(string scriptTag)
+        {
+            var data = new byte[32];
+            U16(0, 1); U16(2, 0); U16(4, 10); U16(6, 28); U16(8, 30);
+            U16(10, 1); Tag(12, scriptTag); U16(16, 8);
+            U16(18, 4); U16(20, 0);
+            U16(22, 0); U16(24, ushort.MaxValue); U16(26, 0);
+            U16(28, 0); U16(30, 0);
+            return data;
+
+            void U16(int offset, ushort value)
+            {
+                data[offset] = (byte)(value >> 8);
+                data[offset + 1] = (byte)value;
+            }
+            void Tag(int offset, string value)
+            {
+                data[offset] = (byte)value[0];
+                data[offset + 1] = (byte)value[1];
+                data[offset + 2] = (byte)value[2];
+                data[offset + 3] = (byte)value[3];
             }
         }
     }
