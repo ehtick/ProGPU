@@ -1203,15 +1203,26 @@ fn vector_fs_main(input: VertexOutput) -> vec4<f32> {
         // local-space equivalent of the required quarter-physical-pixel lattice,
         // including DPI and axis-preserving parent transforms.
         let localUnitsPerPhysicalPixel = vec2<f32>(
-            length(vec2<f32>(dpdx(input.texCoord.x), dpdy(input.texCoord.x))),
-            length(vec2<f32>(dpdx(input.texCoord.y), dpdy(input.texCoord.y))));
+            length(vec2<f32>(atlasCoordDx.x, atlasCoordDy.x)),
+            length(vec2<f32>(atlasCoordDx.y, atlasCoordDy.y)));
         let quarterPhysicalStep = max(
             localUnitsPerPhysicalPixel * 0.25,
             vec2<f32>(0.0001));
         let snappedCenter = round(unsnappedCenter / quarterPhysicalStep) *
             quarterPhysicalStep;
-        let dotDistance = length(input.texCoord - snappedCenter) - radius;
-        let filterWidth = max(fwidth(dotDistance), 0.0001);
+        let dotDelta = input.texCoord - snappedCenter;
+        let dotDeltaLength = length(dotDelta);
+        let dotDistance = dotDeltaLength - radius;
+        // WGSL derivatives must execute in uniform control flow. Reuse the
+        // coordinate derivatives evaluated at fragment entry and project them
+        // onto the circle SDF normal instead of calling fwidth in this
+        // primitive-type branch. This is the same first-order screen-space
+        // filter width without violating WebGPU derivative uniformity.
+        let dotNormal = dotDelta / max(dotDeltaLength, 0.0001);
+        let filterWidth = max(
+            abs(dot(dotNormal, atlasCoordDx)) +
+                abs(dot(dotNormal, atlasCoordDy)),
+            0.0001);
         shapeAlpha = 1.0 - smoothstep(-0.5 * filterWidth, 0.5 * filterWidth, dotDistance);
     }
 
