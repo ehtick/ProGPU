@@ -1958,6 +1958,22 @@ fn restore_split_matra_character_clusters() {
     }
 }
 
+fn expand_khmer_split_matras() {
+    if (params.script_tag != 0x6b686d72u) { return; }
+    var position = 0u;
+    while (position < run_state.glyph_count) {
+        let codepoint = glyphs[position].codepoint;
+        if (codepoint != 0x17beu && codepoint != 0x17bfu && codepoint != 0x17c0u &&
+                codepoint != 0x17c4u && codepoint != 0x17c5u) {
+            position += 1u;
+            continue;
+        }
+        let cluster = glyphs[position].cluster;
+        if (!insert_codepoint(position, 0x17c1u, cluster)) { return; }
+        position += 2u;
+    }
+}
+
 fn reorder_canonical_combining_marks() {
     var segment_start = 0u;
     while (segment_start < run_state.glyph_count) {
@@ -3369,6 +3385,8 @@ fn preprocess_glyphs(@builtin(global_invocation_id) id: vec3<u32>) {
     apply_vowel_constraints();
     if (run_state.status != 0u) { return; }
     normalize_complex_script_diacritics();
+    if (run_state.status != 0u) { return; }
+    expand_khmer_split_matras();
     if (run_state.status != 0u) { return; }
     prepare_hangul_shaping();
     if (run_state.status != 0u) { return; }

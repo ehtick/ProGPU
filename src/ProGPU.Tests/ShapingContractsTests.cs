@@ -424,6 +424,7 @@ public sealed class ShapingContractsTests
         using var pipeline = new GpuOpenTypeRunPipeline(context);
         using var consonant = new ShapingBuffer();
         using var broken = new ShapingBuffer();
+        using var splitMatra = new ShapingBuffer();
         var request = new ShapingRequest(ShapingDirection.LeftToRight, new OpenTypeTag("khmr"));
 
         pipeline.ExecuteRun(
@@ -436,11 +437,16 @@ public sealed class ShapingContractsTests
         pipeline.ExecuteRun(
             [new GpuShapingScalar(0x17b6, 0)],
             fontData, request, [], broken);
+        pipeline.ExecuteRun(
+            [new GpuShapingScalar(0x17be, 0)],
+            fontData, request, [], splitMatra);
 
         Assert.Equal(new uint[] { 0x17d2, 0x179a, 0x1780 },
             consonant.Glyphs.ToArray().Select(static glyph => glyph.CodePoint));
         Assert.Equal(new uint[] { 0x25cc, 0x17b6 },
             broken.Glyphs.ToArray().Select(static glyph => glyph.CodePoint));
+        Assert.Equal(new uint[] { 0x17c1, 0x25cc, 0x17be },
+            splitMatra.Glyphs.ToArray().Select(static glyph => glyph.CodePoint));
     }
 
     [Fact]
@@ -1532,7 +1538,7 @@ public sealed class ShapingContractsTests
     {
         public int FaceIndex => 0;
         public ushort UnitsPerEm => 1000;
-        public uint GlyphCount => 6;
+        public uint GlyphCount => 8;
         public uint VariationAxisCount => 0;
         public bool HasActiveVariations => false;
         public bool TryGetTable(OpenTypeTag tag, out ReadOnlyMemory<byte> table)
@@ -1547,6 +1553,8 @@ public sealed class ShapingContractsTests
             0x179a => 3,
             0x17b6 => 4,
             0x25cc => 5,
+            0x17c1 => 6,
+            0x17be => 7,
             _ => 0
         };
         public bool TryGetVariationGlyph(uint codePoint, uint variationSelector, out uint glyphId)
