@@ -118,6 +118,7 @@ public readonly record struct ShapedGlyph(
 public static class OpenTypeTextShaper
 {
     private const int MaximumShapedGlyphCount = 1_048_576;
+    private const int MaximumLookupNestingDepth = 64;
 
     public static IReadOnlyList<string> GetFeatureTags(TtfFont font)
     {
@@ -1069,7 +1070,6 @@ public static class OpenTypeTextShaper
         if ((lookupFlags & 0x0010) != 0 && CanRead(data, markFilteringSetOffset, 2))
             markFilteringSet = ReadU16(data, markFilteringSetOffset);
         int previousMarkFilteringCoverage = glyphs.SetMarkFilteringSet(markFilteringSet);
-        ushort previousLookup = glyphs.SetActiveLookup(lookupIndex);
         for (var position = glyphs.Count - 1; position >= 0; position--)
         {
             glyphs.SetLookupSyllable(position, restrictToSyllable);
@@ -1104,7 +1104,6 @@ public static class OpenTypeTextShaper
                 }
             }
         }
-        glyphs.SetActiveLookup(previousLookup);
         glyphs.RestoreMarkFilteringCoverage(previousMarkFilteringCoverage);
         glyphs.ClearLookupSyllable();
     }
@@ -1796,7 +1795,7 @@ public static class OpenTypeTextShaper
         {
             return false;
         }
-        if (glyphs.WasSubstitutedByLookup(position, lookupIndex)) return false;
+        if (!glyphs.TryEnterNestedLookup()) return false;
 
         ushort subtableCount = ReadU16(data, subtableCountOffset);
         ushort lookupFlags = ReadU16(data, lookupOffset + 2);
@@ -1805,7 +1804,6 @@ public static class OpenTypeTextShaper
         if ((lookupFlags & 0x0010) != 0 && CanRead(data, markFilteringSetOffset, 2))
             markFilteringSet = ReadU16(data, markFilteringSetOffset);
         int previousMarkFilteringCoverage = glyphs.SetMarkFilteringSet(markFilteringSet);
-        ushort previousLookup = glyphs.SetActiveLookup(lookupIndex);
         try
         {
             for (var subtableIndex = 0; subtableIndex < subtableCount; subtableIndex++)
@@ -1818,7 +1816,7 @@ public static class OpenTypeTextShaper
         }
         finally
         {
-            glyphs.SetActiveLookup(previousLookup);
+            glyphs.ExitNestedLookup();
             glyphs.RestoreMarkFilteringCoverage(previousMarkFilteringCoverage);
         }
     }
@@ -3426,7 +3424,7 @@ public static class OpenTypeTextShaper
         private int _contextMatchEnd;
         private int _markFilteringCoverage = -1;
         private uint _randomState = 1;
-        private ushort _activeLookup = ushort.MaxValue;
+        private int _nestedLookupDepth;
 
         private GlyphSubstitutionBuffer(List<GlyphRecord> glyphs, TtfFont font)
         {
@@ -5869,15 +5867,14 @@ public static class OpenTypeTextShaper
         public void RestoreMarkFilteringCoverage(int coverage) =>
             _markFilteringCoverage = coverage;
 
-        public ushort SetActiveLookup(ushort lookupIndex)
+        public bool TryEnterNestedLookup()
         {
-            ushort previous = _activeLookup;
-            _activeLookup = lookupIndex;
-            return previous;
+            if (_nestedLookupDepth >= MaximumLookupNestingDepth) return false;
+            _nestedLookupDepth++;
+            return true;
         }
 
-        public bool WasSubstitutedByLookup(int index, ushort lookupIndex) =>
-            (uint)index < (uint)_glyphs.Count && _glyphs[index].LastSubstitutionLookup == lookupIndex;
+        public void ExitNestedLookup() => _nestedLookupDepth--;
 
         public void ReplaceLigature(ReadOnlySpan<int> componentIndices, ushort ligatureGlyph)
         {
@@ -5885,7 +5882,6 @@ public static class OpenTypeTextShaper
             GlyphRecord ligature = _glyphs[componentIndices[0]];
             ligature.GlyphIndex = ligatureGlyph;
             ligature.Substituted = 1;
-            ligature.LastSubstitutionLookup = _activeLookup;
             ligature.Ligated = 1;
             ligature.Multiplied = 0;
             ligature.LigatureComponentCount = checked((byte)Math.Min(componentIndices.Length, byte.MaxValue));
@@ -6155,7 +6151,6 @@ public static class OpenTypeTextShaper
             GlyphRecord record = _glyphs[index];
             record.GlyphIndex = newGlyphIndex;
             record.Substituted = 1;
-            record.LastSubstitutionLookup = _activeLookup;
             _glyphs[index] = record;
         }
 
@@ -6164,7 +6159,6 @@ public static class OpenTypeTextShaper
             GlyphRecord record = _glyphs[index];
             record.GlyphIndex = newGlyphIndex;
             record.Substituted = 1;
-            record.LastSubstitutionLookup = _activeLookup;
             if (removeLen > 1) record.Ligated = 1;
             _glyphs[index] = record;
             if (removeLen > 1)
@@ -6193,7 +6187,6 @@ public static class OpenTypeTextShaper
                 GlyphRecord first = record;
                 first.GlyphIndex = newGlyphIndices[0];
                 first.Substituted = 1;
-                first.LastSubstitutionLookup = _activeLookup;
                 first.MultipleSubstitutionComponent = 0;
                 first.Multiplied = 1;
                 _glyphs[index] = first;
@@ -6202,7 +6195,6 @@ public static class OpenTypeTextShaper
                     GlyphRecord replacement = record;
                     replacement.GlyphIndex = newGlyphIndices[replacementIndex];
                     replacement.Substituted = 1;
-                    replacement.LastSubstitutionLookup = _activeLookup;
                     replacement.MultipleSubstitutionComponent = checked((byte)Math.Min(replacementIndex, byte.MaxValue));
                     replacement.Multiplied = 1;
                     _glyphs.Insert(insertionIndex++, replacement);
@@ -6216,7 +6208,6 @@ public static class OpenTypeTextShaper
                 GlyphRecord replacement = record;
                 replacement.GlyphIndex = newGlyphIndices[replacementIndex];
                 replacement.Substituted = 1;
-                replacement.LastSubstitutionLookup = _activeLookup;
                 replacement.MultipleSubstitutionComponent = checked((byte)Math.Min(replacementIndex, byte.MaxValue));
                 replacement.Multiplied = 1;
                 _glyphs.Insert(index, replacement);
@@ -7327,7 +7318,6 @@ public static class OpenTypeTextShaper
             ArabicAction = None;
             LigatureComponent = byte.MaxValue;
             AttachmentTarget = -1;
-            LastSubstitutionLookup = ushort.MaxValue;
         }
 
         public ushort GlyphIndex;
@@ -7356,7 +7346,6 @@ public static class OpenTypeTextShaper
         public byte LigatureComponent;
         public byte AttachmentKind;
         public int AttachmentTarget;
-        public ushort LastSubstitutionLookup;
     }
 
     private readonly record struct ArabicStateEntry(byte PreviousAction, byte CurrentAction, byte NextState);
