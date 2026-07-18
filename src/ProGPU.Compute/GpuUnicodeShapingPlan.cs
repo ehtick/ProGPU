@@ -19,6 +19,14 @@ public readonly record struct GpuUnicodeDirectionalMapping(
     uint VerticalCodePoint,
     uint Reserved = 0);
 
+/// <summary>A full canonical FormD decomposition sequence.</summary>
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+public readonly record struct GpuUnicodeDecomposition(uint CodePoint, uint Offset, uint Count);
+
+/// <summary>One canonical FormC composition pair.</summary>
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+public readonly record struct GpuUnicodeComposition(uint First, uint Second, uint Composed);
+
 /// <summary>
 /// Process-wide Unicode 17 shaping properties compressed into ranges suitable
 /// for binary search by WebGPU compute shaders.
@@ -29,9 +37,19 @@ public static class GpuUnicodeShapingPlan
         new(CreateRanges, LazyThreadSafetyMode.ExecutionAndPublication);
     private static readonly Lazy<ReadOnlyMemory<GpuUnicodeDirectionalMapping>> s_directionalMappings =
         new(CreateDirectionalMappings, LazyThreadSafetyMode.ExecutionAndPublication);
+    private static readonly Lazy<ReadOnlyMemory<GpuUnicodeDecomposition>> s_decompositions =
+        new(CreateDecompositions, LazyThreadSafetyMode.ExecutionAndPublication);
+    private static readonly Lazy<ReadOnlyMemory<GpuUnicodeComposition>> s_compositions =
+        new(CreateCompositions, LazyThreadSafetyMode.ExecutionAndPublication);
+    private static readonly Lazy<ReadOnlyMemory<uint>> s_packedData =
+        new(CreatePackedData, LazyThreadSafetyMode.ExecutionAndPublication);
 
     public static ReadOnlyMemory<GpuUnicodePropertyRange> Ranges => s_ranges.Value;
     public static ReadOnlyMemory<GpuUnicodeDirectionalMapping> DirectionalMappings => s_directionalMappings.Value;
+    public static ReadOnlyMemory<GpuUnicodeDecomposition> Decompositions => s_decompositions.Value;
+    public static ReadOnlyMemory<uint> DecompositionScalars => UnicodeNormalizationPlan.DecompositionScalars;
+    public static ReadOnlyMemory<GpuUnicodeComposition> Compositions => s_compositions.Value;
+    public static ReadOnlyMemory<uint> PackedData => s_packedData.Value;
 
     private static ReadOnlyMemory<GpuUnicodePropertyRange> CreateRanges()
     {
@@ -71,5 +89,65 @@ public static class GpuUnicodeShapingPlan
                 mappings.Add(new GpuUnicodeDirectionalMapping(codePoint, mirrored, vertical));
         }
         return mappings.ToArray();
+    }
+
+    private static ReadOnlyMemory<GpuUnicodeDecomposition> CreateDecompositions()
+    {
+        ReadOnlySpan<uint> source = UnicodeNormalizationPlan.DecompositionRecords.Span;
+        var result = new GpuUnicodeDecomposition[source.Length / 3];
+        for (var index = 0; index < result.Length; index++)
+            result[index] = new(source[index * 3], source[index * 3 + 1], source[index * 3 + 2]);
+        return result;
+    }
+
+    private static ReadOnlyMemory<GpuUnicodeComposition> CreateCompositions()
+    {
+        ReadOnlySpan<uint> source = UnicodeNormalizationPlan.CompositionRecords.Span;
+        var result = new GpuUnicodeComposition[source.Length / 3];
+        for (var index = 0; index < result.Length; index++)
+            result[index] = new(source[index * 3], source[index * 3 + 1], source[index * 3 + 2]);
+        return result;
+    }
+
+    private static ReadOnlyMemory<uint> CreatePackedData()
+    {
+        ReadOnlySpan<GpuUnicodePropertyRange> ranges = Ranges.Span;
+        ReadOnlySpan<GpuUnicodeDirectionalMapping> directional = DirectionalMappings.Span;
+        ReadOnlySpan<GpuUnicodeDecomposition> decompositions = Decompositions.Span;
+        ReadOnlySpan<uint> scalars = DecompositionScalars.Span;
+        ReadOnlySpan<GpuUnicodeComposition> compositions = Compositions.Span;
+        var words = new List<uint>(checked(16 + ranges.Length * 4 + directional.Length * 4 +
+            decompositions.Length * 3 + scalars.Length + compositions.Length * 3));
+        for (var index = 0; index < 16; index++) words.Add(0);
+        words[0] = 0x554e4950u;
+        words[1] = checked((uint)ranges.Length);
+        words[2] = checked((uint)words.Count);
+        foreach (GpuUnicodePropertyRange value in ranges)
+        {
+            words.Add(value.Start); words.Add(value.End); words.Add(value.PropertiesA); words.Add(value.PropertiesB);
+        }
+        words[3] = checked((uint)directional.Length);
+        words[4] = checked((uint)words.Count);
+        foreach (GpuUnicodeDirectionalMapping value in directional)
+        {
+            words.Add(value.CodePoint); words.Add(value.MirroredCodePoint);
+            words.Add(value.VerticalCodePoint); words.Add(0);
+        }
+        words[5] = checked((uint)decompositions.Length);
+        words[6] = checked((uint)words.Count);
+        foreach (GpuUnicodeDecomposition value in decompositions)
+        {
+            words.Add(value.CodePoint); words.Add(value.Offset); words.Add(value.Count);
+        }
+        words[7] = checked((uint)scalars.Length);
+        words[8] = checked((uint)words.Count);
+        foreach (uint value in scalars) words.Add(value);
+        words[9] = checked((uint)compositions.Length);
+        words[10] = checked((uint)words.Count);
+        foreach (GpuUnicodeComposition value in compositions)
+        {
+            words.Add(value.First); words.Add(value.Second); words.Add(value.Composed);
+        }
+        return words.ToArray();
     }
 }

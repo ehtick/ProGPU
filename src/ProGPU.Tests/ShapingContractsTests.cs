@@ -383,7 +383,7 @@ public sealed class ShapingContractsTests
             fontData, request, commands, mirrored);
         pipeline.ExecuteRun(
             [
-                new GpuShapingScalar('a', 0),
+                new GpuShapingScalar('q', 0),
                 new GpuShapingScalar(0x0315, 0),
                 new GpuShapingScalar(0x0300, 0)
             ],
@@ -393,8 +393,46 @@ public sealed class ShapingContractsTests
             reordered);
 
         Assert.Equal(expected.Glyphs.ToArray(), mirrored.Glyphs.ToArray());
-        Assert.Equal(new uint[] { 'a', 0x0300, 0x0315 },
+        Assert.Equal(new uint[] { 'q', 0x0300, 0x0315 },
             reordered.Glyphs.ToArray().Select(static glyph => glyph.CodePoint));
+    }
+
+    [Fact]
+    public void GpuNormalizationMatchesCpuCompositionAndMissingGlyphDecomposition()
+    {
+        var interFace = new TtfShapingFontFace(InterFontFamily.Regular);
+        var request = new ShapingRequest(
+            ShapingDirection.LeftToRight,
+            new OpenTypeTag("latn"),
+            language: "en");
+        GpuOpenTypeShapingPlan interPlan = GpuOpenTypeShapingPlanCompiler.Compile(interFace);
+        GpuOpenTypeLookupCommand[] interCommands = GpuOpenTypeLookupPlanCompiler.Compile(interPlan, request);
+        using var expectedComposed = new ShapingBuffer();
+        CpuOpenTypeShaper.Instance.Shape("e\u0301", interFace, request, expectedComposed);
+        using var context = new WgpuContext();
+        context.Initialize(null);
+        using var interData = new GpuOpenTypeFontData(context, interPlan);
+        using var pipeline = new GpuOpenTypeRunPipeline(context);
+        using var actualComposed = new ShapingBuffer();
+        pipeline.ExecuteRun(
+            [new GpuShapingScalar('e', 0), new GpuShapingScalar(0x0301, 0)],
+            interData, request, interCommands, actualComposed);
+
+        var decompositionFace = new NormalizationFontFace();
+        GpuOpenTypeShapingPlan decompositionPlan = GpuOpenTypeShapingPlanCompiler.Compile(decompositionFace);
+        using var decompositionData = new GpuOpenTypeFontData(context, decompositionPlan);
+        using var actualDecomposed = new ShapingBuffer();
+        pipeline.ExecuteRun(
+            [new GpuShapingScalar(0x00e9, 0)],
+            decompositionData, request, [], actualDecomposed);
+
+        Assert.Equal(expectedComposed.Glyphs.ToArray(), actualComposed.Glyphs.ToArray());
+        Assert.Equal(new uint[] { 'e', 0x0301 },
+            actualDecomposed.Glyphs.ToArray().Select(static glyph => glyph.CodePoint));
+        Assert.Equal(new uint[] { 1, 2 },
+            actualDecomposed.Glyphs.ToArray().Select(static glyph => glyph.GlyphId));
+        Assert.True(UnicodeNormalizationPlan.DecompositionRecords.Length > 1_000);
+        Assert.True(UnicodeNormalizationPlan.CompositionRecords.Length > 1_000);
     }
 
     [Fact]
@@ -826,6 +864,36 @@ public sealed class ShapingContractsTests
                 data[offset + 1] = (byte)value;
             }
         }
+    }
+
+    private sealed class NormalizationFontFace : IShapingFontFace
+    {
+        public int FaceIndex => 0;
+        public ushort UnitsPerEm => 1000;
+        public uint GlyphCount => 3;
+        public uint VariationAxisCount => 0;
+        public bool HasActiveVariations => false;
+        public bool TryGetTable(OpenTypeTag tag, out ReadOnlyMemory<byte> table)
+        {
+            table = ReadOnlyMemory<byte>.Empty;
+            return false;
+        }
+        public uint GetNominalGlyph(uint codePoint) => codePoint == 'e' ? 1u : codePoint == 0x0301 ? 2u : 0u;
+        public bool TryGetVariationGlyph(uint codePoint, uint variationSelector, out uint glyphId)
+        {
+            glyphId = 0;
+            return false;
+        }
+        public int GetHorizontalAdvance(uint glyphId) => glyphId == 2 ? 0 : 500;
+        public int GetVerticalAdvance(uint glyphId) => 1000;
+        public int GetHorizontalOrigin(uint glyphId) => 250;
+        public int GetVerticalOrigin(uint glyphId) => 800;
+        public bool TryGetNormalizedVariationCoordinate(uint axisIndex, out short coordinate)
+        {
+            coordinate = 0;
+            return false;
+        }
+        public float GetLayoutVariationDelta(ushort outerIndex, ushort innerIndex) => 0;
     }
 
     private sealed class VariationSelectorFontFace : IShapingFontFace

@@ -1,6 +1,6 @@
 // Algorithm: initialize through a compressed nominal cmap, preprocess variation selectors and Unicode joining properties, execute ordered OpenType substitutions/positioning, then load direction-aware design-unit metrics and finalize output order.
-// Time complexity: O(N log R + N log V + N log U + N log D + L*N*log C) for typical bounded combining runs, and O(N^2 + L*N*log C) worst-case when all N scalars form one reverse-ordered combining run; R is cmap ranges, V variation-selector ranges, U Unicode-property ranges, D directional mappings, L ordered ranged lookups, and C coverage size. Initialization, metrics, and output conversion are parallel while order-changing preprocessing and lookup mutation are serial.
-// Space complexity: O(N + R + V + U + D + G + L) storage for glyphs plus stable internal identities, cmap/variation/Unicode/directional ranges, G metrics, and lookup commands; each invocation uses O(1) private storage and no textures.
+// Time complexity: O(N*(log R + log V + log U + log D + log Q) + L*N*log C) for typical bounded combining runs, and O(N^2 + L*N*log C) worst-case when all N scalars form one reverse-ordered combining run; R is cmap ranges, V variation-selector ranges, U Unicode-property ranges, D directional mappings, Q normalization records, L ordered ranged lookups, and C coverage size. Initialization, metrics, and output conversion are parallel while order-changing preprocessing and lookup mutation are serial.
+// Space complexity: O(N + R + V + U + D + Q + G + L) storage for glyphs plus stable internal identities, cmap/variation/packed Unicode normalization data, G metrics, and lookup commands; each invocation uses O(1) private storage and no textures.
 // Workgroups contain 64 independent glyph invocations; Unicode preprocessing and the ordered lookup VM use one invocation because they mutate shared order. The Arabic joining machine has 42 fixed transitions (168 bytes of private state). Runtime loops are bounded by uploaded counts/capacity and OpenType table counts. Lookup flags use GDEF glyph/mark classes and mark-set coverage without auxiliary allocations. All arithmetic is exact 32-bit integer design-unit arithmetic.
 
 struct Params {
@@ -15,11 +15,11 @@ struct Params {
     cluster_level: u32,
     script_tag: u32,
     variation_mapping_count: u32,
-    unicode_range_count: u32,
-    unicode_directional_mapping_count: u32,
+    reserved1: u32,
     reserved2: u32,
     reserved3: u32,
     reserved4: u32,
+    reserved5: u32,
 };
 
 struct InputScalar {
@@ -53,20 +53,6 @@ struct VariationMapping {
     end: u32,
     selector: u32,
     glyph: u32,
-};
-
-struct UnicodePropertyRange {
-    start: u32,
-    end: u32,
-    properties_a: u32,
-    properties_b: u32,
-};
-
-struct UnicodeDirectionalMapping {
-    codepoint: u32,
-    mirrored_codepoint: u32,
-    vertical_codepoint: u32,
-    reserved: u32,
 };
 
 struct ShapingGlyph {
@@ -145,8 +131,7 @@ struct LookupTask {
 @group(0) @binding(9) var<storage, read_write> glyph_states: array<GlyphState>;
 @group(0) @binding(10) var<storage, read> variation_deltas: array<LayoutVariationDelta>;
 @group(0) @binding(11) var<storage, read> variation_mappings: array<VariationMapping>;
-@group(0) @binding(12) var<storage, read> unicode_ranges: array<UnicodePropertyRange>;
-@group(0) @binding(13) var<storage, read> unicode_directional_mappings: array<UnicodeDirectionalMapping>;
+@group(0) @binding(12) var<storage, read> unicode_data: array<u32>;
 
 const FEATURE_EXPLICIT: u32 = 1u;
 const GLYPH_SUBSTITUTED: u32 = 2u;
@@ -311,28 +296,31 @@ fn prepare_fraction_masks() {
 
 fn unicode_properties_a(codepoint: u32) -> u32 {
     var low = 0u;
-    var high = params.unicode_range_count;
+    var high = unicode_data[1u];
+    let base = unicode_data[2u];
     loop {
         if (low >= high) { break; }
         let middle = low + ((high - low) >> 1u);
-        let range = unicode_ranges[middle];
-        if (codepoint < range.start) { high = middle; }
-        else if (codepoint >= range.end) { low = middle + 1u; }
-        else { return range.properties_a; }
+        let record = base + middle * 4u;
+        if (codepoint < unicode_data[record]) { high = middle; }
+        else if (codepoint >= unicode_data[record + 1u]) { low = middle + 1u; }
+        else { return unicode_data[record + 2u]; }
     }
     return 0u;
 }
 
 fn directional_mapping(codepoint: u32, vertical: bool) -> u32 {
     var low = 0u;
-    var high = params.unicode_directional_mapping_count;
+    var high = unicode_data[3u];
+    let base = unicode_data[4u];
     loop {
         if (low >= high) { break; }
         let middle = low + ((high - low) >> 1u);
-        let mapping = unicode_directional_mappings[middle];
-        if (codepoint < mapping.codepoint) { high = middle; }
-        else if (codepoint > mapping.codepoint) { low = middle + 1u; }
-        else { return select(mapping.mirrored_codepoint, mapping.vertical_codepoint, vertical); }
+        let record = base + middle * 4u;
+        let mapped_codepoint = unicode_data[record];
+        if (codepoint < mapped_codepoint) { high = middle; }
+        else if (codepoint > mapped_codepoint) { low = middle + 1u; }
+        else { return select(unicode_data[record + 1u], unicode_data[record + 2u], vertical); }
     }
     return codepoint;
 }
@@ -388,6 +376,209 @@ fn modified_combining_class(codepoint: u32) -> u32 {
         case 132u: { return 131u; }
         default: { return canonical; }
     }
+}
+
+fn canonical_combining_class(codepoint: u32) -> u32 {
+    return (unicode_properties_a(codepoint) >> 8u) & 0xffu;
+}
+
+fn canonical_composition(first: u32, second: u32) -> u32 {
+    let s_base = 0xac00u;
+    let l_base = 0x1100u;
+    let v_base = 0x1161u;
+    let t_base = 0x11a7u;
+    let l_count = 19u;
+    let v_count = 21u;
+    let t_count = 28u;
+    let n_count = v_count * t_count;
+    let s_count = l_count * n_count;
+    if (first >= l_base && first < l_base + l_count &&
+            second >= v_base && second < v_base + v_count) {
+        return s_base + (first - l_base) * n_count + (second - v_base) * t_count;
+    }
+    if (first >= s_base && first < s_base + s_count &&
+            (first - s_base) % t_count == 0u &&
+            second > t_base && second < t_base + t_count) {
+        return first + second - t_base;
+    }
+    var low = 0u;
+    var high = unicode_data[9u];
+    let base = unicode_data[10u];
+    loop {
+        if (low >= high) { break; }
+        let middle = low + ((high - low) >> 1u);
+        let record = base + middle * 3u;
+        let record_first = unicode_data[record];
+        let record_second = unicode_data[record + 1u];
+        if (first < record_first || (first == record_first && second < record_second)) { high = middle; }
+        else if (first > record_first || (first == record_first && second > record_second)) {
+            low = middle + 1u;
+        } else { return unicode_data[record + 2u]; }
+    }
+    return 0xffffffffu;
+}
+
+fn canonical_decomposition_record(codepoint: u32) -> u32 {
+    var low = 0u;
+    var high = unicode_data[5u];
+    let base = unicode_data[6u];
+    loop {
+        if (low >= high) { break; }
+        let middle = low + ((high - low) >> 1u);
+        let record = base + middle * 3u;
+        let value = unicode_data[record];
+        if (codepoint < value) { high = middle; }
+        else if (codepoint > value) { low = middle + 1u; }
+        else { return record; }
+    }
+    return 0xffffffffu;
+}
+
+fn remove_record(position: u32) {
+    for (var cursor = position + 1u; cursor < run_state.glyph_count; cursor++) {
+        glyphs[cursor - 1u] = glyphs[cursor];
+        glyph_states[cursor - 1u] = glyph_states[cursor];
+    }
+    run_state.glyph_count -= 1u;
+}
+
+fn reorder_canonical_combining_marks() {
+    var segment_start = 0u;
+    while (segment_start < run_state.glyph_count) {
+        while (segment_start < run_state.glyph_count &&
+                canonical_combining_class(glyphs[segment_start].codepoint) == 0u) {
+            segment_start += 1u;
+        }
+        if (segment_start >= run_state.glyph_count) { break; }
+        var segment_end = segment_start;
+        while (segment_end < run_state.glyph_count &&
+                canonical_combining_class(glyphs[segment_end].codepoint) != 0u) {
+            segment_end += 1u;
+        }
+        for (var index = segment_start + 1u; index < segment_end; index++) {
+            let value = glyphs[index];
+            let value_state = glyph_states[index];
+            let value_class = canonical_combining_class(value.codepoint);
+            var destination = index;
+            var crossed_cluster = 0x7fffffffi;
+            while (destination > segment_start &&
+                    canonical_combining_class(glyphs[destination - 1u].codepoint) > value_class) {
+                crossed_cluster = min(crossed_cluster, glyphs[destination - 1u].cluster);
+                glyphs[destination] = glyphs[destination - 1u];
+                glyph_states[destination] = glyph_states[destination - 1u];
+                destination -= 1u;
+            }
+            glyphs[destination] = value;
+            glyph_states[destination] = value_state;
+            if (params.cluster_level == 1u && destination < index) {
+                for (var crossed = destination + 1u; crossed <= index; crossed++) {
+                    glyphs[crossed].cluster = crossed_cluster;
+                }
+            }
+        }
+        segment_start = segment_end + 1u;
+    }
+}
+
+fn compose_canonical_sequences() {
+    var starter = 0xffffffffu;
+    var last_class = 0u;
+    var position = 0u;
+    while (position < run_state.glyph_count) {
+        let current_class = canonical_combining_class(glyphs[position].codepoint);
+        if (starter != 0xffffffffu && (last_class < current_class || last_class == 0u)) {
+            let composed = canonical_composition(glyphs[starter].codepoint, glyphs[position].codepoint);
+            if (composed != 0xffffffffu) {
+                glyphs[starter].codepoint = composed;
+                glyphs[starter].glyph_id = nominal_glyph(composed);
+                remove_record(position);
+                continue;
+            }
+        }
+        if (current_class == 0u) {
+            starter = position;
+            last_class = 0u;
+        } else {
+            last_class = current_class;
+        }
+        position += 1u;
+    }
+}
+
+fn decomposition_scalar(codepoint: u32, record: u32, component: u32) -> u32 {
+    let s_base = 0xac00u;
+    let l_base = 0x1100u;
+    let v_base = 0x1161u;
+    let t_base = 0x11a7u;
+    let t_count = 28u;
+    let n_count = 588u;
+    if (record != 0xffffffffu) {
+        return unicode_data[unicode_data[8u] + unicode_data[record + 1u] + component];
+    }
+    let s_index = codepoint - s_base;
+    if (component == 0u) { return l_base + s_index / n_count; }
+    if (component == 1u) { return v_base + (s_index % n_count) / t_count; }
+    return t_base + s_index % t_count;
+}
+
+fn decompose_missing_glyphs() {
+    let s_base = 0xac00u;
+    let s_count = 11172u;
+    let t_count = 28u;
+    var position = 0u;
+    while (position < run_state.glyph_count) {
+        if (glyphs[position].glyph_id != 0u) { position += 1u; continue; }
+        let codepoint = glyphs[position].codepoint;
+        if (codepoint == 0x2011u && nominal_glyph(0x2010u) != 0u) {
+            glyphs[position].codepoint = 0x2010u;
+            glyphs[position].glyph_id = nominal_glyph(0x2010u);
+            position += 1u;
+            continue;
+        }
+        var record = 0xffffffffu;
+        var count = 0u;
+        if (codepoint >= s_base && codepoint < s_base + s_count) {
+            count = select(3u, 2u, (codepoint - s_base) % t_count == 0u);
+        } else {
+            record = canonical_decomposition_record(codepoint);
+            if (record != 0xffffffffu) { count = unicode_data[record + 2u]; }
+        }
+        if (count == 0u) { position += 1u; continue; }
+        let extra = count - 1u;
+        if (run_state.glyph_count + extra > params.capacity) {
+            run_state.status = 1u;
+            return;
+        }
+        var cursor = run_state.glyph_count;
+        while (cursor > position + 1u) {
+            cursor -= 1u;
+            glyphs[cursor + extra] = glyphs[cursor];
+            glyph_states[cursor + extra] = glyph_states[cursor];
+        }
+        let source = glyphs[position];
+        let source_state = glyph_states[position];
+        for (var component = 0u; component < count; component++) {
+            let target_index = position + component;
+            let scalar = decomposition_scalar(codepoint, record, component);
+            glyphs[target_index] = source;
+            glyphs[target_index].codepoint = scalar;
+            glyphs[target_index].glyph_id = nominal_glyph(scalar);
+            glyph_states[target_index] = source_state;
+            if (component != 0u) {
+                glyph_states[target_index].serial = run_state.next_serial;
+                run_state.next_serial += 1u;
+            }
+        }
+        run_state.glyph_count += extra;
+        position += count;
+    }
+}
+
+fn normalize_unicode() {
+    if (params.script_tag == 0x68616e67u) { return; }
+    reorder_canonical_combining_marks();
+    compose_canonical_sequences();
+    decompose_missing_glyphs();
 }
 
 fn reverse_records(start_value: u32, end_value: u32) {
@@ -1167,6 +1358,8 @@ fn apply_lookup_at(lookup_offset: u32, position: u32, feature_value: u32, featur
 @compute @workgroup_size(1)
 fn preprocess_glyphs(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x != 0u) { return; }
+    normalize_unicode();
+    if (run_state.status != 0u) { return; }
     var index = 1u;
     loop {
         if (index >= run_state.glyph_count) { break; }

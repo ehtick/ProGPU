@@ -88,11 +88,11 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
         uint ClusterLevel,
         uint ScriptTag,
         uint VariationMappingCount,
-        uint UnicodeRangeCount,
-        uint UnicodeDirectionalMappingCount,
+        uint Reserved1,
         uint Reserved2,
         uint Reserved3,
-        uint Reserved4);
+        uint Reserved4,
+        uint Reserved5);
 
     [StructLayout(LayoutKind.Sequential, Pack = 4)]
     private readonly record struct RunState(
@@ -120,10 +120,7 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
     private readonly ComputePipeline* _substitutionFinalizePipeline;
     private readonly ComputePipeline* _positionPipeline;
     private readonly ComputePipeline* _finalizePipeline;
-    private readonly GpuBuffer _unicodePropertyBuffer;
-    private readonly int _unicodePropertyCount;
-    private readonly GpuBuffer _unicodeDirectionalMappingBuffer;
-    private readonly int _unicodeDirectionalMappingCount;
+    private readonly GpuBuffer _unicodeDataBuffer;
     private int _capacity;
     private bool _disposed;
 
@@ -147,25 +144,13 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
             "OpenTypePositions", shader, "execute_positions");
         _finalizePipeline = _pipelineCache.GetOrCreateComputePipeline(
             "OpenTypeFinalize", shader, "finalize_glyphs");
-        ReadOnlyMemory<GpuUnicodePropertyRange> unicodeRanges = GpuUnicodeShapingPlan.Ranges;
-        _unicodePropertyCount = unicodeRanges.Length;
-        _unicodePropertyBuffer = new GpuBuffer(
+        ReadOnlyMemory<uint> unicodeData = GpuUnicodeShapingPlan.PackedData;
+        _unicodeDataBuffer = new GpuBuffer(
             context,
-            checked((uint)(_unicodePropertyCount * Marshal.SizeOf<GpuUnicodePropertyRange>())),
+            checked((uint)(unicodeData.Length * sizeof(uint))),
             BufferUsage.Storage | BufferUsage.CopyDst,
-            "Unicode shaping properties");
-        _unicodePropertyBuffer.Write(unicodeRanges.Span);
-        ReadOnlyMemory<GpuUnicodeDirectionalMapping> directionalMappings =
-            GpuUnicodeShapingPlan.DirectionalMappings;
-        _unicodeDirectionalMappingCount = directionalMappings.Length;
-        _unicodeDirectionalMappingBuffer = new GpuBuffer(
-            context,
-            checked((uint)Math.Max(16,
-                _unicodeDirectionalMappingCount * Marshal.SizeOf<GpuUnicodeDirectionalMapping>())),
-            BufferUsage.Storage | BufferUsage.CopyDst,
-            "Unicode directional mappings");
-        if (_unicodeDirectionalMappingCount != 0)
-            _unicodeDirectionalMappingBuffer.Write(directionalMappings.Span);
+            "Packed Unicode shaping data");
+        _unicodeDataBuffer.Write(unicodeData.Span);
     }
 
     public void InitializeRun(
@@ -224,9 +209,7 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
             (uint)clusterLevel,
             scriptTag,
             checked((uint)font.VariationMappingCount),
-            checked((uint)_unicodePropertyCount),
-            checked((uint)_unicodeDirectionalMappingCount),
-            0, 0, 0));
+            0, 0, 0, 0, 0));
         _inputBuffer!.Write(input);
         _stateBuffer!.WriteSingle(new RunState(checked((uint)input.Length), 0, 0, checked((uint)input.Length + 1), 1, 0, 0, 0));
         if (!lookups.IsEmpty) _lookupBuffer!.Write(lookups);
@@ -350,11 +333,10 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
                 entries[2] = Entry(7, _stateBuffer!);
                 entries[3] = Entry(9, _glyphStateBuffer!);
                 entries[4] = Entry(11, font.VariationMappingBuffer);
-                entries[5] = Entry(12, _unicodePropertyBuffer);
+                entries[5] = Entry(12, _unicodeDataBuffer);
                 entries[6] = Entry(8, _lookupBuffer!);
-                entries[7] = Entry(13, _unicodeDirectionalMappingBuffer);
-                entries[8] = Entry(2, font.CmapBuffer);
-                count = 9;
+                entries[7] = Entry(2, font.CmapBuffer);
+                count = 8;
             }
             BindGroupDescriptor descriptor = new() { Layout = layout, EntryCount = count, Entries = entries };
             BindGroup* group = _context.Api.DeviceCreateBindGroup(_context.Device, &descriptor);
@@ -430,8 +412,7 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
         _paramsBuffer?.Dispose();
         _stateBuffer?.Dispose();
         _lookupBuffer?.Dispose();
-        _unicodePropertyBuffer.Dispose();
-        _unicodeDirectionalMappingBuffer.Dispose();
+        _unicodeDataBuffer.Dispose();
         _pipelineCache.Dispose();
     }
 }

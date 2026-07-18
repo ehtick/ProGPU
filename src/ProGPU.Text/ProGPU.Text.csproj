@@ -15,4 +15,7 @@
     <ProjectReference Include="..\ProGPU.Text.Shaping\ProGPU.Text.Shaping.csproj" />
     <ProjectReference Include="..\ProGPU.Vector\ProGPU.Vector.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="UnicodeNormalizationData.bin" LogicalName="ProGPU.Text.UnicodeNormalizationData.bin" />
+  </ItemGroup>
 </Project>
