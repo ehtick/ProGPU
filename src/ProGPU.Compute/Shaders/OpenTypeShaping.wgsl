@@ -123,6 +123,10 @@ struct LookupCommand {
 struct LookupTask {
     lookup_index: u32,
     target_serial: u32,
+    origin_position: u32,
+    sequence_index: u32,
+    context_lookup_offset: u32,
+    context_lookup_flags: u32,
     depth: u32,
     feature_value: u32,
     feature_tag: u32,
@@ -2842,14 +2846,19 @@ fn schedule_records(record_offset: u32, record_count: u32, position: u32,
         record -= 1u;
         let sequence_index = table_u16(record_offset + record * 4u);
         let target_index = eligible_at(position, sequence_index, lookup_offset, lookup_flags);
-        if (target_index < 0) { return false; }
+        var target_serial = 0u;
+        if (target_index >= 0) { target_serial = glyph_states[u32(target_index)].serial; }
         if (*task_count >= 64u || depth >= 64u) {
             run_state.status = 2u;
             return false;
         }
         (*tasks)[*task_count] = LookupTask(
             table_u16(record_offset + record * 4u + 2u),
-            glyph_states[u32(target_index)].serial,
+            target_serial,
+            position,
+            sequence_index,
+            lookup_offset,
+            lookup_flags,
             depth + 1u,
             feature_value,
             feature_tag);
@@ -3419,7 +3428,11 @@ fn execute_lookups(@builtin(global_invocation_id) id: vec3<u32>) {
                 if (task_count == 0u || run_state.status != 0u) { break; }
                 task_count -= 1u;
                 let task = tasks[task_count];
-                let target_index = find_serial(task.target_serial);
+                var target_index = find_serial(task.target_serial);
+                if (target_index < 0) {
+                    target_index = eligible_at(task.origin_position, task.sequence_index,
+                        task.context_lookup_offset, task.context_lookup_flags);
+                }
                 if (target_index < 0) { continue; }
                 let nested_lookup = lookup_from_index(table_directory.gsub_offset, task.lookup_index);
                 _ = apply_lookup_at(nested_lookup, u32(target_index), task.feature_value,
@@ -3949,7 +3962,11 @@ fn execute_positions(@builtin(global_invocation_id) id: vec3<u32>) {
                 if (task_count == 0u || run_state.status != 0u) { break; }
                 task_count -= 1u;
                 let task = tasks[task_count];
-                let target_index = find_serial(task.target_serial);
+                var target_index = find_serial(task.target_serial);
+                if (target_index < 0) {
+                    target_index = eligible_at(task.origin_position, task.sequence_index,
+                        task.context_lookup_offset, task.context_lookup_flags);
+                }
                 if (target_index < 0) { continue; }
                 let nested_lookup = lookup_from_index(table_directory.gpos_offset, task.lookup_index);
                 _ = apply_gpos_lookup_at(nested_lookup, u32(target_index), task.depth, &tasks, &task_count);
