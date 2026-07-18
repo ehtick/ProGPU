@@ -68,6 +68,25 @@ public sealed class VisualChangeVersionTests
     }
 
     [Fact]
+    public void ChildInvalidationDoesNotChangeParentLocalVersion()
+    {
+        var parent = new ContainerVisual();
+        var child = new Visual();
+        parent.AddChild(child);
+        parent.IsDirty = false;
+        child.IsDirty = false;
+        var parentTreeVersion = parent.ChangeVersion;
+        var parentLocalVersion = parent.LocalChangeVersion;
+        var childLocalVersion = child.LocalChangeVersion;
+
+        child.Opacity = 0.5f;
+
+        Assert.True(parent.ChangeVersion > parentTreeVersion);
+        Assert.Equal(parentLocalVersion, parent.LocalChangeVersion);
+        Assert.True(child.LocalChangeVersion > childLocalVersion);
+    }
+
+    [Fact]
     public void ClipBoundsChangeIncrementsVisualAndParentChangeVersion()
     {
         var parent = new ContainerVisual();

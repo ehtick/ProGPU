@@ -64,6 +64,13 @@ public class DataGrid : Control
 
     private DataGridColumn? _sortingColumn;
     private readonly List<object> _itemsSource = new();
+    private readonly GpuPictureRecorder _rowPictureRecorder = new();
+    private readonly SceneTransformHandle _rowScrollTransform = new();
+    private SceneFragmentHandle?[] _rowFragmentHandles = [];
+    private int[] _rowFragmentRows = [];
+    private int[] _rowFragmentState = [];
+    private int _itemsVersion;
+    private Func<object, string, string>? _cellValueBinding;
 
     private int _editingRow = -1;
     private int _editingCol = -1;
@@ -142,7 +149,17 @@ public class DataGrid : Control
     public int EditingRow => _editingRow;
     public int EditingCol => _editingCol;
 
-    public Func<object, string, string>? CellValueBinding { get; set; }
+    public Func<object, string, string>? CellValueBinding
+    {
+        get => _cellValueBinding;
+        set
+        {
+            if (ReferenceEquals(_cellValueBinding, value)) return;
+            _cellValueBinding = value;
+            unchecked { _itemsVersion++; }
+            Invalidate();
+        }
+    }
 
     public event EventHandler? SelectionChanged;
 
@@ -230,6 +247,7 @@ public class DataGrid : Control
     public void AddItem(object item)
     {
         _itemsSource.Add(item);
+        unchecked { _itemsVersion++; }
         Invalidate();
     }
 
@@ -237,6 +255,7 @@ public class DataGrid : Control
     {
         CancelEdit();
         _itemsSource.Clear();
+        unchecked { _itemsVersion++; }
         _selectedIndex = -1;
         _scrollOffset = 0f;
         Invalidate();
@@ -487,6 +506,7 @@ public class DataGrid : Control
             }
             return asc ? string.Compare(valX, valY, StringComparison.Ordinal) : string.Compare(valY, valX, StringComparison.Ordinal);
         });
+        unchecked { _itemsVersion++; }
 
         SortingColumn = column;
         Invalidate();
@@ -897,66 +917,7 @@ public class DataGrid : Control
             startRow = Math.Clamp(startRow, 0, _itemsSource.Count - 1);
             endRow = Math.Clamp(endRow, 0, _itemsSource.Count - 1);
 
-            context.PushClip(new Rect(0, _headerHeight, Size.X, ViewportHeight));
-
-            for (int r = startRow; r <= endRow; r++)
-            {
-                float rowY = _headerHeight + r * _rowHeight - ScrollOffset;
-                var item = _itemsSource[r];
-
-                // Alternate, Hover & Selection backgrounds
-                Brush? rowBg = null;
-                if (r == SelectedIndex)
-                {
-                    rowBg = ThemeManager.GetBrush("SelectionHighlight"); // Premium selection
-                }
-                else if (r == _hoveredRowIndex)
-                {
-                    rowBg = ThemeManager.GetBrush("ControlBackgroundHover"); // Hover state row highlight
-                }
-                else if (r % 2 == 1)
-                {
-                    rowBg = ThemeManager.GetBrush("ControlBackground"); // Subtle alternate rows
-                }
-
-                Rect rowRect = new Rect(0, rowY, Size.X, _rowHeight);
-                if (rowBg != null)
-                {
-                    context.DrawRectangle(rowBg, null, rowRect);
-                }
-
-                // Draw active selection vertical indicator stripe on far-left
-                if (r == SelectedIndex)
-                {
-                    Rect selectionStripe = new Rect(0f, rowY + 2f, 3f, _rowHeight - 4f);
-                    context.DrawRectangle(ThemeManager.GetBrush("SystemAccentColor"), null, selectionStripe);
-                }
-
-                // Draw cell text grid columns
-                float colX = Padding.Left;
-                for (int c = 0; c < Columns.Count; c++)
-                {
-                    var col = Columns[c];
-                    float colWidth = col.ActualWidth;
-
-                    if (r == _editingRow && c == _editingCol)
-                    {
-                        // Do not draw text under editor
-                    }
-                    else
-                    {
-                        string val = GetCellValue(item, col.PropertyName);
-                        float cellTextY = rowY + (_rowHeight - FontSize) / 2f;
-                        context.DrawText(val, activeFont, FontSize, ThemeManager.GetBrush("TextPrimary"), new Vector2(colX + 8f, cellTextY));
-                    }
-                    colX += colWidth;
-                }
-
-                // Draw thin grid lines
-                context.DrawRectangle(null, new Pen(ThemeManager.GetBrush("ControlBorder"), 0.5f), new Rect(0, rowY, Size.X, _rowHeight));
-            }
-
-            context.PopClip();
+            DrawRetainedRows(context, activeFont, startRow, endRow);
         }
 
         // 4. Draw Scrollbar track
@@ -985,6 +946,124 @@ public class DataGrid : Control
             
             context.DrawRoundedRectangle(thumbBg, null, thumbRect, scrollbarWidth / 2f);
         }
+    }
+
+    private void DrawRetainedRows(DrawingContext context, TtfFont activeFont, int startRow, int endRow)
+    {
+        int visibleCount = endRow - startRow + 1;
+        EnsureRowFragmentCapacity(visibleCount + 2);
+        int layoutState = ComputeRowFragmentLayoutState(activeFont);
+        _rowScrollTransform.Translation = new Vector2(0f, -ScrollOffset);
+
+        context.PushClip(new Rect(0, _headerHeight, Size.X, ViewportHeight));
+        for (int row = startRow; row <= endRow; row++)
+        {
+            float rowY = _headerHeight + row * _rowHeight - ScrollOffset;
+            Brush? rowBackground = row == SelectedIndex
+                ? ThemeManager.GetBrush("SelectionHighlight")
+                : row == _hoveredRowIndex
+                    ? ThemeManager.GetBrush("ControlBackgroundHover")
+                    : (row & 1) != 0
+                        ? ThemeManager.GetBrush("ControlBackground")
+                        : null;
+            if (rowBackground != null)
+            {
+                context.DrawRectangle(rowBackground, null, new Rect(0f, rowY, Size.X, _rowHeight));
+            }
+            if (row == SelectedIndex)
+            {
+                context.DrawRectangle(
+                    ThemeManager.GetBrush("SystemAccentColor"),
+                    null,
+                    new Rect(0f, rowY + 2f, 3f, _rowHeight - 4f));
+            }
+            context.DrawRectangle(
+                null,
+                new Pen(ThemeManager.GetBrush("ControlBorder"), 0.5f),
+                new Rect(0f, rowY, Size.X, _rowHeight));
+
+            int slot = row % _rowFragmentHandles.Length;
+            int state = HashCode.Combine(
+                layoutState,
+                _itemsVersion,
+                row == _editingRow ? _editingCol + 1 : 0);
+            if (_rowFragmentHandles[slot] == null ||
+                _rowFragmentRows[slot] != row ||
+                _rowFragmentState[slot] != state)
+            {
+                var picture = RecordRowPicture(activeFont, row);
+                if (_rowFragmentHandles[slot] == null)
+                {
+                    _rowFragmentHandles[slot] = new SceneFragmentHandle(picture);
+                }
+                else
+                {
+                    _rowFragmentHandles[slot]!.ReplacePicture(picture);
+                }
+                _rowFragmentRows[slot] = row;
+                _rowFragmentState[slot] = state;
+            }
+
+            context.DrawSceneFragment(
+                _rowFragmentHandles[slot]!,
+                _rowScrollTransform);
+        }
+        context.PopClip();
+    }
+
+    private GpuPicture RecordRowPicture(TtfFont activeFont, int row)
+    {
+        var rowContext = _rowPictureRecorder.BeginRecording(new Rect(0f, 0f, Size.X, _rowHeight));
+        var item = _itemsSource[row];
+        float columnX = Padding.Left;
+        float textY = _headerHeight + row * _rowHeight + (_rowHeight - FontSize) / 2f;
+        var textBrush = ThemeManager.GetBrush("TextPrimary");
+        for (int columnIndex = 0; columnIndex < Columns.Count; columnIndex++)
+        {
+            var column = Columns[columnIndex];
+            if (row != _editingRow || columnIndex != _editingCol)
+            {
+                rowContext.DrawText(
+                    GetCellValue(item, column.PropertyName),
+                    activeFont,
+                    FontSize,
+                    textBrush,
+                    new Vector2(columnX + 8f, textY));
+            }
+            columnX += column.ActualWidth;
+        }
+        return _rowPictureRecorder.EndRecording();
+    }
+
+    private int ComputeRowFragmentLayoutState(TtfFont activeFont)
+    {
+        var hash = new HashCode();
+        hash.Add(activeFont);
+        hash.Add(FontSize);
+        hash.Add(_rowHeight);
+        hash.Add(Size.X);
+        hash.Add(Padding.Left);
+        hash.Add(ActualTheme);
+        hash.Add(ActualThemeFamily);
+        hash.Add(Columns.Count);
+        for (int i = 0; i < Columns.Count; i++)
+        {
+            var column = Columns[i];
+            hash.Add(column.ActualWidth);
+            hash.Add(column.PropertyName, StringComparer.Ordinal);
+        }
+        return hash.ToHashCode();
+    }
+
+    private void EnsureRowFragmentCapacity(int required)
+    {
+        if (_rowFragmentHandles.Length >= required) return;
+        int previousLength = _rowFragmentHandles.Length;
+        int capacity = Math.Max(required, Math.Max(8, previousLength * 2));
+        Array.Resize(ref _rowFragmentHandles, capacity);
+        Array.Resize(ref _rowFragmentRows, capacity);
+        Array.Resize(ref _rowFragmentState, capacity);
+        Array.Fill(_rowFragmentRows, -1, previousLength, capacity - previousLength);
     }
 
     public override void OnKeyDown(KeyRoutedEventArgs e)

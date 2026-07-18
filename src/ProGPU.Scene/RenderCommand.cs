@@ -46,7 +46,8 @@ public enum RenderCommandType
     PopBlendMode,
     DrawGlyphRun,
     DrawVertexMesh,
-    DrawPointBatch
+    DrawPointBatch,
+    DrawSceneFragment
 }
 
 public enum VertexMeshTopology
@@ -657,6 +658,7 @@ public struct RenderCommand
 
     // Picture property
     public GpuPicture? Picture;
+    public SceneFragmentHandle? SceneFragment;
 
     // Glyph run properties (Skia SKTextBlob compatibility)
     public ushort[]? GlyphIndices;
@@ -1914,6 +1916,26 @@ public class DrawingContext : IRenderDataProvider
             Type = RenderCommandType.DrawPicture,
             Picture = picture,
             Transform = transform
+        });
+    }
+
+    /// <summary>
+    /// Draws a stable, patchable fragment from shared persistent GPU arenas. The base transform is
+    /// immutable placement for this draw; the mutable transform is updated through one uniform.
+    /// </summary>
+    public void DrawSceneFragment(
+        SceneFragmentHandle fragment,
+        SceneTransformHandle transform,
+        Matrix4x4 baseTransform = default)
+    {
+        ArgumentNullException.ThrowIfNull(fragment);
+        ArgumentNullException.ThrowIfNull(transform);
+        Commands.Add(new RenderCommand
+        {
+            Type = RenderCommandType.DrawSceneFragment,
+            SceneFragment = fragment,
+            SceneTransform = transform,
+            Transform = baseTransform == default ? Matrix4x4.Identity : baseTransform
         });
     }
 

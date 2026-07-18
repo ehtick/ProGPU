@@ -44,6 +44,8 @@ internal static class SamplePerformanceBenchmark
     private static long s_uploadedBytes;
     private static long s_uploadedBufferBytes;
     private static long s_uploadedTextureBytes;
+    private static long s_sceneFragmentReuses;
+    private static long s_sceneFragmentUpdates;
     private static double s_hostUpdateMilliseconds;
     private static double s_layoutMilliseconds;
     private static double s_animationMilliseconds;
@@ -228,6 +230,8 @@ internal static class SamplePerformanceBenchmark
             s_uploadedBytes += metrics.UploadedBytes;
             s_uploadedBufferBytes += metrics.UploadedBufferBytes;
             s_uploadedTextureBytes += metrics.UploadedTextureBytes;
+            s_sceneFragmentReuses += metrics.SceneFragmentReuseCount;
+            s_sceneFragmentUpdates += metrics.SceneFragmentUpdateCount;
             if (metrics.SceneCacheHit) s_sceneCacheHitFrames++;
         }
 
@@ -385,6 +389,8 @@ internal static class SamplePerformanceBenchmark
             $" queueWritesPerFrame={s_queueWriteCount / divisor:F2}" +
             $" uploadedBytesPerFrame={s_uploadedBytes / divisor:F0}" +
             $" uploadedBytesP95={uploadedBytesP95:F0}" +
+            $" sceneFragmentReusesPerFrame={s_sceneFragmentReuses / divisor:F2}" +
+            $" sceneFragmentUpdatesPerFrame={s_sceneFragmentUpdates / divisor:F2}" +
             $" hostUpdateMs={s_hostUpdateMilliseconds / divisor:F4}" +
             $" layoutMs={s_layoutMilliseconds / divisor:F4}" +
             $" animationMs={s_animationMilliseconds / divisor:F4}" +
@@ -573,6 +579,8 @@ internal static class SamplePerformanceBenchmark
             writer.WriteNumber("uploadedBytesP95", Percentile(s_uploadedByteSamples, measuredFrames, 0.95d));
             writer.WriteNumber("uploadedBufferBytesPerFrame", (double)s_uploadedBufferBytes / Math.Max(1, measuredFrames));
             writer.WriteNumber("uploadedTextureBytesPerFrame", (double)s_uploadedTextureBytes / Math.Max(1, measuredFrames));
+            writer.WriteNumber("sceneFragmentReusesPerFrame", (double)s_sceneFragmentReuses / Math.Max(1, measuredFrames));
+            writer.WriteNumber("sceneFragmentUpdatesPerFrame", (double)s_sceneFragmentUpdates / Math.Max(1, measuredFrames));
             writer.WriteNumber("surfaceAcquireAverageMs", s_surfaceAcquireMilliseconds / Math.Max(1, measuredFrames));
             writer.WriteNumber("surfaceAcquireP95Ms", acquireP95);
             writer.WriteNumber("surfaceAcquireMaxMs", acquireMax);

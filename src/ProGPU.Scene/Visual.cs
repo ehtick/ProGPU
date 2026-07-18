@@ -17,6 +17,7 @@ public class Visual
     private Matrix4x4 _transform = Matrix4x4.Identity;
     private bool _isDirty = true;
     private long _changeVersion;
+    private long _localChangeVersion;
     private bool _cacheAsLayer;
     public virtual bool HasTemplate => false;
     private Vector3 _scale = Vector3.One;
@@ -148,6 +149,7 @@ public class Visual
     }
 
     public long ChangeVersion => _changeVersion;
+    public long LocalChangeVersion => _localChangeVersion;
 
     public bool CacheAsLayer
     {
@@ -304,10 +306,29 @@ public class Visual
             {
                 _changeVersion = 1;
             }
+            _localChangeVersion++;
+            if (_localChangeVersion < 0)
+            {
+                _localChangeVersion = 1;
+            }
         }
 
         _isDirty = true;
-        Parent?.Invalidate();
+        Parent?.InvalidateDescendant();
+    }
+
+    private void InvalidateDescendant()
+    {
+        unchecked
+        {
+            _changeVersion++;
+            if (_changeVersion < 0)
+            {
+                _changeVersion = 1;
+            }
+        }
+        _isDirty = true;
+        Parent?.InvalidateDescendant();
     }
 
     public virtual void OnRender(DrawingContext context)
