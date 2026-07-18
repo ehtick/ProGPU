@@ -27,11 +27,15 @@ public struct GlyphInfo
     // UV coordinates inside the atlas texture
     public Vector2 TexCoordMin;
     public Vector2 TexCoordMax;
+    internal uint AtlasRegionWidth;
+    internal uint AtlasRegionHeight;
 }
 
 public unsafe class GlyphAtlas : IDisposable
 {
     private const uint DefaultUniformRingBufferSize = 256 * 1024;
+    private const int InitialFontRecordCapacity = 32;
+    private const int InitialFontSegmentCapacity = 256;
 
     private readonly WgpuContext _context;
     private readonly GpuTexture _atlasTexture;
@@ -52,7 +56,18 @@ public unsafe class GlyphAtlas : IDisposable
     }
 
     private readonly Dictionary<GlyphKey, CachedGlyph> _glyphs = new();
-    private readonly Dictionary<TtfFont, (GpuBuffer RecordsBuffer, GpuBuffer SegmentsBuffer)> _fontGpuData = new();
+    private sealed class FontGpuData
+    {
+        public required GpuBuffer RecordsBuffer { get; set; }
+        public required GpuBuffer SegmentsBuffer { get; set; }
+        public Dictionary<ushort, uint> RecordSlots { get; } = new();
+        public List<GpuGlyphRecord> Records { get; } = new(InitialFontRecordCapacity);
+        public List<GpuSegment> Segments { get; } = new(InitialFontSegmentCapacity);
+        public int RecordCapacity { get; set; } = InitialFontRecordCapacity;
+        public int SegmentCapacity { get; set; } = InitialFontSegmentCapacity;
+    }
+
+    private readonly Dictionary<TtfFont, FontGpuData> _fontGpuData = new();
     
     private readonly RenderPipelineCache _pipelineCache;
     private readonly ComputePipeline* _computePipeline;
@@ -154,6 +169,32 @@ public unsafe class GlyphAtlas : IDisposable
     public uint AtlasSize => _atlasSize;
 
     public int CachedGlyphCount => _glyphs.Count;
+
+    public int CompiledGpuGlyphCount
+    {
+        get
+        {
+            int count = 0;
+            foreach (FontGpuData data in _fontGpuData.Values)
+            {
+                count += data.RecordSlots.Count;
+            }
+            return count;
+        }
+    }
+
+    public int AllocatedGpuGlyphRecordCapacity
+    {
+        get
+        {
+            int count = 0;
+            foreach (FontGpuData data in _fontGpuData.Values)
+            {
+                count += data.RecordCapacity;
+            }
+            return count;
+        }
+    }
 
     public ulong Generation { get; private set; }
 
@@ -384,7 +425,9 @@ public unsafe class GlyphAtlas : IDisposable
                                     gH,
                                     preferGlyphAtlas,
                                     out uint posX,
-                                    out uint posY))
+                                    out uint posY,
+                                    out uint regionWidth,
+                                    out uint regionHeight))
                             {
                                 // Remember the bounded-atlas miss. Returning without caching
                                 // made every subsequent frame retry the same failed allocation,
@@ -396,35 +439,15 @@ public unsafe class GlyphAtlas : IDisposable
                                 return info;
                             }
 
-                            // Upload pre-compiled font segments and records once per font loading
+                            // Keep the indexed record table stable, but expand and upload only
+                            // outlines requested by visible glyphs. Compiling every outline in a
+                            // large or variable font here creates severe first-use stalls.
                             if (!_fontGpuData.TryGetValue(font, out var gpuData))
                             {
-                                var (records, segments) = font.CompileGpuOutlineData();
-
-                                var recordsBuffer = new GpuBuffer(
-                                    _context,
-                                    (uint)(records.Length * Marshal.SizeOf<GpuGlyphRecord>()),
-                                    BufferUsage.Storage | BufferUsage.CopyDst,
-                                    $"Glyph Records Buffer"
-                                );
-                                recordsBuffer.Write(new ReadOnlySpan<GpuGlyphRecord>(records));
-
-                                // Allocate at least 1 segment to prevent 0-sized buffers which crash WebGPU
-                                uint segmentsSize = (uint)Math.Max(32, segments.Length * Marshal.SizeOf<GpuSegment>());
-                                var segmentsBuffer = new GpuBuffer(
-                                    _context,
-                                    segmentsSize,
-                                    BufferUsage.Storage | BufferUsage.CopyDst,
-                                    $"Glyph Segments Buffer"
-                                );
-                                if (segments.Length > 0)
-                                {
-                                    segmentsBuffer.Write(new ReadOnlySpan<GpuSegment>(segments));
-                                }
-
-                                gpuData = (recordsBuffer, segmentsBuffer);
+                                gpuData = CreateFontGpuData();
                                 _fontGpuData[font] = gpuData;
                             }
+                            uint gpuGlyphSlot = EnsureGpuGlyph(font, glyphIdx, gpuData);
 
                             // Write uniforms for the glyph
                              var uniforms = new GlyphUniforms
@@ -432,7 +455,7 @@ public unsafe class GlyphAtlas : IDisposable
                                  XStart = xStart,
                                  YStart = yStart,
                                  Scale = scale,
-                                 GlyphIndex = glyphIdx,
+                                 GlyphIndex = gpuGlyphSlot,
                                  AtlasX = posX,
                                  AtlasY = posY,
                                  Width = gW,
@@ -560,7 +583,9 @@ public unsafe class GlyphAtlas : IDisposable
                                 BearY = yStart,
                                 Advance = advance,
                                 TexCoordMin = uvMin,
-                                TexCoordMax = uvMax
+                                TexCoordMax = uvMax,
+                                AtlasRegionWidth = regionWidth,
+                                AtlasRegionHeight = regionHeight
                             };
                         }
                     }
@@ -616,7 +641,14 @@ public unsafe class GlyphAtlas : IDisposable
 
         var width = checked((uint)decoded.Width);
         var height = checked((uint)decoded.Height);
-        if (!TryAllocateAtlasRegion(width, height, preferGlyphAtlas, out var x, out var y))
+        if (!TryAllocateAtlasRegion(
+                width,
+                height,
+                preferGlyphAtlas,
+                out var x,
+                out var y,
+                out var regionWidth,
+                out var regionHeight))
         {
             return false;
         }
@@ -661,7 +693,9 @@ public unsafe class GlyphAtlas : IDisposable
             RasterScale = rasterScale,
             IsColorBitmap = true,
             TexCoordMin = new Vector2(x * texelSize, y * texelSize),
-            TexCoordMax = new Vector2((x + width) * texelSize, (y + height) * texelSize)
+            TexCoordMax = new Vector2((x + width) * texelSize, (y + height) * texelSize),
+            AtlasRegionWidth = regionWidth,
+            AtlasRegionHeight = regionHeight
         };
         return true;
     }
@@ -671,10 +705,14 @@ public unsafe class GlyphAtlas : IDisposable
         uint height,
         bool preferGlyphAtlas,
         out uint x,
-        out uint y)
+        out uint y,
+        out uint regionWidth,
+        out uint regionHeight)
     {
         x = 0;
         y = 0;
+        regionWidth = 0;
+        regionHeight = 0;
         if (_atlasSize <= 4 || width == 0 || height == 0)
         {
             return false;
@@ -688,19 +726,30 @@ public unsafe class GlyphAtlas : IDisposable
             return false;
         }
 
+        uint allocationExtent = preferGlyphAtlas
+            ? GetPreferredAllocationExtent(width, height)
+            : 0;
+        uint allocationWidth = preferGlyphAtlas ? allocationExtent : width;
+        uint allocationHeight = preferGlyphAtlas ? allocationExtent : height;
         uint nextX = _currentX;
         uint nextY = _currentY;
         uint nextRowHeight = _currentRowHeight;
-        if (nextX + width + 2 > _atlasSize)
+        if (nextX + allocationWidth + 2 > _atlasSize)
         {
             nextX = 2;
             nextY += nextRowHeight + 2;
             nextRowHeight = 0;
         }
 
-        if (nextY + height + 2 > _atlasSize)
+        if (nextY + allocationHeight + 2 > _atlasSize)
         {
-            if (preferGlyphAtlas && TryReuseLeastRecentlyUsedRegion(width, height, out x, out y))
+            if (preferGlyphAtlas && TryReuseLeastRecentlyUsedRegion(
+                    allocationWidth,
+                    allocationHeight,
+                    out x,
+                    out y,
+                    out regionWidth,
+                    out regionHeight))
             {
                 CapacityExceeded = false;
                 return true;
@@ -714,16 +763,39 @@ public unsafe class GlyphAtlas : IDisposable
 
         x = nextX;
         y = nextY;
-        _currentX = nextX + width + 2;
+        regionWidth = allocationWidth;
+        regionHeight = allocationHeight;
+        _currentX = nextX + allocationWidth + 2;
         _currentY = nextY;
-        _currentRowHeight = Math.Max(nextRowHeight, height);
+        _currentRowHeight = Math.Max(nextRowHeight, allocationHeight);
         return true;
     }
 
-    private bool TryReuseLeastRecentlyUsedRegion(uint width, uint height, out uint x, out uint y)
+    private uint GetPreferredAllocationExtent(uint width, uint height)
+    {
+        uint extent = Math.Max(16u, Math.Max(width, height));
+        extent--;
+        extent |= extent >> 1;
+        extent |= extent >> 2;
+        extent |= extent >> 4;
+        extent |= extent >> 8;
+        extent |= extent >> 16;
+        extent++;
+        return Math.Min(extent, _atlasSize - 4);
+    }
+
+    private bool TryReuseLeastRecentlyUsedRegion(
+        uint width,
+        uint height,
+        out uint x,
+        out uint y,
+        out uint regionWidth,
+        out uint regionHeight)
     {
         x = 0;
         y = 0;
+        regionWidth = 0;
+        regionHeight = 0;
 
         GlyphKey candidateKey = default;
         CachedGlyph candidate = default;
@@ -734,14 +806,16 @@ public unsafe class GlyphAtlas : IDisposable
         {
             var entry = pair.Value;
             var info = entry.Info;
+            uint entryWidth = info.AtlasRegionWidth > 0 ? info.AtlasRegionWidth : info.Width;
+            uint entryHeight = info.AtlasRegionHeight > 0 ? info.AtlasRegionHeight : info.Height;
             if (entry.LastUsedFrame == _frameNumber ||
-                info.Width < width || info.Height < height ||
-                info.Width == 0 || info.Height == 0)
+                entryWidth < width || entryHeight < height ||
+                entryWidth == 0 || entryHeight == 0)
             {
                 continue;
             }
 
-            ulong waste = (ulong)info.Width * info.Height - (ulong)width * height;
+            ulong waste = (ulong)entryWidth * entryHeight - (ulong)width * height;
             if (!found || entry.LastUsedFrame < candidate.LastUsedFrame ||
                 (entry.LastUsedFrame == candidate.LastUsedFrame && waste < bestWaste))
             {
@@ -760,6 +834,12 @@ public unsafe class GlyphAtlas : IDisposable
         _glyphs.Remove(candidateKey);
         x = candidate.Info.X;
         y = candidate.Info.Y;
+        regionWidth = candidate.Info.AtlasRegionWidth > 0
+            ? candidate.Info.AtlasRegionWidth
+            : candidate.Info.Width;
+        regionHeight = candidate.Info.AtlasRegionHeight > 0
+            ? candidate.Info.AtlasRegionHeight
+            : candidate.Info.Height;
         EvictionCount++;
         Generation++;
         return true;
@@ -785,6 +865,138 @@ public unsafe class GlyphAtlas : IDisposable
             TexCoordMin = Vector2.Zero,
             TexCoordMax = Vector2.Zero
         };
+    }
+
+    private FontGpuData CreateFontGpuData()
+    {
+        int recordSize = Marshal.SizeOf<GpuGlyphRecord>();
+        int segmentSize = Marshal.SizeOf<GpuSegment>();
+        uint recordsSize = checked((uint)(InitialFontRecordCapacity * recordSize));
+        uint segmentsSize = checked((uint)(InitialFontSegmentCapacity * segmentSize));
+        return new FontGpuData
+        {
+            RecordsBuffer = new GpuBuffer(
+                _context,
+                recordsSize,
+                BufferUsage.Storage | BufferUsage.CopyDst,
+                "Incremental Glyph Records Buffer"),
+            SegmentsBuffer = new GpuBuffer(
+                _context,
+                segmentsSize,
+                BufferUsage.Storage | BufferUsage.CopyDst,
+                "Incremental Glyph Segments Buffer")
+        };
+    }
+
+    private uint EnsureGpuGlyph(TtfFont font, ushort glyphIndex, FontGpuData data)
+    {
+        if (data.RecordSlots.TryGetValue(glyphIndex, out uint existingSlot))
+        {
+            return existingSlot;
+        }
+
+        int previousSegmentCount = data.Segments.Count;
+        GpuGlyphRecord record;
+        try
+        {
+            record = font.AppendGpuOutlineData(glyphIndex, data.Segments);
+        }
+        catch
+        {
+            if (data.Segments.Count > previousSegmentCount)
+            {
+                data.Segments.RemoveRange(
+                    previousSegmentCount,
+                    data.Segments.Count - previousSegmentCount);
+            }
+            throw;
+        }
+
+        uint recordSlot = checked((uint)data.Records.Count);
+        data.Records.Add(record);
+        int appendedSegmentCount = data.Segments.Count - previousSegmentCount;
+        int recordSize = Marshal.SizeOf<GpuGlyphRecord>();
+        int segmentSize = Marshal.SizeOf<GpuSegment>();
+        try
+        {
+            if (data.Records.Count > data.RecordCapacity)
+            {
+                int capacity = data.RecordCapacity;
+                while (capacity < data.Records.Count)
+                {
+                    capacity = checked(capacity * 2);
+                }
+
+                var replacement = new GpuBuffer(
+                    _context,
+                    checked((uint)(capacity * recordSize)),
+                    BufferUsage.Storage | BufferUsage.CopyDst,
+                    "Incremental Glyph Records Buffer");
+                replacement.Write(CollectionsMarshal.AsSpan(data.Records));
+                ReplaceBatchBuffer(data.RecordsBuffer);
+                data.RecordsBuffer = replacement;
+                data.RecordCapacity = capacity;
+            }
+            else
+            {
+                data.RecordsBuffer.WriteSingle(
+                    record,
+                    checked(recordSlot * (uint)recordSize));
+            }
+
+            if (data.Segments.Count > data.SegmentCapacity)
+            {
+                int capacity = data.SegmentCapacity;
+                while (capacity < data.Segments.Count)
+                {
+                    capacity = checked(capacity * 2);
+                }
+
+                var replacement = new GpuBuffer(
+                    _context,
+                    checked((uint)(capacity * segmentSize)),
+                    BufferUsage.Storage | BufferUsage.CopyDst,
+                    "Incremental Glyph Segments Buffer");
+                replacement.Write(CollectionsMarshal.AsSpan(data.Segments));
+                ReplaceBatchBuffer(data.SegmentsBuffer);
+                data.SegmentsBuffer = replacement;
+                data.SegmentCapacity = capacity;
+            }
+            else if (appendedSegmentCount > 0)
+            {
+                data.SegmentsBuffer.Write(
+                    CollectionsMarshal.AsSpan(data.Segments).Slice(
+                        previousSegmentCount,
+                        appendedSegmentCount),
+                    checked((uint)(previousSegmentCount * segmentSize)));
+            }
+
+            data.RecordSlots.Add(glyphIndex, recordSlot);
+            return recordSlot;
+        }
+        catch
+        {
+            data.Records.RemoveAt(data.Records.Count - 1);
+            if (data.Segments.Count > previousSegmentCount)
+            {
+                data.Segments.RemoveRange(
+                    previousSegmentCount,
+                    data.Segments.Count - previousSegmentCount);
+            }
+            throw;
+        }
+    }
+
+    private void ReplaceBatchBuffer(GpuBuffer previous)
+    {
+        if (_batchEncoder != null)
+        {
+            _batchBuffers.Add(previous);
+        }
+        else
+        {
+            previous.Dispose();
+        }
     }
 
     public void Dispose()

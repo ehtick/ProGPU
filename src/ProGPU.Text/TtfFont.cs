@@ -2310,131 +2310,128 @@ public partial class TtfFont
 
         for (ushort glyphId = 0; glyphId < NumGlyphs; glyphId++)
         {
-            var outline = GetGlyphOutline(glyphId);
-
-            uint startSegment = (uint)segments.Count;
-            float minX = float.MaxValue;
-            float minY = float.MaxValue;
-            float maxX = float.MinValue;
-            float maxY = float.MinValue;
-
-            if (outline != null)
-            {
-                foreach (var figure in outline.Figures)
-                {
-                    if (figure.Segments.Count == 0) continue;
-
-                    Vector2 currentPoint = figure.StartPoint;
-
-                    foreach (var segment in figure.Segments)
-                    {
-                        if (segment is LineSegment line)
-                        {
-                            var seg = new GpuSegment
-                            {
-                                P0 = currentPoint,
-                                P1 = line.Point,
-                                P2 = Vector2.Zero,
-                                SegmentType = 0,
-                                Pad0 = 0,
-                                Pad1 = 0,
-                                Pad2 = 0
-                            };
-                            segments.Add(seg);
-
-                            UpdateBoundingBoxWithLine(seg.P0, seg.P1, ref minX, ref minY, ref maxX, ref maxY);
-                            currentPoint = line.Point;
-                        }
-                        else if (segment is QuadraticBezierSegment quad)
-                        {
-                            var seg = new GpuSegment
-                            {
-                                P0 = currentPoint,
-                                P1 = quad.ControlPoint,
-                                P2 = quad.Point,
-                                SegmentType = 1,
-                                Pad0 = 0,
-                                Pad1 = 0,
-                                Pad2 = 0
-                            };
-                            segments.Add(seg);
-
-                            UpdateBoundingBoxWithQuad(seg.P0, seg.P1, seg.P2, ref minX, ref minY, ref maxX, ref maxY);
-                            currentPoint = quad.Point;
-                        }
-                        else if (segment is CubicBezierSegment cubic)
-                        {
-                            var seg = new GpuSegment
-                            {
-                                P0 = currentPoint,
-                                P1 = cubic.ControlPoint1,
-                                P2 = cubic.ControlPoint2,
-                                P3 = cubic.Point,
-                                SegmentType = 2,
-                                Pad0 = 0,
-                                Pad1 = 0,
-                                Pad2 = 0
-                            };
-                            segments.Add(seg);
-
-                            UpdateBoundingBoxWithCubic(seg.P0, seg.P1, seg.P2, seg.P3, ref minX, ref minY, ref maxX, ref maxY);
-                            currentPoint = cubic.Point;
-                        }
-                    }
-
-                    if (figure.IsClosed && currentPoint != figure.StartPoint)
-                    {
-                        var seg = new GpuSegment
-                        {
-                            P0 = currentPoint,
-                            P1 = figure.StartPoint,
-                            P2 = Vector2.Zero,
-                            SegmentType = 0,
-                            Pad0 = 0,
-                            Pad1 = 0,
-                            Pad2 = 0
-                        };
-                        segments.Add(seg);
-
-                        UpdateBoundingBoxWithLine(seg.P0, seg.P1, ref minX, ref minY, ref maxX, ref maxY);
-                        currentPoint = figure.StartPoint;
-                    }
-                }
-            }
-
-            uint segmentCount = (uint)segments.Count - startSegment;
-
-            if (segmentCount > 0)
-            {
-                records[glyphId] = new GpuGlyphRecord
-                {
-                    StartSegment = startSegment,
-                    SegmentCount = segmentCount,
-                    MinX = minX,
-                    MinY = minY,
-                    MaxX = maxX,
-                    MaxY = maxY,
-                    Pad0 = 0,
-                    Pad1 = 0
-                };
-            }
-            else
-            {
-                records[glyphId] = new GpuGlyphRecord
-                {
-                    StartSegment = 0,
-                    SegmentCount = 0,
-                    MinX = 0,
-                    MinY = 0,
-                    MaxX = 0,
-                    MaxY = 0,
-                    Pad0 = 0,
-                    Pad1 = 0
-                };
-            }
+            records[glyphId] = AppendGpuOutlineData(glyphId, segments);
         }
 
         return (records, segments.ToArray());
+    }
+
+    internal GpuGlyphRecord AppendGpuOutlineData(ushort glyphId, List<GpuSegment> segments)
+    {
+        ArgumentNullException.ThrowIfNull(segments);
+        var outline = GetGlyphOutline(glyphId);
+
+        uint startSegment = checked((uint)segments.Count);
+        float minX = float.MaxValue;
+        float minY = float.MaxValue;
+        float maxX = float.MinValue;
+        float maxY = float.MinValue;
+
+        if (outline != null)
+        {
+            foreach (var figure in outline.Figures)
+            {
+                if (figure.Segments.Count == 0) continue;
+
+                Vector2 currentPoint = figure.StartPoint;
+                foreach (var segment in figure.Segments)
+                {
+                    if (segment is LineSegment line)
+                    {
+                        var gpuSegment = new GpuSegment
+                        {
+                            P0 = currentPoint,
+                            P1 = line.Point,
+                            P2 = Vector2.Zero,
+                            SegmentType = 0
+                        };
+                        segments.Add(gpuSegment);
+                        UpdateBoundingBoxWithLine(
+                            gpuSegment.P0,
+                            gpuSegment.P1,
+                            ref minX,
+                            ref minY,
+                            ref maxX,
+                            ref maxY);
+                        currentPoint = line.Point;
+                    }
+                    else if (segment is QuadraticBezierSegment quadratic)
+                    {
+                        var gpuSegment = new GpuSegment
+                        {
+                            P0 = currentPoint,
+                            P1 = quadratic.ControlPoint,
+                            P2 = quadratic.Point,
+                            SegmentType = 1
+                        };
+                        segments.Add(gpuSegment);
+                        UpdateBoundingBoxWithQuad(
+                            gpuSegment.P0,
+                            gpuSegment.P1,
+                            gpuSegment.P2,
+                            ref minX,
+                            ref minY,
+                            ref maxX,
+                            ref maxY);
+                        currentPoint = quadratic.Point;
+                    }
+                    else if (segment is CubicBezierSegment cubic)
+                    {
+                        var gpuSegment = new GpuSegment
+                        {
+                            P0 = currentPoint,
+                            P1 = cubic.ControlPoint1,
+                            P2 = cubic.ControlPoint2,
+                            P3 = cubic.Point,
+                            SegmentType = 2
+                        };
+                        segments.Add(gpuSegment);
+                        UpdateBoundingBoxWithCubic(
+                            gpuSegment.P0,
+                            gpuSegment.P1,
+                            gpuSegment.P2,
+                            gpuSegment.P3,
+                            ref minX,
+                            ref minY,
+                            ref maxX,
+                            ref maxY);
+                        currentPoint = cubic.Point;
+                    }
+                }
+
+                if (figure.IsClosed && currentPoint != figure.StartPoint)
+                {
+                    var gpuSegment = new GpuSegment
+                    {
+                        P0 = currentPoint,
+                        P1 = figure.StartPoint,
+                        P2 = Vector2.Zero,
+                        SegmentType = 0
+                    };
+                    segments.Add(gpuSegment);
+                    UpdateBoundingBoxWithLine(
+                        gpuSegment.P0,
+                        gpuSegment.P1,
+                        ref minX,
+                        ref minY,
+                        ref maxX,
+                        ref maxY);
+                }
+            }
+        }
+
+        uint segmentCount = checked((uint)segments.Count) - startSegment;
+        return segmentCount == 0
+            ? default
+            : new GpuGlyphRecord
+            {
+                StartSegment = startSegment,
+                SegmentCount = segmentCount,
+                MinX = minX,
+                MinY = minY,
+                MaxX = maxX,
+                MaxY = maxY
+            };
     }
 
     private static void UpdateBoundingBoxWithLine(Vector2 p0, Vector2 p1, ref float minX, ref float minY, ref float maxX, ref float maxY)
