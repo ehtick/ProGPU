@@ -228,6 +228,7 @@ public sealed class ShapingContractsTests
 
         Assert.Equal(16, Marshal.SizeOf<GpuCmapRange>());
         Assert.Equal(16, Marshal.SizeOf<GpuGlyphMetrics>());
+        Assert.Equal(16, Marshal.SizeOf<GpuShapingScalar>());
         foreach (uint codePoint in new uint[] { 'A', 'z', 0x00e9, 0x03a9, 0x20ac, 0x1f642 })
             Assert.Equal(face.GetNominalGlyph(codePoint), plan.GetNominalGlyph(codePoint));
         uint glyph = face.GetNominalGlyph('A');
