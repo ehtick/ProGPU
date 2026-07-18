@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
@@ -387,6 +388,10 @@ internal sealed class SuiteRunner : IDisposable
             ShapingClusterLevel.MonotoneCharacters or ShapingClusterLevel.Characters;
         bool preserveUseMarkOrder = OpenTypeScriptResolver.UsesUniversalShapingEngine(request.Script);
         bool preserveDefaultIgnorableCluster = font.GetGlyphIndex(' ') != 0;
+        string script = request.Script.ToString();
+        bool indicShaper = IsIndicShaperScript(script);
+        bool khmerShaper = script == "khmr";
+        uint indicVirama = GetIndicVirama(script);
         int useCluster = 0;
         bool hasUseCluster = false;
         for (int graphemeStart = 0; graphemeStart < testCase.Text.Length;)
@@ -395,10 +400,43 @@ internal sealed class SuiteRunner : IDisposable
             int graphemeEnd = checked(graphemeStart + graphemeLength);
             Rune.DecodeFromUtf16(testCase.Text.AsSpan(graphemeStart, graphemeLength), out Rune firstRune, out _);
             bool separateClusters = IsPrepend(firstRune.Value);
+            int indicCluster = graphemeStart;
+            uint previousCodePoint = 0;
+            bool splitAfterIndicZwnj = false;
             for (int utf16 = graphemeStart; utf16 < graphemeEnd;)
             {
                 Rune.DecodeFromUtf16(testCase.Text.AsSpan(utf16), out Rune rune, out int consumed);
-                int cluster = characterClusters || separateClusters ? utf16 : graphemeStart;
+                uint followingCodePoint = 0;
+                if (utf16 + consumed < graphemeEnd &&
+                    Rune.DecodeFromUtf16(testCase.Text.AsSpan(utf16 + consumed, graphemeEnd - utf16 - consumed),
+                        out Rune followingRune, out _) == OperationStatus.Done)
+                {
+                    followingCodePoint = checked((uint)followingRune.Value);
+                }
+                if (splitAfterIndicZwnj)
+                {
+                    indicCluster = utf16;
+                    splitAfterIndicZwnj = false;
+                }
+                if (indicShaper &&
+                    (rune.Value == 0x200c || rune.Value == 0x200d &&
+                     previousCodePoint != indicVirama && followingCodePoint != indicVirama))
+                {
+                    indicCluster = utf16;
+                    splitAfterIndicZwnj = rune.Value == 0x200c && followingCodePoint != 0 &&
+                        !UnicodeShapingProperties.IsMark(followingCodePoint);
+                }
+                else if (khmerShaper &&
+                         (rune.Value is 0x200c or 0x200d ||
+                          previousCodePoint == 0x17d2 && IsKhmerBaseCategory(checked((uint)rune.Value))))
+                {
+                    indicCluster = utf16;
+                }
+                int cluster = characterClusters
+                    ? utf16
+                    : separateClusters || script == "hang"
+                        ? utf16
+                        : indicShaper || khmerShaper ? indicCluster : graphemeStart;
                 if (preserveUseMarkOrder)
                 {
                     if (preserveDefaultIgnorableCluster && rune.Value is 0x200c or 0x200d)
@@ -416,6 +454,7 @@ internal sealed class SuiteRunner : IDisposable
                 if (rune.Value == 0x200d && input.Count != 0) cluster = input[^1].Cluster;
                 input.Add(new GpuShapingScalar(
                     checked((uint)rune.Value), cluster));
+                previousCodePoint = checked((uint)rune.Value);
                 utf16 += Math.Max(consumed, 1);
             }
             graphemeStart = graphemeEnd;
@@ -431,6 +470,22 @@ internal sealed class SuiteRunner : IDisposable
         0x110bd or 0x110cd or >= 0x111c2 and <= 0x111c3 or
         0x1193f or 0x11941 or 0x11a3a or >= 0x11a84 and <= 0x11a89 or
         0x11d46;
+
+    private static bool IsIndicShaperScript(string script) => script is
+        "beng" or "deva" or "gujr" or "guru" or "knda" or "mlym" or "orya" or "taml" or "telu";
+
+    private static uint GetIndicVirama(string script) => script switch
+    {
+        "deva" => 0x094d, "beng" => 0x09cd, "guru" => 0x0a4d, "gujr" => 0x0acd,
+        "orya" => 0x0b4d, "taml" => 0x0bcd, "telu" => 0x0c4d, "knda" => 0x0ccd,
+        "mlym" => 0x0d4d, _ => 0
+    };
+
+    private static bool IsKhmerBaseCategory(uint codePoint)
+    {
+        byte category = checked((byte)UnicodeShapingProperties.GetIndicProperties(codePoint));
+        return category is 1 or 2 or 10 or 11 or 15;
+    }
 
     private static ShapingRequest CreateRequest(
         TestCase testCase,
