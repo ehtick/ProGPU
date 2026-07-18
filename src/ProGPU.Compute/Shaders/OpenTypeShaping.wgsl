@@ -1,4 +1,4 @@
-// Algorithm: initialize through a compressed nominal cmap, preprocess Unicode and deterministic complex-script syllables, execute stage-aware OpenType substitutions with Indic/USE/Myanmar/Khmer reordering, load metrics, execute GPOS or extent-based fallback mark positioning, then finalize output order.
+// Algorithm: initialize through a compressed nominal cmap, preprocess Unicode and deterministic complex-script syllables, execute stage-aware OpenType substitutions with Indic/USE/Myanmar/Khmer reordering plus bounded Arabic presentation fallback/stretch, load metrics, execute GPOS or extent-based fallback mark positioning, then finalize output order.
 // Time complexity: O(N*(log R + log V + log U + log D + log Q + log K) + S*N + L*N*log C) for typical bounded combining runs, and O(N^2 + S*N + L*N*log C) worst-case when all N scalars form one reverse-ordered combining run; R is cmap ranges, V variation-selector ranges, U Unicode-property ranges, D directional mappings, Q normalization records, K invalid-vowel constraints, S selected deterministic syllable-machine passes (at most one), L ordered ranged lookups, and C coverage size. Initialization, metrics, and output conversion are parallel while order-changing preprocessing and lookup mutation are serial.
 // Space complexity: O(N + R + V + U + D + Q + K + M + G + L) storage for glyphs plus stable internal identities, cmap/variation/packed Unicode normalization and vowel-constraint data, M generated Indic/USE/Myanmar/Khmer transition words, G metrics and optional extents, and lookup commands; each invocation uses O(1) private storage and no textures.
 // Workgroups contain 64 independent glyph invocations; Unicode preprocessing and the ordered lookup/position VMs use one invocation because they mutate shared order. The Arabic joining machine has 42 fixed transitions (168 bytes of private state), and each stch run is capped at 256 generated components inside the preallocated run capacity; the generated complex-script machines use uploaded state/category matrices with 256 fixed category entries per state. Runtime loops are bounded by uploaded counts/capacity and OpenType table counts. Lookup flags use GDEF glyph/mark classes and mark-set coverage without auxiliary allocations. All arithmetic is exact 32-bit integer design-unit arithmetic.
@@ -1626,6 +1626,9 @@ fn handle_substitution_stage_transition(previous: u32, next: u32) {
                 (glyph_states[position].ligature_component & 1u) != 0u);
         }
     }
+    if (params.script_tag == 0x61726162u && previous <= 160u && next > 160u) {
+        apply_arabic_fallback();
+    }
     if (myanmar && previous <= 10u && next > 10u) { reorder_myanmar(); }
     if (myanmar && previous <= 50u && next > 50u) { clear_syllables(); }
     if (is_use_syllable_script() && previous <= 10u && next > 10u) { clear_substitution_flags(); }
@@ -2603,6 +2606,143 @@ fn find_serial(serial: u32) -> i32 {
         if (glyph_states[index].serial == serial) { return i32(index); }
     }
     return -1;
+}
+
+fn fallback_feature_enabled(feature_tag: u32, position: u32) -> bool {
+    let cluster = u32(max(glyphs[position].cluster, 0));
+    for (var command_index = 0u; command_index < params.lookup_count; command_index++) {
+        let command = lookup_commands[command_index];
+        if (command.table_kind == 4u && command.feature_tag == feature_tag &&
+                command.feature_value != 0u && cluster >= command.range_start &&
+                cluster < command.range_end) { return true; }
+    }
+    return false;
+}
+
+fn arabic_fallback_word(field: u32) -> u32 {
+    let directory = unicode_data[15u];
+    if (directory == 0u || unicode_data[directory] != 0x41524246u) { return 0u; }
+    return unicode_data[directory + field];
+}
+
+fn apply_arabic_fallback_forms() {
+    let first = arabic_fallback_word(1u);
+    let last = arabic_fallback_word(2u);
+    let count = arabic_fallback_word(3u);
+    let forms = arabic_fallback_word(4u);
+    if (forms == 0u) { return; }
+    for (var position = 0u; position < run_state.glyph_count; position++) {
+        let action = (glyph_states[position].feature_mask & ARABIC_ACTION_MASK) >> ARABIC_ACTION_SHIFT;
+        var form = 0xffffffffu;
+        if (action == ARABIC_INITIAL && fallback_feature_enabled(0x696e6974u, position)) { form = 0u; }
+        else if (action == ARABIC_MEDIAL && fallback_feature_enabled(0x6d656469u, position)) { form = 1u; }
+        else if (action == ARABIC_FINAL && fallback_feature_enabled(0x66696e61u, position)) { form = 2u; }
+        else if (action == ARABIC_ISOLATED && fallback_feature_enabled(0x69736f6cu, position)) { form = 3u; }
+        let codepoint = glyphs[position].codepoint;
+        if (form == 0xffffffffu || codepoint < first || codepoint > last) { continue; }
+        let index = (codepoint - first) * 4u + form;
+        if (index >= count) { continue; }
+        let presentation = unicode_data[forms + index];
+        if (presentation == 0u || glyphs[position].glyph_id != nominal_glyph(codepoint)) { continue; }
+        let replacement = nominal_glyph(presentation);
+        if (replacement != 0u && replacement != glyphs[position].glyph_id) {
+            glyphs[position].glyph_id = replacement;
+            glyph_states[position].internal_flags |= GLYPH_SUBSTITUTED;
+        }
+    }
+}
+
+fn fallback_mark_glyph(position: u32) -> bool {
+    if (table_directory.gdef_length >= 6u && table_u16(table_directory.gdef_offset + 4u) != 0u) {
+        return gdef_class(4u, glyphs[position].glyph_id) == 3u;
+    }
+    return is_unicode_mark(glyphs[position].codepoint);
+}
+
+fn next_fallback_component(start: u32, expected: u32, ignore_marks: bool) -> i32 {
+    for (var position = start; position < run_state.glyph_count; position++) {
+        if (ignore_marks && fallback_mark_glyph(position)) { continue; }
+        return select(-1, i32(position), glyphs[position].glyph_id == expected);
+    }
+    return -1;
+}
+
+fn remove_fallback_component(position: u32) {
+    for (var cursor = position + 1u; cursor < run_state.glyph_count; cursor++) {
+        glyphs[cursor - 1u] = glyphs[cursor];
+        glyph_states[cursor - 1u] = glyph_states[cursor];
+    }
+    run_state.glyph_count -= 1u;
+}
+
+fn apply_arabic_fallback_ligature_table(count_field: u32, offset_field: u32,
+    additional_components: u32, ignore_marks: bool) {
+    let count = arabic_fallback_word(count_field);
+    let table = arabic_fallback_word(offset_field);
+    let stride = additional_components + 2u;
+    if (table == 0u || stride > 4u) { return; }
+    var position = 0u;
+    while (position < run_state.glyph_count) {
+        if (!fallback_feature_enabled(0x726c6967u, position)) { position += 1u; continue; }
+        var row = 0u;
+        var replaced = false;
+        while (row + stride <= count) {
+            let expected_first = nominal_glyph(unicode_data[table + row]);
+            if (expected_first == 0u || glyphs[position].glyph_id != expected_first) {
+                row += stride;
+                continue;
+            }
+            var components: array<u32, 3>;
+            components[0] = position;
+            var candidate = position;
+            var matched = true;
+            for (var component = 0u; component < additional_components; component++) {
+                let expected = nominal_glyph(unicode_data[table + row + 1u + component]);
+                if (expected == 0u) { matched = false; break; }
+                let next = next_fallback_component(candidate + 1u, expected, ignore_marks);
+                if (next < 0) { matched = false; break; }
+                candidate = u32(next);
+                components[component + 1u] = candidate;
+            }
+            let ligature = nominal_glyph(unicode_data[table + row + 1u + additional_components]);
+            if (!matched || ligature == 0u) { row += stride; continue; }
+            var cluster = glyphs[position].cluster;
+            for (var component = 1u; component <= additional_components; component++) {
+                cluster = min(cluster, glyphs[components[component]].cluster);
+            }
+            glyphs[position].glyph_id = ligature;
+            glyphs[position].cluster = cluster;
+            glyph_states[position].internal_flags |= GLYPH_SUBSTITUTED;
+            let ligature_id = run_state.reserved0 + 1u;
+            run_state.reserved0 = ligature_id;
+            glyph_states[position].ligature_id = ligature_id;
+            glyph_states[position].ligature_component = additional_components + 1u;
+            var component_number = 1u;
+            for (var cursor = position + 1u; cursor <= candidate; cursor++) {
+                if (ignore_marks && fallback_mark_glyph(cursor)) {
+                    glyph_states[cursor].ligature_id = ligature_id;
+                    glyph_states[cursor].ligature_component = component_number;
+                } else { component_number += 1u; }
+            }
+            var component = additional_components;
+            loop {
+                if (component == 0u) { break; }
+                remove_fallback_component(components[component]);
+                component -= 1u;
+            }
+            replaced = true;
+            break;
+        }
+        position += 1u;
+        if (replaced) { continue; }
+    }
+}
+
+fn apply_arabic_fallback() {
+    apply_arabic_fallback_forms();
+    apply_arabic_fallback_ligature_table(5u, 6u, 2u, true);
+    apply_arabic_fallback_ligature_table(7u, 8u, 1u, true);
+    apply_arabic_fallback_ligature_table(9u, 10u, 1u, false);
 }
 
 fn lookup_from_index(table_base: u32, lookup_index: u32) -> u32 {

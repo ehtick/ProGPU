@@ -75,6 +75,25 @@ public static class GpuOpenTypeLookupPlanCompiler
                 });
             }
         }
+        bool needsArabicFallback = layoutScript == new OpenTypeTag("arab") &&
+            !resolved.Any(static lookup => lookup.Command.TableKind == 1 && lookup.FeatureTag is
+                0x69736f6cu or 0x66696e61u or 0x66696e32u or 0x66696e33u or
+                0x6d656469u or 0x6d656432u or 0x696e6974u);
+        if (needsArabicFallback)
+        {
+            foreach (string fallbackFeature in new[] { "isol", "fina", "medi", "init", "rlig" })
+            {
+                uint tag = Tag(fallbackFeature);
+                foreach (FeatureInterval interval in ResolveIntervals(
+                             request.Features.Span, tag, features.BaseValues.GetValueOrDefault(tag)))
+                {
+                    if (interval.Value == 0) continue;
+                    commands.Add(new GpuOpenTypeLookupCommand(
+                        4, 0, 0, 0, tag, interval.Value, interval.Start, interval.End,
+                        HasFeatureTag(request.Features.Span, tag) ? FeatureExplicit : 0u, 160));
+                }
+            }
+        }
         bool hasGposKerning = resolved.Any(static lookup =>
             lookup.Command.TableKind == 2 && lookup.FeatureTag is 0x6b65726eu or 0x64697374u);
         if (!hasGposKerning && plan.Tables.KernLength != 0 &&

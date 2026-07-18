@@ -992,6 +992,39 @@ public sealed class ShapingContractsTests
     }
 
     [Fact]
+    public void GpuArabicFallbackUsesPresentationFormsWithoutFormLookups()
+    {
+        var face = new ArabicFallbackFontFace();
+        GpuOpenTypeShapingPlan plan = GpuOpenTypeShapingPlanCompiler.Compile(face);
+        var request = new ShapingRequest(ShapingDirection.RightToLeft, new OpenTypeTag("arab"));
+        GpuOpenTypeLookupCommand[] commands = GpuOpenTypeLookupPlanCompiler.Compile(plan, request);
+        Assert.Contains(commands, static command => command.TableKind == 4);
+        using var context = new WgpuContext();
+        context.Initialize(null);
+        using var fontData = new GpuOpenTypeFontData(context, plan);
+        using var pipeline = new GpuOpenTypeRunPipeline(context);
+        using var actual = new ShapingBuffer();
+
+        pipeline.ExecuteRun(
+            [new GpuShapingScalar(0x0628, 0), new GpuShapingScalar(0x0628, 1)],
+            fontData,
+            request,
+            commands,
+            actual);
+
+        Assert.Equal(new uint[] { 4, 3 }, actual.Glyphs.ToArray().Select(static glyph => glyph.GlyphId));
+
+        pipeline.ExecuteRun(
+            [new GpuShapingScalar(0x0644, 0), new GpuShapingScalar(0x0627, 1)],
+            fontData,
+            request,
+            commands,
+            actual);
+        Assert.Single(actual.Glyphs.ToArray());
+        Assert.Equal(11u, actual[0].GlyphId);
+    }
+
+    [Fact]
     public void GpuPositioningMatchesVariableInterInstance()
     {
         const string text = "AVATAR";
@@ -1358,7 +1391,7 @@ public sealed class ShapingContractsTests
     {
         public int FaceIndex => 0;
         public ushort UnitsPerEm => 1000;
-        public uint GlyphCount => 6;
+        public uint GlyphCount => 12;
         public uint VariationAxisCount => 0;
         public bool HasActiveVariations => false;
         public bool TryGetTable(OpenTypeTag tag, out ReadOnlyMemory<byte> table)
@@ -1648,6 +1681,50 @@ public sealed class ShapingContractsTests
                 for (var index = 0; index < 4; index++) data[offset + index] = (byte)value[index];
             }
         }
+    }
+
+    private sealed class ArabicFallbackFontFace : IShapingFontFace
+    {
+        public int FaceIndex => 0;
+        public ushort UnitsPerEm => 1000;
+        public uint GlyphCount => 6;
+        public uint VariationAxisCount => 0;
+        public bool HasActiveVariations => false;
+        public bool TryGetTable(OpenTypeTag tag, out ReadOnlyMemory<byte> table)
+        {
+            table = ReadOnlyMemory<byte>.Empty;
+            return false;
+        }
+        public uint GetNominalGlyph(uint codePoint) => codePoint switch
+        {
+            0x0628 => 1,
+            0xfe8f => 2,
+            0xfe91 => 3,
+            0xfe90 => 4,
+            0xfe92 => 5,
+            0x0644 => 6,
+            0xfedf => 7,
+            0x0627 => 8,
+            0xfe8e => 9,
+            0xfe8d => 10,
+            0xfefb => 11,
+            _ => 0
+        };
+        public bool TryGetVariationGlyph(uint codePoint, uint variationSelector, out uint glyphId)
+        {
+            glyphId = 0;
+            return false;
+        }
+        public int GetHorizontalAdvance(uint glyphId) => glyphId == 0 ? 0 : 500;
+        public int GetVerticalAdvance(uint glyphId) => 1000;
+        public int GetHorizontalOrigin(uint glyphId) => GetHorizontalAdvance(glyphId) / 2;
+        public int GetVerticalOrigin(uint glyphId) => 800;
+        public bool TryGetNormalizedVariationCoordinate(uint axisIndex, out short coordinate)
+        {
+            coordinate = 0;
+            return false;
+        }
+        public float GetLayoutVariationDelta(ushort outerIndex, ushort innerIndex) => 0;
     }
 
     private sealed class VariationSelectorFontFace : IShapingFontFace

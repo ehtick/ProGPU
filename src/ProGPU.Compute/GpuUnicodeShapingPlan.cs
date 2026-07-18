@@ -195,7 +195,24 @@ public static class GpuUnicodeShapingPlan
             words.Add(constraint.Second);
             words.Add(constraint.Third);
         }
+        words[15] = checked((uint)words.Count);
+        int arabicDirectory = words.Count;
+        for (var index = 0; index < 11; index++) words.Add(0);
+        words[arabicDirectory] = 0x41524246u;
+        words[arabicDirectory + 1] = ArabicFallbackPlan.FirstCodePoint;
+        words[arabicDirectory + 2] = ArabicFallbackPlan.LastCodePoint;
+        AppendArabic(ArabicFallbackPlan.ShapingForms, 3, 4);
+        AppendArabic(ArabicFallbackPlan.ThreeComponentLigatures, 5, 6);
+        AppendArabic(ArabicFallbackPlan.TwoComponentLigatures, 7, 8);
+        AppendArabic(ArabicFallbackPlan.MarkLigatures, 9, 10);
         return words.ToArray();
+
+        void AppendArabic(ReadOnlySpan<ushort> values, int countField, int offsetField)
+        {
+            words[arabicDirectory + countField] = checked((uint)values.Length);
+            words[arabicDirectory + offsetField] = checked((uint)words.Count);
+            foreach (ushort value in values) words.Add(value);
+        }
 
         static uint Pack(int target, int action)
         {
