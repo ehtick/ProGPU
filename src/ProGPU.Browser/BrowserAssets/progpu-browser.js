@@ -39,6 +39,39 @@ const VERSION = 1;
 const HEADER_SIZE = 16;
 const COMMAND_HEADER_SIZE = 8;
 const DIAGNOSTICS_VISIBILITY_KEY = 'progpu.browser.diagnostics.visible';
+const uncappedFrameResolvers = [];
+const uncappedGpuFenceResolvers = [];
+const MAX_UNCAPPED_FRAMES_IN_FLIGHT = 2;
+let uncappedFramesSinceFence = 0;
+const uncappedFrameChannel = new MessageChannel();
+uncappedFrameChannel.port1.onmessage = async () => {
+  const resolve = uncappedFrameResolvers.shift();
+  if (!resolve) return;
+
+  if (uncappedFramesSinceFence < MAX_UNCAPPED_FRAMES_IN_FLIGHT) {
+    uncappedFramesSinceFence++;
+    resolve(performance.now());
+    return;
+  }
+
+  // Bound producer/consumer latency instead of flooding the WebGPU queue. Two
+  // frames remain available for CPU/GPU overlap, then the oldest submitted work
+  // must finish before the next frame is admitted.
+  if (state.worker) {
+    uncappedGpuFenceResolvers.push(() => {
+      uncappedFramesSinceFence = 1;
+      resolve(performance.now());
+    });
+    state.worker.postMessage({ type: 'uncapped-frame-fence' });
+  } else if (state.device) {
+    await state.device.queue.onSubmittedWorkDone();
+    uncappedFramesSinceFence = 1;
+    resolve(performance.now());
+  } else {
+    uncappedFramesSinceFence = 1;
+    resolve(performance.now());
+  }
+};
 
 const textureFormats = [
   undefined,
@@ -602,6 +635,8 @@ function handleWorkerMessage(event) {
     setStatus(message.title, message.detail, message.isError);
   } else if (message.type === 'device-lost') {
     globalThis.setTimeout(() => globalThis.location.reload(), 250);
+  } else if (message.type === 'uncapped-frame-ready') {
+    uncappedGpuFenceResolvers.shift()?.();
   } else if (message.type === 'response') {
     const pending = state.workerRequests.get(message.id);
     if (!pending) return;
@@ -1208,8 +1243,17 @@ function releaseMappedBuffer(handle) {
   state.workerMappedBuffers.delete(handle);
 }
 
-function nextAnimationFrame() {
-  return new Promise(resolve => requestAnimationFrame(resolve));
+function nextAnimationFrame(vsync) {
+  if (vsync) return new Promise(resolve => requestAnimationFrame(resolve));
+
+  // A MessageChannel task yields to the browser event loop without coupling the
+  // renderer to the display refresh rate. Unlike a microtask loop it leaves input,
+  // canvas presentation, and other browser task sources eligible between frames;
+  // unlike nested zero-delay timers it is not forced onto the HTML 4 ms timer floor.
+  return new Promise(resolve => {
+    uncappedFrameResolvers.push(resolve);
+    uncappedFrameChannel.port2.postMessage(0);
+  });
 }
 
 function writeCanvasMetrics(destination) {
@@ -1295,6 +1339,10 @@ async function handleDispatcherWorkerMessage(event) {
         }
         break;
       }
+      case 'uncapped-frame-fence':
+        await state.device.queue.onSubmittedWorkDone();
+        globalThis.postMessage({ type: 'uncapped-frame-ready' });
+        break;
       case 'upload':
         state.uploads = new Uint8Array(message.upload);
         break;

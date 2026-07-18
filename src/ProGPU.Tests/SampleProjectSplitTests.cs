@@ -109,6 +109,27 @@ public sealed class SampleProjectSplitTests
     }
 
     [Fact]
+    public void BrowserFrameSchedulerHonorsVSyncWithoutStarvingTheEventLoop()
+    {
+        var browserAsset = Read("src", "ProGPU.Browser", "BrowserAssets", "progpu-browser.js");
+        var browserHost = Read("src", "ProGPU.Browser", "BrowserWindowHost.cs");
+
+        Assert.Contains("function nextAnimationFrame(vsync)", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("if (vsync) return new Promise(resolve => requestAnimationFrame(resolve));", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("const uncappedFrameChannel = new MessageChannel();", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("uncappedFrameChannel.port2.postMessage(0);", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("const MAX_UNCAPPED_FRAMES_IN_FLIGHT = 2;", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("state.device.queue.onSubmittedWorkDone()", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("type: 'uncapped-frame-fence'", browserAsset, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "function nextAnimationFrame(vsync) {\n  queueMicrotask",
+            browserAsset.Replace("\r\n", "\n", StringComparison.Ordinal),
+            StringComparison.Ordinal);
+        Assert.Contains("hosted.Gpu.Context.VSync", browserHost, StringComparison.Ordinal);
+        Assert.Contains("NextAnimationFrameAsync(vsync)", browserHost, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void BrowserFilePickerUsesNativeDialogWithCancellationSafeDirectByteFallback()
     {
         var browserAsset = Read("src", "ProGPU.Browser", "BrowserAssets", "progpu-browser.js");

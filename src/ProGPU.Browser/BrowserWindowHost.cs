@@ -77,7 +77,18 @@ public sealed partial class BrowserWindowHost : IWindowHost, IDisposable
         while (_windows.Count != 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var timestamp = await NextAnimationFrameAsync().WaitAsync(cancellationToken).ConfigureAwait(false);
+            bool vsync = false;
+            for (var index = 0; index < _windows.Count; index++)
+            {
+                var hosted = _windows[index];
+                if (hosted.IsVisible && hosted.Gpu.Context.VSync)
+                {
+                    vsync = true;
+                    break;
+                }
+            }
+
+            var timestamp = await NextAnimationFrameAsync(vsync).WaitAsync(cancellationToken).ConfigureAwait(false);
             var delta = previousTimestamp == 0 ? 0 : Math.Clamp((timestamp - previousTimestamp) / 1000.0, 0, 0.25);
             previousTimestamp = timestamp;
             var metrics = ReadCanvasMetrics();
@@ -114,7 +125,7 @@ public sealed partial class BrowserWindowHost : IWindowHost, IDisposable
     }
 
     [JSImport("nextAnimationFrame", "progpu-browser")]
-    private static partial Task<double> NextAnimationFrameAsync();
+    private static partial Task<double> NextAnimationFrameAsync(bool vsync);
 
     [JSImport("writeCanvasMetrics", "progpu-browser")]
     private static partial void WriteCanvasMetrics(nint destination);
