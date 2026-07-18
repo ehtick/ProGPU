@@ -2,7 +2,7 @@
 
 Status: accepted architecture; implementation in progress  
 Research date: 2026-07-18  
-ProGPU committed revision: `06451e53e53d28fff946b2942dd24e5cc33210b9`
+ProGPU baseline revision analyzed: `06451e53e53d28fff946b2942dd24e5cc33210b9`
 Vello revision inspected: `8ecea46dc79bbb10315c101f9dbd0955c627dab8` (2026-07-16)
 
 ## Executive decision
@@ -336,7 +336,10 @@ The important architectural lesson is not the exact shader count. It is that all
 
 Vello's `flatten.wgsl` decodes compact path segments in parallel, applies transforms, expands strokes, emits caps and joins, and produces a line soup. It uses adaptive curve logic, including Euler-spiral-based cubic/stroke handling, and atomically allocates the emitted line ranges. Per-path bounds are updated with atomic min/max.
 
-This stage is more complete than ProGPU's current experimental wavefront flattener, which uses a stored fixed subdivision count and rewrites all cached raw curves every frame. Vello also treats flattening as only the first sparse stage; it does not ask every output pixel to traverse every candidate path's BVH.
+At the analyzed baseline, this stage was more complete than ProGPU's experimental wavefront
+flattener, which used a stored fixed subdivision count and rewrote all cached raw curves every
+frame. The Phase 4 checkpoint below replaces both behaviors. Vello also treats flattening as only
+the first sparse stage; it does not ask every output pixel to traverse every candidate path's BVH.
 
 ### Draw decoding, clipping, and binning
 
@@ -345,9 +348,9 @@ Vello derives draw bounds, intersects them with clip bounds, and bins draw objec
 This is materially different from ProGPU's experimental wavefront binner:
 
 - Vello's cost follows draw coverage and chunked bin work.
-- The current ProGPU wavefront shader launches over screen grid cells and loops over every instance in every cell, giving O(grid cells x instances) tests.
+- The analyzed ProGPU wavefront shader launched over screen grid cells and looped over every instance in every cell, giving O(grid cells x instances) tests; the Phase 4 checkpoint replaces it.
 - Vello allocates variable-length bin lists with overflow detection.
-- The current ProGPU wavefront path gives every cell a fixed capacity of 64 and silently cannot represent arbitrary overlap.
+- The analyzed ProGPU wavefront path gave every cell a fixed capacity of 64 and could not represent arbitrary overlap; the Phase 4 checkpoint replaces it with exact capacity accounting.
 
 ### Tiles, line-to-tile subdivision, and backdrop
 
