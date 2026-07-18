@@ -76,6 +76,53 @@ public sealed class SamplePerformanceRegressionTests
     }
 
     [Fact]
+    public void TextVisualReusesMeasuredShapingAcrossEquivalentArrange()
+    {
+        var text = new TextVisual
+        {
+            Text = "Retained shaping",
+            Font = LoadTestFont(),
+            FontSize = 18f,
+            WidthConstraint = 240f
+        };
+        text.Measure(new Vector2(240f, 80f));
+        text.Arrange(new Rect(0f, 0f, 240f, 80f));
+        using var atlas = new GlyphAtlas(HeadlessWindow.Shared.Context, atlasSize: 256);
+        TextLayout? first = text.GetOrUpdateLayout(atlas);
+
+        text.Measure(new Vector2(240f, 80f));
+        text.Arrange(new Rect(0f, 0f, 240f, 80f));
+        TextLayout? second = text.GetOrUpdateLayout(atlas);
+
+        Assert.NotNull(first);
+        Assert.Same(first, second);
+    }
+
+    [Fact]
+    public void TextVisualRelayoutsInfiniteMeasurementWhenArrangeRequiresWrapping()
+    {
+        var text = new TextVisual
+        {
+            Text = "A retained text run that must wrap after arrange",
+            Font = LoadTestFont(),
+            FontSize = 18f
+        };
+        text.Measure(new Vector2(float.PositiveInfinity, 120f));
+        text.Arrange(new Rect(0f, 0f, text.DesiredSize.X, 120f));
+        using var atlas = new GlyphAtlas(HeadlessWindow.Shared.Context, atlasSize: 256);
+        TextLayout? measured = text.GetOrUpdateLayout(atlas);
+
+        text.Arrange(new Rect(0f, 0f, 80f, 120f));
+        TextLayout? arranged = text.GetOrUpdateLayout(atlas);
+
+        Assert.NotNull(measured);
+        Assert.NotNull(arranged);
+        Assert.NotSame(measured, arranged);
+        Assert.Equal(80f, arranged.MaxWidth);
+        Assert.True(arranged.ContentSize.Y > measured.ContentSize.Y);
+    }
+
+    [Fact]
     public void FontIconUsesBoundedGlyphAtlasByDefault()
     {
         var font = LoadTestFont();

@@ -93,7 +93,7 @@ public class TextVisual : FrameworkElement, ITextLayoutProvider
         set
         {
             ArgumentNullException.ThrowIfNull(value);
-            if (!ReferenceEquals(_textShapingOptions, value))
+            if (!_textShapingOptions.Equals(value))
             {
                 _textShapingOptions = value;
                 _layout = null;
@@ -112,9 +112,10 @@ public class TextVisual : FrameworkElement, ITextLayoutProvider
         var resolvedFont = ResolveFont();
         if (resolvedFont == null) return null;
 
-        if (_layout == null)
+        float maxWidth = Size.X;
+        if (_layout == null || !HasCompatibleLayoutWidth(_layout, maxWidth))
         {
-            _layout = new TextLayout(Text, resolvedFont, FontSize, Size.X, Alignment, atlas, TextShapingOptions);
+            _layout = new TextLayout(Text, resolvedFont, FontSize, maxWidth, Alignment, atlas, TextShapingOptions);
             Size = _layout.MeasuredSize;
         }
         else if (!_layout.HasTextures)
@@ -131,14 +132,30 @@ public class TextVisual : FrameworkElement, ITextLayoutProvider
             return Vector2.Zero;
 
         float maxWidth = WidthConstraint ?? availableSize.X;
-        var tempLayout = new TextLayout(Text, resolvedFont, FontSize, maxWidth, Alignment, null, TextShapingOptions);
-        return tempLayout.MeasuredSize;
+        if (_layout == null || !HasCompatibleLayoutWidth(_layout, maxWidth))
+        {
+            _layout = new TextLayout(Text, resolvedFont, FontSize, maxWidth, Alignment, null, TextShapingOptions);
+        }
+        return _layout.MeasuredSize;
     }
 
     protected override void ArrangeOverride(Rect arrangeRect)
     {
         Size = new Vector2(arrangeRect.Width, arrangeRect.Height);
-        _layout = null; // force regeneration with new size and actual atlas on next render
+        float maxWidth = arrangeRect.Width;
+        if (_layout != null && !HasCompatibleLayoutWidth(_layout, maxWidth))
+        {
+            _layout = null;
+        }
+    }
+
+    private bool HasCompatibleLayoutWidth(TextLayout layout, float requestedWidth)
+    {
+        float existingWidth = layout.MaxWidth;
+        if (existingWidth.Equals(requestedWidth)) return true;
+        return Alignment == TextAlignment.Left &&
+               float.IsPositiveInfinity(existingWidth) &&
+               requestedWidth >= layout.ContentSize.X;
     }
 
     public override void OnRender(DrawingContext context)
