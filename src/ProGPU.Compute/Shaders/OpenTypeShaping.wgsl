@@ -3249,6 +3249,7 @@ fn replace_multiple(subtable: u32, position: u32) -> bool {
         }
     }
     run_state.glyph_count += extra;
+    run_state.skip_count = max(run_state.skip_count, extra);
     return true;
 }
 
