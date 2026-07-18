@@ -1,6 +1,6 @@
-// Algorithm: Rasterize glyph coverage by supersampling each atlas texel and analytically accumulating line, quadratic, and cubic winding intersections.
-// Time complexity: O(A*S) per texel for A anti-aliasing samples and S outline segments.
-// Space complexity: O(1) local storage plus O(S) read-only segment bandwidth.
+// Algorithm: Rasterize glyph coverage with 8x8 supersampling, sharing analytic line, quadratic, and cubic winding intersections across each eight-sample row.
+// Time complexity: O(R*S + A) per texel for R=8 sample rows, A=64 anti-aliasing samples, and S outline segments.
+// Space complexity: O(R) private winding storage plus O(S) read-only segment bandwidth and one rgba8unorm output write per texel.
 struct GlyphUniforms {
     xStart: f32,
     yStart: f32,
@@ -120,8 +120,25 @@ fn solve_cubic(a_in: f32, b_in: f32, c_in: f32, d_in: f32, roots: ptr<function, 
 }
 
 
-fn is_point_inside(p: vec2<f32>, record: GlyphRecord) -> bool {
-    var winding: i32 = 0;
+fn accumulate_crossing(
+    intersect_x: f32,
+    direction: i32,
+    sample_xs: ptr<function, array<f32, 8>>,
+    windings: ptr<function, array<i32, 8>>
+) {
+    for (var sample_x = 0u; sample_x < 8u; sample_x = sample_x + 1u) {
+        if ((*sample_xs)[sample_x] < intersect_x) {
+            (*windings)[sample_x] = (*windings)[sample_x] + direction;
+        }
+    }
+}
+
+fn accumulate_winding_row(
+    sample_y: f32,
+    sample_xs: ptr<function, array<f32, 8>>,
+    record: GlyphRecord,
+    windings: ptr<function, array<i32, 8>>
+) {
     let endIdx = record.startSegment + record.segmentCount;
     for (var i: u32 = record.startSegment; i < endIdx; i = i + 1u) {
         let seg = segments[i];
@@ -132,21 +149,17 @@ fn is_point_inside(p: vec2<f32>, record: GlyphRecord) -> bool {
             if (A.y == B.y) {
                 continue;
             }
-            if (A.y <= p.y) {
-                if (B.y > p.y) { // Upward crossing
-                    let t = (p.y - A.y) / (B.y - A.y);
+            if (A.y <= sample_y) {
+                if (B.y > sample_y) { // Upward crossing
+                    let t = (sample_y - A.y) / (B.y - A.y);
                     let intersectX = A.x + t * (B.x - A.x);
-                    if (p.x < intersectX) {
-                        winding = winding + 1;
-                    }
+                    accumulate_crossing(intersectX, 1, sample_xs, windings);
                 }
             } else {
-                if (B.y <= p.y) { // Downward crossing
-                    let t = (p.y - A.y) / (B.y - A.y);
+                if (B.y <= sample_y) { // Downward crossing
+                    let t = (sample_y - A.y) / (B.y - A.y);
                     let intersectX = A.x + t * (B.x - A.x);
-                    if (p.x < intersectX) {
-                        winding = winding - 1;
-                    }
+                    accumulate_crossing(intersectX, -1, sample_xs, windings);
                 }
             }
         } else if (seg.segmentType == 1u) {
@@ -157,7 +170,7 @@ fn is_point_inside(p: vec2<f32>, record: GlyphRecord) -> bool {
 
             let a = A.y - 2.0 * B.y + C.y;
             let b = 2.0 * (B.y - A.y);
-            let c = A.y - p.y;
+            let c = A.y - sample_y;
 
             var roots = array<f32, 2>(0.0, 0.0);
             var root_count: u32 = 0u;
@@ -173,15 +186,15 @@ fn is_point_inside(p: vec2<f32>, record: GlyphRecord) -> bool {
                     var is_valid = false;
                     if (t < 0.005) {
                         if (deriv_y > 0.0) {
-                            is_valid = (p.y >= A.y);
+                            is_valid = (sample_y >= A.y);
                         } else if (deriv_y < 0.0) {
-                            is_valid = (p.y < A.y);
+                            is_valid = (sample_y < A.y);
                         }
                     } else if (t > 0.995) {
                         if (deriv_y > 0.0) {
-                            is_valid = (p.y < C.y);
+                            is_valid = (sample_y < C.y);
                         } else if (deriv_y < 0.0) {
-                            is_valid = (p.y >= C.y);
+                            is_valid = (sample_y >= C.y);
                         }
                     } else {
                         is_valid = true;
@@ -191,12 +204,10 @@ fn is_point_inside(p: vec2<f32>, record: GlyphRecord) -> bool {
                         let tc = clamp(t, 0.0, 1.0);
                         let omt = 1.0 - tc;
                         let x_t = omt * omt * A.x + 2.0 * omt * tc * B.x + tc * tc * C.x;
-                        if (p.x < x_t) {
-                            if (deriv_y > 0.0) {
-                                winding = winding + 1;
-                            } else if (deriv_y < 0.0) {
-                                winding = winding - 1;
-                            }
+                        if (deriv_y > 0.0) {
+                            accumulate_crossing(x_t, 1, sample_xs, windings);
+                        } else if (deriv_y < 0.0) {
+                            accumulate_crossing(x_t, -1, sample_xs, windings);
                         }
                     }
                 }
@@ -210,7 +221,7 @@ fn is_point_inside(p: vec2<f32>, record: GlyphRecord) -> bool {
             let a = -A.y + 3.0 * B.y - 3.0 * C.y + D_pt.y;
             let b = 3.0 * A.y - 6.0 * B.y + 3.0 * C.y;
             let c = -3.0 * A.y + 3.0 * B.y;
-            let d = A.y - p.y;
+            let d = A.y - sample_y;
 
             var roots = array<f32, 3>(0.0, 0.0, 0.0);
             var root_count: u32 = 0u;
@@ -225,15 +236,15 @@ fn is_point_inside(p: vec2<f32>, record: GlyphRecord) -> bool {
                     var is_valid = false;
                     if (t < 0.005) {
                         if (deriv_y > 0.0) {
-                            is_valid = (p.y >= A.y);
+                            is_valid = (sample_y >= A.y);
                         } else if (deriv_y < 0.0) {
-                            is_valid = (p.y < A.y);
+                            is_valid = (sample_y < A.y);
                         }
                     } else if (t > 0.995) {
                         if (deriv_y > 0.0) {
-                            is_valid = (p.y < D_pt.y);
+                            is_valid = (sample_y < D_pt.y);
                         } else if (deriv_y < 0.0) {
-                            is_valid = (p.y >= D_pt.y);
+                            is_valid = (sample_y >= D_pt.y);
                         }
                     } else {
                         is_valid = true;
@@ -246,19 +257,16 @@ fn is_point_inside(p: vec2<f32>, record: GlyphRecord) -> bool {
                                 + 3.0 * omt * omt * tc * B.x
                                 + 3.0 * omt * tc * tc * C.x
                                 + tc * tc * tc * D_pt.x;
-                        if (p.x < x_t) {
-                            if (deriv_y > 0.0) {
-                                winding = winding + 1;
-                            } else if (deriv_y < 0.0) {
-                                winding = winding - 1;
-                            }
+                        if (deriv_y > 0.0) {
+                            accumulate_crossing(x_t, 1, sample_xs, windings);
+                        } else if (deriv_y < 0.0) {
+                            accumulate_crossing(x_t, -1, sample_xs, windings);
                         }
                     }
                 }
             }
         }
     }
-    return winding != 0;
 }
 
 @compute @workgroup_size(16, 16)
@@ -276,18 +284,28 @@ fn cs_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let px = uniforms.xStart + f32(x);
     let py = uniforms.yStart + f32(y);
 
-    var coverage: f32 = 0.0;
+    var sample_xs = array<f32, 8>();
+    for (var sample_x = 0u; sample_x < 8u; sample_x = sample_x + 1u) {
+        let dx = 0.0625 + f32(sample_x) * 0.125;
+        sample_xs[sample_x] = (px + dx - uniforms.subpixelX) / uniforms.scale;
+    }
+    var covered_samples = 0u;
 
-    for (var dy: f32 = 0.0625; dy < 1.0; dy = dy + 0.125) {
-        for (var dx: f32 = 0.0625; dx < 1.0; dx = dx + 0.125) {
-            let sp = vec2<f32>(px + dx - uniforms.subpixelX, py + dy);
-            let fp = vec2<f32>(sp.x / uniforms.scale, -sp.y / uniforms.scale);
-            if (is_point_inside(fp, record)) {
-                coverage = coverage + 0.015625;
+    // Fixed 8x8 sampling matches the previous quality policy exactly. Curve roots
+    // depend on sample y, not sample x, so one row traversal serves all eight x taps.
+    for (var sample_y = 0u; sample_y < 8u; sample_y = sample_y + 1u) {
+        let dy = 0.0625 + f32(sample_y) * 0.125;
+        let glyph_y = -(py + dy) / uniforms.scale;
+        var windings = array<i32, 8>(0, 0, 0, 0, 0, 0, 0, 0);
+        accumulate_winding_row(glyph_y, &sample_xs, record, &windings);
+        for (var sample_x = 0u; sample_x < 8u; sample_x = sample_x + 1u) {
+            if (windings[sample_x] != 0) {
+                covered_samples = covered_samples + 1u;
             }
         }
     }
 
+    let coverage = f32(covered_samples) * 0.015625;
     let writeCoord = vec2<u32>(uniforms.atlasX + x, uniforms.atlasY + y);
     textureStore(atlasTexture, writeCoord, vec4<f32>(coverage, 0.0, 0.0, 0.0));
 }

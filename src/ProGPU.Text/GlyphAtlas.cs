@@ -41,10 +41,17 @@ public unsafe class GlyphAtlas : IDisposable
     private readonly GpuTexture _atlasTexture;
     private readonly uint _atlasSize;
 
-    // Packing state (Shelf Packer)
-    private uint _currentX = 2;
-    private uint _currentY = 2;
-    private uint _currentRowHeight = 0;
+    // Packing state. Shelves are segregated by height so a tall glyph cannot waste
+    // the full width of a row containing short punctuation and combining marks.
+    private struct AtlasShelf
+    {
+        public uint Y;
+        public uint Height;
+        public uint NextX;
+    }
+
+    private readonly List<AtlasShelf> _shelves = new();
+    private uint _nextShelfY = 2;
 
     private readonly record struct GlyphKey(TtfFont Font, ushort GlyphIndex, float Size, byte SubpixelX);
 
@@ -204,7 +211,7 @@ public unsafe class GlyphAtlas : IDisposable
 
     public ulong ClearCount { get; private set; }
 
-    public bool IsAlmostFull => (_currentY + _currentRowHeight) > (_atlasSize * 0.85f);
+    public bool IsAlmostFull => _nextShelfY > (_atlasSize * 0.85f);
 
     public void Clear()
     {
@@ -212,9 +219,8 @@ public unsafe class GlyphAtlas : IDisposable
         
         ProGpuTextDiagnostics.WriteLine("[GlyphAtlas] Proactive Clear: Resetting packer and clearing cache.");
         _glyphs.Clear();
-        _currentX = 2;
-        _currentY = 2;
-        _currentRowHeight = 0;
+        _shelves.Clear();
+        _nextShelfY = 2;
 
         _atlasTexture.ClearRenderTarget();
         CapacityExceeded = false;
@@ -726,22 +732,29 @@ public unsafe class GlyphAtlas : IDisposable
             return false;
         }
 
-        uint allocationExtent = preferGlyphAtlas
-            ? GetPreferredAllocationExtent(width, height)
-            : 0;
-        uint allocationWidth = preferGlyphAtlas ? allocationExtent : width;
-        uint allocationHeight = preferGlyphAtlas ? allocationExtent : height;
-        uint nextX = _currentX;
-        uint nextY = _currentY;
-        uint nextRowHeight = _currentRowHeight;
-        if (nextX + allocationWidth + 2 > _atlasSize)
+        // Keep reusable size classes, but classify each axis independently. A square
+        // based on max(width, height) wastes most of the atlas for narrow glyphs and
+        // forces avoidable GPU rerasterization while scrolling through a font.
+        uint allocationWidth = GetPreferredAllocationExtent(width);
+        uint allocationHeight = GetPreferredAllocationExtent(height);
+        for (int shelfIndex = 0; shelfIndex < _shelves.Count; shelfIndex++)
         {
-            nextX = 2;
-            nextY += nextRowHeight + 2;
-            nextRowHeight = 0;
+            AtlasShelf shelf = _shelves[shelfIndex];
+            if (shelf.Height != allocationHeight || shelf.NextX + allocationWidth + 2 > _atlasSize)
+            {
+                continue;
+            }
+
+            x = shelf.NextX;
+            y = shelf.Y;
+            regionWidth = allocationWidth;
+            regionHeight = allocationHeight;
+            shelf.NextX += allocationWidth + 2;
+            _shelves[shelfIndex] = shelf;
+            return true;
         }
 
-        if (nextY + allocationHeight + 2 > _atlasSize)
+        if (_nextShelfY + allocationHeight + 2 > _atlasSize)
         {
             if (preferGlyphAtlas && TryReuseLeastRecentlyUsedRegion(
                     allocationWidth,
@@ -761,27 +774,28 @@ public unsafe class GlyphAtlas : IDisposable
             return false;
         }
 
-        x = nextX;
-        y = nextY;
+        x = 2;
+        y = _nextShelfY;
         regionWidth = allocationWidth;
         regionHeight = allocationHeight;
-        _currentX = nextX + allocationWidth + 2;
-        _currentY = nextY;
-        _currentRowHeight = Math.Max(nextRowHeight, allocationHeight);
+        _shelves.Add(new AtlasShelf
+        {
+            Y = y,
+            Height = allocationHeight,
+            NextX = x + allocationWidth + 2
+        });
+        _nextShelfY += allocationHeight + 2;
         return true;
     }
 
-    private uint GetPreferredAllocationExtent(uint width, uint height)
+    private uint GetPreferredAllocationExtent(uint extent)
     {
-        uint extent = Math.Max(16u, Math.Max(width, height));
-        extent--;
-        extent |= extent >> 1;
-        extent |= extent >> 2;
-        extent |= extent >> 4;
-        extent |= extent >> 8;
-        extent |= extent >> 16;
-        extent++;
-        return Math.Min(extent, _atlasSize - 4);
+        // Eight-pixel classes retain cheap best-fit reuse without the near-2x loss
+        // per axis caused by powers of two. Coverage still occupies its exact width
+        // and height; this only controls reserved atlas residency.
+        extent = Math.Max(8u, extent);
+        uint alignedExtent = (extent + 7u) & ~7u;
+        return Math.Min(alignedExtent, _atlasSize - 4);
     }
 
     private bool TryReuseLeastRecentlyUsedRegion(

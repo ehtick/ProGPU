@@ -1730,7 +1730,7 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
             Assert.True(ReadGlyphAtlasCoverage(pixels, first, atlasSize, 8, 8) > 200);
 
             GlyphInfo second = atlas.GetOrCreateGlyph(font, 'A', 25f);
-            Assert.NotEqual(first.X, second.X);
+            Assert.NotEqual((first.X, first.Y), (second.X, second.Y));
         }
         finally
         {
