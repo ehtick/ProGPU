@@ -1,7 +1,7 @@
-// Algorithm: initialize a shaping run by binary-searching a compressed nominal cmap, then load direction-aware design-unit metrics by glyph ID.
-// Time complexity: O(N log R + N log V + L*N*log C) for N scalars, R cmap ranges, V variation-selector ranges, L ordered ranged lookups, and coverage size C; initialization, metrics, and output conversion are parallel while order-changing preprocessing and lookup mutation are serial.
-// Space complexity: O(N + R + V + G + L) storage for glyphs plus stable internal identities, cmap/variation ranges, G metrics, and lookup commands; each invocation uses O(1) private storage and no textures.
-// Workgroups contain 64 independent glyph invocations; the ordered lookup VM uses one invocation because substitutions mutate shared order. Runtime loops are bounded by uploaded counts/capacity and OpenType table counts. Lookup flags use GDEF glyph/mark classes and mark-set coverage without auxiliary allocations. All arithmetic is exact 32-bit integer design-unit arithmetic.
+// Algorithm: initialize through a compressed nominal cmap, preprocess variation selectors and Unicode joining properties, execute ordered OpenType substitutions/positioning, then load direction-aware design-unit metrics and finalize output order.
+// Time complexity: O(N log R + N log V + N log U + L*N*log C) for N scalars, R cmap ranges, V variation-selector ranges, U Unicode-property ranges, L ordered ranged lookups, and coverage size C; initialization, metrics, and output conversion are parallel while order-changing preprocessing and lookup mutation are serial.
+// Space complexity: O(N + R + V + U + G + L) storage for glyphs plus stable internal identities, cmap/variation/Unicode ranges, G metrics, and lookup commands; each invocation uses O(1) private storage and no textures.
+// Workgroups contain 64 independent glyph invocations; Unicode preprocessing and the ordered lookup VM use one invocation because they mutate shared order. The Arabic joining machine has 42 fixed transitions (168 bytes of private state). Runtime loops are bounded by uploaded counts/capacity and OpenType table counts. Lookup flags use GDEF glyph/mark classes and mark-set coverage without auxiliary allocations. All arithmetic is exact 32-bit integer design-unit arithmetic.
 
 struct Params {
     input_count: u32,
@@ -15,7 +15,7 @@ struct Params {
     cluster_level: u32,
     script_tag: u32,
     variation_mapping_count: u32,
-    reserved1: u32,
+    unicode_range_count: u32,
 };
 
 struct InputScalar {
@@ -49,6 +49,13 @@ struct VariationMapping {
     end: u32,
     selector: u32,
     glyph: u32,
+};
+
+struct UnicodePropertyRange {
+    start: u32,
+    end: u32,
+    properties_a: u32,
+    properties_b: u32,
 };
 
 struct ShapingGlyph {
@@ -127,6 +134,7 @@ struct LookupTask {
 @group(0) @binding(9) var<storage, read_write> glyph_states: array<GlyphState>;
 @group(0) @binding(10) var<storage, read> variation_deltas: array<LayoutVariationDelta>;
 @group(0) @binding(11) var<storage, read> variation_mappings: array<VariationMapping>;
+@group(0) @binding(12) var<storage, read> unicode_ranges: array<UnicodePropertyRange>;
 
 const FEATURE_EXPLICIT: u32 = 1u;
 const GLYPH_SUBSTITUTED: u32 = 2u;
@@ -134,6 +142,24 @@ const GLYPH_INVISIBLE: u32 = 4u;
 const FRACTION_NUMERATOR: u32 = 1u;
 const FRACTION_DENOMINATOR: u32 = 2u;
 const FRACTION_SLASH: u32 = 4u;
+const ARABIC_ACTION_SHIFT: u32 = 8u;
+const ARABIC_ACTION_MASK: u32 = 7u << ARABIC_ACTION_SHIFT;
+const ARABIC_ISOLATED: u32 = 0u;
+const ARABIC_FINAL: u32 = 1u;
+const ARABIC_FINAL2: u32 = 2u;
+const ARABIC_FINAL3: u32 = 3u;
+const ARABIC_MEDIAL: u32 = 4u;
+const ARABIC_MEDIAL2: u32 = 5u;
+const ARABIC_INITIAL: u32 = 6u;
+const ARABIC_NONE: u32 = 7u;
+var<private> arabic_state_table: array<u32, 42> = array<u32, 42>(
+    0x00000707u, 0x00020007u, 0x00010007u, 0x00020007u, 0x00010007u, 0x00060007u,
+    0x00000707u, 0x00020007u, 0x00010007u, 0x00020007u, 0x00050207u, 0x00060007u,
+    0x00000707u, 0x00020007u, 0x00010106u, 0x00030106u, 0x00040106u, 0x00060106u,
+    0x00000707u, 0x00020007u, 0x00010104u, 0x00030104u, 0x00040104u, 0x00060104u,
+    0x00000707u, 0x00020007u, 0x00010005u, 0x00020005u, 0x00050205u, 0x00060005u,
+    0x00000707u, 0x00020007u, 0x00010000u, 0x00020000u, 0x00050200u, 0x00060000u,
+    0x00000707u, 0x00020007u, 0x00010007u, 0x00020007u, 0x00050307u, 0x00060007u);
 fn is_decimal(codepoint: u32) -> bool {
     return (codepoint >= 0x0030u && codepoint <= 0x0039u) ||
         (codepoint >= 0x0660u && codepoint <= 0x0669u) ||
@@ -271,6 +297,56 @@ fn prepare_fraction_masks() {
     }
 }
 
+fn unicode_properties_a(codepoint: u32) -> u32 {
+    var low = 0u;
+    var high = params.unicode_range_count;
+    loop {
+        if (low >= high) { break; }
+        let middle = low + ((high - low) >> 1u);
+        let range = unicode_ranges[middle];
+        if (codepoint < range.start) { high = middle; }
+        else if (codepoint >= range.end) { low = middle + 1u; }
+        else { return range.properties_a; }
+    }
+    return 0u;
+}
+
+fn uses_arabic_joining() -> bool {
+    let script = params.script_tag;
+    return script == 0x61646c6du || script == 0x61726162u || script == 0x63687273u ||
+        script == 0x726f6867u || script == 0x6d616e64u || script == 0x6d616e69u ||
+        script == 0x6d6f6e67u || script == 0x6e6b6f6fu || script == 0x6f756772u ||
+        script == 0x70686167u || script == 0x70686c70u || script == 0x736f6764u ||
+        script == 0x73797263u;
+}
+
+fn set_arabic_action(position: u32, action: u32) {
+    glyph_states[position].feature_mask =
+        (glyph_states[position].feature_mask & ~ARABIC_ACTION_MASK) |
+        ((action & 7u) << ARABIC_ACTION_SHIFT);
+}
+
+fn assign_arabic_joining_actions() {
+    if (!uses_arabic_joining()) { return; }
+    var previous = 0xffffffffu;
+    var state = 0u;
+    for (var position = 0u; position < run_state.glyph_count; position++) {
+        let joining_type = unicode_properties_a(glyphs[position].codepoint) & 0xffu;
+        if (joining_type == 6u) {
+            set_arabic_action(position, ARABIC_NONE);
+            continue;
+        }
+        let entry = arabic_state_table[state * 6u + joining_type];
+        let previous_action = entry & 0xffu;
+        if (previous_action != ARABIC_NONE && previous != 0xffffffffu) {
+            set_arabic_action(previous, previous_action);
+        }
+        set_arabic_action(position, (entry >> 8u) & 0xffu);
+        previous = position;
+        state = (entry >> 16u) & 0xffu;
+    }
+}
+
 fn feature_allowed(command: LookupCommand, position: u32) -> bool {
     if ((command.command_flags & FEATURE_EXPLICIT) != 0u) { return true; }
     if (command.feature_tag == 0x66726163u) { return glyph_states[position].feature_mask != 0u; }
@@ -280,6 +356,14 @@ fn feature_allowed(command: LookupCommand, position: u32) -> bool {
     if (command.feature_tag == 0x646e6f6du) {
         return (glyph_states[position].feature_mask & FRACTION_DENOMINATOR) != 0u;
     }
+    let arabic_action = (glyph_states[position].feature_mask & ARABIC_ACTION_MASK) >> ARABIC_ACTION_SHIFT;
+    if (command.feature_tag == 0x69736f6cu) { return arabic_action == ARABIC_ISOLATED; }
+    if (command.feature_tag == 0x66696e61u) { return arabic_action == ARABIC_FINAL; }
+    if (command.feature_tag == 0x66696e32u) { return arabic_action == ARABIC_FINAL2; }
+    if (command.feature_tag == 0x66696e33u) { return arabic_action == ARABIC_FINAL3; }
+    if (command.feature_tag == 0x6d656469u) { return arabic_action == ARABIC_MEDIAL; }
+    if (command.feature_tag == 0x6d656432u) { return arabic_action == ARABIC_MEDIAL2; }
+    if (command.feature_tag == 0x696e6974u) { return arabic_action == ARABIC_INITIAL; }
     return true;
 }
 
@@ -914,7 +998,7 @@ fn apply_lookup_at(lookup_offset: u32, position: u32, feature_value: u32, featur
 
 @compute @workgroup_size(1)
 fn preprocess_glyphs(@builtin(global_invocation_id) id: vec3<u32>) {
-    if (id.x != 0u || params.variation_mapping_count == 0u) { return; }
+    if (id.x != 0u) { return; }
     var index = 1u;
     loop {
         if (index >= run_state.glyph_count) { break; }
@@ -935,6 +1019,7 @@ fn preprocess_glyphs(@builtin(global_invocation_id) id: vec3<u32>) {
         }
         run_state.glyph_count -= 1u;
     }
+    assign_arabic_joining_actions();
 }
 
 @compute @workgroup_size(1)
@@ -1559,7 +1644,8 @@ fn initialize_glyphs(@builtin(global_invocation_id) id: vec3<u32>) {
     glyphs[index] = ShapingGlyph(
         nominal_glyph(input.codepoint), input.codepoint, input.cluster, input.flags,
         0, 0, 0, 0);
-    glyph_states[index] = GlyphState(index + 1u, 0u, 0u, 0, 0u, 0u, 0u, 0u);
+    glyph_states[index] = GlyphState(
+        index + 1u, 0u, 0u, 0, 0u, ARABIC_NONE << ARABIC_ACTION_SHIFT, 0u, 0u);
 }
 
 @compute @workgroup_size(64)

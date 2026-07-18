@@ -291,6 +291,69 @@ public sealed class ShapingContractsTests
     }
 
     [Fact]
+    public void GpuUnicodePlanPreservesAuthoritativeComplexScriptProperties()
+    {
+        ReadOnlySpan<GpuUnicodePropertyRange> ranges = GpuUnicodeShapingPlan.Ranges.Span;
+
+        Assert.False(ranges.IsEmpty);
+        Assert.Equal(0u, ranges[0].Start);
+        Assert.Equal(0x110000u, ranges[^1].End);
+        Assert.True(ranges.Length < 20_000, $"Expected compressed Unicode ranges, actual {ranges.Length}.");
+        Assert.Equal(3, UnicodeShapingProperties.GetArabicJoiningType(0x0628));
+        Assert.Equal(6, UnicodeShapingProperties.GetArabicJoiningType(0x064e));
+        Assert.Equal(30, UnicodeShapingProperties.GetCanonicalCombiningClass(0x064e));
+        Assert.True(UnicodeShapingProperties.IsMark(0x064e));
+        Assert.NotEqual(0, UnicodeShapingProperties.GetIndicProperties(0x0915));
+        Assert.NotEqual(0, UnicodeShapingProperties.GetUseCategory(0x0915));
+
+        for (var index = 1; index < ranges.Length; index++)
+            Assert.Equal(ranges[index - 1].End, ranges[index].Start);
+    }
+
+    [Fact]
+    public void GpuPreprocessingAppliesArabicJoiningForms()
+    {
+        var face = new ArabicJoiningFontFace();
+        GpuOpenTypeShapingPlan plan = GpuOpenTypeShapingPlanCompiler.Compile(face);
+        var request = new ShapingRequest(
+            ShapingDirection.RightToLeft,
+            new OpenTypeTag("arab"),
+            language: "ar");
+        uint table = plan.Tables.GsubOffset;
+        GpuOpenTypeLookupCommand[] commands =
+        [
+            new(1, table + 4, 1, 0, new OpenTypeTag("init").Value, 1),
+            new(1, table + 26, 1, 0, new OpenTypeTag("medi").Value, 1),
+            new(1, table + 48, 1, 0, new OpenTypeTag("fina").Value, 1),
+            new(1, table + 70, 1, 0, new OpenTypeTag("isol").Value, 1)
+        ];
+        using var context = new WgpuContext();
+        context.Initialize(null);
+        using var fontData = new GpuOpenTypeFontData(context, plan);
+        using var pipeline = new GpuOpenTypeRunPipeline(context);
+        using var joined = new ShapingBuffer();
+        using var transparent = new ShapingBuffer();
+
+        pipeline.ExecuteRun(
+            [
+                new GpuShapingScalar(0x0628, 0),
+                new GpuShapingScalar(0x0628, 1),
+                new GpuShapingScalar(0x0628, 2)
+            ],
+            fontData, request, commands, joined);
+        pipeline.ExecuteRun(
+            [
+                new GpuShapingScalar(0x0628, 0),
+                new GpuShapingScalar(0x064e, 0),
+                new GpuShapingScalar(0x0628, 1)
+            ],
+            fontData, request, commands, transparent);
+
+        Assert.Equal(new uint[] { 12, 11, 10 }, joined.Glyphs.ToArray().Select(static glyph => glyph.GlyphId));
+        Assert.Equal(new uint[] { 12, 2, 10 }, transparent.Glyphs.ToArray().Select(static glyph => glyph.GlyphId));
+    }
+
+    [Fact]
     public void GpuLookupPlanPreservesHalfOpenFeatureRanges()
     {
         var face = new TtfShapingFontFace(InterFontFamily.Regular);
@@ -663,6 +726,62 @@ public sealed class ShapingContractsTests
             return false;
         }
         public float GetLayoutVariationDelta(ushort outerIndex, ushort innerIndex) => 0;
+    }
+
+    private sealed class ArabicJoiningFontFace : IShapingFontFace
+    {
+        private static readonly byte[] s_gsub = CreateGsub();
+
+        public int FaceIndex => 0;
+        public ushort UnitsPerEm => 1000;
+        public uint GlyphCount => 14;
+        public uint VariationAxisCount => 0;
+        public bool HasActiveVariations => false;
+        public bool TryGetTable(OpenTypeTag tag, out ReadOnlyMemory<byte> table)
+        {
+            table = tag == new OpenTypeTag("GSUB") ? s_gsub : ReadOnlyMemory<byte>.Empty;
+            return !table.IsEmpty;
+        }
+        public uint GetNominalGlyph(uint codePoint) => codePoint == 0x0628 ? 1u : codePoint == 0x064e ? 2u : 0u;
+        public bool TryGetVariationGlyph(uint codePoint, uint variationSelector, out uint glyphId)
+        {
+            glyphId = 0;
+            return false;
+        }
+        public int GetHorizontalAdvance(uint glyphId) => glyphId == 2 ? 0 : 500;
+        public int GetVerticalAdvance(uint glyphId) => 1000;
+        public int GetHorizontalOrigin(uint glyphId) => 250;
+        public int GetVerticalOrigin(uint glyphId) => 800;
+        public bool TryGetNormalizedVariationCoordinate(uint axisIndex, out short coordinate)
+        {
+            coordinate = 0;
+            return false;
+        }
+        public float GetLayoutVariationDelta(ushort outerIndex, ushort innerIndex) => 0;
+
+        private static byte[] CreateGsub()
+        {
+            var data = new byte[92];
+            WriteLookup(4, 10);
+            WriteLookup(26, 11);
+            WriteLookup(48, 12);
+            WriteLookup(70, 13);
+            return data;
+
+            void WriteLookup(int lookup, ushort substitute)
+            {
+                U16(lookup, 1); U16(lookup + 2, 0); U16(lookup + 4, 1); U16(lookup + 6, 8);
+                int subtable = lookup + 8;
+                U16(subtable, 2); U16(subtable + 2, 8); U16(subtable + 4, 1); U16(subtable + 6, substitute);
+                U16(subtable + 8, 1); U16(subtable + 10, 1); U16(subtable + 12, 1);
+            }
+
+            void U16(int offset, ushort value)
+            {
+                data[offset] = (byte)(value >> 8);
+                data[offset + 1] = (byte)value;
+            }
+        }
     }
 
     private sealed class VariationSelectorFontFace : IShapingFontFace
