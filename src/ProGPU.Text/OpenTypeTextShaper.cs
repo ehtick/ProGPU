@@ -524,6 +524,7 @@ public static class OpenTypeTextShaper
             foreach (EnabledLookup enabled in plan.Lookups)
             {
                 if (!IsSubstitutionStageFeature(enabled.Tag, stage)) continue;
+                glyphs.SetManualJoiners(IsManualJoinerStage(stage));
                 ushort lookupIndex = enabled.LookupIndex;
                 if (lookupIndex >= table.LookupList.Count)
                 {
@@ -574,6 +575,7 @@ public static class OpenTypeTextShaper
                     }
                 }
                 glyphs.ClearLookupSyllable();
+                glyphs.SetManualJoiners(false);
 
                 ApplyAlternateLookup(font, glyphs, lookupIndex, enabled.Value, enabled.Tag);
             }
@@ -584,6 +586,7 @@ public static class OpenTypeTextShaper
             foreach (EnabledLookup enabled in rawLookups)
             {
                 if (!IsSubstitutionStageFeature(enabled.Tag, stage)) continue;
+                glyphs.SetManualJoiners(IsManualJoinerStage(stage));
                 bool restrictToSyllable = IsUsePerSyllableFeature(enabled.Tag, stage);
                 bool alternateLookup = IsRawAlternateLookup(rawTable.Span, enabled.LookupIndex);
                 if (!alternateLookup)
@@ -604,10 +607,12 @@ public static class OpenTypeTextShaper
                     }
                 }
                 glyphs.ClearLookupSyllable();
+                glyphs.SetManualJoiners(false);
                 ApplyAlternateLookup(font, glyphs, enabled.LookupIndex, enabled.Value, enabled.Tag);
             }
         }
 
+        glyphs.SetManualJoiners(false);
         foreach (EnabledLookup enabled in rawLookups)
         {
             if (!IsSubstitutionStageFeature(enabled.Tag, stage)) continue;
@@ -643,6 +648,15 @@ public static class OpenTypeTextShaper
         (tag is "locl" or "ccmp" or "nukt" or "akhn" or "rphf" or "pref" or
             "rkrf" or "abvf" or "blwf" or "half" or "pstf" or "vatu" or "cjct" ||
          stage == UseSubstitutionStage.IndicPresentation && tag is "init" or "pres" or "abvs" or "blws" or "psts" or "haln");
+
+    private static bool IsManualJoinerStage(UseSubstitutionStage stage) => stage is
+        UseSubstitutionStage.IndicNukta or UseSubstitutionStage.IndicAkhand or UseSubstitutionStage.Repha or
+        UseSubstitutionStage.IndicRakar or UseSubstitutionStage.Prebase or UseSubstitutionStage.IndicBelow or
+        UseSubstitutionStage.IndicAbove or UseSubstitutionStage.IndicHalf or UseSubstitutionStage.IndicPost or
+        UseSubstitutionStage.IndicVattu or UseSubstitutionStage.IndicConjunct or UseSubstitutionStage.IndicPresentation or
+        UseSubstitutionStage.KhmerBasic or UseSubstitutionStage.KhmerPresentation or
+        UseSubstitutionStage.MyanmarRepha or UseSubstitutionStage.MyanmarPrebase or UseSubstitutionStage.MyanmarBelow or
+        UseSubstitutionStage.MyanmarPostbase or UseSubstitutionStage.MyanmarPresentation;
 
     private static bool IsSubstitutionStageFeature(string tag, UseSubstitutionStage stage)
     {
@@ -1390,7 +1404,7 @@ public static class OpenTypeTextShaper
         int matchPosition = position;
         for (var index = 0; index < backtrackCount; index++)
         {
-            matchPosition = glyphs.PreviousVisibleIndex(matchPosition - 1, lookupFlags);
+            matchPosition = glyphs.PreviousContextIndex(matchPosition - 1, lookupFlags);
             if (matchPosition < 0) return false;
             int coverage = subtableOffset + ReadU16(data, cursor + index * 2);
             if (FindCoverage(data, coverage, glyphs[matchPosition]) < 0) return false;
@@ -1418,7 +1432,7 @@ public static class OpenTypeTextShaper
         if (!CanRead(data, cursor, lookaheadCount * 2)) return false;
         for (var index = 0; index < lookaheadCount; index++)
         {
-            matchPosition = glyphs.NextVisibleIndex(matchPosition + 1, lookupFlags);
+            matchPosition = glyphs.NextContextIndex(matchPosition + 1, lookupFlags);
             if (matchPosition < 0) return false;
             int coverage = subtableOffset + ReadU16(data, cursor + index * 2);
             if (FindCoverage(data, coverage, glyphs[matchPosition]) < 0) return false;
@@ -1632,7 +1646,7 @@ public static class OpenTypeTextShaper
         int matchPosition = position;
         for (var index = 0; index < backtrackCount; index++)
         {
-            matchPosition = glyphs.PreviousVisibleIndex(matchPosition - 1, lookupFlags);
+            matchPosition = glyphs.PreviousContextIndex(matchPosition - 1, lookupFlags);
             if (matchPosition < 0) return false;
             ushort expected = ReadU16(data, cursor + index * 2);
             ushort actualGlyph = glyphs[matchPosition];
@@ -1683,7 +1697,7 @@ public static class OpenTypeTextShaper
         }
         for (var index = 0; index < lookaheadCount; index++)
         {
-            matchPosition = glyphs.NextVisibleIndex(matchPosition + 1, lookupFlags);
+            matchPosition = glyphs.NextContextIndex(matchPosition + 1, lookupFlags);
             if (matchPosition < 0) return false;
             ushort expected = ReadU16(data, cursor + index * 2);
             ushort actualGlyph = glyphs[matchPosition];
@@ -3363,6 +3377,7 @@ public static class OpenTypeTextShaper
         private readonly ReadOnlyMemory<byte> _gdefTable;
         private byte _lookupSyllable;
         private bool _restrictLookupToSyllable;
+        private bool _manualJoiners;
         private int _contextMatchEnd;
         private int _markFilteringCoverage = -1;
         private uint _randomState = 1;
@@ -3408,6 +3423,8 @@ public static class OpenTypeTextShaper
             _restrictLookupToSyllable = false;
             _lookupSyllable = 0;
         }
+
+        public void SetManualJoiners(bool enabled) => _manualJoiners = enabled;
 
         public void ClearSyllables()
         {
@@ -5645,7 +5662,8 @@ public static class OpenTypeTextShaper
                 // reordering, but OpenType lookup matching skips it just like
                 // HarfBuzz skips the temporary .notdef buffer item.
                 if (!IsDefaultIgnorable(glyph.CodePoint) || IsVisibleDefaultIgnorable(glyph) ||
-                    glyph.CodePoint == 0x200C || IsMongolianShapingControl(glyph.CodePoint) ||
+                    glyph.CodePoint == 0x200C || _manualJoiners && glyph.CodePoint == 0x200D ||
+                    IsMongolianShapingControl(glyph.CodePoint) ||
                     IsUnicodeTagCharacter(glyph.CodePoint))
                 {
                     if (!IsGlyphClassIgnored(index, lookupFlags)) return index;
@@ -5655,13 +5673,25 @@ public static class OpenTypeTextShaper
             return -1;
         }
 
-        public int PreviousVisibleIndex(int index, ushort lookupFlags)
+        public int NextContextIndex(int index, ushort lookupFlags)
+        {
+            while (index < _glyphs.Count)
+            {
+                GlyphRecord glyph = _glyphs[index];
+                if (_restrictLookupToSyllable && glyph.UseSyllable != _lookupSyllable) return -1;
+                if (!IsContextLookupIgnored(index, lookupFlags)) return index;
+                index++;
+            }
+            return -1;
+        }
+
+        public int PreviousContextIndex(int index, ushort lookupFlags)
         {
             while (index >= 0)
             {
                 GlyphRecord glyph = _glyphs[index];
                 if (_restrictLookupToSyllable && glyph.UseSyllable != _lookupSyllable) return -1;
-                if (!IsLookupIgnored(index, lookupFlags)) return index;
+                if (!IsContextLookupIgnored(index, lookupFlags)) return index;
                 index--;
             }
             return -1;
@@ -5678,6 +5708,7 @@ public static class OpenTypeTextShaper
                     // CGJ is skipped by contextual matching, but remains an
                     // explicit component boundary for ligature formation.
                     if (glyph.GlyphIndex == expectedGlyph || glyph.CodePoint is 0x034F or 0x200C ||
+                        _manualJoiners && glyph.CodePoint == 0x200D ||
                         IsMongolianShapingControl(glyph.CodePoint) ||
                         IsUnicodeTagCharacter(glyph.CodePoint)) return index;
                     index++;
@@ -5704,6 +5735,17 @@ public static class OpenTypeTextShaper
         {
             GlyphRecord glyph = _glyphs[index];
             if (IsDefaultIgnorable(glyph.CodePoint) && !IsVisibleDefaultIgnorable(glyph) && glyph.CodePoint != 0x200C &&
+                !(_manualJoiners && glyph.CodePoint == 0x200D) &&
+                !IsMongolianShapingControl(glyph.CodePoint) &&
+                !IsUnicodeTagCharacter(glyph.CodePoint)) return true;
+            return IsGlyphClassIgnored(index, lookupFlags);
+        }
+
+        private bool IsContextLookupIgnored(int index, ushort lookupFlags)
+        {
+            GlyphRecord glyph = _glyphs[index];
+            if (IsDefaultIgnorable(glyph.CodePoint) && !IsVisibleDefaultIgnorable(glyph) &&
+                !(_manualJoiners && glyph.CodePoint == 0x200C) &&
                 !IsMongolianShapingControl(glyph.CodePoint) &&
                 !IsUnicodeTagCharacter(glyph.CodePoint)) return true;
             return IsGlyphClassIgnored(index, lookupFlags);
