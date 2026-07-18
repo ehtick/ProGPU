@@ -385,15 +385,37 @@ internal sealed class SuiteRunner : IDisposable
         var input = new List<GpuShapingScalar>(testCase.Text.Length);
         bool characterClusters = request.ClusterLevel is
             ShapingClusterLevel.MonotoneCharacters or ShapingClusterLevel.Characters;
+        bool preserveUseMarkOrder = OpenTypeScriptResolver.UsesUniversalShapingEngine(request.Script);
+        bool preserveDefaultIgnorableCluster = font.GetGlyphIndex(' ') != 0;
+        int useCluster = 0;
+        bool hasUseCluster = false;
         for (int graphemeStart = 0; graphemeStart < testCase.Text.Length;)
         {
             int graphemeLength = StringInfo.GetNextTextElementLength(testCase.Text.AsSpan(graphemeStart));
             int graphemeEnd = checked(graphemeStart + graphemeLength);
+            Rune.DecodeFromUtf16(testCase.Text.AsSpan(graphemeStart, graphemeLength), out Rune firstRune, out _);
+            bool separateClusters = IsPrepend(firstRune.Value);
             for (int utf16 = graphemeStart; utf16 < graphemeEnd;)
             {
                 Rune.DecodeFromUtf16(testCase.Text.AsSpan(utf16), out Rune rune, out int consumed);
+                int cluster = characterClusters || separateClusters ? utf16 : graphemeStart;
+                if (preserveUseMarkOrder)
+                {
+                    if (preserveDefaultIgnorableCluster && rune.Value is 0x200c or 0x200d)
+                        cluster = utf16;
+                    UnicodeCategory category = Rune.GetUnicodeCategory(rune);
+                    bool mark = category is UnicodeCategory.NonSpacingMark or
+                        UnicodeCategory.SpacingCombiningMark or UnicodeCategory.EnclosingMark;
+                    if (mark && hasUseCluster) cluster = useCluster;
+                    else
+                    {
+                        useCluster = cluster;
+                        hasUseCluster = true;
+                    }
+                }
+                if (rune.Value == 0x200d && input.Count != 0) cluster = input[^1].Cluster;
                 input.Add(new GpuShapingScalar(
-                    checked((uint)rune.Value), characterClusters ? utf16 : graphemeStart));
+                    checked((uint)rune.Value), cluster));
                 utf16 += Math.Max(consumed, 1);
             }
             graphemeStart = graphemeEnd;
@@ -402,6 +424,13 @@ internal sealed class SuiteRunner : IDisposable
         _gpuPipeline!.ExecuteRun(input.ToArray(), fontData, request, commands, buffer);
         return Convert(buffer, configuration.FontSize ?? font.UnitsPerEm, font.UnitsPerEm);
     }
+
+    private static bool IsPrepend(int codePoint) => codePoint is
+        >= 0x0600 and <= 0x0605 or 0x06dd or 0x070f or
+        >= 0x0890 and <= 0x0891 or 0x08e2 or 0x0d4e or
+        0x110bd or 0x110cd or >= 0x111c2 and <= 0x111c3 or
+        0x1193f or 0x11941 or 0x11a3a or >= 0x11a84 and <= 0x11a89 or
+        0x11d46;
 
     private static ShapingRequest CreateRequest(
         TestCase testCase,
