@@ -491,7 +491,7 @@ public unsafe class GlyphAtlas : IDisposable
                                     CreateBatchEncoder();
                                 }
 
-                                _context.Api.QueueWriteBuffer(_context.Queue, _uniformRingBuffer.BufferPtr, _ringOffset, &uniforms, (uint)Marshal.SizeOf<GlyphUniforms>());
+                                _uniformRingBuffer.WriteSingle(uniforms, _ringOffset);
 
                                 var entries = stackalloc BindGroupEntry[4];
                                 entries[0] = new BindGroupEntry { Binding = 0, Buffer = _uniformRingBuffer.BufferPtr, Offset = _ringOffset, Size = (uint)Marshal.SizeOf<GlyphUniforms>() };

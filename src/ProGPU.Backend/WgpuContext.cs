@@ -23,11 +23,38 @@ public enum WgpuBackendKind
     BrowserWebGpu
 }
 
+/// <summary>
+/// Monotonic queue-upload counters. Callers take two snapshots and subtract them so diagnostics
+/// add no locks, allocations, or per-frame reset traffic to rendering hot paths.
+/// </summary>
+public readonly record struct GpuQueueUploadMetrics(
+    long BufferWriteCount,
+    long BufferBytes,
+    long TextureWriteCount,
+    long TextureBytes)
+{
+    public static GpuQueueUploadMetrics operator -(
+        GpuQueueUploadMetrics end,
+        GpuQueueUploadMetrics start) =>
+        new(
+            Math.Max(0, end.BufferWriteCount - start.BufferWriteCount),
+            Math.Max(0, end.BufferBytes - start.BufferBytes),
+            Math.Max(0, end.TextureWriteCount - start.TextureWriteCount),
+            Math.Max(0, end.TextureBytes - start.TextureBytes));
+
+    public long TotalWriteCount => BufferWriteCount + TextureWriteCount;
+    public long TotalBytes => BufferBytes + TextureBytes;
+}
+
 public unsafe class WgpuContext : IDisposable
 {
     private SharedDeviceLifetime? _sharedDeviceLifetime;
     private GpuFrameCompletionTracker? _frameCompletionTracker;
     private GpuTimestampRing? _gpuTimestampRing;
+    private long _queueBufferWriteCount;
+    private long _queueBufferBytes;
+    private long _queueTextureWriteCount;
+    private long _queueTextureBytes;
     public WebGPU Wgpu { get; private set; } = null!;
     public IWebGpuApi Api { get; private set; } = null!;
     public WgpuBackendKind BackendKind { get; private set; } = WgpuBackendKind.SilkNative;
@@ -94,6 +121,24 @@ public unsafe class WgpuContext : IDisposable
     }
 
     public GpuTimestampMetrics GpuTimestampMetrics => _gpuTimestampRing?.Metrics ?? default;
+
+    public GpuQueueUploadMetrics QueueUploadMetrics => new(
+        Interlocked.Read(ref _queueBufferWriteCount),
+        Interlocked.Read(ref _queueBufferBytes),
+        Interlocked.Read(ref _queueTextureWriteCount),
+        Interlocked.Read(ref _queueTextureBytes));
+
+    internal void RecordQueueBufferWrite(uint byteCount)
+    {
+        Interlocked.Increment(ref _queueBufferWriteCount);
+        Interlocked.Add(ref _queueBufferBytes, byteCount);
+    }
+
+    internal void RecordQueueTextureWrite(uint byteCount)
+    {
+        Interlocked.Increment(ref _queueTextureWriteCount);
+        Interlocked.Add(ref _queueTextureBytes, byteCount);
+    }
 
     public bool BeginFrameGpuTimestamp(CommandEncoder* encoder) =>
         _gpuTimestampRing?.BeginFrame(encoder) == true;

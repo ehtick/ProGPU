@@ -28,6 +28,22 @@ internal static class SamplePerformanceBenchmark
     private static double s_uploadMilliseconds;
     private static double s_renderMilliseconds;
     private static double s_compositorMilliseconds;
+    private static double s_preRenderMilliseconds;
+    private static double s_glyphAtlasMilliseconds;
+    private static double s_dynamicBufferUploadMilliseconds;
+    private static double s_sceneStateUploadMilliseconds;
+    private static double s_pathAtlasMilliseconds;
+    private static double s_sceneTransformPatchMilliseconds;
+    private static double s_encoderCreationMilliseconds;
+    private static double s_maskPassRecordMilliseconds;
+    private static double s_primaryPassRecordMilliseconds;
+    private static double s_commandFinishMilliseconds;
+    private static double s_queueSubmitMilliseconds;
+    private static double s_cleanupMilliseconds;
+    private static long s_queueWriteCount;
+    private static long s_uploadedBytes;
+    private static long s_uploadedBufferBytes;
+    private static long s_uploadedTextureBytes;
     private static double s_hostUpdateMilliseconds;
     private static double s_layoutMilliseconds;
     private static double s_animationMilliseconds;
@@ -63,6 +79,10 @@ internal static class SamplePerformanceBenchmark
     private static readonly double[] s_compileSamples = new double[s_measureFrames];
     private static readonly double[] s_compositorSamples = new double[s_measureFrames];
     private static readonly double[] s_surfaceAcquireSamples = new double[s_measureFrames];
+    private static readonly double[] s_dynamicBufferUploadSamples = new double[s_measureFrames];
+    private static readonly double[] s_primaryPassRecordSamples = new double[s_measureFrames];
+    private static readonly double[] s_queueSubmitSamples = new double[s_measureFrames];
+    private static readonly double[] s_uploadedByteSamples = new double[s_measureFrames];
     private static GpuFrameCompletionMetrics s_gpuCompletionAtStart;
     private static GpuTimestampMetrics s_gpuTimestampsAtStart;
 
@@ -192,6 +212,22 @@ internal static class SamplePerformanceBenchmark
             s_uploadMilliseconds += metrics.GpuUploadTimeMs;
             s_renderMilliseconds += metrics.RenderPassTimeMs;
             s_compositorMilliseconds += metrics.FrameTimeMs;
+            s_preRenderMilliseconds += metrics.PreRenderTimeMs;
+            s_glyphAtlasMilliseconds += metrics.GlyphAtlasTimeMs;
+            s_dynamicBufferUploadMilliseconds += metrics.DynamicBufferUploadTimeMs;
+            s_sceneStateUploadMilliseconds += metrics.SceneStateUploadTimeMs;
+            s_pathAtlasMilliseconds += metrics.PathAtlasTimeMs;
+            s_sceneTransformPatchMilliseconds += metrics.SceneTransformPatchTimeMs;
+            s_encoderCreationMilliseconds += metrics.EncoderCreationTimeMs;
+            s_maskPassRecordMilliseconds += metrics.MaskPassRecordTimeMs;
+            s_primaryPassRecordMilliseconds += metrics.PrimaryPassRecordTimeMs;
+            s_commandFinishMilliseconds += metrics.CommandFinishTimeMs;
+            s_queueSubmitMilliseconds += metrics.QueueSubmitTimeMs;
+            s_cleanupMilliseconds += metrics.CleanupTimeMs;
+            s_queueWriteCount += metrics.QueueWriteCount;
+            s_uploadedBytes += metrics.UploadedBytes;
+            s_uploadedBufferBytes += metrics.UploadedBufferBytes;
+            s_uploadedTextureBytes += metrics.UploadedTextureBytes;
             if (metrics.SceneCacheHit) s_sceneCacheHitFrames++;
         }
 
@@ -208,6 +244,10 @@ internal static class SamplePerformanceBenchmark
             {
                 s_compileSamples[sampleIndex] = measuredCompositor.Metrics.VisualTreeCompileTimeMs;
                 s_compositorSamples[sampleIndex] = measuredCompositor.Metrics.FrameTimeMs;
+                s_dynamicBufferUploadSamples[sampleIndex] = measuredCompositor.Metrics.DynamicBufferUploadTimeMs;
+                s_primaryPassRecordSamples[sampleIndex] = measuredCompositor.Metrics.PrimaryPassRecordTimeMs;
+                s_queueSubmitSamples[sampleIndex] = measuredCompositor.Metrics.QueueSubmitTimeMs;
+                s_uploadedByteSamples[sampleIndex] = measuredCompositor.Metrics.UploadedBytes;
             }
         }
 
@@ -254,6 +294,10 @@ internal static class SamplePerformanceBenchmark
         double compositorMax = Maximum(s_compositorSamples, measuredFrames);
         double acquireP95 = Percentile(s_surfaceAcquireSamples, measuredFrames, 0.95d);
         double acquireMax = Maximum(s_surfaceAcquireSamples, measuredFrames);
+        double dynamicUploadP95 = Percentile(s_dynamicBufferUploadSamples, measuredFrames, 0.95d);
+        double primaryRecordP95 = Percentile(s_primaryPassRecordSamples, measuredFrames, 0.95d);
+        double queueSubmitP95 = Percentile(s_queueSubmitSamples, measuredFrames, 0.95d);
+        double uploadedBytesP95 = Percentile(s_uploadedByteSamples, measuredFrames, 0.95d);
         string workloadDetails = string.Empty;
         if (string.Equals(RequestedPage, "Font Glyph Browser", StringComparison.OrdinalIgnoreCase))
         {
@@ -323,6 +367,24 @@ internal static class SamplePerformanceBenchmark
             $" compositorMs={s_compositorMilliseconds / divisor:F4}" +
             $" compositorP95Ms={compositorP95:F4}" +
             $" compositorMaxMs={compositorMax:F4}" +
+            $" preRenderMs={s_preRenderMilliseconds / divisor:F4}" +
+            $" glyphAtlasMs={s_glyphAtlasMilliseconds / divisor:F4}" +
+            $" dynamicUploadMs={s_dynamicBufferUploadMilliseconds / divisor:F4}" +
+            $" dynamicUploadP95Ms={dynamicUploadP95:F4}" +
+            $" sceneStateUploadMs={s_sceneStateUploadMilliseconds / divisor:F4}" +
+            $" pathAtlasMs={s_pathAtlasMilliseconds / divisor:F4}" +
+            $" sceneTransformPatchMs={s_sceneTransformPatchMilliseconds / divisor:F4}" +
+            $" encoderCreateMs={s_encoderCreationMilliseconds / divisor:F4}" +
+            $" maskRecordMs={s_maskPassRecordMilliseconds / divisor:F4}" +
+            $" primaryRecordMs={s_primaryPassRecordMilliseconds / divisor:F4}" +
+            $" primaryRecordP95Ms={primaryRecordP95:F4}" +
+            $" commandFinishMs={s_commandFinishMilliseconds / divisor:F4}" +
+            $" queueSubmitMs={s_queueSubmitMilliseconds / divisor:F4}" +
+            $" queueSubmitP95Ms={queueSubmitP95:F4}" +
+            $" cleanupMs={s_cleanupMilliseconds / divisor:F4}" +
+            $" queueWritesPerFrame={s_queueWriteCount / divisor:F2}" +
+            $" uploadedBytesPerFrame={s_uploadedBytes / divisor:F0}" +
+            $" uploadedBytesP95={uploadedBytesP95:F0}" +
             $" hostUpdateMs={s_hostUpdateMilliseconds / divisor:F4}" +
             $" layoutMs={s_layoutMilliseconds / divisor:F4}" +
             $" animationMs={s_animationMilliseconds / divisor:F4}" +
@@ -460,7 +522,7 @@ internal static class SamplePerformanceBenchmark
         using (var writer = new Utf8JsonWriter(output))
         {
             writer.WriteStartObject();
-            writer.WriteNumber("schemaVersion", 1);
+            writer.WriteNumber("schemaVersion", 2);
             writer.WriteString("page", RequestedPage);
             writer.WriteString("platform", OperatingSystem.IsBrowser() ? "browser" : "desktop");
             writer.WriteString("backend", AppState._wgpuContext?.BackendKind.ToString());
@@ -491,6 +553,26 @@ internal static class SamplePerformanceBenchmark
             writer.WriteNumber("compositorAverageMs", s_compositorMilliseconds / Math.Max(1, measuredFrames));
             writer.WriteNumber("compositorP95Ms", compositorP95);
             writer.WriteNumber("compositorMaxMs", compositorMax);
+            writer.WriteNumber("preRenderAverageMs", s_preRenderMilliseconds / Math.Max(1, measuredFrames));
+            writer.WriteNumber("glyphAtlasAverageMs", s_glyphAtlasMilliseconds / Math.Max(1, measuredFrames));
+            writer.WriteNumber("dynamicBufferUploadAverageMs", s_dynamicBufferUploadMilliseconds / Math.Max(1, measuredFrames));
+            writer.WriteNumber("dynamicBufferUploadP95Ms", Percentile(s_dynamicBufferUploadSamples, measuredFrames, 0.95d));
+            writer.WriteNumber("sceneStateUploadAverageMs", s_sceneStateUploadMilliseconds / Math.Max(1, measuredFrames));
+            writer.WriteNumber("pathAtlasAverageMs", s_pathAtlasMilliseconds / Math.Max(1, measuredFrames));
+            writer.WriteNumber("sceneTransformPatchAverageMs", s_sceneTransformPatchMilliseconds / Math.Max(1, measuredFrames));
+            writer.WriteNumber("encoderCreationAverageMs", s_encoderCreationMilliseconds / Math.Max(1, measuredFrames));
+            writer.WriteNumber("maskPassRecordAverageMs", s_maskPassRecordMilliseconds / Math.Max(1, measuredFrames));
+            writer.WriteNumber("primaryPassRecordAverageMs", s_primaryPassRecordMilliseconds / Math.Max(1, measuredFrames));
+            writer.WriteNumber("primaryPassRecordP95Ms", Percentile(s_primaryPassRecordSamples, measuredFrames, 0.95d));
+            writer.WriteNumber("commandFinishAverageMs", s_commandFinishMilliseconds / Math.Max(1, measuredFrames));
+            writer.WriteNumber("queueSubmitAverageMs", s_queueSubmitMilliseconds / Math.Max(1, measuredFrames));
+            writer.WriteNumber("queueSubmitP95Ms", Percentile(s_queueSubmitSamples, measuredFrames, 0.95d));
+            writer.WriteNumber("cleanupAverageMs", s_cleanupMilliseconds / Math.Max(1, measuredFrames));
+            writer.WriteNumber("queueWritesPerFrame", (double)s_queueWriteCount / Math.Max(1, measuredFrames));
+            writer.WriteNumber("uploadedBytesPerFrame", (double)s_uploadedBytes / Math.Max(1, measuredFrames));
+            writer.WriteNumber("uploadedBytesP95", Percentile(s_uploadedByteSamples, measuredFrames, 0.95d));
+            writer.WriteNumber("uploadedBufferBytesPerFrame", (double)s_uploadedBufferBytes / Math.Max(1, measuredFrames));
+            writer.WriteNumber("uploadedTextureBytesPerFrame", (double)s_uploadedTextureBytes / Math.Max(1, measuredFrames));
             writer.WriteNumber("surfaceAcquireAverageMs", s_surfaceAcquireMilliseconds / Math.Max(1, measuredFrames));
             writer.WriteNumber("surfaceAcquireP95Ms", acquireP95);
             writer.WriteNumber("surfaceAcquireMaxMs", acquireMax);

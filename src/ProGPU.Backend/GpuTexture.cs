@@ -399,6 +399,7 @@ public unsafe class GpuTexture : IDisposable
         {
             _context.Api.QueueWriteTexture(_context.Queue, &destination, ptr, passedSize, &layout, &extent);
         }
+        _context.RecordQueueTextureWrite(passedSize);
 
         Generation++;
     }
@@ -512,6 +513,7 @@ public unsafe class GpuTexture : IDisposable
         {
             _context.Api.QueueWriteTexture(_context.Queue, &destination, ptr, passedSize, &layout, &extent);
         }
+        _context.RecordQueueTextureWrite(passedSize);
 
         Generation++;
     }
@@ -596,6 +598,7 @@ public unsafe class GpuTexture : IDisposable
         {
             _context.Api.QueueWriteTexture(_context.Queue, &destination, ptr, passedSize, &layout, &extent);
         }
+        _context.RecordQueueTextureWrite(passedSize);
 
         Generation++;
     }

@@ -113,6 +113,22 @@ public struct CompositorMetrics
     public double VisualTreeCompileTimeMs;
     public double GpuUploadTimeMs;
     public double RenderPassTimeMs;
+    public double PreRenderTimeMs;
+    public double GlyphAtlasTimeMs;
+    public double DynamicBufferUploadTimeMs;
+    public double SceneStateUploadTimeMs;
+    public double PathAtlasTimeMs;
+    public double SceneTransformPatchTimeMs;
+    public double EncoderCreationTimeMs;
+    public double MaskPassRecordTimeMs;
+    public double PrimaryPassRecordTimeMs;
+    public double CommandFinishTimeMs;
+    public double QueueSubmitTimeMs;
+    public double CleanupTimeMs;
+    public long QueueWriteCount;
+    public long UploadedBytes;
+    public long UploadedBufferBytes;
+    public long UploadedTextureBytes;
     public int DrawCallsCount;
     public int VectorVerticesCount;
     public int TextVerticesCount;
@@ -2108,8 +2124,21 @@ public unsafe class Compositor : IDisposable
             _currentDpiScale = (float)DisplayScaleResolver.ResolveWindowDisplayScale(_context.Window);
         }
 
+        var uploadMetricsAtStart = _context.QueueUploadMetrics;
         var totalSw = System.Diagnostics.Stopwatch.StartNew();
         var compileSw = System.Diagnostics.Stopwatch.StartNew();
+        double preRenderTimeMs = 0d;
+        double glyphAtlasTimeMs = 0d;
+        double dynamicBufferUploadTimeMs = 0d;
+        double sceneStateUploadTimeMs = 0d;
+        double pathAtlasTimeMs = 0d;
+        double sceneTransformPatchTimeMs = 0d;
+        double encoderCreationTimeMs = 0d;
+        double maskPassRecordTimeMs = 0d;
+        double primaryPassRecordTimeMs = 0d;
+        double commandFinishTimeMs = 0d;
+        double queueSubmitTimeMs = 0d;
+        double cleanupTimeMs = 0d;
         _pathAtlas.CleanupFrame(
             _explicitRenderTargetWidth ?? width,
             _explicitRenderTargetHeight ?? height);
@@ -2117,11 +2146,13 @@ public unsafe class Compositor : IDisposable
         _activeLayerTextureOwners.Clear();
 
         // Invoke pre-render actions (e.g. measure/arrange popups in UI framework)
+        long phaseStart = System.Diagnostics.Stopwatch.GetTimestamp();
         PreRender?.Invoke(width, height);
 
         IReadOnlyList<Visual>? externalLayers = GetExternalLayers?.Invoke();
         Visual? activeToolTip = GetTooltip?.Invoke();
         bool hasDynamicDiagnostics = RenderDiagnostics != null && (HasDynamicDiagnostics?.Invoke() ?? true);
+        preRenderTimeMs = System.Diagnostics.Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
 
         // 1. Calculate orthographic projection matrix for modern 2D rendering
         // Maps X in [0, width] to [-1, 1], and Y in [0, height] to [1, -1]
@@ -2428,7 +2459,9 @@ SceneCompilationComplete:
         if (glyphBatchActive)
         {
             glyphBatchActive = false;
+            phaseStart = System.Diagnostics.Stopwatch.GetTimestamp();
             _atlas.EndBatch();
+            glyphAtlasTimeMs += System.Diagnostics.Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
         }
 
         if (_pathAtlas.CapacityExceeded ||
@@ -2459,6 +2492,7 @@ SceneCompilationComplete:
         // Dynamic buffer writing will happen after uploads to keep logic clear
 
         // Upload CPU batches to dynamic GPU buffers
+        phaseStart = System.Diagnostics.Stopwatch.GetTimestamp();
         if (reuseCompiledScene)
         {
             goto DynamicBufferUploadComplete;
@@ -2493,12 +2527,14 @@ SceneCompilationComplete:
         }
 
 DynamicBufferUploadComplete:
+        dynamicBufferUploadTimeMs = System.Diagnostics.Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
         if (reuseCompiledScene)
         {
             goto SceneStateUploadComplete;
         }
 
         // Upload unified projection and MVP matrices
+        phaseStart = System.Diagnostics.Stopwatch.GetTimestamp();
         var uniformsData = new GpuUniforms
         {
             Projection = projection,
@@ -2520,7 +2556,9 @@ DynamicBufferUploadComplete:
         }
 
         // Rasterize all pending paths before starting the render pass.
+        long pathAtlasStart = System.Diagnostics.Stopwatch.GetTimestamp();
         _pathAtlas.RasterizePendingPaths();
+        pathAtlasTimeMs = System.Diagnostics.Stopwatch.GetElapsedTime(pathAtlasStart).TotalMilliseconds;
 
         CaptureCompiledScene(
             root,
@@ -2529,9 +2567,12 @@ DynamicBufferUploadComplete:
             externalLayers,
             activeToolTip,
             hasDynamicDiagnostics);
+        sceneStateUploadTimeMs = System.Diagnostics.Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
 
 SceneStateUploadComplete:
+        phaseStart = System.Diagnostics.Stopwatch.GetTimestamp();
         UpdateSceneTransformResources(projection, renderWidth, renderHeight);
+        sceneTransformPatchTimeMs = System.Diagnostics.Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
         uploadSw.Stop();
         passSw = System.Diagnostics.Stopwatch.StartNew();
 
@@ -2550,14 +2591,19 @@ SceneStateUploadComplete:
         }
 
         // 5. WebGPU Command Encoder and Render Pass Execution
+        phaseStart = System.Diagnostics.Stopwatch.GetTimestamp();
         var encoderDesc = new CommandEncoderDescriptor { Label = (byte*)SilkMarshal.StringToPtr("Compositor Command Encoder") };
         encoder = _context.Api.DeviceCreateCommandEncoder(_context.Device, &encoderDesc);
         SilkMarshal.Free((nint)encoderDesc.Label);
         _context.BeginFrameGpuTimestamp(encoder);
+        encoderCreationTimeMs = System.Diagnostics.Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
 
         // Run mask render passes first!
+        phaseStart = System.Diagnostics.Stopwatch.GetTimestamp();
         ExecuteMaskRenderPasses(encoder, isOffscreen: false);
+        maskPassRecordTimeMs = System.Diagnostics.Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
 
+        phaseStart = System.Diagnostics.Stopwatch.GetTimestamp();
         var bgColor = ClearColor;
         var colorAttachment = new RenderPassColorAttachment
         {
@@ -2852,29 +2898,37 @@ SceneStateUploadComplete:
             _context.Api.RenderPassEncoderEnd(finalPass);
             _context.Api.RenderPassEncoderRelease(finalPass);
         }
+        primaryPassRecordTimeMs = System.Diagnostics.Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
         }
         finally
         {
             if (glyphBatchActive)
             {
                 glyphBatchActive = false;
+                phaseStart = System.Diagnostics.Stopwatch.GetTimestamp();
                 _atlas.EndBatch();
+                glyphAtlasTimeMs += System.Diagnostics.Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
             }
             EndExtensionFrame(extensionFrame);
         }
 
         // Submit to queue
         _context.EndFrameGpuTimestamp(encoder);
+        phaseStart = System.Diagnostics.Stopwatch.GetTimestamp();
         var cmdDesc = new CommandBufferDescriptor { Label = (byte*)SilkMarshal.StringToPtr("Compositor Command Buffer") };
         var cmdBuffer = _context.Api.CommandEncoderFinish(encoder, &cmdDesc);
         SilkMarshal.Free((nint)cmdDesc.Label);
+        commandFinishTimeMs = System.Diagnostics.Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
 
+        phaseStart = System.Diagnostics.Stopwatch.GetTimestamp();
         _context.Api.QueueSubmit(_context.Queue, 1, &cmdBuffer);
         _context.NotifyFrameSubmitted();
+        queueSubmitTimeMs = System.Diagnostics.Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
 
         _context.Api.CommandBufferRelease(cmdBuffer);
         _context.Api.CommandEncoderRelease(encoder);
 
+        phaseStart = System.Diagnostics.Stopwatch.GetTimestamp();
         ReturnPendingMaskTexturesToPool();
 
         _frameNumber++;
@@ -2884,16 +2938,34 @@ SceneStateUploadComplete:
         SweepUnusedLayerTextures(root, externalLayers, activeToolTip);
         SweepUnusedEffectTextures(root, externalLayers, activeToolTip);
         _activeLayerTextureOwners.Clear();
+        cleanupTimeMs = System.Diagnostics.Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
 
         passSw.Stop();
         totalSw.Stop();
 
+        var frameUploadMetrics = _context.QueueUploadMetrics - uploadMetricsAtStart;
         Metrics = new CompositorMetrics
         {
             FrameTimeMs = totalSw.Elapsed.TotalMilliseconds,
             VisualTreeCompileTimeMs = compileSw.Elapsed.TotalMilliseconds,
             GpuUploadTimeMs = uploadSw.Elapsed.TotalMilliseconds,
             RenderPassTimeMs = passSw.Elapsed.TotalMilliseconds,
+            PreRenderTimeMs = preRenderTimeMs,
+            GlyphAtlasTimeMs = glyphAtlasTimeMs,
+            DynamicBufferUploadTimeMs = dynamicBufferUploadTimeMs,
+            SceneStateUploadTimeMs = sceneStateUploadTimeMs,
+            PathAtlasTimeMs = pathAtlasTimeMs,
+            SceneTransformPatchTimeMs = sceneTransformPatchTimeMs,
+            EncoderCreationTimeMs = encoderCreationTimeMs,
+            MaskPassRecordTimeMs = maskPassRecordTimeMs,
+            PrimaryPassRecordTimeMs = primaryPassRecordTimeMs,
+            CommandFinishTimeMs = commandFinishTimeMs,
+            QueueSubmitTimeMs = queueSubmitTimeMs,
+            CleanupTimeMs = cleanupTimeMs,
+            QueueWriteCount = frameUploadMetrics.TotalWriteCount,
+            UploadedBytes = frameUploadMetrics.TotalBytes,
+            UploadedBufferBytes = frameUploadMetrics.BufferBytes,
+            UploadedTextureBytes = frameUploadMetrics.TextureBytes,
             DrawCallsCount = _drawCalls.Count,
             VectorVerticesCount = _vectorVerticesList.Count,
             TextVerticesCount = _textVerticesList.Count,
