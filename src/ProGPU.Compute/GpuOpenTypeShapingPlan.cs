@@ -23,6 +23,18 @@ public readonly record struct GpuGlyphMetrics(
     int OriginX,
     int OriginY);
 
+/// <summary>Byte ranges for raw big-endian OpenType tables in one upload.</summary>
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+public readonly record struct GpuOpenTypeTableDirectory(
+    uint GdefOffset,
+    uint GdefLength,
+    uint GsubOffset,
+    uint GsubLength,
+    uint GposOffset,
+    uint GposLength,
+    uint KernOffset,
+    uint KernLength);
+
 /// <summary>
 /// Immutable GPU upload plan for one font face and variation instance. The
 /// arrays are built once, are sorted by code point/glyph ID, and can be shared
@@ -30,14 +42,22 @@ public readonly record struct GpuGlyphMetrics(
 /// </summary>
 public sealed class GpuOpenTypeShapingPlan
 {
-    internal GpuOpenTypeShapingPlan(GpuCmapRange[] cmap, GpuGlyphMetrics[] metrics)
+    internal GpuOpenTypeShapingPlan(
+        GpuCmapRange[] cmap,
+        GpuGlyphMetrics[] metrics,
+        GpuOpenTypeTableDirectory tables,
+        byte[] tableData)
     {
         Cmap = cmap;
         Metrics = metrics;
+        Tables = tables;
+        TableData = tableData;
     }
 
     public ReadOnlyMemory<GpuCmapRange> Cmap { get; }
     public ReadOnlyMemory<GpuGlyphMetrics> Metrics { get; }
+    public GpuOpenTypeTableDirectory Tables { get; }
+    public ReadOnlyMemory<byte> TableData { get; }
 
     public uint GetNominalGlyph(uint codePoint)
     {
@@ -74,7 +94,31 @@ public static class GpuOpenTypeShapingPlanCompiler
                 font.GetHorizontalOrigin(glyph),
                 font.GetVerticalOrigin(glyph));
         }
-        return new GpuOpenTypeShapingPlan(cmap, metrics);
+        byte[] tableData = CompileTables(font, out GpuOpenTypeTableDirectory tables);
+        return new GpuOpenTypeShapingPlan(cmap, metrics, tables, tableData);
+    }
+
+    private static byte[] CompileTables(IShapingFontFace font, out GpuOpenTypeTableDirectory directory)
+    {
+        var bytes = new List<byte>();
+        (uint gdefOffset, uint gdefLength) = Append(new OpenTypeTag("GDEF"));
+        (uint gsubOffset, uint gsubLength) = Append(new OpenTypeTag("GSUB"));
+        (uint gposOffset, uint gposLength) = Append(new OpenTypeTag("GPOS"));
+        (uint kernOffset, uint kernLength) = Append(new OpenTypeTag("kern"));
+        directory = new GpuOpenTypeTableDirectory(
+            gdefOffset, gdefLength, gsubOffset, gsubLength,
+            gposOffset, gposLength, kernOffset, kernLength);
+        return bytes.ToArray();
+
+        (uint Offset, uint Length) Append(OpenTypeTag tag)
+        {
+            while ((bytes.Count & 3) != 0) bytes.Add(0);
+            uint offset = checked((uint)bytes.Count);
+            if (!font.TryGetTable(tag, out ReadOnlyMemory<byte> table) || table.IsEmpty)
+                return (offset, 0);
+            bytes.AddRange(table.Span);
+            return (offset, checked((uint)table.Length));
+        }
     }
 
     private static GpuCmapRange[] CompileCmap(IShapingFontFace font)

@@ -42,11 +42,38 @@ struct ShapingGlyph {
     offset_y: i32,
 };
 
+struct TableDirectory {
+    gdef_offset: u32,
+    gdef_length: u32,
+    gsub_offset: u32,
+    gsub_length: u32,
+    gpos_offset: u32,
+    gpos_length: u32,
+    kern_offset: u32,
+    kern_length: u32,
+};
+
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> input_scalars: array<InputScalar>;
 @group(0) @binding(2) var<storage, read> cmap_ranges: array<CmapRange>;
 @group(0) @binding(3) var<storage, read> glyph_metrics: array<GlyphMetric>;
 @group(0) @binding(4) var<storage, read_write> glyphs: array<ShapingGlyph>;
+@group(0) @binding(5) var<uniform> table_directory: TableDirectory;
+@group(0) @binding(6) var<storage, read> table_words: array<u32>;
+
+fn table_u8(offset: u32) -> u32 {
+    let word = table_words[offset >> 2u];
+    return (word >> ((offset & 3u) * 8u)) & 0xffu;
+}
+
+fn table_u16(offset: u32) -> u32 {
+    return (table_u8(offset) << 8u) | table_u8(offset + 1u);
+}
+
+fn table_u32(offset: u32) -> u32 {
+    return (table_u8(offset) << 24u) | (table_u8(offset + 1u) << 16u) |
+        (table_u8(offset + 2u) << 8u) | table_u8(offset + 3u);
+}
 
 fn nominal_glyph(codepoint: u32) -> u32 {
     var low = 0u;

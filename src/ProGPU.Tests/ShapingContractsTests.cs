@@ -229,6 +229,7 @@ public sealed class ShapingContractsTests
         Assert.Equal(16, Marshal.SizeOf<GpuCmapRange>());
         Assert.Equal(16, Marshal.SizeOf<GpuGlyphMetrics>());
         Assert.Equal(16, Marshal.SizeOf<GpuShapingScalar>());
+        Assert.Equal(32, Marshal.SizeOf<GpuOpenTypeTableDirectory>());
         foreach (uint codePoint in new uint[] { 'A', 'z', 0x00e9, 0x03a9, 0x20ac, 0x1f642 })
             Assert.Equal(face.GetNominalGlyph(codePoint), plan.GetNominalGlyph(codePoint));
         uint glyph = face.GetNominalGlyph('A');
@@ -236,6 +237,10 @@ public sealed class ShapingContractsTests
         Assert.Equal(face.GetHorizontalAdvance(glyph), metric.AdvanceX);
         Assert.Equal(face.GetVerticalAdvance(glyph), metric.AdvanceY);
         Assert.Equal(face.GetVerticalOrigin(glyph), metric.OriginY);
+        Assert.True(face.TryGetTable(new OpenTypeTag("GSUB"), out ReadOnlyMemory<byte> gsub));
+        Assert.Equal((uint)gsub.Length, plan.Tables.GsubLength);
+        Assert.Equal(gsub.Span, plan.TableData.Span.Slice(
+            checked((int)plan.Tables.GsubOffset), checked((int)plan.Tables.GsubLength)));
     }
 
     private static ShapingGlyph Glyph(uint glyphId) => new() { GlyphId = glyphId };

@@ -20,6 +20,8 @@ public sealed class GpuOpenTypeFontData : IDisposable
 {
     internal GpuBuffer CmapBuffer { get; }
     internal GpuBuffer MetricsBuffer { get; }
+    internal GpuBuffer TablesBuffer { get; }
+    internal GpuBuffer TableDirectoryBuffer { get; }
     public int CmapRangeCount { get; }
     public int GlyphMetricCount { get; }
 
@@ -33,13 +35,20 @@ public sealed class GpuOpenTypeFontData : IDisposable
         uint metricBytes = checked((uint)Math.Max(16, GlyphMetricCount * Marshal.SizeOf<GpuGlyphMetrics>()));
         CmapBuffer = new GpuBuffer(context, cmapBytes, BufferUsage.Storage | BufferUsage.CopyDst, "OpenType cmap ranges");
         MetricsBuffer = new GpuBuffer(context, metricBytes, BufferUsage.Storage | BufferUsage.CopyDst, "OpenType glyph metrics");
+        uint tableBytes = checked((uint)Math.Max(4, plan.TableData.Length));
+        TablesBuffer = new GpuBuffer(context, tableBytes, BufferUsage.Storage | BufferUsage.CopyDst, "OpenType table bytes");
+        TableDirectoryBuffer = new GpuBuffer(context, 32, BufferUsage.Uniform | BufferUsage.CopyDst, "OpenType table directory");
         if (CmapRangeCount != 0) CmapBuffer.Write(plan.Cmap.Span);
         if (GlyphMetricCount != 0) MetricsBuffer.Write(plan.Metrics.Span);
+        if (!plan.TableData.IsEmpty) TablesBuffer.WriteBytes(plan.TableData.Span);
+        TableDirectoryBuffer.WriteSingle(plan.Tables);
     }
 
     public void Dispose()
     {
         MetricsBuffer.Dispose();
+        TablesBuffer.Dispose();
+        TableDirectoryBuffer.Dispose();
         CmapBuffer.Dispose();
     }
 }
@@ -131,13 +140,15 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
         BindGroupLayout* layout = _context.Api.ComputePipelineGetBindGroupLayout(pipeline, 0);
         try
         {
-            BindGroupEntry* entries = stackalloc BindGroupEntry[5];
+            BindGroupEntry* entries = stackalloc BindGroupEntry[7];
             entries[0] = Entry(0, _paramsBuffer!);
             entries[1] = Entry(1, _inputBuffer!);
             entries[2] = Entry(2, font.CmapBuffer);
             entries[3] = Entry(3, font.MetricsBuffer);
             entries[4] = Entry(4, _glyphBuffer!);
-            BindGroupDescriptor descriptor = new() { Layout = layout, EntryCount = 5, Entries = entries };
+            entries[5] = Entry(5, font.TableDirectoryBuffer);
+            entries[6] = Entry(6, font.TablesBuffer);
+            BindGroupDescriptor descriptor = new() { Layout = layout, EntryCount = 7, Entries = entries };
             BindGroup* group = _context.Api.DeviceCreateBindGroup(_context.Device, &descriptor);
             if (group == null) throw new InvalidOperationException("Failed to create an OpenType shaping bind group.");
             return group;
