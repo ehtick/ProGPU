@@ -11,6 +11,14 @@ public readonly record struct GpuUnicodePropertyRange(
     uint PropertiesA,
     uint PropertiesB);
 
+/// <summary>A sparse directional code-point fallback record.</summary>
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+public readonly record struct GpuUnicodeDirectionalMapping(
+    uint CodePoint,
+    uint MirroredCodePoint,
+    uint VerticalCodePoint,
+    uint Reserved = 0);
+
 /// <summary>
 /// Process-wide Unicode 17 shaping properties compressed into ranges suitable
 /// for binary search by WebGPU compute shaders.
@@ -19,8 +27,11 @@ public static class GpuUnicodeShapingPlan
 {
     private static readonly Lazy<ReadOnlyMemory<GpuUnicodePropertyRange>> s_ranges =
         new(CreateRanges, LazyThreadSafetyMode.ExecutionAndPublication);
+    private static readonly Lazy<ReadOnlyMemory<GpuUnicodeDirectionalMapping>> s_directionalMappings =
+        new(CreateDirectionalMappings, LazyThreadSafetyMode.ExecutionAndPublication);
 
     public static ReadOnlyMemory<GpuUnicodePropertyRange> Ranges => s_ranges.Value;
+    public static ReadOnlyMemory<GpuUnicodeDirectionalMapping> DirectionalMappings => s_directionalMappings.Value;
 
     private static ReadOnlyMemory<GpuUnicodePropertyRange> CreateRanges()
     {
@@ -47,5 +58,18 @@ public static class GpuUnicodeShapingPlan
         uint propertiesB = UnicodeShapingProperties.GetUseCategory(codePoint) |
             (UnicodeShapingProperties.IsMark(codePoint) ? 1u << 8 : 0u);
         return (propertiesA, propertiesB);
+    }
+
+    private static ReadOnlyMemory<GpuUnicodeDirectionalMapping> CreateDirectionalMappings()
+    {
+        var mappings = new List<GpuUnicodeDirectionalMapping>(512);
+        for (uint codePoint = 0; codePoint <= 0x10ffffu; codePoint++)
+        {
+            uint mirrored = UnicodeShapingProperties.GetMirroredCodePoint(codePoint);
+            uint vertical = UnicodeShapingProperties.GetVerticalCodePoint(codePoint);
+            if (mirrored != codePoint || vertical != codePoint)
+                mappings.Add(new GpuUnicodeDirectionalMapping(codePoint, mirrored, vertical));
+        }
+        return mappings.ToArray();
     }
 }

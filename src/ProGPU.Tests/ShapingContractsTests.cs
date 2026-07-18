@@ -294,17 +294,22 @@ public sealed class ShapingContractsTests
     public void GpuUnicodePlanPreservesAuthoritativeComplexScriptProperties()
     {
         ReadOnlySpan<GpuUnicodePropertyRange> ranges = GpuUnicodeShapingPlan.Ranges.Span;
+        ReadOnlySpan<GpuUnicodeDirectionalMapping> directional =
+            GpuUnicodeShapingPlan.DirectionalMappings.Span;
 
         Assert.False(ranges.IsEmpty);
         Assert.Equal(0u, ranges[0].Start);
         Assert.Equal(0x110000u, ranges[^1].End);
         Assert.True(ranges.Length < 20_000, $"Expected compressed Unicode ranges, actual {ranges.Length}.");
+        Assert.InRange(directional.Length, 100, 1_000);
         Assert.Equal(3, UnicodeShapingProperties.GetArabicJoiningType(0x0628));
         Assert.Equal(6, UnicodeShapingProperties.GetArabicJoiningType(0x064e));
         Assert.Equal(30, UnicodeShapingProperties.GetCanonicalCombiningClass(0x064e));
         Assert.True(UnicodeShapingProperties.IsMark(0x064e));
         Assert.NotEqual(0, UnicodeShapingProperties.GetIndicProperties(0x0915));
         Assert.NotEqual(0, UnicodeShapingProperties.GetUseCategory(0x0915));
+        Assert.Equal((uint)')', UnicodeShapingProperties.GetMirroredCodePoint('('));
+        Assert.Equal(0xfe11u, UnicodeShapingProperties.GetVerticalCodePoint(0x3001));
 
         for (var index = 1; index < ranges.Length; index++)
             Assert.Equal(ranges[index - 1].End, ranges[index].Start);
@@ -351,6 +356,45 @@ public sealed class ShapingContractsTests
 
         Assert.Equal(new uint[] { 12, 11, 10 }, joined.Glyphs.ToArray().Select(static glyph => glyph.GlyphId));
         Assert.Equal(new uint[] { 12, 2, 10 }, transparent.Glyphs.ToArray().Select(static glyph => glyph.GlyphId));
+    }
+
+    [Fact]
+    public void GpuPreprocessingMatchesDirectionalFallbackAndCombiningOrder()
+    {
+        const string mirroredText = "(A)";
+        var face = new TtfShapingFontFace(InterFontFamily.Regular);
+        GpuOpenTypeShapingPlan plan = GpuOpenTypeShapingPlanCompiler.Compile(face);
+        var request = new ShapingRequest(
+            ShapingDirection.RightToLeft,
+            new OpenTypeTag("latn"),
+            language: "en");
+        GpuOpenTypeLookupCommand[] commands = GpuOpenTypeLookupPlanCompiler.Compile(plan, request);
+        using var expected = new ShapingBuffer();
+        CpuOpenTypeShaper.Instance.Shape(mirroredText, face, request, expected);
+        using var context = new WgpuContext();
+        context.Initialize(null);
+        using var fontData = new GpuOpenTypeFontData(context, plan);
+        using var pipeline = new GpuOpenTypeRunPipeline(context);
+        using var mirrored = new ShapingBuffer();
+        using var reordered = new ShapingBuffer();
+
+        pipeline.ExecuteRun(
+            mirroredText.Select((character, index) => new GpuShapingScalar(character, index)).ToArray(),
+            fontData, request, commands, mirrored);
+        pipeline.ExecuteRun(
+            [
+                new GpuShapingScalar('a', 0),
+                new GpuShapingScalar(0x0315, 0),
+                new GpuShapingScalar(0x0300, 0)
+            ],
+            fontData,
+            new ShapingRequest(ShapingDirection.LeftToRight, new OpenTypeTag("latn")),
+            [],
+            reordered);
+
+        Assert.Equal(expected.Glyphs.ToArray(), mirrored.Glyphs.ToArray());
+        Assert.Equal(new uint[] { 'a', 0x0300, 0x0315 },
+            reordered.Glyphs.ToArray().Select(static glyph => glyph.CodePoint));
     }
 
     [Fact]

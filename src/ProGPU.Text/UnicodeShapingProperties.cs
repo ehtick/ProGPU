@@ -29,6 +29,12 @@ public static class UnicodeShapingProperties
             UnicodeCategory.SpacingCombiningMark or UnicodeCategory.EnclosingMark;
     }
 
+    public static uint GetMirroredCodePoint(uint codePoint) =>
+        IsScalar(codePoint) ? UnicodeDirectionalData.GetMirroredCodePoint(codePoint) : codePoint;
+
+    public static uint GetVerticalCodePoint(uint codePoint) =>
+        IsScalar(codePoint) ? UnicodeDirectionalData.GetVerticalCodePoint(codePoint) : codePoint;
+
     private static bool IsScalar(uint codePoint) =>
         codePoint <= 0x10ffffu && (codePoint < 0xd800u || codePoint > 0xdfffu);
 }

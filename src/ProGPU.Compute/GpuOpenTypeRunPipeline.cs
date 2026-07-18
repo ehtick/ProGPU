@@ -88,7 +88,11 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
         uint ClusterLevel,
         uint ScriptTag,
         uint VariationMappingCount,
-        uint UnicodeRangeCount);
+        uint UnicodeRangeCount,
+        uint UnicodeDirectionalMappingCount,
+        uint Reserved2,
+        uint Reserved3,
+        uint Reserved4);
 
     [StructLayout(LayoutKind.Sequential, Pack = 4)]
     private readonly record struct RunState(
@@ -118,6 +122,8 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
     private readonly ComputePipeline* _finalizePipeline;
     private readonly GpuBuffer _unicodePropertyBuffer;
     private readonly int _unicodePropertyCount;
+    private readonly GpuBuffer _unicodeDirectionalMappingBuffer;
+    private readonly int _unicodeDirectionalMappingCount;
     private int _capacity;
     private bool _disposed;
 
@@ -149,6 +155,17 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
             BufferUsage.Storage | BufferUsage.CopyDst,
             "Unicode shaping properties");
         _unicodePropertyBuffer.Write(unicodeRanges.Span);
+        ReadOnlyMemory<GpuUnicodeDirectionalMapping> directionalMappings =
+            GpuUnicodeShapingPlan.DirectionalMappings;
+        _unicodeDirectionalMappingCount = directionalMappings.Length;
+        _unicodeDirectionalMappingBuffer = new GpuBuffer(
+            context,
+            checked((uint)Math.Max(16,
+                _unicodeDirectionalMappingCount * Marshal.SizeOf<GpuUnicodeDirectionalMapping>())),
+            BufferUsage.Storage | BufferUsage.CopyDst,
+            "Unicode directional mappings");
+        if (_unicodeDirectionalMappingCount != 0)
+            _unicodeDirectionalMappingBuffer.Write(directionalMappings.Span);
     }
 
     public void InitializeRun(
@@ -207,7 +224,9 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
             (uint)clusterLevel,
             scriptTag,
             checked((uint)font.VariationMappingCount),
-            checked((uint)_unicodePropertyCount)));
+            checked((uint)_unicodePropertyCount),
+            checked((uint)_unicodeDirectionalMappingCount),
+            0, 0, 0));
         _inputBuffer!.Write(input);
         _stateBuffer!.WriteSingle(new RunState(checked((uint)input.Length), 0, 0, checked((uint)input.Length + 1), 1, 0, 0, 0));
         if (!lookups.IsEmpty) _lookupBuffer!.Write(lookups);
@@ -264,7 +283,7 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
         BindGroupLayout* layout = _context.Api.ComputePipelineGetBindGroupLayout(pipeline, 0);
         try
         {
-            BindGroupEntry* entries = stackalloc BindGroupEntry[8];
+            BindGroupEntry* entries = stackalloc BindGroupEntry[9];
             uint count;
             if (stage == 0)
             {
@@ -332,7 +351,10 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
                 entries[3] = Entry(9, _glyphStateBuffer!);
                 entries[4] = Entry(11, font.VariationMappingBuffer);
                 entries[5] = Entry(12, _unicodePropertyBuffer);
-                count = 6;
+                entries[6] = Entry(8, _lookupBuffer!);
+                entries[7] = Entry(13, _unicodeDirectionalMappingBuffer);
+                entries[8] = Entry(2, font.CmapBuffer);
+                count = 9;
             }
             BindGroupDescriptor descriptor = new() { Layout = layout, EntryCount = count, Entries = entries };
             BindGroup* group = _context.Api.DeviceCreateBindGroup(_context.Device, &descriptor);
@@ -365,7 +387,7 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
     {
         if (_paramsBuffer is null)
         {
-            _paramsBuffer = new GpuBuffer(_context, 48, BufferUsage.Uniform | BufferUsage.CopyDst, "OpenType run parameters");
+            _paramsBuffer = new GpuBuffer(_context, 64, BufferUsage.Uniform | BufferUsage.CopyDst, "OpenType run parameters");
             _stateBuffer = new GpuBuffer(_context, 32, BufferUsage.Storage | BufferUsage.CopySrc | BufferUsage.CopyDst, "OpenType run state");
         }
         uint lookupBytes = checked((uint)Math.Max(36, lookupCount * Marshal.SizeOf<GpuOpenTypeLookupCommand>()));
@@ -409,6 +431,7 @@ public unsafe sealed class GpuOpenTypeRunPipeline : IDisposable
         _stateBuffer?.Dispose();
         _lookupBuffer?.Dispose();
         _unicodePropertyBuffer.Dispose();
+        _unicodeDirectionalMappingBuffer.Dispose();
         _pipelineCache.Dispose();
     }
 }
