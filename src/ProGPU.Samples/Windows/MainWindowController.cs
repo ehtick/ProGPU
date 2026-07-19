@@ -688,13 +688,31 @@ public static unsafe class MainWindowController
 
                 AppState._offscreenCompositor!.RenderScene(AppState._gearCanvasVisual, canvasW, canvasH, AppState._canvasSourceTexture.ViewPtr);
 
-                if (AppState._shadowRadius > 0)
+                if (AppState._shadowRadius > 0 && AppState._blurRadius > 0)
                 {
                     var shadowColor = new Vector4(0f, 0f, 0f, 0.65f);
-                    AppState._compute!.ApplyDropShadow(AppState._canvasSourceTexture, AppState._canvasTempTexture, AppState._canvasShadowTexture, AppState._shadowOffset, shadowColor, AppState._shadowRadius);
+                    AppState._compute!.ApplyDropShadowAndGaussianBlur(
+                        AppState._canvasSourceTexture,
+                        AppState._canvasTempTexture,
+                        AppState._canvasShadowTexture,
+                        AppState._canvasBlurTexture,
+                        AppState._shadowOffset,
+                        shadowColor,
+                        AppState._shadowRadius,
+                        AppState._blurRadius);
                 }
-
-                if (AppState._blurRadius > 0)
+                else if (AppState._shadowRadius > 0)
+                {
+                    var shadowColor = new Vector4(0f, 0f, 0f, 0.65f);
+                    AppState._compute!.ApplyDropShadow(
+                        AppState._canvasSourceTexture,
+                        AppState._canvasTempTexture,
+                        AppState._canvasShadowTexture,
+                        AppState._shadowOffset,
+                        shadowColor,
+                        AppState._shadowRadius);
+                }
+                else if (AppState._blurRadius > 0)
                 {
                     AppState._compute!.ApplyGaussianBlur(AppState._canvasSourceTexture, AppState._canvasTempTexture, AppState._canvasBlurTexture, AppState._blurRadius);
                 }

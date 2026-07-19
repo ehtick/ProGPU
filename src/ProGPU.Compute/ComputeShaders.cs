@@ -32,5 +32,8 @@ public static class ComputeShaders
 
     public static readonly string ShadowBlurVertical = ShaderResource.Load(typeof(ComputeShaders), "ShadowBlurVertical.wgsl");
 
+    public static readonly string CombinedBlurHorizontal = ShaderResource.Load(typeof(ComputeShaders), "CombinedBlurHorizontal.wgsl");
+
+    public static readonly string CombinedBlurVertical = ShaderResource.Load(typeof(ComputeShaders), "CombinedBlurVertical.wgsl");
 
 }

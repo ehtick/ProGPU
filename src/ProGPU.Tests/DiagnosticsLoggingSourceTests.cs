@@ -1,5 +1,7 @@
 namespace ProGPU.Tests;
 
+using System.Runtime.InteropServices;
+using ProGPU.Compute;
 using Xunit;
 
 public class DiagnosticsLoggingSourceTests
@@ -420,18 +422,30 @@ public class DiagnosticsLoggingSourceTests
     }
 
     [Fact]
-    public void ComputeAcceleratorTracksTransientBindGroupsWithoutListSnapshots()
+    public void ComputeAcceleratorReusesBlurStateAndCombinesEffectPasses()
     {
         string source = ReadSource("src", "ProGPU.Compute", "ComputeAccelerator.cs");
 
-        Assert.Contains("horizontalParams.WriteSingle(new GaussianBlurParams(sigmaX));", source, StringComparison.Ordinal);
-        Assert.Contains("verticalParams.WriteSingle(new GaussianBlurParams(sigmaY));", source, StringComparison.Ordinal);
+        Assert.Contains("_blurHorizontalParams!.WriteSingle(new GaussianBlurParams(sigmaX));", source, StringComparison.Ordinal);
+        Assert.Contains("_blurVerticalParams!.WriteSingle(new GaussianBlurParams(sigmaY));", source, StringComparison.Ordinal);
+        Assert.Contains("private CachedPassBinding _blurHorizontalBinding;", source, StringComparison.Ordinal);
+        Assert.Contains("private CachedPassBinding _shadowVerticalBinding;", source, StringComparison.Ordinal);
+        Assert.Contains("private BindGroup* GetOrCreatePassBinding(", source, StringComparison.Ordinal);
+        Assert.Contains("InputGeneration == input.Generation", source, StringComparison.Ordinal);
+        Assert.Contains("OutputGeneration == output.Generation", source, StringComparison.Ordinal);
+        Assert.Contains("public void ApplyDropShadowAndGaussianBlur(", source, StringComparison.Ordinal);
+        Assert.Contains("private void ApplyCombinedEqualRadiusBlur(", source, StringComparison.Ordinal);
+        Assert.Contains("var entries = stackalloc BindGroupEntry[4];", source, StringComparison.Ordinal);
+        Assert.Contains("var entries = stackalloc BindGroupEntry[5];", source, StringComparison.Ordinal);
+        Assert.Contains("RunComputePass(encoder, _combinedBlurHorizPipeline, horizontalBinding, width, height);", source, StringComparison.Ordinal);
+        Assert.Contains("RunComputePass(encoder, _combinedBlurVertPipeline, verticalBinding, width, height);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("GaussianWeights", source, StringComparison.Ordinal);
+        Assert.Contains("RunComputePass(encoder, _shadowBlurHorizPipeline, shadowHorizontalBinding, width, height);", source, StringComparison.Ordinal);
+        Assert.Contains("RunComputePass(encoder, _shadowBlurVertPipeline, shadowVerticalBinding, width, height);", source, StringComparison.Ordinal);
+        Assert.Contains("RunComputePass(encoder, _blurHorizPipeline, blurHorizontalBinding, width, height);", source, StringComparison.Ordinal);
+        Assert.Contains("RunComputePass(encoder, _blurVertPipeline, blurVerticalBinding, width, height);", source, StringComparison.Ordinal);
         Assert.Contains("var bindGroupToReleaseCount = 0;", source, StringComparison.Ordinal);
         Assert.Contains("Span<nint> bindGroupsToRelease = stackalloc nint[2];", source, StringComparison.Ordinal);
-        Assert.Contains("horizontalParams,", source, StringComparison.Ordinal);
-        Assert.Contains("verticalParams,", source, StringComparison.Ordinal);
-        Assert.Contains("RunShadowPass(encoder, _shadowBlurHorizPipeline, shadowHLayout, source, temp, paramsBuffer, width, height, bindGroupsToRelease, ref bindGroupToReleaseCount);", source, StringComparison.Ordinal);
-        Assert.Contains("RunShadowPass(encoder, _shadowBlurVertPipeline, shadowVLayout, temp, destination, paramsBuffer, width, height, bindGroupsToRelease, ref bindGroupToReleaseCount);", source, StringComparison.Ordinal);
         Assert.Contains("ReleaseBindGroups(bindGroupsToRelease[..bindGroupToReleaseCount]);", source, StringComparison.Ordinal);
         Assert.Contains("private static void TrackBindGroupForRelease(Span<nint> bindGroupsToRelease, ref int count, BindGroup* bindGroup)", source, StringComparison.Ordinal);
         Assert.Contains("bindGroupsToRelease[count++] = (nint)bindGroup;", source, StringComparison.Ordinal);
@@ -441,6 +455,7 @@ public class DiagnosticsLoggingSourceTests
         Assert.DoesNotContain("new List<nint>()", source, StringComparison.Ordinal);
         Assert.DoesNotContain("bindGroupsToRelease.Add", source, StringComparison.Ordinal);
         Assert.DoesNotContain("foreach (var bgPtr in bindGroupsToRelease)", source, StringComparison.Ordinal);
+        Assert.Equal(48, Marshal.SizeOf<ComputeAccelerator.CombinedBlurParams>());
     }
 
     [Fact]
