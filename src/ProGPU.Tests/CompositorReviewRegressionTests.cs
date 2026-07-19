@@ -198,6 +198,53 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     }
 
     [Fact]
+    public void DenseSolidRoundedRectanglesSpecializeAfterObservationAndPreservePixels()
+    {
+        using var window = new HeadlessWindow(160, 96);
+        window.Content = new DenseSolidRoundedRectangleVisual();
+
+        window.Render();
+
+        var generalDrawCall = Assert.Single(
+            GetDrawCalls(window.Compositor),
+            static candidate => candidate.Type == Compositor.DrawCallType.Vector);
+        Assert.False(generalDrawCall.IsSolidRounded);
+        byte[] generalPixels = window.ReadPixels();
+
+        window.Render();
+
+        var specializedDrawCall = Assert.Single(
+            GetDrawCalls(window.Compositor),
+            static candidate => candidate.Type == Compositor.DrawCallType.Vector);
+        Assert.True(specializedDrawCall.IsSolidRounded);
+        Assert.False(window.Compositor.Metrics.SceneCacheHit);
+        Assert.Equal("Solid rounded specialization changed", window.Compositor.Metrics.SceneCacheMissReason);
+        Assert.Equal(generalPixels, window.ReadPixels());
+
+        window.Render();
+
+        Assert.True(window.Compositor.Metrics.SceneCacheHit);
+        Assert.True(Assert.Single(
+            GetDrawCalls(window.Compositor),
+            static candidate => candidate.Type == Compositor.DrawCallType.Vector).IsSolidRounded);
+    }
+
+    [Fact]
+    public void SparseSolidRoundedRectanglesRemainOnGeneralCachedPipeline()
+    {
+        using var window = new HeadlessWindow(48, 32);
+        window.Content = new SparseSolidRoundedRectangleVisual();
+
+        window.Render();
+        window.Render();
+
+        Assert.True(window.Compositor.Metrics.SceneCacheHit);
+        Assert.False(Assert.Single(
+            GetDrawCalls(window.Compositor),
+            static candidate => candidate.Type == Compositor.DrawCallType.Vector).IsSolidRounded);
+    }
+
+    [Fact]
     public void GradientRectangleRemainsOnGeneralVectorPipeline()
     {
         using var window = new HeadlessWindow(48, 32);
@@ -5338,6 +5385,56 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
                 new Pen(stroke, 2f),
                 new Rect(8f, 8f, 24f, 16f));
             context.PopOpacity();
+        }
+    }
+
+    private sealed class DenseSolidRoundedRectangleVisual : FrameworkElement
+    {
+        private readonly SolidColorBrush _brush = new(new Vector4(0.2f, 0.55f, 0.9f, 1f))
+        {
+            Opacity = 0.75f
+        };
+
+        public DenseSolidRoundedRectangleVisual()
+        {
+            Width = 160f;
+            Height = 96f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            context.PushOpacity(0.8f);
+            for (var index = 0; index < 32; index++)
+            {
+                var column = index % 8;
+                var row = index / 8;
+                context.DrawRoundedRectangle(
+                    _brush,
+                    null,
+                    new Rect(2f + column * 19f, 2f + row * 22f, 16f, 18f),
+                    4f);
+            }
+            context.PopOpacity();
+        }
+    }
+
+    private sealed class SparseSolidRoundedRectangleVisual : FrameworkElement
+    {
+        private readonly SolidColorBrush _brush = new(Vector4.One);
+
+        public SparseSolidRoundedRectangleVisual()
+        {
+            Width = 48f;
+            Height = 32f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            context.DrawRoundedRectangle(
+                _brush,
+                null,
+                new Rect(8f, 6f, 28f, 20f),
+                5f);
         }
     }
 

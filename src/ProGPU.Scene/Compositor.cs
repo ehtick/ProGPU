@@ -748,10 +748,12 @@ public unsafe class Compositor : IDisposable
     // Render Pipelines
     private RenderPipeline* _vectorPipeline;
     private RenderPipeline* _solidRectPipeline;
+    private RenderPipeline* _solidRoundedPipeline;
     private RenderPipeline* _textPipeline;
     private RenderPipeline* _texturePipeline;
     private RenderPipeline* _vectorPipelineOffscreen;
     private RenderPipeline* _solidRectPipelineOffscreen;
+    private RenderPipeline* _solidRoundedPipelineOffscreen;
     private RenderPipeline* _textPipelineOffscreen;
     private RenderPipeline* _texturePipelineOffscreen;
     private BindGroupLayout* _textureBindGroupLayout;
@@ -830,6 +832,7 @@ public unsafe class Compositor : IDisposable
     {
         public DrawCallType Type;
         public bool IsSolidRect;
+        public bool IsSolidRounded;
         public uint IndexStart;
         public uint IndexCount;
         public GpuTexture? Texture;
@@ -956,8 +959,13 @@ public unsafe class Compositor : IDisposable
         None,
         Vector,
         SolidRect,
+        SolidRounded,
         Text
     }
+
+    private const int SolidRoundedSpecializationThreshold = 32;
+    private int _previousSolidRoundedPrimitiveCount;
+    private int _currentSolidRoundedPrimitiveCount;
 
     private readonly record struct CompiledVisualVersion(Visual Visual, long ChangeVersion);
     private readonly record struct CompiledLayerVersion(Visual Visual, GpuTexture Texture);
@@ -2131,6 +2139,7 @@ public unsafe class Compositor : IDisposable
             externalLayers,
             activeToolTip,
             hasDynamicDiagnostics);
+        bool requiresSolidRoundedSpecializationRecompile = false;
 
         _useGpuTransformsActive = false;
         _cameraViewMatrix = Matrix4x4.Identity;
@@ -2150,6 +2159,7 @@ public unsafe class Compositor : IDisposable
         // 2. Clear CPU collection batch lists and active brushes
         if (!reuseCompiledScene)
         {
+            _currentSolidRoundedPrimitiveCount = 0;
             _activeBrushes.Clear();
             _activeGradientStops.Clear();
             _vectorVerticesList.Clear();
@@ -2410,6 +2420,13 @@ public unsafe class Compositor : IDisposable
         }
 
 SceneCompilationComplete:
+        if (!reuseCompiledScene)
+        {
+            requiresSolidRoundedSpecializationRecompile =
+                (_previousSolidRoundedPrimitiveCount >= SolidRoundedSpecializationThreshold) !=
+                (_currentSolidRoundedPrimitiveCount >= SolidRoundedSpecializationThreshold);
+            _previousSolidRoundedPrimitiveCount = _currentSolidRoundedPrimitiveCount;
+        }
         if (glyphBatchActive)
         {
             glyphBatchActive = false;
@@ -2514,6 +2531,11 @@ DynamicBufferUploadComplete:
             externalLayers,
             activeToolTip,
             hasDynamicDiagnostics);
+        if (requiresSolidRoundedSpecializationRecompile)
+        {
+            _compiledSceneReusable = false;
+            _compiledSceneCacheStateReason = "Solid rounded specialization changed";
+        }
 
 SceneStateUploadComplete:
         uploadSw.Stop();
@@ -2573,7 +2595,7 @@ SceneStateUploadComplete:
         GpuBlendMode? currentBlendMode = null;
         GpuTexture? currentMaskTexture = null;
         bool? currentPipelineHasMask = null;
-        bool? currentVectorIsSolidRect = null;
+        byte? currentVectorPipelineKind = null;
         var textureEntries = stackalloc BindGroupEntry[2];
 
         var drawCallCount = _drawCalls.Count;
@@ -2588,22 +2610,17 @@ SceneStateUploadComplete:
             if (dc.Type == DrawCallType.Vector)
             {
                 var hasMask = dc.MaskTexture != null;
-                var activePipeline = dc.IsSolidRect
-                    ? GetSolidRectPipeline(
-                        dc.BlendMode,
-                        isOffscreen: false,
-                        hasMask: hasMask)
-                    : GetPipeline(
-                        dc.Type,
-                        dc.BlendMode,
-                        isOffscreen: false,
-                        hasMask: hasMask);
+                var vectorPipelineKind = GetVectorPipelineKind(dc);
+                var activePipeline = GetVectorPipeline(
+                    dc,
+                    isOffscreen: false,
+                    hasMask: hasMask);
                 var maskBindGroup = GetMaskBindGroup(dc.MaskTexture, isOffscreen: false);
 
                 if (currentType != DrawCallType.Vector ||
                     currentBlendMode != dc.BlendMode ||
                     currentPipelineHasMask != hasMask ||
-                    currentVectorIsSolidRect != dc.IsSolidRect)
+                    currentVectorPipelineKind != vectorPipelineKind)
                 {
                     _context.Api.RenderPassEncoderSetPipeline(pass, activePipeline);
                     fixed (BindGroup** pGrp = &_vectorUniformBindGroup)
@@ -2619,7 +2636,7 @@ SceneStateUploadComplete:
                     currentBlendMode = dc.BlendMode;
                     currentMaskTexture = dc.MaskTexture;
                     currentPipelineHasMask = hasMask;
-                    currentVectorIsSolidRect = dc.IsSolidRect;
+                    currentVectorPipelineKind = vectorPipelineKind;
                 }
                 else if (currentMaskTexture != dc.MaskTexture)
                 {
@@ -2760,7 +2777,7 @@ SceneStateUploadComplete:
                         var selectedVectorPipeline = currentType != DrawCallType.Vector ||
                             currentBlendMode != dc.BlendMode ||
                             currentPipelineHasMask != hasMask ||
-                            currentVectorIsSolidRect != false;
+                            currentVectorPipelineKind != 0;
                         if (selectedVectorPipeline)
                         {
                             var splinePipeline = GetPipeline(
@@ -2780,7 +2797,7 @@ SceneStateUploadComplete:
                             currentType = DrawCallType.Vector;
                             currentBlendMode = dc.BlendMode;
                             currentPipelineHasMask = hasMask;
-                            currentVectorIsSolidRect = false;
+                            currentVectorPipelineKind = 0;
                         }
 
                         if (selectedVectorPipeline || currentMaskTexture != dc.MaskTexture)
@@ -8669,7 +8686,20 @@ SceneStateUploadComplete:
             return;
         }
 
-        SwitchBatch(BatchType.Vector);
+        bool hasFill = cmd.Brush != null;
+        bool hasStroke = cmd.Pen != null && cmd.Pen.Thickness > 0f;
+        bool isSolidRoundedCandidate = ActiveCompilationContext == null &&
+            (hasFill || hasStroke) &&
+            (!hasFill || cmd.Brush is SolidColorBrush) &&
+            (!hasStroke || cmd.Pen!.Brush is SolidColorBrush);
+        if (isSolidRoundedCandidate)
+        {
+            _currentSolidRoundedPrimitiveCount++;
+        }
+
+        bool useSolidRoundedPipeline = isSolidRoundedCandidate &&
+            _previousSolidRoundedPrimitiveCount >= SolidRoundedSpecializationThreshold;
+        SwitchBatch(useSolidRoundedPipeline ? BatchType.SolidRounded : BatchType.Vector);
         int startIndex = _vectorVerticesList.Count;
         var radius = radiusX;
         float wHalf = r.Width / 2f;
@@ -8685,8 +8715,12 @@ SceneStateUploadComplete:
             var f2_pos = Vector2.Transform(new Vector2(r.X + r.Width + pad, r.Y + r.Height + pad), transform);
             var f3_pos = Vector2.Transform(new Vector2(r.X - pad, r.Y + r.Height + pad), transform);
 
-            float bIdx = RegisterBrush(cmd.Brush);
+            float bIdx = useSolidRoundedPipeline ? 0f : RegisterBrush(cmd.Brush);
             var solidColor = (cmd.Brush is SolidColorBrush solid) ? solid.Color : new Vector4(r.X + wHalf, r.Y + hHalf, 0f, 0f);
+            if (useSolidRoundedPipeline)
+            {
+                solidColor.W *= cmd.Brush.Opacity * _activeOpacity;
+            }
 
             uint idxStart = (uint)_vectorVerticesList.Count;
 
@@ -8719,8 +8753,12 @@ SceneStateUploadComplete:
             var p2_pos = Vector2.Transform(new Vector2(r.X + r.Width + pad, r.Y + r.Height + pad), transform);
             var p3_pos = Vector2.Transform(new Vector2(r.X - pad, r.Y + r.Height + pad), transform);
 
-            float penBrushIdx = RegisterBrush(cmd.Pen.Brush);
+            float penBrushIdx = useSolidRoundedPipeline ? 0f : RegisterBrush(cmd.Pen.Brush);
             var penSolidColor = (cmd.Pen.Brush is SolidColorBrush solidPen) ? solidPen.Color : new Vector4(r.X + wHalf, r.Y + hHalf, 0f, 0f);
+            if (useSolidRoundedPipeline)
+            {
+                penSolidColor.W *= cmd.Pen.Brush.Opacity * _activeOpacity;
+            }
 
             uint idxStart = (uint)_vectorVerticesList.Count;
 
@@ -10318,15 +10356,20 @@ SceneStateUploadComplete:
 
     private void CommitPendingVectorDrawCall()
     {
-        CommitPendingVectorDrawCall(isSolidRect: false);
+        CommitPendingVectorDrawCall(isSolidRect: false, isSolidRounded: false);
     }
 
     private void CommitPendingSolidRectDrawCall()
     {
-        CommitPendingVectorDrawCall(isSolidRect: true);
+        CommitPendingVectorDrawCall(isSolidRect: true, isSolidRounded: false);
     }
 
-    private void CommitPendingVectorDrawCall(bool isSolidRect)
+    private void CommitPendingSolidRoundedDrawCall()
+    {
+        CommitPendingVectorDrawCall(isSolidRect: false, isSolidRounded: true);
+    }
+
+    private void CommitPendingVectorDrawCall(bool isSolidRect, bool isSolidRounded)
     {
         uint vecCount = (uint)_vectorIndicesList.Count - _pendingVectorStart;
         if (vecCount > 0)
@@ -10335,6 +10378,7 @@ SceneStateUploadComplete:
             {
                 Type = DrawCallType.Vector,
                 IsSolidRect = isSolidRect,
+                IsSolidRounded = isSolidRounded,
                 IndexStart = _pendingVectorStart,
                 IndexCount = vecCount,
                 ClipRect = _activeClipRect,
@@ -10375,6 +10419,10 @@ SceneStateUploadComplete:
         {
             CommitPendingSolidRectDrawCall();
         }
+        else if (_currentBatchType == BatchType.SolidRounded)
+        {
+            CommitPendingSolidRoundedDrawCall();
+        }
         else if (_currentBatchType == BatchType.Text)
         {
             CommitPendingTextDrawCall();
@@ -10392,6 +10440,10 @@ SceneStateUploadComplete:
         else if (_currentBatchType == BatchType.SolidRect)
         {
             CommitPendingSolidRectDrawCall();
+        }
+        else if (_currentBatchType == BatchType.SolidRounded)
+        {
+            CommitPendingSolidRoundedDrawCall();
         }
         else if (_currentBatchType == BatchType.Text)
         {
@@ -12055,7 +12107,7 @@ SceneStateUploadComplete:
         GpuBlendMode? currentBlendMode = null;
         GpuTexture? currentMaskTexture = null;
         bool? currentPipelineHasMask = null;
-        bool? currentVectorIsSolidRect = null;
+        byte? currentVectorPipelineKind = null;
         var textureEntries = stackalloc BindGroupEntry[2];
 
         var drawCallCount = _drawCalls.Count;
@@ -12094,7 +12146,7 @@ SceneStateUploadComplete:
                 currentType = null;
                 currentBlendMode = null;
                 currentMaskTexture = null;
-                currentVectorIsSolidRect = null;
+                currentVectorPipelineKind = null;
                 continue;
             }
 
@@ -12106,22 +12158,17 @@ SceneStateUploadComplete:
             if (dc.Type == DrawCallType.Vector)
             {
                 var hasMask = dc.MaskTexture != null;
-                var activePipeline = dc.IsSolidRect
-                    ? GetSolidRectPipeline(
-                        dc.BlendMode,
-                        isOffscreen: true,
-                        hasMask: hasMask)
-                    : GetPipeline(
-                        dc.Type,
-                        dc.BlendMode,
-                        isOffscreen: true,
-                        hasMask: hasMask);
+                var vectorPipelineKind = GetVectorPipelineKind(dc);
+                var activePipeline = GetVectorPipeline(
+                    dc,
+                    isOffscreen: true,
+                    hasMask: hasMask);
                 var maskBindGroup = GetMaskBindGroup(dc.MaskTexture, isOffscreen: true);
 
                 if (currentType != DrawCallType.Vector ||
                     currentBlendMode != dc.BlendMode ||
                     currentPipelineHasMask != hasMask ||
-                    currentVectorIsSolidRect != dc.IsSolidRect)
+                    currentVectorPipelineKind != vectorPipelineKind)
                 {
                     _context.Api.RenderPassEncoderSetPipeline(pass, activePipeline);
                     fixed (BindGroup** pGrp = &_vectorUniformBindGroupOffscreen)
@@ -12137,7 +12184,7 @@ SceneStateUploadComplete:
                     currentBlendMode = dc.BlendMode;
                     currentMaskTexture = dc.MaskTexture;
                     currentPipelineHasMask = hasMask;
-                    currentVectorIsSolidRect = dc.IsSolidRect;
+                    currentVectorPipelineKind = vectorPipelineKind;
                 }
                 else if (currentMaskTexture != dc.MaskTexture)
                 {
@@ -12278,7 +12325,7 @@ SceneStateUploadComplete:
                         var selectedVectorPipeline = currentType != DrawCallType.Vector ||
                             currentBlendMode != dc.BlendMode ||
                             currentPipelineHasMask != hasMask ||
-                            currentVectorIsSolidRect != false;
+                            currentVectorPipelineKind != 0;
                         if (selectedVectorPipeline)
                         {
                             var splinePipeline = GetPipeline(
@@ -12298,7 +12345,7 @@ SceneStateUploadComplete:
                             currentType = DrawCallType.Vector;
                             currentBlendMode = dc.BlendMode;
                             currentPipelineHasMask = hasMask;
-                            currentVectorIsSolidRect = false;
+                            currentVectorPipelineKind = 0;
                         }
 
                         if (selectedVectorPipeline || currentMaskTexture != dc.MaskTexture)
@@ -14167,6 +14214,22 @@ SceneStateUploadComplete:
         return hasMask ? entryPoint : $"{entryPoint}_unmasked";
     }
 
+    private static string GetSolidRoundedFragmentEntryPoint(
+        GpuBlendMode blendMode,
+        bool writesOpacityMask,
+        bool hasMask)
+    {
+        string entryPoint = writesOpacityMask
+            ? "fs_solid_rounded_mask"
+            : BlendModeRequiresPremultipliedSource(blendMode)
+                ? "fs_solid_rounded_premultiplied"
+                : "fs_solid_rounded_main";
+        return hasMask ? entryPoint : $"{entryPoint}_unmasked";
+    }
+
+    private static byte GetVectorPipelineKind(in CompositorDrawCall drawCall) =>
+        drawCall.IsSolidRounded ? (byte)2 : drawCall.IsSolidRect ? (byte)1 : (byte)0;
+
     private RenderPipeline* GetSolidRectPipeline(
         GpuBlendMode blendMode,
         bool isOffscreen,
@@ -14234,6 +14297,123 @@ SceneStateUploadComplete:
                     blendMode,
                     GpuTextureAlphaMode.Straight));
         }
+    }
+
+    private RenderPipeline* GetSolidRoundedPipeline(
+        GpuBlendMode blendMode,
+        bool isOffscreen,
+        TextureFormat? overrideFormat = null,
+        bool hasMask = true)
+    {
+        if (!overrideFormat.HasValue &&
+            blendMode == GpuBlendMode.SrcOver &&
+            !hasMask)
+        {
+            var cachedPipeline = isOffscreen
+                ? _solidRoundedPipelineOffscreen
+                : _solidRoundedPipeline;
+            if (cachedPipeline != null)
+            {
+                return cachedPipeline;
+            }
+        }
+
+        var shaderModule = _pipelineCache.GetOrCreateShader(
+            "Vector",
+            Shaders.VectorShader,
+            "VectorShader");
+        var pipelineLayout = isOffscreen
+            ? _vectorPipelineLayoutOffscreen
+            : _vectorPipelineLayout;
+
+        Span<VertexAttribute> attributes = stackalloc VertexAttribute[8];
+        attributes[0] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 0, ShaderLocation = 0 };
+        attributes[1] = new VertexAttribute { Format = VertexFormat.Float32x4, Offset = 8, ShaderLocation = 1 };
+        attributes[2] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 24, ShaderLocation = 2 };
+        attributes[3] = new VertexAttribute { Format = VertexFormat.Float32, Offset = 32, ShaderLocation = 3 };
+        attributes[4] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 36, ShaderLocation = 4 };
+        attributes[5] = new VertexAttribute { Format = VertexFormat.Float32, Offset = 44, ShaderLocation = 5 };
+        attributes[6] = new VertexAttribute { Format = VertexFormat.Float32, Offset = 48, ShaderLocation = 6 };
+        attributes[7] = new VertexAttribute { Format = VertexFormat.Float32, Offset = 52, ShaderLocation = 7 };
+
+        fixed (VertexAttribute* attributesPointer = attributes)
+        {
+            Span<VertexBufferLayout> layouts = stackalloc VertexBufferLayout[1];
+            layouts[0] = new VertexBufferLayout
+            {
+                ArrayStride = (uint)Unsafe.SizeOf<VectorVertex>(),
+                StepMode = VertexStepMode.Vertex,
+                AttributeCount = 8,
+                Attributes = attributesPointer
+            };
+
+            bool writesOpacityMask = overrideFormat == TextureFormat.R8Unorm;
+            string fragmentEntryPoint = GetSolidRoundedFragmentEntryPoint(
+                blendMode,
+                writesOpacityMask,
+                hasMask);
+            string targetKey = overrideFormat.HasValue ? $"_{overrideFormat.Value}" : string.Empty;
+            string pipelineKey = $"SolidRounded_{(isOffscreen ? "Offscreen_" : string.Empty)}{blendMode}{targetKey}_{fragmentEntryPoint}";
+            var pipeline = _pipelineCache.GetOrCreateRenderPipeline(
+                pipelineKey,
+                shaderModule,
+                layouts,
+                "vs_solid_rounded",
+                fragmentEntryPoint,
+                overrideFormat ?? RenderFormat,
+                PrimitiveTopology.TriangleList,
+                enableBlend: true,
+                enableDepthStencil: false,
+                sampleCount: isOffscreen ? 1u : Options.PrimarySampleCount,
+                blendMode: blendMode,
+                pipelineLayout: pipelineLayout,
+                sourceAlphaMode: GetPipelineSourceAlphaMode(
+                    DrawCallType.Vector,
+                    blendMode,
+                    GpuTextureAlphaMode.Straight));
+            if (!overrideFormat.HasValue &&
+                blendMode == GpuBlendMode.SrcOver &&
+                !hasMask)
+            {
+                if (isOffscreen)
+                {
+                    _solidRoundedPipelineOffscreen = pipeline;
+                }
+                else
+                {
+                    _solidRoundedPipeline = pipeline;
+                }
+            }
+
+            return pipeline;
+        }
+    }
+
+    private RenderPipeline* GetVectorPipeline(
+        in CompositorDrawCall drawCall,
+        bool isOffscreen,
+        TextureFormat? overrideFormat = null,
+        bool hasMask = true)
+    {
+        return GetVectorPipelineKind(drawCall) switch
+        {
+            2 => GetSolidRoundedPipeline(
+                drawCall.BlendMode,
+                isOffscreen,
+                overrideFormat,
+                hasMask),
+            1 => GetSolidRectPipeline(
+                drawCall.BlendMode,
+                isOffscreen,
+                overrideFormat,
+                hasMask),
+            _ => GetPipeline(
+                DrawCallType.Vector,
+                drawCall.BlendMode,
+                isOffscreen,
+                overrideFormat: overrideFormat,
+                hasMask: hasMask)
+        };
     }
 
     private RenderPipeline* GetPipeline(
@@ -14649,7 +14829,7 @@ SceneStateUploadComplete:
             var maskBindGroup = GetMaskBindGroup(maskPass.PreviousMaskTexture, isOffscreen: true);
 
             DrawCallType? currentType = null;
-            bool? currentVectorIsSolidRect = null;
+            byte? currentVectorPipelineKind = null;
             var textureEntries = stackalloc BindGroupEntry[2];
 
             var maskDrawCalls = maskPass.DrawCalls;
@@ -14664,19 +14844,14 @@ SceneStateUploadComplete:
 
                 if (dc.Type == DrawCallType.Vector)
                 {
+                    var vectorPipelineKind = GetVectorPipelineKind(dc);
                     if (currentType != DrawCallType.Vector ||
-                        currentVectorIsSolidRect != dc.IsSolidRect)
+                        currentVectorPipelineKind != vectorPipelineKind)
                     {
-                        var activePipeline = dc.IsSolidRect
-                            ? GetSolidRectPipeline(
-                                dc.BlendMode,
-                                isOffscreen: true,
-                                overrideFormat: TextureFormat.R8Unorm)
-                            : GetPipeline(
-                                dc.Type,
-                                dc.BlendMode,
-                                isOffscreen: true,
-                                overrideFormat: TextureFormat.R8Unorm);
+                        var activePipeline = GetVectorPipeline(
+                            dc,
+                            isOffscreen: true,
+                            overrideFormat: TextureFormat.R8Unorm);
                         _context.Api.RenderPassEncoderSetPipeline(pass, activePipeline);
                         fixed (BindGroup** pGrp = &_vectorUniformBindGroupOffscreen)
                         {
@@ -14692,7 +14867,7 @@ SceneStateUploadComplete:
                         _context.Api.RenderPassEncoderSetVertexBuffer(pass, 0, buffer, 0, _vectorVertexBuffer.Size);
                         _context.Api.RenderPassEncoderSetIndexBuffer(pass, _vectorIndexBuffer.BufferPtr, IndexFormat.Uint32, 0, _vectorIndexBuffer.Size);
                         currentType = DrawCallType.Vector;
-                        currentVectorIsSolidRect = dc.IsSolidRect;
+                        currentVectorPipelineKind = vectorPipelineKind;
                     }
                     _context.Api.RenderPassEncoderDrawIndexed(pass, dc.IndexCount, 1, dc.IndexStart, 0, 0);
                 }
