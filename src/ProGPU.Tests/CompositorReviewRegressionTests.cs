@@ -176,6 +176,59 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     }
 
     [Fact]
+    public void SolidRectangleFillAndStrokeUseSpecializedBatchAndComposeOpacity()
+    {
+        using var window = new HeadlessWindow(48, 32);
+        window.Content = new SolidRectangleFastPathVisual();
+
+        window.Render();
+
+        var drawCall = Assert.Single(
+            GetDrawCalls(window.Compositor),
+            static candidate => candidate.Type == Compositor.DrawCallType.Vector);
+        Assert.True(drawCall.IsSolidRect);
+        Assert.Equal(12u, drawCall.IndexCount);
+
+        byte[] pixels = window.ReadPixels();
+        int center = (16 * 48 + 20) * 4;
+        Assert.InRange(pixels[center], (byte)50, (byte)80);
+        Assert.InRange(pixels[center + 1], (byte)0, (byte)25);
+        int topStroke = (8 * 48 + 20) * 4;
+        Assert.True(pixels[topStroke + 1] >= 40, "Expected the opacity-composed green rectangle stroke.");
+    }
+
+    [Fact]
+    public void GradientRectangleRemainsOnGeneralVectorPipeline()
+    {
+        using var window = new HeadlessWindow(48, 32);
+        window.Content = new GradientRectangleVisual();
+
+        window.Render();
+
+        var drawCall = Assert.Single(
+            GetDrawCalls(window.Compositor),
+            static candidate => candidate.Type == Compositor.DrawCallType.Vector);
+        Assert.False(drawCall.IsSolidRect);
+    }
+
+    [Fact]
+    public void StaticRectangleCompilationRetainsGeneralVectorAbi()
+    {
+        using var window = new HeadlessWindow(48, 32);
+        using var buffer = window.Compositor.CompileStaticDxf(
+            [
+                new RenderCommand
+                {
+                    Type = RenderCommandType.DrawRect,
+                    Brush = new SolidColorBrush(Vector4.One),
+                    Rect = new Rect(4f, 4f, 20f, 12f)
+                }
+            ]);
+
+        Assert.DoesNotContain(buffer.DrawCalls, static drawCall => drawCall.IsSolidRect);
+    }
+
+    [Fact]
     public void FractionalTransformedVectorGlyphsUseBoundedAtlasPhases()
     {
         const int glyphCount = 512;
@@ -5264,6 +5317,50 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
                 null,
                 PrimitivePathGeometry.CreateRectangle(0f, 0f, 80f, 80f),
                 Matrix4x4.Identity);
+        }
+    }
+
+    private sealed class SolidRectangleFastPathVisual : FrameworkElement
+    {
+        public SolidRectangleFastPathVisual()
+        {
+            Width = 48f;
+            Height = 32f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            var fill = new SolidColorBrush(new Vector4(1f, 0f, 0f, 1f)) { Opacity = 0.5f };
+            var stroke = new SolidColorBrush(new Vector4(0f, 1f, 0f, 1f)) { Opacity = 0.5f };
+            context.PushOpacity(0.5f);
+            context.DrawRectangle(
+                fill,
+                new Pen(stroke, 2f),
+                new Rect(8f, 8f, 24f, 16f));
+            context.PopOpacity();
+        }
+    }
+
+    private sealed class GradientRectangleVisual : FrameworkElement
+    {
+        public GradientRectangleVisual()
+        {
+            Width = 48f;
+            Height = 32f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            context.DrawRectangle(
+                new LinearGradientBrush(
+                    new Vector2(4f, 4f),
+                    new Vector2(36f, 4f),
+                    [
+                        new GradientStop(new Vector4(1f, 0f, 0f, 1f), 0f),
+                        new GradientStop(new Vector4(0f, 0f, 1f, 1f), 1f)
+                    ]),
+                null,
+                new Rect(4f, 4f, 32f, 20f));
         }
     }
 

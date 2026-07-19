@@ -1,4 +1,4 @@
-// Algorithm: Expand and transform batched vector primitives and meshes, evaluate analytic curves and arcs, then shade fills, strokes, gradients, vertex-color blends, and anti-aliased edges.
+// Algorithm: Expand and transform batched vector primitives and meshes, evaluate analytic curves and arcs, then shade fills, strokes, gradients, vertex-color blends, and anti-aliased edges; a dedicated solid-rectangle entry point avoids the general material/path program for UI chrome.
 // Time complexity: O(1) per vertex or fragment under the shader's fixed primitive and gradient limits.
 // Space complexity: O(1) local storage and a bounded number of uniform/storage reads; masked variants add one mask-texture sample per fragment.
 struct Brush {
@@ -705,6 +705,132 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vertexIndex: u32) -> Verte
         aliasedEdge);
     output.gridIndex = gridIndex;
     return output;
+}
+
+// Solid UI rectangles use the same retained VectorVertex ABI and transform flags as
+// the general vector path. The specialized entry point intentionally does not read
+// brush storage or evaluate unrelated primitive branches. The compositor bakes the
+// solid brush and effective opacity into input.color before selecting this pipeline.
+@vertex
+fn vs_solid_rect(input: VertexInput) -> VertexOutput {
+    var encodedShapeType = input.shapeType;
+    let aliasedEdge = encodedShapeType >= 1000.0;
+    if (aliasedEdge) {
+        encodedShapeType = encodedShapeType - 1000.0;
+    }
+
+    var position = input.position;
+    if (encodedShapeType >= 195.0) {
+        position = (uniforms.mvp * vec4<f32>(position, 0.0, 1.0)).xy;
+    } else if (encodedShapeType >= 95.0) {
+        position = (uniforms.view * vec4<f32>(position, 0.0, 1.0)).xy;
+    }
+
+    var output: VertexOutput;
+    output.position = uniforms.projection * vec4<f32>(position, 0.0, 1.0);
+    output.color = input.color;
+    output.texCoord = input.texCoord;
+    output.brushIndex = input.brushIndex;
+    output.shapeSize = input.shapeSize;
+    output.cornerRadius = 0.0;
+    output.strokeThickness = input.strokeThickness;
+    output.shapeType = select(0.0, 1000.0, aliasedEdge);
+    output.gridIndex = 0.0;
+    return output;
+}
+
+fn solid_rect_distance(coordinate: vec2<f32>, shapeSize: vec2<f32>) -> f32 {
+    let distanceVector = abs(coordinate) - shapeSize * 0.5;
+    return length(max(distanceVector, vec2<f32>(0.0))) +
+        min(max(distanceVector.x, distanceVector.y), 0.0);
+}
+
+fn solid_rect_fs_main(input: VertexOutput, maskAlpha: f32) -> vec4<f32> {
+    let aliasedEdge = input.shapeType >= 1000.0;
+    // Fragment derivatives must execute in uniform control flow. Compute both
+    // fill and stroke widths before selecting the interpolated primitive mode;
+    // the branch below then only combines already evaluated scalar coverage.
+    let edgeDistance = abs(input.texCoord) - input.shapeSize * 0.5;
+    let edgeWidth = max(
+        abs(dpdx(input.texCoord)) + abs(dpdy(input.texCoord)),
+        vec2<f32>(0.0001));
+    let distance = solid_rect_distance(input.texCoord, input.shapeSize);
+    let thinStrokeInset = select(
+        0.0,
+        0.0625,
+        !aliasedEdge && input.strokeThickness <= 1.0001);
+    let strokeDistance = abs(distance) -
+        max(input.strokeThickness * 0.5 - thinStrokeInset, 0.0);
+    // dFdx/dFdy evaluate the exact analytic rectangle distance in screen
+    // space, avoiding the general shader's four extra SDF evaluations.
+    let strokeFilterWidth = max(
+        abs(dpdx(strokeDistance)) + abs(dpdy(strokeDistance)),
+        0.0001);
+
+    var shapeAlpha = 1.0;
+    if (input.strokeThickness <= 0.0) {
+        // Match the general fill-rectangle path exactly: separable derivative AA
+        // keeps axis-aligned one-pixel edges crisp and remains affine-safe.
+        let antialiasedCoverage = vec2<f32>(1.0) - smoothstep(
+            -0.5 * edgeWidth,
+            0.5 * edgeWidth,
+            edgeDistance);
+        let aliasedCoverage = select(
+            vec2<f32>(0.0),
+            vec2<f32>(1.0),
+            edgeDistance <= vec2<f32>(0.0));
+        let coverage = select(antialiasedCoverage, aliasedCoverage, aliasedEdge);
+        shapeAlpha = coverage.x * coverage.y;
+    } else {
+        let antialiasedAlpha = 1.0 - smoothstep(
+            -0.5 * strokeFilterWidth,
+            0.5 * strokeFilterWidth,
+            strokeDistance);
+        let aliasedAlpha = select(0.0, 1.0, strokeDistance <= 0.0);
+        shapeAlpha = select(antialiasedAlpha, aliasedAlpha, aliasedEdge);
+    }
+
+    if (shapeAlpha <= 0.0 || maskAlpha <= 0.0) {
+        discard;
+    }
+    return vec4<f32>(input.color.rgb, input.color.a * shapeAlpha * maskAlpha);
+}
+
+@fragment
+fn fs_solid_rect_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    let screenUv = input.position.xy / uniforms.canvasSize;
+    return solid_rect_fs_main(input, textureSample(maskTexture, maskSampler, screenUv).r);
+}
+
+@fragment
+fn fs_solid_rect_main_unmasked(input: VertexOutput) -> @location(0) vec4<f32> {
+    return solid_rect_fs_main(input, 1.0);
+}
+
+@fragment
+fn fs_solid_rect_premultiplied(input: VertexOutput) -> @location(0) vec4<f32> {
+    let screenUv = input.position.xy / uniforms.canvasSize;
+    let color = solid_rect_fs_main(input, textureSample(maskTexture, maskSampler, screenUv).r);
+    return vec4<f32>(color.rgb * color.a, color.a);
+}
+
+@fragment
+fn fs_solid_rect_premultiplied_unmasked(input: VertexOutput) -> @location(0) vec4<f32> {
+    let color = solid_rect_fs_main(input, 1.0);
+    return vec4<f32>(color.rgb * color.a, color.a);
+}
+
+@fragment
+fn fs_solid_rect_mask(input: VertexOutput) -> @location(0) vec4<f32> {
+    let screenUv = input.position.xy / uniforms.canvasSize;
+    let color = solid_rect_fs_main(input, textureSample(maskTexture, maskSampler, screenUv).r);
+    return vec4<f32>(color.a, 0.0, 0.0, 1.0);
+}
+
+@fragment
+fn fs_solid_rect_mask_unmasked(input: VertexOutput) -> @location(0) vec4<f32> {
+    let color = solid_rect_fs_main(input, 1.0);
+    return vec4<f32>(color.a, 0.0, 0.0, 1.0);
 }
 fn mesh_unpremultiply(color: vec4<f32>) -> vec4<f32> {
     if (color.a <= 0.0) {
