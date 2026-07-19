@@ -161,10 +161,13 @@ public class VirtualizingStackPanel : VirtualizingPanel
     protected override void ArrangeOverride(Rect arrangeRect)
     {
         base.ArrangeOverride(arrangeRect);
-        UpdateViewport();
+        // The base panel sizes viewport chrome and generically arranges its children to
+        // the full virtual extent. Always restore item rectangles after that pass, even
+        // when the realized range is unchanged. This does not rebind or recycle items.
+        UpdateViewport(forceArrange: true);
     }
 
-    private void UpdateViewport()
+    private void UpdateViewport(bool forceArrange = false)
     {
         int itemsCount = ItemsCount;
         var createVisual = CreateVisualFactory;
@@ -188,11 +191,15 @@ public class VirtualizingStackPanel : VirtualizingPanel
             startIdx = Math.Clamp(startIdx, 0, itemsCount - 1);
             endIdx = Math.Clamp(endIdx, 0, itemsCount - 1);
 
-            if (CanReuseRealizedRange(startIdx, endIdx, viewportWidth))
+            bool canReuseRealizedRange = CanReuseRealizedRange(startIdx, endIdx, viewportWidth);
+            if (canReuseRealizedRange && !forceArrange)
             {
                 return;
             }
-            ViewportReconciliationCount++;
+            if (!canReuseRealizedRange)
+            {
+                ViewportReconciliationCount++;
+            }
 
             // 2. Recycle items scrolled out of view
             _indicesToRecycle.Clear();
@@ -248,11 +255,15 @@ public class VirtualizingStackPanel : VirtualizingPanel
             startIdx = Math.Clamp(startIdx, 0, itemsCount - 1);
             endIdx = Math.Clamp(endIdx, 0, itemsCount - 1);
 
-            if (CanReuseRealizedRange(startIdx, endIdx, viewportHeight))
+            bool canReuseRealizedRange = CanReuseRealizedRange(startIdx, endIdx, viewportHeight);
+            if (canReuseRealizedRange && !forceArrange)
             {
                 return;
             }
-            ViewportReconciliationCount++;
+            if (!canReuseRealizedRange)
+            {
+                ViewportReconciliationCount++;
+            }
 
             _indicesToRecycle.Clear();
             foreach (var key in _activeVisuals.Keys)

@@ -144,10 +144,14 @@ public class UniformVirtualizingGridPanel : VirtualizingPanel
     protected override void ArrangeOverride(Rect arrangeRect)
     {
         base.ArrangeOverride(arrangeRect);
-        UpdateViewport();
+        // VirtualizingPanel's base layout must size the viewport chrome, but its generic
+        // child arrange temporarily stretches every realized container to the complete
+        // virtual extent. Restore stable item rectangles even when the visible range did
+        // not change; this is placement-only and must not count as reconciliation.
+        UpdateViewport(forceArrange: true);
     }
 
-    private void UpdateViewport()
+    private void UpdateViewport(bool forceArrange = false)
     {
         int itemsCount = ItemsCount;
         var createVisual = CreateVisualFactory;
@@ -183,17 +187,22 @@ public class UniformVirtualizingGridPanel : VirtualizingPanel
         endIdx = Math.Clamp(endIdx, 0, itemsCount - 1);
 
         int expectedActiveCount = endIdx - startIdx + 1;
-        if (_realizedStartIndex == startIdx &&
+        bool canReuseRealizedRange =
+            _realizedStartIndex == startIdx &&
             _realizedEndIndex == endIdx &&
             _realizedColumns == cols &&
             _realizedItemWidth == ItemWidth &&
             _realizedItemHeight == ItemHeight &&
-            _activeVisuals.Count == expectedActiveCount)
+            _activeVisuals.Count == expectedActiveCount;
+        if (canReuseRealizedRange && !forceArrange)
         {
             return;
         }
 
-        ViewportReconciliationCount++;
+        if (!canReuseRealizedRange)
+        {
+            ViewportReconciliationCount++;
+        }
 
         // 2. Recycle items that scrolled out of view
         _indicesToRecycle.Clear();

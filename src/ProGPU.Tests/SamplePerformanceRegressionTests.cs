@@ -250,6 +250,46 @@ public sealed class SamplePerformanceRegressionTests
     }
 
     [Fact]
+    public void RepeatedGridArrangeRestoresRealizedCellGeometryWithoutRebinding()
+    {
+        var panel = new UniformVirtualizingGridPanel
+        {
+            ItemsCount = 1_000,
+            ItemWidth = 80f,
+            ItemHeight = 80f,
+            CreateVisualFactory = static () => new Border
+            {
+                WidthConstraint = 72f,
+                HeightConstraint = 72f,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            },
+            BindVisualCallback = static (visual, index) => visual.HitTestId = index + 1
+        };
+        var scrollViewer = new ScrollViewer
+        {
+            WidthConstraint = 320f,
+            HeightConstraint = 240f,
+            Content = panel
+        };
+
+        scrollViewer.Measure(new Vector2(320f, 240f));
+        scrollViewer.Arrange(new Rect(0f, 0f, 320f, 240f));
+        Visual firstCell = panel.Children.First(static child => !child.ExcludeFromParentRetainedTransform);
+        int hitTestId = firstCell.HitTestId;
+        ulong reconciliationCount = panel.ViewportReconciliationCount;
+
+        panel.InvalidateArrange();
+        scrollViewer.InvalidateArrange();
+        scrollViewer.Arrange(new Rect(0f, 0f, 320f, 240f));
+
+        Assert.Equal(new Vector2(4f, 4f), firstCell.Offset);
+        Assert.Equal(new Vector2(72f, 72f), firstCell.Size);
+        Assert.Equal(hitTestId, firstCell.HitTestId);
+        Assert.Equal(reconciliationCount, panel.ViewportReconciliationCount);
+    }
+
+    [Fact]
     public void GlyphGridSubRowScrollReusesCompiledScene()
     {
         TtfFont font = LoadTestFont();
@@ -312,6 +352,36 @@ public sealed class SamplePerformanceRegressionTests
         Assert.NotNull(panel.ChildrenRetainedTransform);
         Assert.Equal(new Vector2(0f, -20f), panel.ChildrenRetainedTransform!.Translation);
         Assert.Equal(sceneVersion, panel.ChangeVersion);
+        Assert.Equal(reconciliationCount, panel.ViewportReconciliationCount);
+    }
+
+    [Fact]
+    public void RepeatedStackArrangeRestoresRealizedItemGeometryWithoutRebinding()
+    {
+        var panel = new VirtualizingStackPanel
+        {
+            ItemsCount = 1_000,
+            ItemHeight = 40f,
+            CreateVisualFactory = static () => new Border
+            {
+                HeightConstraint = 32f,
+                VerticalAlignment = VerticalAlignment.Center
+            },
+            BindVisualCallback = static (visual, index) => visual.HitTestId = index + 1
+        };
+
+        panel.Measure(new Vector2(300f, 200f));
+        panel.Arrange(new Rect(0f, 0f, 300f, 200f));
+        Visual firstItem = panel.Children.First(static child => !child.ExcludeFromParentRetainedTransform);
+        int hitTestId = firstItem.HitTestId;
+        ulong reconciliationCount = panel.ViewportReconciliationCount;
+
+        panel.InvalidateArrange();
+        panel.Arrange(new Rect(0f, 0f, 300f, 200f));
+
+        Assert.Equal(new Vector2(0f, 4f), firstItem.Offset);
+        Assert.Equal(new Vector2(300f, 32f), firstItem.Size);
+        Assert.Equal(hitTestId, firstItem.HitTestId);
         Assert.Equal(reconciliationCount, panel.ViewportReconciliationCount);
     }
 
