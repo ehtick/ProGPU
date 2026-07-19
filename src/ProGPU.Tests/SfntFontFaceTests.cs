@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Numerics;
 using System.Text;
+using System.Threading.Tasks;
 using ProGPU.Tests.Headless;
 using ProGPU.Text;
 using ProGPU.Vector;
@@ -425,6 +426,52 @@ public class SfntFontFaceTests
         Assert.Contains(
             outline.Figures[0].Segments,
             segment => segment is LineSegment { Point: var point } && point == new Vector2(200, 170));
+    }
+
+    [Fact]
+    public void TtfFontPublishesOneImmutableOutlineAcrossConcurrentCacheHits()
+    {
+        (byte[] loca, byte[] glyf) = BuildCompositeGlyphTables();
+        byte[] fontData = BuildSfntWithTables(
+            ("head", BuildHeadTable()),
+            ("hhea", BuildHheaTable()),
+            ("maxp", BuildMaxpTable(3)),
+            ("hmtx", BuildHmtxTable()),
+            ("cmap", BuildCmapFormat4Table()),
+            ("loca", loca),
+            ("glyf", glyf));
+        var font = new TtfFont(fontData);
+        var outlines = new PathGeometry?[256];
+
+        Parallel.For(0, outlines.Length, index => outlines[index] = font.GetGlyphOutline(2));
+
+        PathGeometry first = Assert.IsType<PathGeometry>(outlines[0]);
+        Assert.All(outlines, outline => Assert.Same(first, outline));
+    }
+
+    [Fact]
+    public void TtfFontPublishesAsciiCmapHitsAndMissesAcrossConcurrentLookups()
+    {
+        byte[] fontData = BuildSfntWithTables(
+            ("head", BuildHeadTable()),
+            ("hhea", BuildHheaTable()),
+            ("maxp", BuildMaxpTable(3)),
+            ("hmtx", BuildHmtxTable()),
+            ("cmap", BuildCmapFormat4Table()),
+            ("loca", BuildLocaTable(3)),
+            ("glyf", BuildGlyfTable()));
+        var font = new TtfFont(fontData);
+        var mappings = new ushort[512];
+
+        Parallel.For(
+            0,
+            mappings.Length,
+            index => mappings[index] = font.GetGlyphIndex(index % 2 == 0 ? 'A' : 'Z'));
+
+        for (var index = 0; index < mappings.Length; index++)
+        {
+            Assert.Equal(index % 2 == 0 ? (ushort)1 : (ushort)0, mappings[index]);
+        }
     }
 
     [Fact]

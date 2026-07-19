@@ -5,6 +5,7 @@ using System.IO.Compression;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Xml;
 using OpenFontSharp;
 using OpenFontSharp.Tables.CFF;
@@ -118,6 +119,7 @@ public readonly struct BitmapGlyphData
 public partial class TtfFont
 {
     private const int MaxSvgDocumentBytes = 16 * 1024 * 1024;
+    private const int AsciiGlyphCacheLength = 128;
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
     public const uint JpegBitmapGraphicType = 0x6A706720;
@@ -127,6 +129,9 @@ public partial class TtfFont
     private readonly byte[] _data;
     private readonly SfntFontFace _face;
     private readonly Typeface? _cffTypeface;
+    private readonly object _asciiGlyphCacheLock = new();
+    private ushort[]? _asciiGlyphCache;
+    private byte[]? _asciiGlyphCacheStates;
     private readonly Lazy<Typeface?> _layoutTypeface;
     private readonly Dictionary<string, (uint offset, uint length)> _tables = new();
     private readonly Dictionary<ushort, List<FontColorLayer>?> _svgColorLayerCache = new();
@@ -456,8 +461,39 @@ public partial class TtfFont
 
     public ushort GetGlyphIndex(uint codePoint)
     {
-        return _face.TryGetGlyphIndex(codePoint, out var glyphIndex) ? glyphIndex : (ushort)0;
+        if (codePoint >= AsciiGlyphCacheLength)
+        {
+            return GetUncachedGlyphIndex(codePoint);
+        }
+
+        byte[]? states = Volatile.Read(ref _asciiGlyphCacheStates);
+        if (states is null)
+        {
+            lock (_asciiGlyphCacheLock)
+            {
+                if (_asciiGlyphCacheStates is null)
+                {
+                    Volatile.Write(ref _asciiGlyphCache, new ushort[AsciiGlyphCacheLength]);
+                    Volatile.Write(ref _asciiGlyphCacheStates, new byte[AsciiGlyphCacheLength]);
+                }
+                states = _asciiGlyphCacheStates;
+            }
+        }
+
+        int index = (int)codePoint;
+        if (Volatile.Read(ref states![index]) != 0)
+        {
+            return Volatile.Read(ref _asciiGlyphCache)![index];
+        }
+
+        ushort glyphIndex = GetUncachedGlyphIndex(codePoint);
+        Volatile.Read(ref _asciiGlyphCache)![index] = glyphIndex;
+        Volatile.Write(ref states[index], (byte)1);
+        return glyphIndex;
     }
+
+    private ushort GetUncachedGlyphIndex(uint codePoint) =>
+        _face.TryGetGlyphIndex(codePoint, out var glyphIndex) ? glyphIndex : (ushort)0;
 
     public bool TryGetVariationGlyph(uint codePoint, uint variationSelector, out ushort glyphIndex)
     {
@@ -1394,24 +1430,67 @@ public partial class TtfFont
         }
     }
 
-    private readonly Dictionary<ushort, ParsedGlyph?> _glyphOutlineCache = new();
+    // Parsed outlines are immutable after publication. Keep cache hits lock-free: scrolling
+    // repeatedly asks for the same small glyph set, and serializing every hit on one font-wide
+    // monitor makes text compilation scale with contention instead of visible glyph count.
+    // The arrays are allocated on first outline demand and are bounded by the font's maxp glyph
+    // count, independent of document, row, or text-layout cardinality.
+    private readonly object _glyphOutlineCacheLock = new();
+    private ParsedGlyph?[]? _glyphOutlineCache;
+    private byte[]? _glyphOutlineCacheStates;
     private readonly Dictionary<ushort, PathGeometry?> _flippedOutlineCache = new();
 
     public PathGeometry? GetGlyphOutline(ushort glyphIndex)
     {
-        lock (_glyphOutlineCache)
+        byte[]? states = Volatile.Read(ref _glyphOutlineCacheStates);
+        if (states is not null && glyphIndex < states.Length)
         {
-            if (_glyphOutlineCache.TryGetValue(glyphIndex, out var cached))
+            byte state = Volatile.Read(ref states[glyphIndex]);
+            if (state != 0)
             {
-                return cached?.Geometry;
+                return Volatile.Read(ref _glyphOutlineCache)![glyphIndex]?.Geometry;
+            }
+        }
+
+        if (glyphIndex >= NumGlyphs)
+        {
+            return null;
+        }
+
+        lock (_glyphOutlineCacheLock)
+        {
+            EnsureGlyphOutlineCache();
+            states = _glyphOutlineCacheStates!;
+            if (states[glyphIndex] != 0)
+            {
+                return _glyphOutlineCache![glyphIndex]?.Geometry;
             }
 
             var result = HasTrueTypeOutlines
                 ? GetGlyphOutlineInternal(glyphIndex, new HashSet<ushort>(), 0)
                 : GetCffGlyphOutline(glyphIndex);
-            _glyphOutlineCache[glyphIndex] = result;
+            PublishGlyphOutline(glyphIndex, result);
             return result?.Geometry;
         }
+    }
+
+    private void EnsureGlyphOutlineCache()
+    {
+        if (_glyphOutlineCacheStates is not null)
+        {
+            return;
+        }
+
+        var outlines = new ParsedGlyph?[NumGlyphs];
+        var states = new byte[NumGlyphs];
+        Volatile.Write(ref _glyphOutlineCache, outlines);
+        Volatile.Write(ref _glyphOutlineCacheStates, states);
+    }
+
+    private void PublishGlyphOutline(ushort glyphIndex, ParsedGlyph? outline)
+    {
+        _glyphOutlineCache![glyphIndex] = outline;
+        Volatile.Write(ref _glyphOutlineCacheStates![glyphIndex], outline is null ? (byte)2 : (byte)1);
     }
 
     private ParsedGlyph? GetCffGlyphOutline(ushort glyphIndex)
@@ -1562,13 +1641,14 @@ public partial class TtfFont
 
         try
         {
-            if (_glyphOutlineCache.TryGetValue(glyphIndex, out var cached))
+            EnsureGlyphOutlineCache();
+            if (_glyphOutlineCacheStates![glyphIndex] != 0)
             {
-                return cached;
+                return _glyphOutlineCache![glyphIndex];
             }
 
             var result = ParseGlyphOutline(glyphIndex, ancestors, depth);
-            _glyphOutlineCache[glyphIndex] = result;
+            PublishGlyphOutline(glyphIndex, result);
             return result;
         }
         finally

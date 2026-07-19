@@ -237,6 +237,16 @@ internal static class SamplePerformanceBenchmark
                 $" positionedCharacters={s_lastMarkdownCharacters}" +
                 $" maximumScrollOffset={s_maximumMarkdownOffset:F0}";
         }
+        else if (string.Equals(RequestedPage, "Data Virtualization", StringComparison.OrdinalIgnoreCase) &&
+                 AppState._screenCompositor is { } dataCompositor)
+        {
+            workloadDetails =
+                $" cachedTextLayouts={dataCompositor.CachedTextLayoutCount}" +
+                $" cachedTextLayoutGlyphs={dataCompositor.CachedTextLayoutGlyphCount}" +
+                $" glyphAtlasGenerationChanges={dataCompositor.Atlas.Generation - s_glyphAtlasGenerationAtStart}" +
+                $" glyphAtlasEvictions={dataCompositor.Atlas.EvictionCount - s_glyphAtlasEvictionsAtStart}" +
+                $" glyphAtlasClears={dataCompositor.Atlas.ClearCount - s_glyphAtlasClearsAtStart}";
+        }
 
         Console.WriteLine(
             $"[SampleBenchmark] RESULT page=\"{RequestedPage}\" frames={measuredFrames}" +

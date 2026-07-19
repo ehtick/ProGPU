@@ -31,6 +31,9 @@ public class TextLayout
 {
     private const long SharedFallbackFontFileSizeLimit = 16L * 1024L * 1024L;
 
+    [ThreadStatic]
+    private static ShapingBuffer? t_shapingBuffer;
+
     private readonly struct LineRange
     {
         public LineRange(int start, int count)
@@ -238,12 +241,12 @@ public class TextLayout
         }
     }
 
-    public string Text { get; }
-    public TtfFont Font { get; }
-    public float FontSize { get; }
-    public float MaxWidth { get; }
-    public TextAlignment Alignment { get; }
-    public TextShapingOptions ShapingOptions { get; }
+    public string Text { get; private set; } = string.Empty;
+    public TtfFont Font { get; private set; } = null!;
+    public float FontSize { get; private set; }
+    public float MaxWidth { get; private set; }
+    public TextAlignment Alignment { get; private set; }
+    public TextShapingOptions ShapingOptions { get; private set; } = TextShapingOptions.Default;
 
     public List<TextRunGlyph> Glyphs { get; } = new();
     public Vector2 ContentSize { get; private set; }
@@ -259,6 +262,18 @@ public class TextLayout
         GlyphAtlas? atlas = null,
         TextShapingOptions? shapingOptions = null)
     {
+        Reset(text, font, fontSize, maxWidth, alignment, atlas, shapingOptions);
+    }
+
+    internal void Reset(
+        string text,
+        TtfFont font,
+        float fontSize,
+        float maxWidth,
+        TextAlignment alignment,
+        GlyphAtlas? atlas,
+        TextShapingOptions? shapingOptions)
+    {
         Text = text ?? string.Empty;
         Font = font;
         FontSize = fontSize;
@@ -267,6 +282,20 @@ public class TextLayout
         ShapingOptions = shapingOptions ?? TextShapingOptions.Default;
 
         GenerateLayout(atlas);
+    }
+
+    internal void ClearForReuse()
+    {
+        Text = string.Empty;
+        Font = null!;
+        FontSize = 0f;
+        MaxWidth = float.PositiveInfinity;
+        Alignment = TextAlignment.Left;
+        ShapingOptions = TextShapingOptions.Default;
+        Glyphs.Clear();
+        ContentSize = Vector2.Zero;
+        MeasuredSize = Vector2.Zero;
+        HasTextures = false;
     }
 
     public void GenerateLayout(GlyphAtlas? atlas)
@@ -302,6 +331,11 @@ public class TextLayout
         if (ShapingOptions.Direction is ShapingDirection.TopToBottom or ShapingDirection.BottomToTop)
         {
             GenerateVerticalShapedLayout();
+            return;
+        }
+
+        if (TryGenerateSingleLineAsciiLayout())
+        {
             return;
         }
 
@@ -438,6 +472,78 @@ public class TextLayout
         MeasuredSize = new Vector2(float.IsInfinity(MaxWidth) ? maxLineWidth : MaxWidth, cursorY);
     }
 
+    private bool TryGenerateSingleLineAsciiLayout()
+    {
+        if (Alignment != TextAlignment.Left ||
+            ShapingOptions.Direction is not (ShapingDirection.Unspecified or ShapingDirection.LeftToRight))
+        {
+            return false;
+        }
+
+        for (var index = 0; index < Text.Length; index++)
+        {
+            char character = Text[index];
+            if (character is < ' ' or > '~')
+            {
+                return false;
+            }
+        }
+
+        ShapingBuffer shaping = t_shapingBuffer ??= new ShapingBuffer(64);
+        OpenTypeTextShaper.ShapeDesignUnits(Text, Font, ShapingOptions, shaping);
+        ReadOnlySpan<ShapingGlyph> shaped = shaping.Glyphs;
+        float scale = FontSize / Font.UnitsPerEm;
+        float width = 0f;
+        for (var index = 0; index < shaped.Length; index++)
+        {
+            width += shaped[index].AdvanceX * scale;
+        }
+        if (!float.IsInfinity(MaxWidth) && width > MaxWidth)
+        {
+            return false;
+        }
+
+        float lineSpacing = (Font.Ascender - Font.Descender + Font.LineGap) * scale;
+        float fontAscent = Font.Ascender * scale;
+        float cursorX = 0f;
+        Glyphs.EnsureCapacity(shaped.Length);
+        for (var index = 0; index < shaped.Length; index++)
+        {
+            ShapingGlyph candidate = shaped[index];
+            if (candidate.GlyphId == 0)
+            {
+                Glyphs.Clear();
+                return false;
+            }
+            float advance = candidate.AdvanceX * scale;
+            int cluster = Math.Clamp(candidate.Cluster, 0, Text.Length - 1);
+            Glyphs.Add(new TextRunGlyph
+            {
+                Character = Text[cluster],
+                CodePoint = candidate.CodePoint,
+                GlyphIndex = checked((ushort)candidate.GlyphId),
+                Cluster = candidate.Cluster,
+                Position = new Vector2(
+                    cursorX + candidate.OffsetX * scale,
+                    fontAscent + candidate.OffsetY * scale),
+                Glyph = new GlyphInfo
+                {
+                    Width = (uint)Math.Max(0f, MathF.Ceiling(advance)),
+                    Height = (uint)Math.Max(0f, MathF.Ceiling(lineSpacing)),
+                    Advance = advance,
+                    TexCoordMin = Vector2.Zero,
+                    TexCoordMax = Vector2.Zero
+                },
+                Font = Font
+            });
+            cursorX += advance;
+        }
+
+        ContentSize = new Vector2(width, lineSpacing);
+        MeasuredSize = new Vector2(float.IsInfinity(MaxWidth) ? width : MaxWidth, lineSpacing);
+        return true;
+    }
+
     private void GenerateVerticalShapedLayout()
     {
         float scale = FontSize / Font.UnitsPerEm;
@@ -568,20 +674,51 @@ public class TextLayout
 
     private void AppendShapedRun(List<ShapedCandidate> candidates, int start, int length, TtfFont font)
     {
-        string runText = Text.Substring(start, length);
-        IReadOnlyList<ShapedGlyph> shaped = OpenTypeTextShaper.Shape(runText, font, FontSize, ShapingOptions);
-        for (var index = 0; index < shaped.Count; index++)
+        // The overwhelmingly common layout is one font run spanning the complete
+        // string. Reuse the command text in that case so first-touch virtualized
+        // rows do not allocate an identical substring before shaping.
+        string runText = start == 0 && length == Text.Length
+            ? Text
+            : Text.Substring(start, length);
+        if (ShapingOptions.Direction is ShapingDirection.TopToBottom or ShapingDirection.BottomToTop)
         {
-            ShapedGlyph glyph = shaped[index];
+            IReadOnlyList<ShapedGlyph> vertical = OpenTypeTextShaper.Shape(
+                runText,
+                font,
+                FontSize,
+                ShapingOptions);
+            for (var index = 0; index < vertical.Count; index++)
+            {
+                ShapedGlyph glyph = vertical[index];
+                candidates.Add(new ShapedCandidate(
+                    font,
+                    glyph.GlyphIndex,
+                    start + glyph.Cluster,
+                    glyph.CodePoint,
+                    glyph.AdvanceX,
+                    glyph.AdvanceY,
+                    glyph.OffsetX,
+                    glyph.OffsetY));
+            }
+            return;
+        }
+
+        ShapingBuffer shaping = t_shapingBuffer ??= new ShapingBuffer(64);
+        OpenTypeTextShaper.ShapeDesignUnits(runText, font, ShapingOptions, shaping);
+        float scale = FontSize / font.UnitsPerEm;
+        ReadOnlySpan<ShapingGlyph> shaped = shaping.Glyphs;
+        for (var index = 0; index < shaped.Length; index++)
+        {
+            ShapingGlyph glyph = shaped[index];
             candidates.Add(new ShapedCandidate(
                 font,
-                glyph.GlyphIndex,
+                checked((ushort)glyph.GlyphId),
                 start + glyph.Cluster,
                 glyph.CodePoint,
-                glyph.AdvanceX,
-                glyph.AdvanceY,
-                glyph.OffsetX,
-                glyph.OffsetY));
+                glyph.AdvanceX * scale,
+                glyph.AdvanceY * scale,
+                glyph.OffsetX * scale,
+                glyph.OffsetY * scale));
         }
     }
 

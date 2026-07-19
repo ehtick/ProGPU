@@ -12,6 +12,7 @@ using GdiRectangle = System.Drawing.Rectangle;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using ProGPU.Backend;
+using ProGPU.Fonts.Inter;
 using ProGPU.Scene;
 using ProGPU.Scene.Extensions;
 using ProGPU.Tests.Headless;
@@ -173,6 +174,25 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
             var redOffset = (33 * 1024 + glyphIndex * 10 + 6) * 4;
             Assert.True(pixels[redOffset] > 200, $"Glyph {glyphIndex} was not rendered at its expected position.");
         }
+    }
+
+    [Fact]
+    public void TextLayoutCacheMemoryStaysBoundedAcrossDistinctVirtualizedRows()
+    {
+        const int visibleRows = 128;
+        const int compilationCount = 20;
+        using var window = new HeadlessWindow(640, 64);
+        var rows = new DistinctTextRowsVisual(InterFontFamily.Regular, visibleRows);
+        window.Content = rows;
+
+        for (var compilation = 0; compilation < compilationCount; compilation++)
+        {
+            rows.FirstRow = compilation * visibleRows;
+            window.Render();
+        }
+
+        Assert.Equal(visibleRows * 2, window.Compositor.CachedTextLayoutCount);
+        Assert.InRange(window.Compositor.CachedTextLayoutGlyphCount, visibleRows * 2, 32_768);
     }
 
     [Fact]
@@ -5435,6 +5455,46 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
                 null,
                 new Rect(8f, 6f, 28f, 20f),
                 5f);
+        }
+    }
+
+    private sealed class DistinctTextRowsVisual : FrameworkElement
+    {
+        private readonly TtfFont _font;
+        private readonly int _visibleRowCount;
+        private readonly SolidColorBrush _brush = new(Vector4.One);
+        private int _firstRow;
+
+        public DistinctTextRowsVisual(TtfFont font, int visibleRowCount)
+        {
+            _font = font;
+            _visibleRowCount = visibleRowCount;
+            Width = 640f;
+            Height = 64f;
+        }
+
+        public int FirstRow
+        {
+            get => _firstRow;
+            set
+            {
+                if (_firstRow == value)
+                {
+                    return;
+                }
+
+                _firstRow = value;
+                Invalidate();
+            }
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            int endRow = _firstRow + _visibleRowCount;
+            for (var row = _firstRow; row < endRow; row++)
+            {
+                context.DrawText($"virtualized row {row}", _font, 13f, _brush, new Vector2(2f, 16f));
+            }
         }
     }
 

@@ -215,7 +215,11 @@ public unsafe class Compositor : IDisposable
     internal const int MaxGradientStops = 65536;
     private const int PerlinNoiseTableEntryCount = 512;
     private const int MaxCachedPerlinNoiseTables = 16;
-    private const int MaxCachedTextLayouts = 1000;
+    private const int RetainedTextLayoutCompilationGenerations = 2;
+    private const int MaxCachedTextLayouts = 1024;
+    private const int MaxCachedTextLayoutGlyphs = 32768;
+    private const int MaxPooledTextLayouts = 256;
+    private const int MaxPooledTextLayoutGlyphCapacity = 256;
     private const float StrokeEpsilon = 0.0001f;
     private const float AliasedShapeTypeOffset = 1000f;
     private const float ArcSdfShapeType = 12f;
@@ -547,32 +551,38 @@ public unsafe class Compositor : IDisposable
 
     private void AddHitTestStateCommand(RenderCommand command, Matrix4x4 transform)
     {
-        if (!IsHitTestStateCommand(command.Type))
+        if (!Options.EnableGpuHitTesting ||
+            _suspendHitTestCacheWrites ||
+            !IsHitTestStateCommand(command.Type))
         {
             return;
         }
 
-        AddHitTestCommand(command, transform);
+        _hitTestCacheBuilder.AddCommand(command, transform);
     }
 
     private void AddHitTestDrawCommand(RenderCommand command, Matrix4x4 transform)
     {
-        if (IsHitTestStateCommand(command.Type))
+        if (!Options.EnableGpuHitTesting ||
+            _suspendHitTestCacheWrites ||
+            IsHitTestStateCommand(command.Type))
         {
             return;
         }
 
-        AddHitTestCommand(command, transform);
+        _hitTestCacheBuilder.AddCommand(command, transform);
     }
 
     private void AddHitTestDrawCommand(RenderCommand command, Matrix4x4 transform, IRenderDataProvider provider)
     {
-        if (IsHitTestStateCommand(command.Type))
+        if (!Options.EnableGpuHitTesting ||
+            _suspendHitTestCacheWrites ||
+            IsHitTestStateCommand(command.Type))
         {
             return;
         }
 
-        AddHitTestCommand(command, transform, provider);
+        _hitTestCacheBuilder.AddCommand(command, transform, provider);
     }
 
     private static bool IsHitTestStateCommand(RenderCommandType type)
@@ -952,7 +962,10 @@ public unsafe class Compositor : IDisposable
     private int _offscreenRenderDepth;
     private float _totalTime = 0f;
     private readonly Dictionary<TextLayoutCacheKey, TextLayoutCacheEntry> _layoutCache = new();
-    private readonly LinkedList<TextLayoutCacheKey> _layoutCacheLru = new();
+    private readonly Queue<TextLayoutCacheUse> _layoutCacheUses = new();
+    private readonly Stack<TextLayout> _textLayoutPool = new();
+    private int _cachedTextLayoutGlyphCount;
+    private long _textLayoutCacheCompilationGeneration;
     private readonly Dictionary<VectorGlyphPathCacheKey, PathGeometry> _vectorGlyphPathCache = new();
     private enum BatchType
     {
@@ -979,7 +992,12 @@ public unsafe class Compositor : IDisposable
 
     private readonly record struct TextLayoutCacheEntry(
         TextLayout Layout,
-        LinkedListNode<TextLayoutCacheKey> LruNode);
+        int GlyphCount,
+        long LastUsedGeneration);
+
+    private readonly record struct TextLayoutCacheUse(
+        TextLayoutCacheKey Key,
+        long Generation);
 
     [Flags]
     private enum VisualCompositeScope
@@ -1022,6 +1040,8 @@ public unsafe class Compositor : IDisposable
     public int VectorVertexCount => _vectorVerticesList.Count;
     public List<VectorVertex> VectorVertices => _vectorVerticesList;
     public List<uint> VectorIndices => _vectorIndicesList;
+    public int CachedTextLayoutCount => _layoutCache.Count;
+    public int CachedTextLayoutGlyphCount => _cachedTextLayoutGlyphCount;
 
     public WgpuContext Context => _context;
     internal RenderPipelineCache PipelineCache => _pipelineCache;
@@ -2199,6 +2219,7 @@ public unsafe class Compositor : IDisposable
             goto SceneCompilationComplete;
         }
 
+        _textLayoutCacheCompilationGeneration++;
         _atlas.BeginBatch();
         glyphBatchActive = true;
 
@@ -2422,6 +2443,7 @@ public unsafe class Compositor : IDisposable
 SceneCompilationComplete:
         if (!reuseCompiledScene)
         {
+            TrimTextLayoutCache();
             requiresSolidRoundedSpecializationRecompile =
                 (_previousSolidRoundedPrimitiveCount >= SolidRoundedSpecializationThreshold) !=
                 (_currentSolidRoundedPrimitiveCount >= SolidRoundedSpecializationThreshold);
@@ -4255,12 +4277,16 @@ SceneStateUploadComplete:
 
     private void AddVisualHitTestBounds(Visual node, Matrix4x4 globalTransform)
     {
-        if (node.HitTestId == 0 || node.Size.X <= 0f || node.Size.Y <= 0f)
+        if (!Options.EnableGpuHitTesting ||
+            _suspendHitTestCacheWrites ||
+            node.HitTestId == 0 ||
+            node.Size.X <= 0f ||
+            node.Size.Y <= 0f)
         {
             return;
         }
 
-        AddHitTestCommand(
+        _hitTestCacheBuilder.AddCommand(
             new RenderCommand
             {
                 Type = RenderCommandType.DrawTexture,
@@ -9203,10 +9229,11 @@ SceneStateUploadComplete:
             return false;
         }
 
-        if (!ReferenceEquals(_layoutCacheLru.First, entry.LruNode))
+        if (entry.LastUsedGeneration != _textLayoutCacheCompilationGeneration)
         {
-            _layoutCacheLru.Remove(entry.LruNode);
-            _layoutCacheLru.AddFirst(entry.LruNode);
+            entry = entry with { LastUsedGeneration = _textLayoutCacheCompilationGeneration };
+            _layoutCache[key] = entry;
+            _layoutCacheUses.Enqueue(new TextLayoutCacheUse(key, _textLayoutCacheCompilationGeneration));
         }
 
         layout = entry.Layout;
@@ -9215,14 +9242,93 @@ SceneStateUploadComplete:
 
     private void AddCachedTextLayout(TextLayoutCacheKey key, TextLayout layout)
     {
-        if (_layoutCache.Count >= MaxCachedTextLayouts && _layoutCacheLru.Last is { } leastRecentlyUsed)
+        int glyphCount = layout.Glyphs.Count;
+        if (glyphCount > MaxCachedTextLayoutGlyphs)
         {
-            _layoutCache.Remove(leastRecentlyUsed.Value);
-            _layoutCacheLru.RemoveLast();
+            return;
         }
 
-        var node = _layoutCacheLru.AddFirst(key);
-        _layoutCache.Add(key, new TextLayoutCacheEntry(layout, node));
+        while ((_layoutCache.Count >= MaxCachedTextLayouts ||
+                _cachedTextLayoutGlyphCount + glyphCount > MaxCachedTextLayoutGlyphs) &&
+               TryEvictOldestTextLayout())
+        {
+        }
+
+        _layoutCache.Add(
+            key,
+            new TextLayoutCacheEntry(
+                layout,
+                glyphCount,
+                _textLayoutCacheCompilationGeneration));
+        _layoutCacheUses.Enqueue(new TextLayoutCacheUse(key, _textLayoutCacheCompilationGeneration));
+        _cachedTextLayoutGlyphCount += glyphCount;
+    }
+
+    private void TrimTextLayoutCache()
+    {
+        long oldestRetainedGeneration =
+            _textLayoutCacheCompilationGeneration - RetainedTextLayoutCompilationGenerations + 1;
+        while (_layoutCacheUses.TryPeek(out TextLayoutCacheUse use) &&
+               use.Generation < oldestRetainedGeneration)
+        {
+            _layoutCacheUses.Dequeue();
+            if (_layoutCache.TryGetValue(use.Key, out TextLayoutCacheEntry entry) &&
+                entry.LastUsedGeneration == use.Generation)
+                RemoveCachedTextLayout(use.Key, entry);
+        }
+    }
+
+    private bool TryEvictOldestTextLayout()
+    {
+        while (_layoutCacheUses.TryDequeue(out TextLayoutCacheUse use))
+        {
+            if (!_layoutCache.TryGetValue(use.Key, out TextLayoutCacheEntry entry) ||
+                entry.LastUsedGeneration != use.Generation)
+            {
+                continue;
+            }
+
+            RemoveCachedTextLayout(use.Key, entry);
+            return true;
+        }
+
+        return false;
+    }
+
+    private void RemoveCachedTextLayout(TextLayoutCacheKey key, TextLayoutCacheEntry entry)
+    {
+        _cachedTextLayoutGlyphCount -= entry.GlyphCount;
+        _layoutCache.Remove(key);
+        ReturnTextLayout(entry.Layout);
+    }
+
+    private TextLayout RentTextLayout(
+        string text,
+        TtfFont font,
+        float fontSize,
+        float maxWidth,
+        TextAlignment alignment,
+        TextShapingOptions? shapingOptions)
+    {
+        if (_textLayoutPool.TryPop(out TextLayout? layout))
+        {
+            layout.Reset(text, font, fontSize, maxWidth, alignment, null, shapingOptions);
+            return layout;
+        }
+
+        return new TextLayout(text, font, fontSize, maxWidth, alignment, null, shapingOptions);
+    }
+
+    private void ReturnTextLayout(TextLayout layout)
+    {
+        if (_textLayoutPool.Count >= MaxPooledTextLayouts ||
+            layout.Glyphs.Capacity > MaxPooledTextLayoutGlyphCapacity)
+        {
+            return;
+        }
+
+        layout.ClearForReuse();
+        _textLayoutPool.Push(layout);
     }
 
     private void CompileTextCommand(RenderCommand cmd, ITextLayoutProvider? textNode, Matrix4x4 transform)
@@ -9265,13 +9371,12 @@ SceneStateUploadComplete:
                 cmd.TextShapingOptions);
             if (!TryGetCachedTextLayout(key, out layout))
             {
-                layout = new TextLayout(
+                layout = RentTextLayout(
                     cmd.Text,
                     font,
                     cmd.FontSize,
                     maxWidth,
                     TextAlignment.Left,
-                    null,
                     cmd.TextShapingOptions);
                 AddCachedTextLayout(key, layout);
             }

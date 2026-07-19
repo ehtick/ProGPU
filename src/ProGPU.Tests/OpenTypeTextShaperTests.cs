@@ -158,6 +158,66 @@ public sealed class OpenTypeTextShaperTests
     }
 
     [Fact]
+    public void PrintableAsciiDataGridLabelMatchesHarfBuzzReference()
+    {
+        TtfFont font = InterFontFamily.Regular;
+        IReadOnlyList<ShapedGlyph> glyphs = OpenTypeTextShaper.Shape(
+            "Dispatcher.QueueEvent #428",
+            font,
+            font.UnitsPerEm);
+
+        Assert.Equal(
+            new ushort[]
+            {
+                84, 689, 871, 843, 507, 889, 586, 670, 614, 852, 1502, 382, 915,
+                614, 915, 614, 95, 980, 614, 773, 889, 1777, 1453, 1346, 1343, 1351
+            },
+            glyphs.Select(static glyph => glyph.GlyphIndex));
+        Assert.Equal(
+            new float[]
+            {
+                1478, 496, 1081, 1274, 1150, 650, 1170, 1211, 1194, 643, 500, 1566, 1211,
+                1194, 1211, 1194, 1231, 1111, 1194, 1210, 670, 576, 1297, 1323, 1249, 1267
+            },
+            glyphs.Select(static glyph => glyph.AdvanceX));
+    }
+
+    [Fact]
+    public void PrintableAsciiKerningMatchesHarfBuzzReference()
+    {
+        TtfFont font = InterFontFamily.Regular;
+        IReadOnlyList<ShapedGlyph> glyphs = OpenTypeTextShaper.Shape(
+            "AVATAR To Wa Yo",
+            font,
+            font.UnitsPerEm);
+
+        Assert.Equal(
+            new ushort[] { 2, 456, 2, 411, 2, 384, 1777, 411, 790, 1777, 459, 507, 1777, 472, 790 },
+            glyphs.Select(static glyph => glyph.GlyphIndex));
+        Assert.Equal(
+            new float[] { 1273, 1273, 1239, 1148, 1413, 1318, 576, 1162, 1228, 576, 1914, 1150, 576, 1233, 1228 },
+            glyphs.Select(static glyph => glyph.AdvanceX));
+    }
+
+    [Fact]
+    public void PrintableAsciiFractionFeatureMatchesHarfBuzzReference()
+    {
+        TtfFont font = InterFontFamily.Regular;
+        IReadOnlyList<ShapedGlyph> glyphs = OpenTypeTextShaper.Shape(
+            "1/2 12/25",
+            font,
+            font.UnitsPerEm,
+            TextShapingOptions.WithFeatures(new OpenTypeFeatureSetting("frac")));
+
+        Assert.Equal(
+            new ushort[] { 1701, 1673, 1678, 1777, 1701, 1703, 1673, 1678, 1683 },
+            glyphs.Select(static glyph => glyph.GlyphIndex));
+        Assert.Equal(
+            new float[] { 589, 393, 753, 576, 539, 783, 393, 753, 762 },
+            glyphs.Select(static glyph => glyph.AdvanceX));
+    }
+
+    [Fact]
     public void VariableMarkAnchorsMatchHarfBuzzReferenceAtMidAxisInstance()
     {
         TtfFont font = InterFontFamily.GetVariableFont(537, 23);
