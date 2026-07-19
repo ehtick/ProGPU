@@ -7,6 +7,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Documents;
 using ProGPU.Vector;
+using Windows.Devices.Input;
 
 public class ToolboxItem : Border
 {
@@ -77,7 +78,7 @@ public class ToolboxItem : Border
 
     public override void OnPointerPressed(PointerRoutedEventArgs e)
     {
-        if (e.IsLeftButtonPressed)
+        if (e.IsLeftButtonPressed || e.Pointer.PointerDeviceType is PointerDeviceType.Touch or PointerDeviceType.Pen)
         {
             var dp = new DataPackage();
             dp.SetData(StandardDataFormats.Tool, _controlName);

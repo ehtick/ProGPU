@@ -543,7 +543,7 @@ public static class InputSystem
 
     private static void OnPointerMovedCore(PointerInputEvent input)
     {
-        if (input.DeviceType == PointerDeviceType.Mouse && DragDropManager.IsDragging)
+        if (DragDropManager.IsDragging && DragDropManager.IsPointerOwner(input.PointerId))
         {
             if (Current.PointerContacts.TryGetValue(input.PointerId, out var dragContact)) dragContact.LastEvent = input;
             DragDropManager.UpdateDrag(input.Position);
@@ -594,8 +594,8 @@ public static class InputSystem
             return;
         }
 
-        var completesDrag = input.DeviceType == PointerDeviceType.Mouse &&
-            DragDropManager.IsDragging && contact.LastEvent.IsLeftButtonPressed && !input.IsLeftButtonPressed;
+        var completesDrag = !canceled && DragDropManager.IsDragging && DragDropManager.IsPointerOwner(input.PointerId);
+        var cancelsDrag = canceled && DragDropManager.IsDragging && DragDropManager.IsPointerOwner(input.PointerId);
         contact.LastEvent = input;
         contact.Pointer.IsInContact = false;
         var hit = HitTest(input.Position);
@@ -609,13 +609,18 @@ public static class InputSystem
         if (completesDrag)
         {
             DragDropManager.CompleteDrop(input.Position);
-            target?.OnPointerCanceled(args);
+            contact.Target?.OnPointerCanceled(CreatePointerArgs(contact.Target, input, contact.Pointer, canceled: true));
+        }
+        else if (cancelsDrag)
+        {
+            DragDropManager.CancelDrag();
+            contact.Target?.OnPointerCanceled(CreatePointerArgs(contact.Target, input, contact.Pointer, canceled: true));
         }
         else if (canceled && !contact.CanceledByManipulation) target?.OnPointerCanceled(args);
         else if (!canceled && !contact.CanceledByManipulation) target?.OnPointerReleased(args);
 
-        EndManipulation(contact, canceled || completesDrag);
-        if (!canceled && !completesDrag && !contact.CanceledByManipulation) CompleteGesture(contact, input);
+        EndManipulation(contact, canceled || completesDrag || cancelsDrag);
+        if (!canceled && !completesDrag && !cancelsDrag && !contact.CanceledByManipulation) CompleteGesture(contact, input);
         else CancelHolding(contact, raiseCanceled: true);
 
         if (Current.CapturedElements.Remove(input.PointerId, out var captured)) RaiseCaptureLost(captured, input, contact.Pointer);
@@ -831,6 +836,7 @@ public static class InputSystem
     private static void BeginManipulation(PointerContactState contact)
     {
         if (contact.Pointer.PointerDeviceType == PointerDeviceType.Mouse) return;
+        if (DragDropManager.IsDragging && DragDropManager.IsPointerOwner(contact.Pointer.PointerId)) return;
         var target = FindManipulationTarget(contact.Target);
         if (target == null) return;
         if (Current.CapturedElements.ContainsKey(contact.Pointer.PointerId)) return;
