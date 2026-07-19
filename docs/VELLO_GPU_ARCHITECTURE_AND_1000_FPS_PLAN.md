@@ -934,7 +934,38 @@ are implemented and CPU-qualified.
   or texture generation changes. Native pipeline creation, encoded compute plus indirect render,
   1x/2x path pixels, and Wavefront glyph pixels pass on the available headless WebGPU adapter.
 
-The retained bitmap uses `G * ceil(I / 32)` 32-bit words. It is a correctness-first portable implementation of Vello's stable coverage-bitmap concept, not the final memory layout. Phase 4C should replace it for very large sparse scenes with block-local bin records or stable radix-grouped overlap pairs selected by measured occupancy. Active-cell compaction eliminates empty-tile fine work, coarse classification removes solid/outside BVH walks, and sparse indirect replacement removes the previous full-target copy. Edge pixels still traverse candidate BVHs, so a Vello-style edge/backdrop coarse command remains required before this can become the default. The router must reject this path when bitmap bytes or expected fine-stage work exceed the atlas/static-geometry alternatives.
+The retained bitmap uses `G * ceil(I / 32)` 32-bit words. It is a correctness-first portable implementation of Vello's stable coverage-bitmap concept, not the final memory layout. Phase 4C must replace it for large dynamic scenes with block-local bin records or stable radix-grouped overlap pairs selected by measured occupancy. Active-cell compaction eliminates empty-tile fine work, coarse classification removes solid/outside BVH walks, and sparse indirect replacement removes the previous full-target copy. Edge pixels still traverse candidate BVHs, so a Vello-style edge/backdrop coarse command remains required before this can become the default.
+
+The first bounded admission route is now implemented rather than allowing that bitmap to grow
+without limit:
+
+- `SelectBinningMode` computes the exact bitmap word count with 64-bit checked arithmetic before
+  allocating a WebGPU buffer. The GPU bitmap route is capped at 16 MiB and, beyond a small 4,096-word
+  floor, at eight bitmap words per useful cell/shape overlap. These are conservative safety values,
+  exposed as named constants and benchmark telemetry rather than hidden device guesses.
+- Workloads outside that envelope use persistent geometrically grown CPU arrays. Two deterministic
+  passes count and prefix cells, then visit instances in painter order and write exact indices. A
+  row-major active-cell list and both indirect argument records are uploaded directly. The route is
+  `O(I + G + O)` CPU work, `O(G + O)` retained CPU storage and `O(A + O)` upload for `I` instances,
+  `G` cells, `A` active cells and `O` overlaps; it performs no per-frame managed allocation after
+  capacity warm-up. The shared fine shader selects compact active grid records for this route, so
+  inactive grid cells consume no queue bandwidth.
+- Both routes feed the same conservative coarse classifier, fine winding evaluator, sparse output,
+  and indirect composite, so the switch changes bookkeeping cost rather than coverage, blend order,
+  DPI, or half-open winding behavior. The CPU route is a bounded fallback, not a claim that CPU
+  binning is the final high-density solution.
+- Exact retained replay now caches the completed bin lists and indirect arguments. When instance
+  identity, target size, DPI and retained transforms are unchanged, the next compiled-scene hit
+  performs no overlap walk, bitmap clear/scan, CPU bin upload or active-cell compaction. A retained
+  translation dirties only its transform record and correctly rebuilds spatial bins once; the next
+  unchanged frame reuses them.
+- Metrics report selected mode, reuse, coverage words, exact overlap count, CPU active cells and CPU
+  bin upload bytes. Benchmark schema 6 records these alongside per-stage GPU timestamps, allowing
+  the constants to be calibrated from matched final binaries instead of intuition.
+
+This closes the unbounded-memory failure mode and the redundant static-frame binning regression.
+It does **not** complete the intended all-GPU Phase 4C path: a GPU overlap-pair generator plus stable
+radix/block grouping is still required to avoid CPU `O(G + O)` uploads for very large moving scenes.
 
 Deliverables:
 

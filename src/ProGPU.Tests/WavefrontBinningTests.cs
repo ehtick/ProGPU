@@ -93,6 +93,52 @@ public class WavefrontBinningTests
     }
 
     [Fact]
+    public void BinningRouterKeepsCompactDenseCoverageOnGpu()
+    {
+        Assert.Equal(
+            WavefrontBinningMode.GpuCoverageBitmap,
+            WavefrontVectorEngine.SelectBinningMode(
+                cellCount: 4096,
+                instanceCount: 256,
+                pairCount: 4096));
+    }
+
+    [Fact]
+    public void BinningRouterUsesSparseStablePathForLowOccupancyBitmap()
+    {
+        Assert.Equal(
+            WavefrontBinningMode.CpuSparseStable,
+            WavefrontVectorEngine.SelectBinningMode(
+                cellCount: 32_400,
+                instanceCount: 4096,
+                pairCount: 4096));
+    }
+
+    [Fact]
+    public void BinningRouterRejectsCoverageBitmapPastBoundedArena()
+    {
+        uint cellCount = 32_400;
+        uint instanceCount = 32_000;
+        ulong requestedBytes = (ulong)cellCount * ((instanceCount + 31u) / 32u) * sizeof(uint);
+
+        Assert.True(requestedBytes > WavefrontVectorEngine.MaximumCoverageBitmapBytes);
+        Assert.Equal(
+            WavefrontBinningMode.CpuSparseStable,
+            WavefrontVectorEngine.SelectBinningMode(cellCount, instanceCount, pairCount: 32_000));
+    }
+
+    [Fact]
+    public void EmptyVisibleWorkUsesZeroUploadSparsePath()
+    {
+        Assert.Equal(
+            WavefrontBinningMode.CpuSparseStable,
+            WavefrontVectorEngine.SelectBinningMode(
+                cellCount: 8160,
+                instanceCount: 1000,
+                pairCount: 0));
+    }
+
+    [Fact]
     public void CoarseCellClassificationKeepsUncertainCoverageOnEdgePath()
     {
         Assert.Equal(
@@ -219,6 +265,15 @@ public class WavefrontBinningTests
         Assert.Equal(152, Marshal.OffsetOf<GpuShapeInstance>(nameof(GpuShapeInstance.TransformIndex)).ToInt32());
         Assert.Equal(160, Marshal.OffsetOf<GpuShapeInstance>(nameof(GpuShapeInstance.Color)).ToInt32());
         Assert.Equal(128, Marshal.SizeOf<GpuShapeTransform>());
+    }
+
+    [Fact]
+    public void WavefrontUniformLayoutCarriesBinningModeWithoutGrowingGpuRecord()
+    {
+        Assert.Equal(64, Marshal.SizeOf<GpuWavefrontUniforms>());
+        Assert.Equal(
+            56,
+            Marshal.OffsetOf<GpuWavefrontUniforms>(nameof(GpuWavefrontUniforms.BinningMode)).ToInt32());
     }
 
     [Fact]

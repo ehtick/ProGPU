@@ -142,6 +142,12 @@ public struct CompositorMetrics
     public uint WavefrontRetainedTransformCount;
     public uint WavefrontUploadedInstanceCount;
     public uint WavefrontUploadedTransformCount;
+    public WavefrontBinningMode WavefrontBinningMode;
+    public bool WavefrontBinningReused;
+    public uint WavefrontCoverageWordCount;
+    public uint WavefrontCellPairCount;
+    public uint WavefrontCpuActiveCellCount;
+    public uint WavefrontCpuBinningUploadBytes;
     public int DrawCallsCount;
     public int VectorVerticesCount;
     public int TextVerticesCount;
@@ -3154,6 +3160,12 @@ SceneStateUploadComplete:
             WavefrontRetainedTransformCount = _wavefrontEngine?.RetainedTransformCount ?? 0,
             WavefrontUploadedInstanceCount = _wavefrontEngine?.LastUploadedInstanceCount ?? 0,
             WavefrontUploadedTransformCount = _wavefrontEngine?.LastUploadedTransformCount ?? 0,
+            WavefrontBinningMode = _wavefrontEngine?.LastBinningMode ?? ProGPU.Compute.WavefrontBinningMode.CpuSparseStable,
+            WavefrontBinningReused = _wavefrontEngine?.LastBinningReused ?? false,
+            WavefrontCoverageWordCount = _wavefrontEngine?.LastCoverageWordCount ?? 0,
+            WavefrontCellPairCount = _wavefrontEngine?.LastCellPairCount ?? 0,
+            WavefrontCpuActiveCellCount = _wavefrontEngine?.LastCpuActiveCellCount ?? 0,
+            WavefrontCpuBinningUploadBytes = _wavefrontEngine?.LastCpuBinningUploadBytes ?? 0,
             DrawCallsCount = _drawCalls.Count,
             VectorVerticesCount = _vectorVerticesList.Count,
             TextVerticesCount = _textVerticesList.Count,

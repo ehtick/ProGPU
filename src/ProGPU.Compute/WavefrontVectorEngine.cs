@@ -77,6 +77,12 @@ public enum GpuCellShapeClass : uint
     Solid = 2
 }
 
+public enum WavefrontBinningMode
+{
+    GpuCoverageBitmap,
+    CpuSparseStable
+}
+
 [StructLayout(LayoutKind.Sequential, Pack = 16)]
 public struct GpuWavefrontUniforms
 {
@@ -94,7 +100,7 @@ public struct GpuWavefrontUniforms
     public uint CellCount;
     public uint PairCount;
     public uint CurveStart;
-    public uint Pad1;
+    public uint BinningMode;
     public uint Pad2;
 }
 
@@ -115,6 +121,8 @@ public struct GpuSortParamsAligned
 public unsafe class WavefrontVectorEngine : IDisposable
 {
     public const uint MaximumPortableDispatchDimension = 65535;
+    public const uint MaximumCoverageBitmapBytes = 16u * 1024u * 1024u;
+    public const uint MaximumBitmapWordsPerSparsePair = 8u;
     public const float DeviceFlatteningTolerance = 0.125f;
     private const float MinimumCoverageScale = 1f / 65536f;
     private const float MaximumCoverageScale = 65536f;
@@ -198,6 +206,21 @@ public unsafe class WavefrontVectorEngine : IDisposable
     private readonly List<uint> _dirtyShapeTransformIndices = [0u];
     private readonly Stack<uint> _freeShapeTransformIndices = new();
     private readonly HashSet<uint> _freeShapeTransformSet = new();
+    private (uint MinX, uint MinY, uint MaxX, uint MaxY, bool IsVisible)[] _cpuCellRanges = [];
+    private GpuGridCell[] _cpuGridCells = [];
+    private uint[] _cpuGridIndices = [];
+    private uint[] _cpuActiveCellIndices = [];
+    private GpuGridCell[] _cpuActiveGridCells = [];
+    private uint[] _cpuCellCursors = [];
+    private bool _binningCacheValid;
+    private uint _binningCacheWidth;
+    private uint _binningCacheHeight;
+    private float _binningCacheDpiScale;
+    private int _binningCacheInstanceCount;
+    private WavefrontBinningMode _binningCacheMode;
+    private uint _binningCacheCoverageWordCount;
+    private uint _binningCachePairCount;
+    private uint _binningCacheCpuActiveCellCount;
     private uint _frameNumber = 0;
     private float _frameDpiScale = 1f;
     private bool _hasSparseFrameWork;
@@ -218,6 +241,18 @@ public unsafe class WavefrontVectorEngine : IDisposable
     public uint LastUploadedInstanceCount { get; private set; }
 
     public uint LastUploadedTransformCount { get; private set; }
+
+    public WavefrontBinningMode LastBinningMode { get; private set; }
+
+    public bool LastBinningReused { get; private set; }
+
+    public uint LastCoverageWordCount { get; private set; }
+
+    public uint LastCellPairCount { get; private set; }
+
+    public uint LastCpuActiveCellCount { get; private set; }
+
+    public uint LastCpuBinningUploadBytes { get; private set; }
 
     public bool LastGeometryArenaReplay { get; private set; }
 
@@ -465,6 +500,12 @@ public unsafe class WavefrontVectorEngine : IDisposable
         LastFlattenedCurveCount = 0;
         LastUploadedInstanceCount = 0;
         LastUploadedTransformCount = 0;
+        LastBinningMode = WavefrontBinningMode.CpuSparseStable;
+        LastBinningReused = false;
+        LastCoverageWordCount = 0;
+        LastCellPairCount = 0;
+        LastCpuActiveCellCount = 0;
+        LastCpuBinningUploadBytes = 0;
         LastGeometryArenaReplay = false;
         FramePathCount = reuseRetainedInstances ? _retainedPathCount : 0;
         FrameGlyphCount = reuseRetainedInstances ? _retainedGlyphCount : 0;
@@ -679,8 +720,42 @@ public unsafe class WavefrontVectorEngine : IDisposable
         uint gridStride = gridCols;
         uint cellCount = checked(gridCols * gridRows);
         uint wordsPerCell = checked(((uint)_frameInstances.Count + 31u) / 32u);
-        uint coverageWordCount = checked(cellCount * wordsPerCell);
-        uint pairCount = CountCellOverlaps(width, height, dpiScale, gridStride, gridRows);
+        bool reuseBinning =
+            _binningCacheValid &&
+            _reuseRetainedInstances &&
+            _dirtyShapeTransformIndices.Count == 0 &&
+            _binningCacheWidth == width &&
+            _binningCacheHeight == height &&
+            MathF.Abs(_binningCacheDpiScale - dpiScale) <= MathF.Max(_binningCacheDpiScale, dpiScale) * 0.0001f &&
+            _binningCacheInstanceCount == _frameInstances.Count;
+        uint pairCount;
+        WavefrontBinningMode binningMode;
+        uint coverageWordCount;
+        if (reuseBinning)
+        {
+            pairCount = _binningCachePairCount;
+            binningMode = _binningCacheMode;
+            coverageWordCount = _binningCacheCoverageWordCount;
+            LastCpuActiveCellCount = _binningCacheCpuActiveCellCount;
+            LastBinningReused = true;
+        }
+        else
+        {
+            pairCount = CountCellOverlaps(width, height, dpiScale, gridStride, gridRows);
+            binningMode = SelectBinningMode(
+                cellCount,
+                checked((uint)_frameInstances.Count),
+                pairCount);
+            ulong requestedCoverageWordCount = (ulong)cellCount * wordsPerCell;
+            coverageWordCount = binningMode == WavefrontBinningMode.GpuCoverageBitmap
+                ? checked((uint)requestedCoverageWordCount)
+                : 1u;
+        }
+        LastBinningMode = binningMode;
+        LastCoverageWordCount = binningMode == WavefrontBinningMode.GpuCoverageBitmap
+            ? coverageWordCount
+            : 0u;
+        LastCellPairCount = pairCount;
 
         EnsureGpuResources(
             width,
@@ -688,6 +763,7 @@ public unsafe class WavefrontVectorEngine : IDisposable
             cellCount,
             coverageWordCount,
             Math.Max(1u, pairCount),
+            binningMode,
             destination,
             out bool instancesReallocated,
             out bool transformsReallocated);
@@ -757,9 +833,22 @@ public unsafe class WavefrontVectorEngine : IDisposable
             WordsPerCell = wordsPerCell,
             CellCount = cellCount,
             PairCount = pairCount,
-            CurveStart = curveStart
+            CurveStart = curveStart,
+            BinningMode = binningMode == WavefrontBinningMode.CpuSparseStable ? 1u : 0u
         };
         _uniformsBuffer!.WriteSingle(uniforms);
+
+        if (!reuseBinning && binningMode == WavefrontBinningMode.CpuSparseStable)
+        {
+            UploadCpuSparseBins(
+                width,
+                height,
+                dpiScale,
+                gridStride,
+                gridRows,
+                cellCount,
+                pairCount);
+        }
 
         var passDesc = new ComputePassDescriptor();
 
@@ -781,60 +870,81 @@ public unsafe class WavefrontVectorEngine : IDisposable
             _uploadedRawCurveCount = (uint)_rawCurves.Count;
         }
 
-        // Instance-driven bitmap construction performs O(overlap) writes. Word popcount followed
-        // by the reusable hierarchical scan reserves an exact, stable list for every cell.
-        _context.BeginGpuTimestampStage(encoder, GpuTimestampStage.WavefrontBinning);
-        var passBin = _context.Api.CommandEncoderBeginComputePass(encoder, &passDesc);
-        _context.Api.ComputePassEncoderSetPipeline(passBin, _clearBinWordsPipeline);
-        _context.Api.ComputePassEncoderSetBindGroup(passBin, 0, _clearBinWordsBindGroup, 0, null);
-        _context.Api.ComputePassEncoderDispatchWorkgroups(passBin, DivRoundUp(coverageWordCount, 256u), 1, 1);
-        _context.Api.ComputePassEncoderSetPipeline(passBin, _buildBinCoveragePipeline);
-        _context.Api.ComputePassEncoderSetBindGroup(passBin, 0, _buildBinCoverageBindGroup, 0, null);
-        _context.Api.ComputePassEncoderDispatchWorkgroups(passBin, DivRoundUp((uint)_frameInstances.Count, 64u), 1, 1);
-        _context.Api.ComputePassEncoderSetPipeline(passBin, _countBinWordsPipeline);
-        _context.Api.ComputePassEncoderSetBindGroup(passBin, 0, _countBinWordsBindGroup, 0, null);
-        _context.Api.ComputePassEncoderDispatchWorkgroups(passBin, DivRoundUp(coverageWordCount, 256u), 1, 1);
-        _context.Api.ComputePassEncoderEnd(passBin);
-        _context.Api.ComputePassEncoderRelease(passBin);
+        if (!reuseBinning && binningMode == WavefrontBinningMode.GpuCoverageBitmap)
+        {
+            // Instance-driven bitmap construction performs O(overlap) writes. Word popcount
+            // followed by the reusable hierarchical scan reserves one stable list per cell.
+            _context.BeginGpuTimestampStage(encoder, GpuTimestampStage.WavefrontBinning);
+            var passBin = _context.Api.CommandEncoderBeginComputePass(encoder, &passDesc);
+            _context.Api.ComputePassEncoderSetPipeline(passBin, _clearBinWordsPipeline);
+            _context.Api.ComputePassEncoderSetBindGroup(passBin, 0, _clearBinWordsBindGroup, 0, null);
+            _context.Api.ComputePassEncoderDispatchWorkgroups(passBin, DivRoundUp(coverageWordCount, 256u), 1, 1);
+            _context.Api.ComputePassEncoderSetPipeline(passBin, _buildBinCoveragePipeline);
+            _context.Api.ComputePassEncoderSetBindGroup(passBin, 0, _buildBinCoverageBindGroup, 0, null);
+            _context.Api.ComputePassEncoderDispatchWorkgroups(passBin, DivRoundUp((uint)_frameInstances.Count, 64u), 1, 1);
+            _context.Api.ComputePassEncoderSetPipeline(passBin, _countBinWordsPipeline);
+            _context.Api.ComputePassEncoderSetBindGroup(passBin, 0, _countBinWordsBindGroup, 0, null);
+            _context.Api.ComputePassEncoderDispatchWorkgroups(passBin, DivRoundUp(coverageWordCount, 256u), 1, 1);
+            _context.Api.ComputePassEncoderEnd(passBin);
+            _context.Api.ComputePassEncoderRelease(passBin);
 
-        _binWordScan.RecordExclusiveScan(encoder, coverageWordCount);
-        _context.EndGpuTimestampStage(encoder, GpuTimestampStage.WavefrontBinning);
+            _binWordScan.RecordExclusiveScan(encoder, coverageWordCount);
+            _context.EndGpuTimestampStage(encoder, GpuTimestampStage.WavefrontBinning);
 
-        _context.BeginGpuTimestampStage(encoder, GpuTimestampStage.WavefrontCompaction);
-        var passScatter = _context.Api.CommandEncoderBeginComputePass(encoder, &passDesc);
-        _context.Api.ComputePassEncoderSetPipeline(passScatter, _scatterBinWordsPipeline);
-        _context.Api.ComputePassEncoderSetBindGroup(passScatter, 0, _scatterBinWordsBindGroup, 0, null);
-        _context.Api.ComputePassEncoderDispatchWorkgroups(passScatter, DivRoundUp(coverageWordCount, 256u), 1, 1);
-        _context.Api.ComputePassEncoderSetPipeline(passScatter, _markActiveCellsPipeline);
-        _context.Api.ComputePassEncoderSetBindGroup(passScatter, 0, _markActiveCellsBindGroup, 0, null);
-        _context.Api.ComputePassEncoderDispatchWorkgroups(passScatter, DivRoundUp(cellCount, 256u), 1, 1);
-        _context.Api.ComputePassEncoderEnd(passScatter);
-        _context.Api.ComputePassEncoderRelease(passScatter);
+            _context.BeginGpuTimestampStage(encoder, GpuTimestampStage.WavefrontCompaction);
+            var passScatter = _context.Api.CommandEncoderBeginComputePass(encoder, &passDesc);
+            _context.Api.ComputePassEncoderSetPipeline(passScatter, _scatterBinWordsPipeline);
+            _context.Api.ComputePassEncoderSetBindGroup(passScatter, 0, _scatterBinWordsBindGroup, 0, null);
+            _context.Api.ComputePassEncoderDispatchWorkgroups(passScatter, DivRoundUp(coverageWordCount, 256u), 1, 1);
+            _context.Api.ComputePassEncoderSetPipeline(passScatter, _markActiveCellsPipeline);
+            _context.Api.ComputePassEncoderSetBindGroup(passScatter, 0, _markActiveCellsBindGroup, 0, null);
+            _context.Api.ComputePassEncoderDispatchWorkgroups(passScatter, DivRoundUp(cellCount, 256u), 1, 1);
+            _context.Api.ComputePassEncoderEnd(passScatter);
+            _context.Api.ComputePassEncoderRelease(passScatter);
 
-        _activeCellScan.RecordExclusiveScan(encoder, cellCount);
+            _activeCellScan.RecordExclusiveScan(encoder, cellCount);
 
-        var passActiveCells = _context.Api.CommandEncoderBeginComputePass(encoder, &passDesc);
-        _context.Api.ComputePassEncoderSetPipeline(passActiveCells, _scatterActiveCellsPipeline);
-        _context.Api.ComputePassEncoderSetBindGroup(passActiveCells, 0, _scatterActiveCellsBindGroup, 0, null);
-        _context.Api.ComputePassEncoderDispatchWorkgroups(passActiveCells, DivRoundUp(cellCount, 256u), 1, 1);
-        _context.Api.ComputePassEncoderSetPipeline(passActiveCells, _finalizeActiveDispatchPipeline);
-        _context.Api.ComputePassEncoderSetBindGroup(passActiveCells, 0, _finalizeActiveDispatchBindGroup, 0, null);
-        _context.Api.ComputePassEncoderDispatchWorkgroups(passActiveCells, 1, 1, 1);
-        _context.Api.ComputePassEncoderEnd(passActiveCells);
-        _context.Api.ComputePassEncoderRelease(passActiveCells);
-        _context.EndGpuTimestampStage(encoder, GpuTimestampStage.WavefrontCompaction);
+            var passActiveCells = _context.Api.CommandEncoderBeginComputePass(encoder, &passDesc);
+            _context.Api.ComputePassEncoderSetPipeline(passActiveCells, _scatterActiveCellsPipeline);
+            _context.Api.ComputePassEncoderSetBindGroup(passActiveCells, 0, _scatterActiveCellsBindGroup, 0, null);
+            _context.Api.ComputePassEncoderDispatchWorkgroups(passActiveCells, DivRoundUp(cellCount, 256u), 1, 1);
+            _context.Api.ComputePassEncoderSetPipeline(passActiveCells, _finalizeActiveDispatchPipeline);
+            _context.Api.ComputePassEncoderSetBindGroup(passActiveCells, 0, _finalizeActiveDispatchBindGroup, 0, null);
+            _context.Api.ComputePassEncoderDispatchWorkgroups(passActiveCells, 1, 1, 1);
+            _context.Api.ComputePassEncoderEnd(passActiveCells);
+            _context.Api.ComputePassEncoderRelease(passActiveCells);
+            _context.EndGpuTimestampStage(encoder, GpuTimestampStage.WavefrontCompaction);
+        }
+
+        if (!reuseBinning)
+        {
+            _binningCacheValid = true;
+            _binningCacheWidth = width;
+            _binningCacheHeight = height;
+            _binningCacheDpiScale = dpiScale;
+            _binningCacheInstanceCount = _frameInstances.Count;
+            _binningCacheMode = binningMode;
+            _binningCacheCoverageWordCount = coverageWordCount;
+            _binningCachePairCount = pairCount;
+            _binningCacheCpuActiveCellCount = LastCpuActiveCellCount;
+        }
 
         // Coarse work classifies each active cell's candidates once. Only uncertain edge pairs
         // retain per-pixel BVH traversal; conservative solid/outside pairs become constant work.
         // The exact active workgroup count is reused without CPU readback.
         _context.BeginGpuTimestampStage(encoder, GpuTimestampStage.WavefrontCoarseFine);
         var passRender = _context.Api.CommandEncoderBeginComputePass(encoder, &passDesc);
-        _context.Api.ComputePassEncoderSetPipeline(passRender, _classifyCellShapesPipeline);
-        _context.Api.ComputePassEncoderSetBindGroup(passRender, 0, _classifyCellShapesBindGroup, 0, null);
-        _context.Api.ComputePassEncoderDispatchWorkgroupsIndirect(
-            passRender,
-            _activeDispatchBuffer!.BufferPtr,
-            0);
+        if (!reuseBinning)
+        {
+            // Cell classes depend only on the retained geometry, bins and spatial transforms.
+            // Preserve them with the bin cache instead of repeating BVH center queries.
+            _context.Api.ComputePassEncoderSetPipeline(passRender, _classifyCellShapesPipeline);
+            _context.Api.ComputePassEncoderSetBindGroup(passRender, 0, _classifyCellShapesBindGroup, 0, null);
+            _context.Api.ComputePassEncoderDispatchWorkgroupsIndirect(
+                passRender,
+                _activeDispatchBuffer!.BufferPtr,
+                0);
+        }
         _context.Api.ComputePassEncoderSetPipeline(passRender, _renderPipeline);
         _context.Api.ComputePassEncoderSetBindGroup(passRender, 0, _renderBindGroup, 0, null);
         _context.Api.ComputePassEncoderDispatchWorkgroupsIndirect(
@@ -915,6 +1025,7 @@ public unsafe class WavefrontVectorEngine : IDisposable
         uint cellCount,
         uint coverageWordCount,
         uint indexCount,
+        WavefrontBinningMode binningMode,
         GpuTexture destination,
         out bool instancesReallocated,
         out bool transformsReallocated)
@@ -956,7 +1067,8 @@ public unsafe class WavefrontVectorEngine : IDisposable
         _binWordScan.EnsureCapacity(coverageWordCount);
         bindingsDirty |= oldScanCapacity != _binWordScan.Capacity;
         uint oldActiveScanCapacity = _activeCellScan.Capacity;
-        _activeCellScan.EnsureCapacity(cellCount);
+        _activeCellScan.EnsureCapacity(
+            binningMode == WavefrontBinningMode.GpuCoverageBitmap ? cellCount : 1u);
         bindingsDirty |= oldActiveScanCapacity != _activeCellScan.Capacity;
 
         if (destination.Format != TextureFormat.Bgra8Unorm)
@@ -1028,6 +1140,201 @@ public unsafe class WavefrontVectorEngine : IDisposable
             }
         }
         return (uint)count;
+    }
+
+    public static WavefrontBinningMode SelectBinningMode(
+        uint cellCount,
+        uint instanceCount,
+        uint pairCount)
+    {
+        if (cellCount == 0 || instanceCount == 0 || pairCount == 0)
+        {
+            return WavefrontBinningMode.CpuSparseStable;
+        }
+
+        ulong wordsPerCell = ((ulong)instanceCount + 31ul) / 32ul;
+        ulong coverageWords = (ulong)cellCount * wordsPerCell;
+        ulong coverageBytes = coverageWords * sizeof(uint);
+        if (coverageWords > uint.MaxValue || coverageBytes > MaximumCoverageBitmapBytes)
+        {
+            return WavefrontBinningMode.CpuSparseStable;
+        }
+
+        // Small bitmaps are cheaper to leave on the GPU even when occupancy is low. Beyond that
+        // fixed floor, avoid clearing/scanning more than eight bitmap words per useful overlap.
+        const ulong smallBitmapWordFloor = 4096ul;
+        ulong usefulWordBudget = Math.Max(
+            smallBitmapWordFloor,
+            (ulong)pairCount * MaximumBitmapWordsPerSparsePair);
+        return coverageWords <= usefulWordBudget
+            ? WavefrontBinningMode.GpuCoverageBitmap
+            : WavefrontBinningMode.CpuSparseStable;
+    }
+
+    private void UploadCpuSparseBins(
+        uint width,
+        uint height,
+        float dpiScale,
+        uint gridStride,
+        uint gridRows,
+        uint cellCount,
+        uint expectedPairCount)
+    {
+        int instanceCount = _frameInstances.Count;
+        int cellLength = CheckedArrayLength(cellCount, "cell");
+        int pairLength = CheckedArrayLength(expectedPairCount, "cell-pair");
+        EnsureCpuArrayCapacity(ref _cpuCellRanges, instanceCount);
+        EnsureCpuArrayCapacity(ref _cpuGridCells, cellLength);
+        EnsureCpuArrayCapacity(ref _cpuCellCursors, cellLength);
+        EnsureCpuArrayCapacity(ref _cpuGridIndices, pairLength);
+        EnsureCpuArrayCapacity(ref _cpuActiveCellIndices, cellLength);
+        EnsureCpuArrayCapacity(ref _cpuActiveGridCells, cellLength);
+
+        Array.Clear(_cpuGridCells, 0, cellLength);
+        Array.Clear(_cpuCellCursors, 0, cellLength);
+
+        uint countedPairs = 0;
+        for (int instanceIndex = 0; instanceIndex < instanceCount; instanceIndex++)
+        {
+            var instance = _frameInstances[instanceIndex];
+            if (instance.TransformIndex >= (uint)_shapeTransforms.Count ||
+                _freeShapeTransformSet.Contains(instance.TransformIndex))
+            {
+                throw new InvalidOperationException(
+                    "Wavefront instance references a released retained-transform slot.");
+            }
+            if (!TryGetCoveredCellRange(
+                    instance,
+                    _shapeTransforms[(int)instance.TransformIndex],
+                    width,
+                    height,
+                    dpiScale,
+                    gridStride,
+                    gridRows,
+                    out var min,
+                    out var max))
+            {
+                _cpuCellRanges[instanceIndex] = default;
+                continue;
+            }
+
+            _cpuCellRanges[instanceIndex] = (min.X, min.Y, max.X, max.Y, true);
+            for (uint y = min.Y; y <= max.Y; y++)
+            {
+                for (uint x = min.X; x <= max.X; x++)
+                {
+                    _cpuGridCells[(int)(y * gridStride + x)].ShapeCount++;
+                    countedPairs = checked(countedPairs + 1u);
+                }
+            }
+        }
+        if (countedPairs != expectedPairCount)
+        {
+            throw new InvalidOperationException(
+                $"Wavefront sparse bin count changed during one frame ({expectedPairCount} expected, {countedPairs} produced).");
+        }
+
+        uint runningOffset = 0;
+        uint activeCount = 0;
+        for (uint cellIndex = 0; cellIndex < cellCount; cellIndex++)
+        {
+            ref var cell = ref _cpuGridCells[(int)cellIndex];
+            cell.ShapeStartOffset = runningOffset;
+            runningOffset = checked(runningOffset + cell.ShapeCount);
+            if (cell.ShapeCount != 0)
+            {
+                _cpuActiveCellIndices[(int)activeCount++] = cellIndex;
+            }
+        }
+
+        for (uint instanceIndex = 0; instanceIndex < (uint)instanceCount; instanceIndex++)
+        {
+            var range = _cpuCellRanges[(int)instanceIndex];
+            if (!range.IsVisible)
+            {
+                continue;
+            }
+            for (uint y = range.MinY; y <= range.MaxY; y++)
+            {
+                for (uint x = range.MinX; x <= range.MaxX; x++)
+                {
+                    uint cellIndex = y * gridStride + x;
+                    uint destination = _cpuGridCells[(int)cellIndex].ShapeStartOffset +
+                        _cpuCellCursors[(int)cellIndex]++;
+                    _cpuGridIndices[(int)destination] = instanceIndex;
+                }
+            }
+        }
+
+        for (uint activeIndex = 0; activeIndex < activeCount; activeIndex++)
+        {
+            _cpuActiveGridCells[(int)activeIndex] =
+                _cpuGridCells[(int)_cpuActiveCellIndices[(int)activeIndex]];
+        }
+        if (activeCount != 0)
+        {
+            _gridCellsBuffer!.Write(
+                _cpuActiveGridCells.AsSpan(0, checked((int)activeCount)));
+        }
+        if (pairLength != 0)
+        {
+            _gridIndicesBuffer!.Write(_cpuGridIndices.AsSpan(0, pairLength));
+        }
+        if (activeCount != 0)
+        {
+            _activeCellIndicesBuffer!.Write(
+                _cpuActiveCellIndices.AsSpan(0, checked((int)activeCount)));
+        }
+        _activeCellIndicesBuffer!.WriteSingle(activeCount, checked(cellCount * sizeof(uint)));
+
+        var dispatch = CreateSparseDispatchArgs(activeCount);
+        _activeDispatchBuffer!.WriteSingle(dispatch);
+        _activeDrawBuffer!.WriteSingle(new GpuDrawIndirectArgs
+        {
+            VertexCount = 6u,
+            InstanceCount = activeCount
+        });
+
+        LastCpuActiveCellCount = activeCount;
+        LastCpuBinningUploadBytes = checked(
+            activeCount * (uint)sizeof(GpuGridCell) +
+            expectedPairCount * (uint)sizeof(uint) +
+            activeCount * (uint)sizeof(uint) +
+            (uint)sizeof(uint) +
+            (uint)sizeof(GpuDispatchIndirectArgs) +
+            (uint)sizeof(GpuDrawIndirectArgs));
+    }
+
+    private static int CheckedArrayLength(uint count, string name)
+    {
+        if (count > int.MaxValue)
+        {
+            throw new InvalidOperationException(
+                $"Wavefront {name} count {count} exceeds managed array addressing.");
+        }
+        return (int)count;
+    }
+
+    private static void EnsureCpuArrayCapacity<T>(ref T[] array, int requiredLength)
+    {
+        if (array.Length >= requiredLength)
+        {
+            return;
+        }
+
+        int capacity = Math.Max(256, array.Length);
+        while (capacity < requiredLength)
+        {
+            capacity = capacity <= int.MaxValue / 2
+                ? capacity * 2
+                : requiredLength;
+            if (capacity < requiredLength && capacity == int.MaxValue)
+            {
+                throw new InvalidOperationException(
+                    $"Wavefront CPU sparse arena cannot grow to {requiredLength} entries.");
+            }
+        }
+        Array.Resize(ref array, capacity);
     }
 
     public static bool TryGetCoveredCellRange(

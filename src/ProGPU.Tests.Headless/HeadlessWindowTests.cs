@@ -641,6 +641,14 @@ public class HeadlessWindowTests : IDisposable
             Assert.Equal(255, pixels[movedPath]);
             Assert.Equal(0, pixels[movedPath + 1]);
             Assert.Equal(0, pixels[movedPath + 2]);
+
+            window.Render();
+
+            Assert.True(window.Compositor.Metrics.SceneCacheHit);
+            Assert.True(window.Compositor.Metrics.WavefrontBinningReused);
+            Assert.Equal(0u, window.Compositor.Metrics.WavefrontUploadedInstanceCount);
+            Assert.Equal(0u, window.Compositor.Metrics.WavefrontUploadedTransformCount);
+            Assert.Equal(0u, window.Compositor.Metrics.WavefrontCpuBinningUploadBytes);
         }
         finally
         {

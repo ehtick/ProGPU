@@ -49,6 +49,8 @@ public class ShaderResourceTests
         Assert.Contains("fn classify_cell_shapes(", source, StringComparison.Ordinal);
         Assert.Contains("@binding(21) var<storage, read> shape_transforms", source, StringComparison.Ordinal);
         Assert.Contains("fn instance_transform(", source, StringComparison.Ordinal);
+        Assert.Contains("fn active_grid_cell(", source, StringComparison.Ordinal);
+        Assert.Contains("uniforms.binningMode == 1u", source, StringComparison.Ordinal);
         Assert.Contains("minimum_device_scale(transform)", source, StringComparison.Ordinal);
         Assert.Contains("cell_shape_classes[pair_idx]", source, StringComparison.Ordinal);
         Assert.DoesNotContain(

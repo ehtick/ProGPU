@@ -1,6 +1,6 @@
-// Algorithm: Retain flattened vector curves and transform-indexed shape instances, patch stable spatial transforms independently, build deterministic 16x16-cell coverage bitmaps instance-first, count/scan/scatter exact painter-ordered cell lists, compact non-empty cells stably, conservatively classify solid/outside cell-shape pairs, and indirectly dispatch only active cells to a sparse output texture.
-// Time complexity: O(dC*S) for newly appended curves (O(C*S) only after an arena grow replay), O(dT) CPU upload for changed retained transforms, O(O + G*ceil(I/32) + G + O*log L) for sparse binning/active-cell compaction/coarse classification, and O(Pa*Ke*log L + Pa*Ks) for the fine path, where dC is new curves, C retained curves, S is the CPU-selected adaptive subdivision count bounded by 256, dT changed transforms, O instance/cell overlaps, G cells, I instances, Pa pixels in active cells, Ke edge candidates, Ks solid candidates, and L primitives per shape.
-// Space complexity: O(C*S + I + T + G*ceil(I/32) + O + G + W*H), for retained geometry/transform/bin arenas and one sparse ping-pong texture; there is no fixed per-cell overlap cap and no full-window texture copy.
+// Algorithm: Retain flattened vector curves and transform-indexed shape instances, patch stable spatial transforms independently, consume either deterministic GPU coverage-bitmaps or compact stable CPU sparse bins, conservatively classify solid/outside cell-shape pairs, and indirectly dispatch only active 16x16 cells to a sparse output texture.
+// Time complexity: O(dC*S) for newly appended curves (O(C*S) only after an arena grow replay), O(dT) CPU upload for changed retained transforms, O(O + G*ceil(I/32) + G + O*log L) for GPU bitmap binning/compaction/coarse classification or O(O*log L) after compact CPU bins are uploaded, and O(Pa*Ke*log L + Pa*Ks) for the fine path, where dC is new curves, C retained curves, S is the CPU-selected adaptive subdivision count bounded by 256, dT changed transforms, O instance/cell overlaps, G cells, I instances, Pa pixels in active cells, Ke edge candidates, Ks solid candidates, and L primitives per shape.
+// Space complexity: O(C*S + I + T + min(G*ceil(I/32), B) + A + O + G + W*H), where A is active cells and B is the fixed admitted bitmap-word cap, for retained geometry/transform/bin arenas and one sparse ping-pong texture; there is no fixed per-cell overlap cap and no full-window texture copy.
 struct BvhNode {
     min_bounds: vec2<f32>,
     max_bounds: vec2<f32>,
@@ -51,7 +51,7 @@ struct Uniforms {
     cellCount: u32,
     pairCount: u32,
     curveStart: u32,
-    pad1: u32,
+    binningMode: u32,
     pad2: u32,
 };
 
@@ -270,6 +270,15 @@ fn instance_inverse_transform(inst: ShapeInstance) -> mat4x4<f32> {
     return inst.inv_transform * shape_transforms[inst.transform_index].inv_transform;
 }
 
+fn active_grid_cell(active_idx: u32, cell_idx: u32) -> GridCell {
+    // GPU bitmap scatter stores cells by screen-cell index. The bounded CPU sparse route uploads
+    // only compact active records, avoiding O(G) grid-buffer traffic when occupancy is low.
+    if (uniforms.binningMode == 1u) {
+        return grid_cells[active_idx];
+    }
+    return grid_cells[cell_idx];
+}
+
 // Fixed workgroup size: 256. One invocation clears one 32-instance coverage word.
 // Bandwidth: one 32-bit store per coverage word; no scene reads.
 @compute @workgroup_size(256)
@@ -436,7 +445,7 @@ fn classify_cell_shapes(
     let cell_size = min(vec2<f32>(16.0), screen_size - cell_origin);
     let logical_center = (cell_origin + cell_size * 0.5) / uniforms.dpiScale;
     let safe_radius = length(cell_size * 0.5) + 0.5;
-    let cell = grid_cells[cell_idx];
+    let cell = active_grid_cell(active_idx, cell_idx);
 
     for (var candidate = local_id.x; candidate < cell.shape_count; candidate = candidate + 64u) {
         let pair_idx = cell.shape_start_offset + candidate;
@@ -475,7 +484,7 @@ fn wavefront_render(
 
     var current_color = textureLoad(screen_texture, vec2<i32>(pixel_coord), 0);
 
-    let cell = grid_cells[cell_idx];
+    let cell = active_grid_cell(active_idx, cell_idx);
     let logical_pos = (vec2<f32>(pixel_coord) + vec2<f32>(0.5)) / uniforms.dpiScale;
 
     for (var i = 0u; i < cell.shape_count; i = i + 1u) {
