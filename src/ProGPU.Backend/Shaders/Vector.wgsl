@@ -1,4 +1,4 @@
-// Algorithm: Expand and transform batched vector primitives and meshes, evaluate analytic curves and arcs, then shade fills, strokes, gradients, vertex-color blends, and anti-aliased edges; a dedicated solid-rectangle entry point avoids the general material/path program for UI chrome.
+// Algorithm: Expand and transform batched vector primitives and meshes, evaluate analytic curves and arcs, use exact single-evaluation box/rounded-box distance gradients for anti-aliasing, then shade fills, strokes, gradients, vertex-color blends, and edges; a dedicated solid-rectangle entry point avoids the general material/path program for UI chrome.
 // Time complexity: O(1) per vertex or fragment under the shader's fixed primitive and gradient limits.
 // Space complexity: O(1) local storage and a bounded number of uniform/storage reads; masked variants add one mask-texture sample per fragment.
 struct Brush {
@@ -1045,6 +1045,35 @@ fn analytic_shape_distance(
     return -1.0;
 }
 
+// Returns the exact signed distance and its local-space gradient for an
+// axis-aligned box with an optional circular corner radius. The gradient is
+// analytic everywhere except the SDF's intentional medial-axis ties, where a
+// stable single-axis subgradient is selected. This replaces four extra SDF
+// evaluations for rectangle strokes and circular rounded rectangles.
+fn box_distance_gradient(
+    coordinate: vec2<f32>,
+    halfSize: vec2<f32>,
+    cornerRadius: f32) -> vec3<f32> {
+    let q = abs(coordinate) - (halfSize - vec2<f32>(cornerRadius));
+    let outside = max(q, vec2<f32>(0.0));
+    let outsideLength = length(outside);
+    let distance = outsideLength + min(max(q.x, q.y), 0.0) - cornerRadius;
+    let coordinateSign = select(
+        vec2<f32>(-1.0),
+        vec2<f32>(1.0),
+        coordinate >= vec2<f32>(0.0));
+    var gradient: vec2<f32>;
+    if (outsideLength > 0.000001) {
+        gradient = (outside / outsideLength) * coordinateSign;
+    } else {
+        gradient = select(
+            vec2<f32>(0.0, coordinateSign.y),
+            vec2<f32>(coordinateSign.x, 0.0),
+            q.x >= q.y);
+    }
+    return vec3<f32>(distance, gradient);
+}
+
 fn vector_fs_main(input: VertexOutput, maskAlpha: f32) -> vec4<f32> {
     let atlasCoordDx = dpdx(input.texCoord);
     let atlasCoordDy = dpdy(input.texCoord);
@@ -1080,7 +1109,48 @@ fn vector_fs_main(input: VertexOutput, maskAlpha: f32) -> vec4<f32> {
         let coverage = select(antialiasedCoverage, aliasedCoverage, aliasedEdge);
         shapeAlpha = coverage.x * coverage.y;
     } else if (sType < 3u) {
-        let d = analytic_shape_distance(sType, input.texCoord, input.shapeSize, input.cornerRadius);
+        var d: f32;
+        var gradient: vec2<f32>;
+        if (sType == 0u || sType == 2u) {
+            let radius = select(0.0, input.cornerRadius, sType == 2u);
+            let distanceGradient = box_distance_gradient(
+                input.texCoord,
+                input.shapeSize * 0.5,
+                radius);
+            d = distanceGradient.x;
+            gradient = distanceGradient.yz;
+        } else {
+            d = analytic_shape_distance(
+                sType,
+                input.texCoord,
+                input.shapeSize,
+                input.cornerRadius);
+            // Elliptical distance uses the established finite-difference
+            // gradient because its first-order distance approximation is not
+            // the exact ellipse SDF.
+            let gradientStep = 0.01;
+            gradient = vec2<f32>(
+                analytic_shape_distance(
+                    sType,
+                    input.texCoord + vec2<f32>(gradientStep, 0.0),
+                    input.shapeSize,
+                    input.cornerRadius) -
+                    analytic_shape_distance(
+                        sType,
+                        input.texCoord - vec2<f32>(gradientStep, 0.0),
+                        input.shapeSize,
+                        input.cornerRadius),
+                analytic_shape_distance(
+                    sType,
+                    input.texCoord + vec2<f32>(0.0, gradientStep),
+                    input.shapeSize,
+                    input.cornerRadius) -
+                    analytic_shape_distance(
+                        sType,
+                        input.texCoord - vec2<f32>(0.0, gradientStep),
+                        input.shapeSize,
+                        input.cornerRadius)) / (2.0 * gradientStep);
+        }
         var d_shape: f32 = 0.0;
         if (input.strokeThickness > 0.0) {
             var strokeDistance = d;
@@ -1096,30 +1166,8 @@ fn vector_fs_main(input: VertexOutput, maskAlpha: f32) -> vec4<f32> {
         } else {
             d_shape = d;
         }
-        // Estimate the local SDF gradient with fixed central differences, then
-        // transform it with derivatives obtained before non-uniform branching.
-        let gradientStep = 0.01;
-        let gradient = vec2<f32>(
-            analytic_shape_distance(
-                sType,
-                input.texCoord + vec2<f32>(gradientStep, 0.0),
-                input.shapeSize,
-                input.cornerRadius) -
-                analytic_shape_distance(
-                    sType,
-                    input.texCoord - vec2<f32>(gradientStep, 0.0),
-                    input.shapeSize,
-                    input.cornerRadius),
-            analytic_shape_distance(
-                sType,
-                input.texCoord + vec2<f32>(0.0, gradientStep),
-                input.shapeSize,
-                input.cornerRadius) -
-                analytic_shape_distance(
-                    sType,
-                    input.texCoord - vec2<f32>(0.0, gradientStep),
-                    input.shapeSize,
-                    input.cornerRadius)) / (2.0 * gradientStep);
+        // Transform the local SDF gradient with derivatives obtained before
+        // non-uniform branching.
         let fw = max(
             abs(dot(gradient, atlasCoordDx)) + abs(dot(gradient, atlasCoordDy)),
             0.0001);
