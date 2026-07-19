@@ -130,6 +130,20 @@ public sealed class SampleProjectSplitTests
     }
 
     [Fact]
+    public void BrowserBenchmarkQueryUsesExplicitEnvironmentAllowList()
+    {
+        var browserAsset = Read("src", "ProGPU.Browser", "BrowserAssets", "progpu-browser.js");
+
+        Assert.Contains("const BENCHMARK_QUERY_VARIABLES = Object.freeze({", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("benchmarkPage: 'PROGPU_SAMPLE_BENCHMARK_PAGE'", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("benchmarkMeasureFrames: 'PROGPU_SAMPLE_BENCHMARK_MEASURE_FRAMES'", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("benchmarkScrollStep: 'PROGPU_SAMPLE_BENCHMARK_SCROLL_STEP'", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("function readBenchmarkEnvironment()", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("dotnet.withEnvironmentVariables(readBenchmarkEnvironment()).create()", browserAsset, StringComparison.Ordinal);
+        Assert.DoesNotContain("Object.fromEntries(query", browserAsset, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void BrowserFilePickerUsesCancellationSafeDirectByteTransfer()
     {
         var browserAsset = Read("src", "ProGPU.Browser", "BrowserAssets", "progpu-browser.js");

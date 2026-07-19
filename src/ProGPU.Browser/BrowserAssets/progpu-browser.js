@@ -40,6 +40,14 @@ const VERSION = 1;
 const HEADER_SIZE = 16;
 const COMMAND_HEADER_SIZE = 8;
 const DIAGNOSTICS_VISIBILITY_KEY = 'progpu.browser.diagnostics.visible';
+const BENCHMARK_QUERY_VARIABLES = Object.freeze({
+  benchmarkPage: 'PROGPU_SAMPLE_BENCHMARK_PAGE',
+  benchmarkWarmupFrames: 'PROGPU_SAMPLE_BENCHMARK_WARMUP_FRAMES',
+  benchmarkMeasureFrames: 'PROGPU_SAMPLE_BENCHMARK_MEASURE_FRAMES',
+  benchmarkVsync: 'PROGPU_SAMPLE_BENCHMARK_VSYNC',
+  benchmarkScroll: 'PROGPU_SAMPLE_BENCHMARK_SCROLL',
+  benchmarkScrollStep: 'PROGPU_SAMPLE_BENCHMARK_SCROLL_STEP'
+});
 const uncappedFrameResolvers = [];
 const uncappedGpuFenceResolvers = [];
 const MAX_UNCAPPED_FRAMES_IN_FLIGHT = 2;
@@ -1286,6 +1294,16 @@ function updateCounters(frames, dispatches, commandBytes) {
   document.querySelector('#counter-bytes').textContent = Number(commandBytes).toLocaleString();
 }
 
+function readBenchmarkEnvironment() {
+  const query = new URLSearchParams(globalThis.location.search);
+  const environment = {};
+  for (const [queryName, variableName] of Object.entries(BENCHMARK_QUERY_VARIABLES)) {
+    const value = query.get(queryName)?.trim();
+    if (value) environment[variableName] = value;
+  }
+  return environment;
+}
+
 async function handleDispatcherWorkerMessage(event) {
   const message = event.data;
   try {
@@ -1351,7 +1369,7 @@ if (isDispatcherWorker) {
   });
 } else {
   initializeDiagnosticsVisibility();
-  runtime = await dotnet.create();
+  runtime = await dotnet.withEnvironmentVariables(readBenchmarkEnvironment()).create();
   runtime.setModuleImports('progpu-browser', { initialize, dispatch, dispatchUpload, mapBuffer, copyMappedBuffer, writeMappedBuffer, releaseMappedBuffer, nextAnimationFrame, writeCanvasMetrics, drainInputEvents, setCanvasCursor, setClipboardText, getClipboardText, pickStorage, getPickedStorageLength, copyPickedStorage, clearPickedStorage, downloadText, getDiagnosticsVisible, setDiagnosticsVisible, setStatus, updateCounters });
   const browserExports = await runtime.getAssemblyExports('ProGPU.Browser.dll');
   state.dispatchImmediatePointer = browserExports.ProGPU.Browser.BrowserInputDispatcher.DispatchImmediatePointer;
