@@ -770,6 +770,7 @@ public unsafe class Compositor : IDisposable
 
 
     private readonly System.Runtime.CompilerServices.ConditionalWeakTable<object, GpuSeriesBuffer> _dynamicGpuBufferCache = new();
+    private readonly ConditionalWeakTable<Visual, RetainedVisualCommands> _retainedVisualCommands = new();
 
     // Batch buffers (Dynamic GPU vertex & index buffers)
     private GpuBuffer _vectorVertexBuffer;
@@ -3675,6 +3676,63 @@ SceneStateUploadComplete:
         _poolIndex--;
     }
 
+    private sealed class RetainedVisualCommands
+    {
+        public DrawingContext Context { get; } = new();
+
+        public long RenderContentVersion { get; set; }
+
+        public uint TargetWidth { get; set; }
+
+        public uint TargetHeight { get; set; }
+
+        public float DpiScale { get; set; }
+    }
+
+    private static bool CanRetainVisualCommands(DrawingContext context)
+    {
+        if (context.Commands.Count == 0 ||
+            context.RetainedResourceCount != 0 ||
+            context.PointBuffer.Count != 0 ||
+            context.DoubleBuffer.Count != 0 ||
+            context.Line3DBuffer.Count != 0 ||
+            context.FloatBuffer.Count != 0)
+        {
+            return false;
+        }
+
+        var commands = context.Commands;
+        for (int commandIndex = 0; commandIndex < commands.Count; commandIndex++)
+        {
+            if (commands[commandIndex].Type is not (
+                RenderCommandType.DrawRect or
+                RenderCommandType.DrawPath or
+                RenderCommandType.DrawText or
+                RenderCommandType.PushClip or
+                RenderCommandType.PopClip or
+                RenderCommandType.PushOpacity or
+                RenderCommandType.PopOpacity or
+                RenderCommandType.DrawLine or
+                RenderCommandType.DrawEllipse or
+                RenderCommandType.DrawCircle or
+                RenderCommandType.DrawRoundedRect or
+                RenderCommandType.DrawBezier or
+                RenderCommandType.DrawCubicBezier or
+                RenderCommandType.FillTriangle or
+                RenderCommandType.FillQuad or
+                RenderCommandType.PushGeometryClip or
+                RenderCommandType.PopGeometryClip or
+                RenderCommandType.PushBlendMode or
+                RenderCommandType.PopBlendMode or
+                RenderCommandType.DrawGlyphRun))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private void CompileVisualTree(Visual node, Matrix4x4 parentTransform)
     {
         CompileVisualTree(node, parentTransform, offsetOverride: null);
@@ -3746,10 +3804,53 @@ SceneStateUploadComplete:
         // traversed so overflow content is never dropped.
         if (compileLocalCommands)
         {
-            var ctx = GetDrawingContext();
+            RetainedVisualCommands? retainedCommands = null;
+            bool hasRetainedCommands = node is not DrawingVisual &&
+                _retainedVisualCommands.TryGetValue(node, out retainedCommands);
+            bool reuseRetainedCommands = hasRetainedCommands &&
+                retainedCommands!.RenderContentVersion == node.RenderContentVersion &&
+                retainedCommands.TargetWidth == _currentWidth &&
+                retainedCommands.TargetHeight == _currentHeight &&
+                retainedCommands.DpiScale == _currentDpiScale;
+            bool usesPooledContext = !hasRetainedCommands;
+            bool keepRetainedCommands = reuseRetainedCommands;
+            var ctx = hasRetainedCommands
+                ? retainedCommands!.Context
+                : GetDrawingContext();
             try
             {
-                node.OnRender(ctx);
+                if (!reuseRetainedCommands)
+                {
+                    if (hasRetainedCommands)
+                    {
+                        ctx.Clear();
+                    }
+
+                    node.OnRender(ctx);
+                    if (node is not DrawingVisual && CanRetainVisualCommands(ctx))
+                    {
+                        if (hasRetainedCommands)
+                        {
+                            retainedCommands!.RenderContentVersion = node.RenderContentVersion;
+                            retainedCommands.TargetWidth = _currentWidth;
+                            retainedCommands.TargetHeight = _currentHeight;
+                            retainedCommands.DpiScale = _currentDpiScale;
+                            keepRetainedCommands = true;
+                        }
+                        else
+                        {
+                            var cached = new RetainedVisualCommands
+                            {
+                                RenderContentVersion = node.RenderContentVersion,
+                                TargetWidth = _currentWidth,
+                                TargetHeight = _currentHeight,
+                                DpiScale = _currentDpiScale
+                            };
+                            cached.Context.Append(ctx);
+                            _retainedVisualCommands.Add(node, cached);
+                        }
+                    }
+                }
 
                 var commands = ctx.Commands;
                 var commandCount = commands.Count;
@@ -3971,8 +4072,16 @@ SceneStateUploadComplete:
             }
             finally
             {
-                ctx.Clear();
-                ReleaseDrawingContext();
+                if (usesPooledContext)
+                {
+                    ctx.Clear();
+                    ReleaseDrawingContext();
+                }
+                else if (!keepRetainedCommands)
+                {
+                    _retainedVisualCommands.Remove(node);
+                    ctx.Clear();
+                }
             }
         }
 

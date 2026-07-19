@@ -17,6 +17,7 @@ public class Visual
     private Matrix4x4 _transform = Matrix4x4.Identity;
     private bool _isDirty = true;
     private long _changeVersion;
+    private long _renderContentVersion;
     private bool _cacheAsLayer;
     public virtual bool HasTemplate => false;
     private Vector3 _scale = Vector3.One;
@@ -42,7 +43,7 @@ public class Visual
                 _effect?.RemoveOwner(this);
                 _effect = value;
                 _effect?.AddOwner(this);
-                Invalidate();
+                InvalidateVisualState();
             }
         }
     }
@@ -74,7 +75,7 @@ public class Visual
             if (_offset != value)
             {
                 _offset = value;
-                Invalidate();
+                InvalidateVisualState();
             }
         }
     }
@@ -87,7 +88,7 @@ public class Visual
             if (_isVisible != value)
             {
                 _isVisible = value;
-                Invalidate();
+                InvalidateVisualState();
             }
         }
     }
@@ -113,7 +114,7 @@ public class Visual
             if (_opacity != value)
             {
                 _opacity = value;
-                Invalidate();
+                InvalidateVisualState();
             }
         }
     }
@@ -126,7 +127,7 @@ public class Visual
             if (_transform != value)
             {
                 _transform = value;
-                Invalidate();
+                InvalidateVisualState();
             }
         }
     }
@@ -149,6 +150,8 @@ public class Visual
 
     public long ChangeVersion => _changeVersion;
 
+    internal long RenderContentVersion => _renderContentVersion;
+
     public bool CacheAsLayer
     {
         get => _cacheAsLayer;
@@ -157,7 +160,7 @@ public class Visual
             if (_cacheAsLayer != value)
             {
                 _cacheAsLayer = value;
-                Invalidate();
+                InvalidateVisualState();
             }
         }
     }
@@ -170,7 +173,7 @@ public class Visual
             if (_scale != value)
             {
                 _scale = value;
-                Invalidate();
+                InvalidateVisualState();
             }
         }
     }
@@ -183,7 +186,7 @@ public class Visual
             if (_rotation != value)
             {
                 _rotation = value;
-                Invalidate();
+                InvalidateVisualState();
             }
         }
     }
@@ -196,7 +199,7 @@ public class Visual
             if (_centerPoint != value)
             {
                 _centerPoint = value;
-                Invalidate();
+                InvalidateVisualState();
             }
         }
     }
@@ -209,7 +212,7 @@ public class Visual
             if (_renderTransformOrigin != value)
             {
                 _renderTransformOrigin = value;
-                Invalidate();
+                InvalidateVisualState();
             }
         }
     }
@@ -225,7 +228,7 @@ public class Visual
             if (_hitTestId != value)
             {
                 _hitTestId = value;
-                Invalidate();
+                InvalidateVisualState();
             }
         }
     }
@@ -238,7 +241,7 @@ public class Visual
             if (_clipBounds != value)
             {
                 _clipBounds = value;
-                Invalidate();
+                InvalidateVisualState();
             }
         }
     }
@@ -251,7 +254,7 @@ public class Visual
             if (_outerClipBounds != value)
             {
                 _outerClipBounds = value;
-                Invalidate();
+                InvalidateVisualState();
             }
         }
     }
@@ -264,7 +267,7 @@ public class Visual
             if (!ReferenceEquals(_geometryClip, value))
             {
                 _geometryClip = value;
-                Invalidate();
+                InvalidateVisualState();
             }
         }
     }
@@ -277,7 +280,7 @@ public class Visual
             if (_opacityMask != value)
             {
                 _opacityMask = value;
-                Invalidate();
+                InvalidateVisualState();
             }
         }
     }
@@ -290,12 +293,22 @@ public class Visual
             if (_opacityMaskBounds != value)
             {
                 _opacityMaskBounds = value;
-                Invalidate();
+                InvalidateVisualState();
             }
         }
     }
 
     public void Invalidate()
+    {
+        InvalidateCore(invalidateRenderContent: true);
+    }
+
+    protected void InvalidateVisualState()
+    {
+        InvalidateCore(invalidateRenderContent: false);
+    }
+
+    private void InvalidateCore(bool invalidateRenderContent)
     {
         unchecked
         {
@@ -304,10 +317,19 @@ public class Visual
             {
                 _changeVersion = 1;
             }
+
+            if (invalidateRenderContent)
+            {
+                _renderContentVersion++;
+                if (_renderContentVersion < 0)
+                {
+                    _renderContentVersion = 1;
+                }
+            }
         }
 
         _isDirty = true;
-        Parent?.Invalidate();
+        Parent?.InvalidateCore(invalidateRenderContent: false);
     }
 
     public virtual void OnRender(DrawingContext context)
@@ -368,14 +390,14 @@ public class Visual
     public void StartAnimation(string propertyName, CompositionAnimation animation)
     {
         _activeAnimations[propertyName] = animation;
-        Invalidate();
+        InvalidateVisualState();
     }
 
     public void StopAnimation(string propertyName)
     {
         if (_activeAnimations.Remove(propertyName))
         {
-            Invalidate();
+            InvalidateVisualState();
         }
     }
 
@@ -398,6 +420,7 @@ public class Visual
         if (_activeAnimations.Count == 0) return;
 
         bool changed = false;
+        bool renderContentChanged = false;
 
         var activeAnimationEnumerator = _activeAnimations.GetEnumerator();
         while (activeAnimationEnumerator.MoveNext())
@@ -452,6 +475,7 @@ public class Visual
                     {
                         _size = vSize;
                         changed = true;
+                        renderContentChanged = true;
                     }
                 }
             }
@@ -479,7 +503,7 @@ public class Visual
 
         if (changed)
         {
-            Invalidate();
+            InvalidateCore(renderContentChanged);
         }
     }
 
