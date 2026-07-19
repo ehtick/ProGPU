@@ -171,6 +171,61 @@ and retained bundle/indirect replay. The benchmark reports a minimum 14.75 MB co
 1000 FPS would require at least 13.73 GiB/s of color writes before blending, overdraw, texture reads,
 or presentation copies.
 
+#### Incremental compiled-scene patch checkpoint
+
+The next retained-scene slice removes the remaining full visual-tree compile when an explicit
+`SceneFragmentHandle` changes but the scene topology does not:
+
+- The compiled scene records each persistent fragment allocation, transform placement, parent clip
+  and opacity, and the draw-range uses that reference its arena slot.
+- A cache candidate compares fragment versions before traversal. Changed pictures are compiled into
+  the existing grow-only `GpuSceneFragmentArena` slot, only the affected GPU ranges are uploaded, and
+  merged draw ranges are refreshed in place.
+- Capacity, stream kind, range count, transform placement, and duplicate-handle placement are strict
+  compatibility gates. Any mismatch abandons the patch and performs a normal full compile in the
+  same frame; stale or partially relocated arena data is never submitted.
+- Glyph-atlas generation changes during a patch also force the ordinary compiler, preserving atlas
+  UV generation correctness.
+- Parent clip-stack and opacity state are captured and restored for patch compilation. A native
+  pixel regression changes a clipped, half-opacity fragment and verifies cache reuse, the new color,
+  unchanged clipping, and unchanged visual render count.
+- Text arena slots receive bounded first-allocation headroom so recycled one- and two-digit row
+  values normally remain in place without reserving unbounded exact-string variants.
+
+DataGrid now uses stable slot-order text fragments and one hysteretic row-chrome fragment. Alternating
+backgrounds, selection/hover chrome, selection accent, and row borders are recorded once for a
+bounded two-window band rather than interleaved with every row's text. The initial slot reservation
+accounts for the maximum fractional-scroll realization, preventing the first sub-row scroll from
+doubling the retained topology. Forty consecutive realized-range transitions are covered by a test
+that requires an unchanged root version, a compiled-scene hit, and only one or two fragment updates
+per boundary.
+
+The republished Release AOT measurements below use the same 2560 x 1440, DPI 2, 120/600-frame,
+VSync-off, completion-tracked configuration as the preceding table:
+
+| Workload | GPU-completed FPS | Compile avg / p95 | Upload/frame | Allocation/frame | Cache / draws |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Data Virtualization, 40 px | 293.97 | 2.087 / 3.000 ms | 12,314 B | 25,412 B | 596/600 hits; 35 draws |
+| Data Virtualization, 1 px repeat | 493.77 | 0.089 / 0.100 ms | 980 B | 7,312 B | 598/600 hits; 35 draws |
+| Font Glyph Browser, 40 px | 230.51 | 2.187 / 4.400 ms | 103,409 B | 68,471 B | 235/600 hits; 110 draws |
+| Inter Typeface, 40 px repeat | 455.65 | 0.466 / 3.500 ms | 54,773 B | 26,224 B | 521/600 hits; 62 draws |
+
+Compared with the pre-patch DataGrid AOT baseline, the 40-pixel workload improves from 229-238 to
+294 completed FPS, reduces upload traffic from about 80.5 KiB to 12.0 KiB per frame, and converts
+596 of 600 measured frames into compiled-scene hits. Row-chrome batching reduces the patched design
+from 66 to 35 draws while preserving the same visible rows, borders, alternating fills, text, clip,
+and scrollbar in the browser screenshot. The 1-pixel repeat has only 0.199 ms average compositor
+time and 0.089 ms compile time, yet its median submitted-frame interval is 2.5 ms. This is direct
+evidence that further C# command-recording reductions alone cannot deliver 1000 GPU-completed FPS at
+this target.
+
+The next implementation priority is therefore the Vello/WebRender-style separation already defined
+in Phases 2, 3, 6, and 7: keep font/glyph pages on stable interned fragments, generate visibility and
+dirty-strip work without rebuilding the root, preserve or copy unchanged scroll tiles when the
+surface path permits it, and replay compact indirect/bundled batches. Browser scheduling,
+full-target color bandwidth, and actual GPU completion must remain measured separately; a faster
+CPU submit counter is not an acceptable substitute.
+
 A larger hysteretic overscan experiment was measured and rejected. It reduced average DataGrid
 compile time to about 2.24 ms but left throughput flat at 233.88 FPS and worsened compile p95 to
 17.1 ms by batching the same 1.43 entering rows into larger bursts. Overscan is not a substitute for
