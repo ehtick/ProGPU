@@ -63,6 +63,26 @@ public struct GpuUniforms
     [FieldOffset(204)] public float Pad0;
 }
 
+[StructLayout(LayoutKind.Explicit, Size = 64)]
+public struct GpuPlacement
+{
+    [FieldOffset(0)] public Vector4 TransformRow0;
+    [FieldOffset(16)] public Vector4 TransformRow1;
+    [FieldOffset(32)] public Vector4 ClipRect;
+    [FieldOffset(48)] public float Opacity;
+    [FieldOffset(52)] public uint Flags;
+    [FieldOffset(56)] public uint Generation;
+    [FieldOffset(60)] public uint Padding;
+
+    public static GpuPlacement Identity => new()
+    {
+        TransformRow0 = new Vector4(1f, 0f, 0f, 0f),
+        TransformRow1 = new Vector4(0f, 1f, 0f, 0f),
+        ClipRect = new Vector4(float.MinValue, float.MinValue, float.MaxValue, float.MaxValue),
+        Opacity = 1f
+    };
+}
+
 [StructLayout(LayoutKind.Sequential, Pack = 16)]
 public struct GpuHatchRecord
 {
@@ -712,6 +732,7 @@ public unsafe class Compositor : IDisposable
 
     // Uniform buffer (Projection Matrix)
     private readonly GpuBuffer _uniformBuffer;
+    private readonly GpuBuffer _placementStorageBuffer;
     private BindGroup* _vectorUniformBindGroup;
     private BindGroup* _textUniformBindGroup;
     private BindGroup* _textureUniformBindGroup;
@@ -1116,6 +1137,14 @@ public unsafe class Compositor : IDisposable
             "Compositor Uniform Projection Buffer"
         );
 
+        _placementStorageBuffer = new GpuBuffer(
+            _context,
+            1024u * (uint)Marshal.SizeOf<GpuPlacement>(),
+            BufferUsage.Storage | BufferUsage.CopyDst,
+            "Compositor Placement Storage Buffer"
+        );
+        _placementStorageBuffer.WriteSingle(GpuPlacement.Identity);
+
         // Allocate brushes storage buffer for the fixed GPU brush ABI.
         _brushesStorageBuffer = new GpuBuffer(
             _context,
@@ -1454,8 +1483,8 @@ public unsafe class Compositor : IDisposable
         // Create explicit BindGroupLayouts
         _vectorUniformBindGroupLayout = CreateVectorUniformLayout();
         _vectorUniformBindGroupLayoutOffscreen = CreateVectorUniformLayout();
-        _textUniformBindGroupLayout = CreateUniformOnlyLayout();
-        _textUniformBindGroupLayoutOffscreen = CreateUniformOnlyLayout();
+        _textUniformBindGroupLayout = CreateTextUniformLayout();
+        _textUniformBindGroupLayoutOffscreen = CreateTextUniformLayout();
         _textureUniformBindGroupLayout = CreateUniformOnlyLayout();
         _textureUniformBindGroupLayoutOffscreen = CreateUniformOnlyLayout();
 
@@ -1595,7 +1624,7 @@ public unsafe class Compositor : IDisposable
                 pipelineLayout: _vectorPipelineLayout
             );
 
-            Span<VertexAttribute> textAttrs = stackalloc VertexAttribute[8];
+            Span<VertexAttribute> textAttrs = stackalloc VertexAttribute[9];
             textAttrs[0] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 0, ShaderLocation = 0 }; // SnappedLogicalPos
             textAttrs[1] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 8, ShaderLocation = 1 }; // BasisX
             textAttrs[2] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 16, ShaderLocation = 2 }; // BasisY
@@ -1604,6 +1633,7 @@ public unsafe class Compositor : IDisposable
             textAttrs[5] = new VertexAttribute { Format = VertexFormat.Float32x4, Offset = 56, ShaderLocation = 5 }; // Color
             textAttrs[6] = new VertexAttribute { Format = VertexFormat.Float32x4, Offset = 72, ShaderLocation = 6 }; // ScaleBoldItalicUseMvp
             textAttrs[7] = new VertexAttribute { Format = VertexFormat.Float32, Offset = 88, ShaderLocation = 7 }; // BrushIndex
+            textAttrs[8] = new VertexAttribute { Format = VertexFormat.Uint32, Offset = 92, ShaderLocation = 8 }; // PlacementIndex
 
             fixed (VertexAttribute* textAttribsPtr = textAttrs)
             {
@@ -1612,7 +1642,7 @@ public unsafe class Compositor : IDisposable
                 {
                     ArrayStride = (uint)Unsafe.SizeOf<GlyphInstance>(),
                     StepMode = VertexStepMode.Instance,
-                    AttributeCount = 8,
+                    AttributeCount = 9,
                     Attributes = textAttribsPtr
                 };
 
@@ -1783,15 +1813,24 @@ public unsafe class Compositor : IDisposable
             Size = _gradientStopsStorageBuffer.Size
         };
 
-        var vectorEntries = stackalloc BindGroupEntry[3];
+        var placementEntry = new BindGroupEntry
+        {
+            Binding = 3,
+            Buffer = _placementStorageBuffer.BufferPtr,
+            Offset = 0,
+            Size = _placementStorageBuffer.Size
+        };
+
+        var vectorEntries = stackalloc BindGroupEntry[4];
         vectorEntries[0] = uBufferEntryVector;
         vectorEntries[1] = brushesEntry;
         vectorEntries[2] = gradientStopsEntry;
+        vectorEntries[3] = placementEntry;
 
         var uDescVector = new BindGroupDescriptor
         {
             Layout = _vectorUniformBindGroupLayout,
-            EntryCount = 3,
+            EntryCount = 4,
             Entries = vectorEntries
         };
         _vectorUniformBindGroup = _context.Api.DeviceCreateBindGroup(_context.Device, &uDescVector);
@@ -1799,24 +1838,29 @@ public unsafe class Compositor : IDisposable
         var uDescVectorOffscreen = new BindGroupDescriptor
         {
             Layout = _vectorUniformBindGroupLayoutOffscreen,
-            EntryCount = 3,
+            EntryCount = 4,
             Entries = vectorEntries
         };
         _vectorUniformBindGroupOffscreen = _context.Api.DeviceCreateBindGroup(_context.Device, &uDescVectorOffscreen);
 
+        placementEntry.Binding = 1;
+        var textEntries = stackalloc BindGroupEntry[2];
+        textEntries[0] = uBufferEntry;
+        textEntries[1] = placementEntry;
+
         var uDescText = new BindGroupDescriptor
         {
             Layout = _textUniformBindGroupLayout,
-            EntryCount = 1,
-            Entries = &uBufferEntry
+            EntryCount = 2,
+            Entries = textEntries
         };
         _textUniformBindGroup = _context.Api.DeviceCreateBindGroup(_context.Device, &uDescText);
 
         var uDescTextOffscreen = new BindGroupDescriptor
         {
             Layout = _textUniformBindGroupLayoutOffscreen,
-            EntryCount = 1,
-            Entries = &uBufferEntry
+            EntryCount = 2,
+            Entries = textEntries
         };
         _textUniformBindGroupOffscreen = _context.Api.DeviceCreateBindGroup(_context.Device, &uDescTextOffscreen);
 
@@ -9226,7 +9270,7 @@ SceneStateUploadComplete:
                             cmd.TextRenderingMode,
                             info.IsColorBitmap)),
                     BrushIndex = bIdx,
-                    Padding = 0f
+                    PlacementIndex = 0u
                 });
             }
         }
@@ -9451,7 +9495,7 @@ SceneStateUploadComplete:
                             cmd.TextRenderingMode,
                             info.IsColorBitmap)),
                     BrushIndex = bIdx,
-                    Padding = 0f
+                    PlacementIndex = 0u
                 });
             }
         }
@@ -10267,6 +10311,7 @@ SceneStateUploadComplete:
             ReleaseMsaaResources();
 
             _uniformBuffer.Dispose();
+            _placementStorageBuffer.Dispose();
             _brushesStorageBuffer.Dispose();
             _gradientStopsStorageBuffer.Dispose();
             _vectorVertexBuffer.Dispose();
@@ -12509,7 +12554,8 @@ SceneStateUploadComplete:
                 _vectorUniformBindGroupLayoutOffscreen,
                 _textUniformBindGroupLayout,
                 _textUniformBindGroupLayoutOffscreen,
-                _retainedGlyphBindGroupLayout
+                _retainedGlyphBindGroupLayout,
+                _placementStorageBuffer
             );
 
             return staticBuffer;
@@ -13019,7 +13065,8 @@ SceneStateUploadComplete:
                 _vectorUniformBindGroupLayoutOffscreen,
                 _textUniformBindGroupLayout,
                 _textUniformBindGroupLayoutOffscreen,
-                _retainedGlyphBindGroupLayout
+                _retainedGlyphBindGroupLayout,
+                _placementStorageBuffer
             );
 
             return staticBuffer;
@@ -13864,7 +13911,7 @@ SceneStateUploadComplete:
             var textShaderModule = _pipelineCache.GetOrCreateShader("Text", Shaders.TextShader, "TextShader");
             var textPipelineLayout = isOffscreen ? _textPipelineLayoutOffscreen : _textPipelineLayout;
 
-            Span<VertexAttribute> textAttrs = stackalloc VertexAttribute[8];
+            Span<VertexAttribute> textAttrs = stackalloc VertexAttribute[9];
             textAttrs[0] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 0, ShaderLocation = 0 }; // SnappedLogicalPos
             textAttrs[1] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 8, ShaderLocation = 1 }; // BasisX
             textAttrs[2] = new VertexAttribute { Format = VertexFormat.Float32x2, Offset = 16, ShaderLocation = 2 }; // BasisY
@@ -13873,6 +13920,7 @@ SceneStateUploadComplete:
             textAttrs[5] = new VertexAttribute { Format = VertexFormat.Float32x4, Offset = 56, ShaderLocation = 5 }; // Color
             textAttrs[6] = new VertexAttribute { Format = VertexFormat.Float32x4, Offset = 72, ShaderLocation = 6 }; // ScaleBoldItalicUseMvp
             textAttrs[7] = new VertexAttribute { Format = VertexFormat.Float32, Offset = 88, ShaderLocation = 7 }; // BrushIndex
+            textAttrs[8] = new VertexAttribute { Format = VertexFormat.Uint32, Offset = 92, ShaderLocation = 8 }; // PlacementIndex
 
             fixed (VertexAttribute* textAttribsPtr = textAttrs)
             {
@@ -13881,7 +13929,7 @@ SceneStateUploadComplete:
                 {
                     ArrayStride = (uint)Unsafe.SizeOf<GlyphInstance>(),
                     StepMode = VertexStepMode.Instance,
-                    AttributeCount = 8,
+                    AttributeCount = 9,
                     Attributes = textAttribsPtr
                 };
 
@@ -14355,7 +14403,7 @@ SceneStateUploadComplete:
 
     private unsafe BindGroupLayout* CreateVectorUniformLayout()
     {
-        var entries = stackalloc BindGroupLayoutEntry[3];
+        var entries = stackalloc BindGroupLayoutEntry[4];
         entries[0] = new BindGroupLayoutEntry
         {
             Binding = 0,
@@ -14389,14 +14437,59 @@ SceneStateUploadComplete:
                 MinBindingSize = 0
             }
         };
+        entries[3] = new BindGroupLayoutEntry
+        {
+            Binding = 3,
+            Visibility = ShaderStage.Vertex,
+            Buffer = new BufferBindingLayout
+            {
+                Type = BufferBindingType.ReadOnlyStorage,
+                HasDynamicOffset = false,
+                MinBindingSize = (ulong)Marshal.SizeOf<GpuPlacement>()
+            }
+        };
 
         var desc = new BindGroupLayoutDescriptor
         {
-            EntryCount = (UIntPtr)3,
+            EntryCount = (UIntPtr)4,
             Entries = entries
         };
 
         return _context.Api.DeviceCreateBindGroupLayout(_context.Device, &desc);
+    }
+
+    private unsafe BindGroupLayout* CreateTextUniformLayout()
+    {
+        var entries = stackalloc BindGroupLayoutEntry[2];
+        entries[0] = new BindGroupLayoutEntry
+        {
+            Binding = 0,
+            Visibility = ShaderStage.Vertex | ShaderStage.Fragment,
+            Buffer = new BufferBindingLayout
+            {
+                Type = BufferBindingType.Uniform,
+                HasDynamicOffset = false,
+                MinBindingSize = 0
+            }
+        };
+        entries[1] = new BindGroupLayoutEntry
+        {
+            Binding = 1,
+            Visibility = ShaderStage.Vertex,
+            Buffer = new BufferBindingLayout
+            {
+                Type = BufferBindingType.ReadOnlyStorage,
+                HasDynamicOffset = false,
+                MinBindingSize = (ulong)Marshal.SizeOf<GpuPlacement>()
+            }
+        };
+
+        var descriptor = new BindGroupLayoutDescriptor
+        {
+            EntryCount = 2,
+            Entries = entries
+        };
+        return _context.Api.DeviceCreateBindGroupLayout(_context.Device, &descriptor);
     }
 
     private unsafe BindGroupLayout* CreateRetainedGlyphLayout()
