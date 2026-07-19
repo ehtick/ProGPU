@@ -1038,6 +1038,31 @@ public unsafe class Compositor : IDisposable
     private readonly List<CompositorDrawCall> _drawCalls = new();
     private readonly List<CompiledVisualVersion> _compiledExternalLayers = new();
     private readonly List<CompiledLayerVersion> _compiledLayerOwners = new();
+    private readonly List<CompiledSceneFragmentEntry> _compiledSceneFragmentEntries = new();
+    private readonly List<int> _compiledSceneFragmentDrawCallsToRefresh = new();
+    private readonly List<GpuSceneFragmentArena.DrawRange> _sceneFragmentRangeScratch = new(8);
+
+    private readonly record struct CompiledSceneFragmentRangeUse(int DrawCallIndex, int RangeIndex);
+
+    private sealed class CompiledSceneFragmentEntry(
+        SceneFragmentHandle handle,
+        GpuSceneFragmentArena.Allocation allocation,
+        SceneTransformHandle transform,
+        Matrix4x4 baseTransform,
+        uint transformIndex,
+        Rect? parentClip,
+        float parentOpacity,
+        CompiledSceneFragmentRangeUse[] rangeUses)
+    {
+        public SceneFragmentHandle Handle { get; } = handle;
+        public GpuSceneFragmentArena.Allocation Allocation { get; set; } = allocation;
+        public SceneTransformHandle Transform { get; } = transform;
+        public Matrix4x4 BaseTransform { get; } = baseTransform;
+        public uint TransformIndex { get; } = transformIndex;
+        public Rect? ParentClip { get; } = parentClip;
+        public float ParentOpacity { get; } = parentOpacity;
+        public CompiledSceneFragmentRangeUse[] RangeUses { get; } = rangeUses;
+    }
     private readonly Dictionary<TextureCacheKey, CachedBindGroup> _persistentTextureBindGroups = new();
     private readonly List<GpuBrush> _activeBrushes = new();
     private readonly List<GpuGradientStop> _activeGradientStops = new();
@@ -2295,6 +2320,7 @@ public unsafe class Compositor : IDisposable
             _textureVerticesList.Clear();
             _textureIndicesList.Clear();
             _drawCalls.Clear();
+            _compiledSceneFragmentEntries.Clear();
             _activeSceneTransformKeys.Clear();
             _hitTestCacheBuilder.Clear();
             ClearLastHitTestIndex();
@@ -2327,13 +2353,57 @@ public unsafe class Compositor : IDisposable
         try
         {
 
+        bool patchCompiledSceneFragments = reuseCompiledScene && HasChangedCompiledSceneFragments();
+        ulong glyphAtlasGenerationBeforeFragmentPatch = _atlas.Generation;
+        if (!reuseCompiledScene || patchCompiledSceneFragments)
+        {
+            _atlas.BeginBatch();
+            glyphBatchActive = true;
+        }
+
+        if (patchCompiledSceneFragments &&
+            (!TryPatchCompiledSceneFragments() || _atlas.Generation != glyphAtlasGenerationBeforeFragmentPatch))
+        {
+            reuseCompiledScene = false;
+            _currentSceneCacheMissReason ??= "Persistent scene fragment topology changed";
+            _hasGpuTransformsInFrame = false;
+            _gpuTransformsCameraView = Matrix4x4.Identity;
+            _compiledSceneContainsDrawingVisual = false;
+            _compiledSceneContainsRetainedTransformFallback = false;
+            _activeLayerTextureOwners.Clear();
+            _activeBrushes.Clear();
+            _activeGradientStops.Clear();
+            _vectorVerticesList.Clear();
+            _vectorIndicesList.Clear();
+            _textVerticesList.Clear();
+            _textureVerticesList.Clear();
+            _textureIndicesList.Clear();
+            _drawCalls.Clear();
+            _compiledSceneFragmentEntries.Clear();
+            _activeSceneTransformKeys.Clear();
+            _hitTestCacheBuilder.Clear();
+            ClearLastHitTestIndex();
+            _clipStack.Clear();
+            _clipScopeIsGeometryMask.Clear();
+            _activeClipRect = null;
+            _opacityStack.Clear();
+            _activeOpacity = 1.0f;
+            _currentBatchType = BatchType.None;
+            _blendModeStack.Clear();
+            _activeBlendMode = GpuBlendMode.SrcOver;
+            _maskStack.Clear();
+            ReturnMaskRenderPassDrawCallLists();
+            _masksToReturnToPool.Clear();
+            if (wavefrontEnabled)
+            {
+                _wavefrontEngine!.BeginFrame(_currentDpiScale, reuseRetainedInstances: false);
+            }
+        }
+
         if (reuseCompiledScene)
         {
             goto SceneCompilationComplete;
         }
-
-        _atlas.BeginBatch();
-        glyphBatchActive = true;
 
         // 3. Compile Layer 0: Root Visual Scene
         _pendingVectorStart = (uint)_vectorIndicesList.Count;
@@ -3277,6 +3347,165 @@ SceneStateUploadComplete:
         return false;
     }
 
+    private bool HasChangedCompiledSceneFragments()
+    {
+        for (int i = 0; i < _compiledSceneFragmentEntries.Count; i++)
+        {
+            var entry = _compiledSceneFragmentEntries[i];
+            if (entry.Handle.Version != entry.Allocation.Version)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Patches changed persistent fragments without traversing or rebuilding the visual tree.
+    /// Existing arena slots and draw topology must remain stable; a capacity or topology change
+    /// falls back to the ordinary full compiler in the same frame.
+    /// </summary>
+    private bool TryPatchCompiledSceneFragments()
+    {
+        _compiledSceneFragmentDrawCallsToRefresh.Clear();
+
+        for (int entryIndex = 0; entryIndex < _compiledSceneFragmentEntries.Count; entryIndex++)
+        {
+            var entry = _compiledSceneFragmentEntries[entryIndex];
+            if (entry.Handle.Version == entry.Allocation.Version)
+            {
+                continue;
+            }
+
+            // One handle rendered with multiple placements shares one arena allocation. Updating
+            // that allocation for only one placement would change the other use, so retain the
+            // full-compile correctness fallback for this uncommon topology.
+            for (int otherIndex = 0; otherIndex < _compiledSceneFragmentEntries.Count; otherIndex++)
+            {
+                if (otherIndex != entryIndex &&
+                    ReferenceEquals(_compiledSceneFragmentEntries[otherIndex].Handle, entry.Handle))
+                {
+                    return false;
+                }
+            }
+
+            var previous = entry.Allocation;
+            int vectorStart = previous.VectorStart;
+            int vectorCapacity = previous.VectorCapacity;
+            int indexStart = previous.IndexStart;
+            int indexCapacity = previous.IndexCapacity;
+            int textStart = previous.TextStart;
+            int textCapacity = previous.TextCapacity;
+            int previousRangeCount = previous.DrawRangeCount;
+
+            var allocation = CompileSceneFragmentAllocation(
+                entry.Handle,
+                entry.Handle.Picture,
+                entry.Transform,
+                entry.BaseTransform,
+                entry.TransformIndex,
+                entry.ParentClip,
+                entry.ParentOpacity,
+                entry.Handle.Version);
+            _sceneFragmentUpdatesInFrame++;
+            entry.Allocation = allocation;
+
+            if (!ReferenceEquals(previous, allocation) ||
+                allocation.VectorStart != vectorStart ||
+                allocation.VectorCapacity != vectorCapacity ||
+                allocation.IndexStart != indexStart ||
+                allocation.IndexCapacity != indexCapacity ||
+                allocation.TextStart != textStart ||
+                allocation.TextCapacity != textCapacity ||
+                allocation.DrawRangeCount != previousRangeCount ||
+                allocation.DrawRangeCount != entry.RangeUses.Length)
+            {
+                _currentSceneCacheMissReason =
+                    $"Persistent scene fragment slot changed " +
+                    $"v={vectorStart}/{vectorCapacity}->{allocation.VectorStart}/{allocation.VectorCapacity} " +
+                    $"i={indexStart}/{indexCapacity}->{allocation.IndexStart}/{allocation.IndexCapacity} " +
+                    $"t={textStart}/{textCapacity}->{allocation.TextStart}/{allocation.TextCapacity} " +
+                    $"r={previousRangeCount}->{allocation.DrawRangeCount}";
+                return false;
+            }
+
+            for (int rangeIndex = 0; rangeIndex < entry.RangeUses.Length; rangeIndex++)
+            {
+                var use = entry.RangeUses[rangeIndex];
+                if ((uint)use.DrawCallIndex >= (uint)_drawCalls.Count ||
+                    (uint)use.RangeIndex >= (uint)allocation.DrawRangeCount)
+                {
+                    return false;
+                }
+
+                var drawCallType = _drawCalls[use.DrawCallIndex].Type;
+                var rangeType = allocation.DrawRanges[use.RangeIndex].Type;
+                if ((rangeType == DrawCallType.Vector && drawCallType != DrawCallType.FragmentVector) ||
+                    (rangeType == DrawCallType.Text &&
+                        drawCallType is not DrawCallType.FragmentText and not DrawCallType.FragmentTextIndexed))
+                {
+                    return false;
+                }
+
+                if (!_compiledSceneFragmentDrawCallsToRefresh.Contains(use.DrawCallIndex))
+                {
+                    _compiledSceneFragmentDrawCallsToRefresh.Add(use.DrawCallIndex);
+                }
+            }
+        }
+
+        for (int i = 0; i < _compiledSceneFragmentDrawCallsToRefresh.Count; i++)
+        {
+            if (!RefreshCompiledSceneFragmentDrawCall(_compiledSceneFragmentDrawCallsToRefresh[i]))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private bool RefreshCompiledSceneFragmentDrawCall(int drawCallIndex)
+    {
+        uint start = uint.MaxValue;
+        uint end = 0;
+        GpuSceneFragmentArena.Allocation? firstAllocation = null;
+
+        for (int entryIndex = 0; entryIndex < _compiledSceneFragmentEntries.Count; entryIndex++)
+        {
+            var entry = _compiledSceneFragmentEntries[entryIndex];
+            var uses = entry.RangeUses;
+            for (int useIndex = 0; useIndex < uses.Length; useIndex++)
+            {
+                var use = uses[useIndex];
+                if (use.DrawCallIndex != drawCallIndex)
+                {
+                    continue;
+                }
+
+                if ((uint)use.RangeIndex >= (uint)entry.Allocation.DrawRangeCount)
+                {
+                    return false;
+                }
+                var range = entry.Allocation.DrawRanges[use.RangeIndex];
+                start = Math.Min(start, range.Start);
+                end = Math.Max(end, checked(range.Start + range.Count));
+                firstAllocation ??= entry.Allocation;
+            }
+        }
+
+        if (firstAllocation == null || start == uint.MaxValue || end < start)
+        {
+            return false;
+        }
+
+        var drawCall = _drawCalls[drawCallIndex];
+        drawCall.IndexStart = start;
+        drawCall.IndexCount = end - start;
+        drawCall.StaticBuffer = firstAllocation;
+        _drawCalls[drawCallIndex] = drawCall;
+        return true;
+    }
+
     private void CaptureCompiledScene(
         Visual root,
         uint width,
@@ -3299,6 +3528,7 @@ SceneStateUploadComplete:
         {
             _compiledExternalLayers.Clear();
             _compiledLayerOwners.Clear();
+            _compiledSceneFragmentEntries.Clear();
             return;
         }
 
@@ -5116,6 +5346,8 @@ SceneStateUploadComplete:
                 transform,
                 baseTransform,
                 transformResources.TransformIndex,
+                _activeClipRect,
+                _activeOpacity,
                 version);
         }
         else
@@ -5124,6 +5356,7 @@ SceneStateUploadComplete:
         }
 
         var ranges = allocation.DrawRanges;
+        var rangeUses = new CompiledSceneFragmentRangeUse[allocation.DrawRangeCount];
         for (int i = 0; i < allocation.DrawRangeCount; i++)
         {
             var range = ranges[i];
@@ -5146,22 +5379,34 @@ SceneStateUploadComplete:
             {
                 previous.IndexCount = checked(range.Start + range.Count - previous.IndexStart);
                 _drawCalls[^1] = previous;
-                continue;
+                rangeUses[i] = new CompiledSceneFragmentRangeUse(_drawCalls.Count - 1, i);
             }
-
-            _drawCalls.Add(new CompositorDrawCall
+            else
             {
-                Type = type,
-                IndexStart = range.Start,
-                IndexCount = range.Count,
-                ClipRect = _activeClipRect,
-                MaskTexture = _maskStack.Count > 0 ? _maskStack.Peek() : null,
-                BlendMode = _activeBlendMode,
-                SceneTransform = transform,
-                SceneTransformBase = baseTransform,
-                StaticBuffer = allocation
-            });
+                _drawCalls.Add(new CompositorDrawCall
+                {
+                    Type = type,
+                    IndexStart = range.Start,
+                    IndexCount = range.Count,
+                    ClipRect = _activeClipRect,
+                    MaskTexture = _maskStack.Count > 0 ? _maskStack.Peek() : null,
+                    BlendMode = _activeBlendMode,
+                    SceneTransform = transform,
+                    SceneTransformBase = baseTransform,
+                    StaticBuffer = allocation
+                });
+                rangeUses[i] = new CompiledSceneFragmentRangeUse(_drawCalls.Count - 1, i);
+            }
         }
+        _compiledSceneFragmentEntries.Add(new CompiledSceneFragmentEntry(
+            handle,
+            allocation,
+            transform,
+            baseTransform,
+            transformResources.TransformIndex,
+            _activeClipRect,
+            _activeOpacity,
+            rangeUses));
         _pendingVectorStart = (uint)_vectorIndicesList.Count;
         _pendingTextStart = (uint)_textVerticesList.Count;
     }
@@ -5172,6 +5417,8 @@ SceneStateUploadComplete:
         SceneTransformHandle transform,
         Matrix4x4 baseTransform,
         uint transformIndex,
+        Rect? parentClip,
+        float parentOpacity,
         long version)
     {
         int vectorStart = _vectorVerticesList.Count;
@@ -5185,7 +5432,13 @@ SceneStateUploadComplete:
         bool savedUseGpuTransforms = _useGpuTransformsActive;
         Matrix4x4 savedCamera = _cameraViewMatrix;
         bool savedSuspendHitTestWrites = _suspendHitTestCacheWrites;
-        var ranges = new List<GpuSceneFragmentArena.DrawRange>(4);
+        Rect? savedActiveClipRect = _activeClipRect;
+        var savedClipStack = RentStackSnapshot(_clipStack, out int savedClipStackCount);
+        var savedClipScope = RentStackSnapshot(_clipScopeIsGeometryMask, out int savedClipScopeCount);
+        float savedActiveOpacity = _activeOpacity;
+        var savedOpacityStack = RentStackSnapshot(_opacityStack, out int savedOpacityStackCount);
+        var ranges = _sceneFragmentRangeScratch;
+        ranges.Clear();
 
         try
         {
@@ -5196,6 +5449,16 @@ SceneStateUploadComplete:
             _useGpuTransformsActive = true;
             _cameraViewMatrix = Matrix4x4.Identity;
             _suspendHitTestCacheWrites = true;
+            _activeClipRect = parentClip;
+            _clipStack.Clear();
+            _clipScopeIsGeometryMask.Clear();
+            if (parentClip.HasValue)
+            {
+                _clipStack.Push(parentClip.Value);
+                _clipScopeIsGeometryMask.Push(false);
+            }
+            _activeOpacity = parentOpacity;
+            _opacityStack.Clear();
             _pendingVectorStart = (uint)indexStart;
             _pendingTextStart = (uint)textStart;
             _currentBatchType = BatchType.None;
@@ -5269,9 +5532,18 @@ SceneStateUploadComplete:
             _useGpuTransformsActive = savedUseGpuTransforms;
             _cameraViewMatrix = savedCamera;
             _suspendHitTestCacheWrites = savedSuspendHitTestWrites;
+            _activeClipRect = savedActiveClipRect;
+            RestoreStack(ref _clipStack, savedClipStack, savedClipStackCount);
+            RestoreClipScopeStack(savedClipScope, savedClipScopeCount);
+            _activeOpacity = savedActiveOpacity;
+            RestoreStack(ref _opacityStack, savedOpacityStack, savedOpacityStackCount);
+            ReturnStackSnapshot(savedClipStack, savedClipStackCount);
+            ReturnStackSnapshot(savedClipScope, savedClipScopeCount);
+            ReturnStackSnapshot(savedOpacityStack, savedOpacityStackCount);
             _pendingVectorStart = (uint)_vectorIndicesList.Count;
             _pendingTextStart = (uint)_textVerticesList.Count;
             _currentBatchType = BatchType.None;
+            ranges.Clear();
         }
     }
 

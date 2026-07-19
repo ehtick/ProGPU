@@ -66,6 +66,36 @@ public sealed class LayerRenderTests
     }
 
     [Fact]
+    public void ChangedSceneFragmentPatchesInsideCapturedClipAndOpacity()
+    {
+        using var window = new HeadlessWindow(64, 32);
+        using var visual = new MutableSceneFragmentVisual();
+        window.Content = visual;
+
+        try
+        {
+            window.Render();
+            AssertHalfRed(ReadPixel(window.ReadPixels(), window.Width, x: 10, y: 8));
+            AssertBlack(ReadPixel(window.ReadPixels(), window.Width, x: 30, y: 8));
+
+            visual.SetColor(new Vector4(0f, 1f, 0f, 1f));
+            window.Render();
+
+            Assert.True(
+                window.Compositor.Metrics.SceneCacheHit,
+                window.Compositor.Metrics.SceneCacheMissReason);
+            Assert.Equal(1, window.Compositor.Metrics.SceneFragmentUpdateCount);
+            Assert.Equal(1, visual.RenderCount);
+            AssertHalfGreen(ReadPixel(window.ReadPixels(), window.Width, x: 10, y: 8));
+            AssertBlack(ReadPixel(window.ReadPixels(), window.Width, x: 30, y: 8));
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
+    [Fact]
     public void RetainedVisualTransformMovesWholeSubtreeOnCompiledSceneCacheHit()
     {
         using var window = new HeadlessWindow(64, 32);
@@ -564,6 +594,14 @@ public sealed class LayerRenderTests
         Assert.Equal(255, pixel.A);
     }
 
+    private static void AssertHalfGreen(RgbaPixel pixel)
+    {
+        Assert.InRange(pixel.R, 0, 12);
+        Assert.InRange(pixel.G, 115, 140);
+        Assert.InRange(pixel.B, 0, 12);
+        Assert.Equal(255, pixel.A);
+    }
+
     private static void AssertBlack(RgbaPixel pixel)
     {
         Assert.InRange(pixel.R, 0, 12);
@@ -652,6 +690,57 @@ public sealed class LayerRenderTests
         }
 
         public void Dispose() => _picture.Dispose();
+    }
+
+    private sealed class MutableSceneFragmentVisual : FrameworkElement, IDisposable
+    {
+        private readonly SceneTransformHandle _transform = new();
+        private readonly SceneFragmentHandle _fragment;
+
+        public MutableSceneFragmentVisual()
+        {
+            Width = 64f;
+            Height = 32f;
+            _fragment = new SceneFragmentHandle(CreatePicture(new Vector4(1f, 0f, 0f, 1f)));
+        }
+
+        public int RenderCount { get; private set; }
+
+        public void SetColor(Vector4 color)
+        {
+            _fragment.ReplacePicture(CreatePicture(color));
+            InvalidateRetainedTransform();
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            RenderCount++;
+            context.DrawRectangle(
+                new SolidColorBrush(new Vector4(0f, 0f, 0f, 1f)),
+                null,
+                new Rect(0f, 0f, 64f, 32f));
+            context.PushClip(new Rect(0f, 0f, 20f, 32f));
+            context.PushOpacity(0.5f);
+            context.DrawSceneFragment(_fragment, _transform);
+            context.PopOpacity();
+            context.PopClip();
+        }
+
+        public void Dispose()
+        {
+            _fragment.Dispose();
+        }
+
+        private static GpuPicture CreatePicture(Vector4 color)
+        {
+            var recorder = new GpuPictureRecorder();
+            var context = recorder.BeginRecording(new Rect(0f, 0f, 40f, 20f));
+            context.DrawRectangle(
+                new SolidColorBrush(color),
+                null,
+                new Rect(0f, 0f, 40f, 20f));
+            return recorder.EndRecording();
+        }
     }
 
     private sealed class RetainedTransformVisual : FrameworkElement

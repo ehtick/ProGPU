@@ -171,9 +171,31 @@ public sealed class SamplePerformanceRegressionTests
             grid.ChangeVersion);
         Assert.Equal(firstRealizedRow, grid.FirstRealizedRow);
         Assert.Equal(lastRealizedRow, grid.LastRealizedRow);
+        window.Render();
+        Assert.True(window.Compositor.Metrics.SceneCacheHit);
 
         grid.ScrollOffset = 30f;
-        Assert.True(grid.ChangeVersion > retainedRangeVersion);
+        Assert.Equal(retainedRangeVersion, grid.ChangeVersion);
+        Assert.Equal(1, grid.FirstRealizedRow);
+        Assert.Equal(8, grid.LastRealizedRow);
+
+        window.Render();
+
+        Assert.True(
+            window.Compositor.Metrics.SceneCacheHit,
+            window.Compositor.Metrics.SceneCacheMissReason);
+        Assert.Equal(1, window.Compositor.Metrics.SceneFragmentUpdateCount);
+
+        for (int firstRow = 2; firstRow <= 40; firstRow++)
+        {
+            grid.ScrollOffset = firstRow * 28f;
+            Assert.Equal(retainedRangeVersion, grid.ChangeVersion);
+            window.Render();
+            Assert.True(
+                window.Compositor.Metrics.SceneCacheHit,
+                $"row={firstRow}: {window.Compositor.Metrics.SceneCacheMissReason}");
+            Assert.InRange(window.Compositor.Metrics.SceneFragmentUpdateCount, 1, 2);
+        }
     }
 
     [Fact]

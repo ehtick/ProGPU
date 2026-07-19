@@ -180,7 +180,16 @@ internal sealed class GpuSceneFragmentArena : IDisposable
 
         Reserve(ref allocation.VectorStart, ref allocation.VectorCapacity, vectors.Length, ref _vectorUsed);
         Reserve(ref allocation.IndexStart, ref allocation.IndexCapacity, indices.Length, ref _indexUsed);
-        Reserve(ref allocation.TextStart, ref allocation.TextCapacity, text.Length, ref _textUsed);
+        // Mutable text fragments commonly cross a power-of-two boundary when a recycled row
+        // changes from a one- to two-digit value. Reserve bounded headroom on first allocation so
+        // those updates remain in-place compiled-scene patches instead of moving the slot and
+        // forcing a full visual-tree compile. Count and upload still cover only active glyphs.
+        int textCapacityRequirement = text.Length;
+        if (allocation.TextCapacity == 0 && text.Length != 0)
+        {
+            textCapacityRequirement = checked(text.Length + Math.Max(8, text.Length / 2));
+        }
+        Reserve(ref allocation.TextStart, ref allocation.TextCapacity, textCapacityRequirement, ref _textUsed);
         Reserve(ref allocation.BrushStart, ref allocation.BrushCapacity, brushes.Length, ref _brushUsed);
         Reserve(ref allocation.GradientStart, ref allocation.GradientCapacity, gradients.Length, ref _gradientUsed);
 

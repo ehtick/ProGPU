@@ -78,6 +78,10 @@ public class DataGrid : Control
     private SceneFragmentHandle?[] _rowFragmentHandles = [];
     private int[] _rowFragmentRows = [];
     private int[] _rowFragmentState = [];
+    private SceneFragmentHandle? _rowChromeFragment;
+    private int _rowChromeStart = -1;
+    private int _rowChromeEnd = -1;
+    private int _rowChromeState;
     private int _itemsVersion;
     private int _compiledStartRow = -1;
     private int _compiledEndRow = -1;
@@ -157,8 +161,8 @@ public class DataGrid : Control
                 }
                 if (_editingRow == -1 &&
                     TryGetVisibleRowRange(clamped, out int startRow, out int endRow) &&
-                    startRow == _compiledStartRow &&
-                    endRow == _compiledEndRow)
+                    (startRow == _compiledStartRow && endRow == _compiledEndRow ||
+                        TryPrepareRetainedScrollRange(startRow, endRow)))
                 {
                     InvalidateRetainedTransform();
                 }
@@ -1054,76 +1058,81 @@ public class DataGrid : Control
     {
         int visibleCount = endRow - startRow + 1;
         EnsureRowFragmentCapacity(visibleCount + 2);
-        int layoutState = ComputeRowFragmentLayoutState(activeFont);
+        PrepareRetainedRows(activeFont, startRow);
+        PrepareRetainedRowChrome(startRow, endRow);
         _rowScrollTransform.Translation = new Vector2(0f, -ScrollOffset);
 
         context.PushClip(new Rect(0, _headerHeight, Size.X, ViewportHeight));
-        // Row chrome occupies disjoint horizontal bands, so recording all chrome before the
-        // text in each retained row preserves painter order while allowing sub-row scrolling to
-        // patch one transform. Range/state changes remain O(V); in-range scrolling is O(1).
-        for (int row = startRow; row <= endRow; row++)
+        if (_rowChromeFragment is { } chromeFragment)
+        {
+            context.DrawSceneFragment(chromeFragment, _rowScrollTransform);
+        }
+        // Slot commands remain in a stable order across realization boundaries. Rows occupy
+        // disjoint horizontal bands, so modulo-slot order cannot alter painter output. Rebinding
+        // an entering row therefore changes one fragment version while the parent command list
+        // and every other row allocation remain reusable.
+        for (int slot = 0; slot < _rowFragmentHandles.Length; slot++)
+        {
+            if (_rowFragmentHandles[slot] is { } fragment)
+            {
+                context.DrawSceneFragment(fragment, _rowScrollTransform);
+            }
+        }
+        context.PopClip();
+    }
+
+    private bool TryPrepareRetainedScrollRange(int startRow, int endRow)
+    {
+        if (_compiledStartRow < 0 ||
+            _rowFragmentHandles.Length < endRow - startRow + 3 ||
+            GetActiveFont() is not { } activeFont)
+        {
+            return false;
+        }
+
+        PrepareRetainedRows(activeFont, startRow);
+        PrepareRetainedRowChrome(startRow, endRow);
+        _compiledStartRow = startRow;
+        _compiledEndRow = endRow;
+        return true;
+    }
+
+    private void PrepareRetainedRows(TtfFont activeFont, int startRow)
+    {
+        int layoutState = ComputeRowFragmentLayoutState(activeFont);
+        int endRow = (int)Math.Min(_itemsSource.Count, (long)startRow + _rowFragmentHandles.Length);
+        for (int row = startRow; row < endRow; row++)
         {
             int slot = row % _rowFragmentHandles.Length;
             int state = HashCode.Combine(
                 layoutState,
                 _itemsVersion,
-                row == _editingRow ? _editingCol + 1 : 0,
-                row == SelectedIndex,
-                row == _hoveredRowIndex);
-            if (_rowFragmentHandles[slot] == null ||
-                _rowFragmentRows[slot] != row ||
-                _rowFragmentState[slot] != state)
+                row == _editingRow ? _editingCol + 1 : 0);
+            if (_rowFragmentHandles[slot] != null &&
+                _rowFragmentRows[slot] == row &&
+                _rowFragmentState[slot] == state)
             {
-                var picture = RecordRowPicture(activeFont, row);
-                if (_rowFragmentHandles[slot] == null)
-                {
-                    _rowFragmentHandles[slot] = new SceneFragmentHandle(picture);
-                }
-                else
-                {
-                    _rowFragmentHandles[slot]!.ReplacePicture(picture);
-                }
-                _rowFragmentRows[slot] = row;
-                _rowFragmentState[slot] = state;
+                continue;
             }
 
+            var picture = RecordRowPicture(activeFont, row);
+            if (_rowFragmentHandles[slot] == null)
+            {
+                _rowFragmentHandles[slot] = new SceneFragmentHandle(picture);
+            }
+            else
+            {
+                _rowFragmentHandles[slot]!.ReplacePicture(picture);
+            }
+            _rowFragmentRows[slot] = row;
+            _rowFragmentState[slot] = state;
         }
-
-        for (int row = startRow; row <= endRow; row++)
-        {
-            int slot = row % _rowFragmentHandles.Length;
-            context.DrawSceneFragment(_rowFragmentHandles[slot]!, _rowScrollTransform);
-        }
-        context.PopClip();
     }
 
     private GpuPicture RecordRowPicture(TtfFont activeFont, int row)
     {
         float rowY = _headerHeight + row * _rowHeight;
         var rowContext = _rowPictureRecorder.BeginRecording(new Rect(0f, rowY, Size.X, _rowHeight));
-        Brush? rowBackground = row == SelectedIndex
-            ? ThemeManager.GetBrush("SelectionHighlight")
-            : row == _hoveredRowIndex
-                ? ThemeManager.GetBrush("ControlBackgroundHover")
-                : (row & 1) != 0
-                    ? ThemeManager.GetBrush("ControlBackground")
-                    : null;
-        if (rowBackground != null)
-        {
-            rowContext.DrawRectangle(rowBackground, null, new Rect(0f, rowY, Size.X, _rowHeight));
-        }
-        if (row == SelectedIndex)
-        {
-            rowContext.DrawRectangle(
-                ThemeManager.GetBrush("SystemAccentColor"),
-                null,
-                new Rect(0f, rowY + 2f, 3f, _rowHeight - 4f));
-        }
-        rowContext.DrawRectangle(
-            null,
-            new Pen(ThemeManager.GetBrush("ControlBorder"), 0.5f),
-            new Rect(0f, rowY, Size.X, _rowHeight));
-
         var item = _itemsSource[row];
         float columnX = Padding.Left;
         float textY = rowY + (_rowHeight - FontSize) / 2f;
@@ -1143,6 +1152,81 @@ public class DataGrid : Control
             columnX += column.ActualWidth;
         }
         return _rowPictureRecorder.EndRecording();
+    }
+
+    private void PrepareRetainedRowChrome(int visibleStartRow, int visibleEndRow)
+    {
+        var stateHash = new HashCode();
+        stateHash.Add(Size.X);
+        stateHash.Add(_rowHeight);
+        stateHash.Add(_headerHeight);
+        stateHash.Add(ActualTheme);
+        stateHash.Add(ActualThemeFamily);
+        stateHash.Add(SelectedIndex);
+        stateHash.Add(_hoveredRowIndex);
+        stateHash.Add(_editingRow);
+        stateHash.Add(_itemsSource.Count);
+        int layoutState = stateHash.ToHashCode();
+        int capacity = Math.Max(1, _rowFragmentHandles.Length);
+        int chromeMargin = capacity / 4;
+        bool rangeContainsViewport =
+            _rowChromeStart >= 0 &&
+            (visibleStartRow >= _rowChromeStart + chromeMargin || _rowChromeStart == 0) &&
+            (visibleEndRow <= _rowChromeEnd - chromeMargin || _rowChromeEnd == _itemsSource.Count - 1);
+        if (_rowChromeFragment != null && _rowChromeState == layoutState && rangeContainsViewport)
+        {
+            return;
+        }
+
+        int rowCount = Math.Min(_itemsSource.Count, checked(capacity * 2));
+        int chromeStart = Math.Max(0, visibleStartRow - capacity / 2);
+        if (chromeStart + rowCount > _itemsSource.Count)
+        {
+            chromeStart = Math.Max(0, _itemsSource.Count - rowCount);
+        }
+        int chromeEnd = chromeStart + rowCount - 1;
+        var chromeContext = _rowPictureRecorder.BeginRecording(
+            new Rect(0f, _headerHeight + chromeStart * _rowHeight, Size.X, rowCount * _rowHeight));
+        var selectionBrush = ThemeManager.GetBrush("SelectionHighlight");
+        var hoverBrush = ThemeManager.GetBrush("ControlBackgroundHover");
+        var alternateBrush = ThemeManager.GetBrush("ControlBackground");
+        var accentBrush = ThemeManager.GetBrush("SystemAccentColor");
+        var borderPen = new Pen(ThemeManager.GetBrush("ControlBorder"), 0.5f);
+        for (int row = chromeStart; row <= chromeEnd; row++)
+        {
+            float rowY = _headerHeight + row * _rowHeight;
+            Brush? background = row == SelectedIndex
+                ? selectionBrush
+                : row == _hoveredRowIndex
+                    ? hoverBrush
+                    : (row & 1) != 0
+                        ? alternateBrush
+                        : null;
+            if (background != null)
+            {
+                chromeContext.DrawRectangle(background, null, new Rect(0f, rowY, Size.X, _rowHeight));
+            }
+            if (row == SelectedIndex)
+            {
+                chromeContext.DrawRectangle(
+                    accentBrush,
+                    null,
+                    new Rect(0f, rowY + 2f, 3f, _rowHeight - 4f));
+            }
+            chromeContext.DrawRectangle(null, borderPen, new Rect(0f, rowY, Size.X, _rowHeight));
+        }
+        var picture = _rowPictureRecorder.EndRecording();
+        if (_rowChromeFragment == null)
+        {
+            _rowChromeFragment = new SceneFragmentHandle(picture);
+        }
+        else
+        {
+            _rowChromeFragment.ReplacePicture(picture);
+        }
+        _rowChromeStart = chromeStart;
+        _rowChromeEnd = chromeEnd;
+        _rowChromeState = layoutState;
     }
 
     private int ComputeRowFragmentLayoutState(TtfFont activeFont)
@@ -1169,7 +1253,13 @@ public class DataGrid : Control
     {
         if (_rowFragmentHandles.Length >= required) return;
         int previousLength = _rowFragmentHandles.Length;
-        int capacity = Math.Max(required, Math.Max(8, previousLength * 2));
+        // Reserve for the largest fractional-scroll realization on the first layout. Without
+        // this, an exactly row-aligned first frame can allocate one fewer slot and the first
+        // sub-row scroll doubles the retained row/chrome topology, defeating scene reuse.
+        int viewportCapacity = _rowHeight > 0f
+            ? checked((int)MathF.Ceiling(ViewportHeight / _rowHeight) + 4)
+            : required;
+        int capacity = Math.Max(required, Math.Max(8, Math.Max(viewportCapacity, previousLength * 2)));
         Array.Resize(ref _rowFragmentHandles, capacity);
         Array.Resize(ref _rowFragmentRows, capacity);
         Array.Resize(ref _rowFragmentState, capacity);
