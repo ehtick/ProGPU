@@ -249,6 +249,100 @@ Quality and interaction qualification on this AOT output found:
   direct byte transfer into the WASM filesystem; an interactive Chrome/native chooser run remains a
   separate platform qualification gate.
 
+#### Stable glyph-slot fragments and browser pacing checkpoint
+
+The next glyph-browser checkpoint implements WebRender-style stable interned slots on top of the
+generic compiled-fragment patcher. `UniformVirtualizingGridPanel` recognizes an optional retained
+leaf contract, creates one fixed modulo ring sized to visible rows plus two overscan rows, and keeps
+those visuals attached for the panel lifetime. A row transition rebinds only the entering modulo
+slots. Each slot replaces a generation-bearing `SceneFragmentHandle` recorded in absolute content
+coordinates, while one shared `SceneTransformHandle` applies the scroll offset. The panel remains
+outside the `ScrollViewer` parent translation so the scroll transform is applied exactly once.
+
+The Font Glyph Browser cells now record card chrome, the raw font glyph, and the two numeric labels
+directly into those retained pictures. The numeric labels reuse length-class glyph/position arrays,
+perform no string formatting, and avoid general rich-text layout for this fixed ASCII diagnostic
+case. The raw glyph still uses the ordinary glyph atlas and all existing physical-DPI, phase,
+outline, and color-glyph fallbacks. Theme colors are bound through dependency properties and
+resolved for each element/theme before picture recording; three border pens are rebuilt only on a
+theme change, not when a cell enters the viewport. Pointer hit routing maps the panel coordinate
+plus scroll offset back to the active retained slot, preserving hover and click behavior even though
+the slot visuals intentionally have no mutable layout placement.
+
+A focused 20-row regression requires the post-warmup root version and attached child identities to
+remain unchanged at every full-row boundary. Each frame must be a compiled-scene hit and patch
+exactly `ColumnsCount` entering fragments. The same test forwards pointer move and press to the
+first visible retained item after the final scroll. The broader qualification passes 47 sample
+performance tests, 18 compositor layer/fragment tests, and the two headless glyph-page render and
+theme diagnostics.
+
+The exact Release AOT output was republished and measured at the same 2560 x 1440 physical target,
+DPI 2, one sample, 120/600 frames, completion tracking, Atlas renderer, and VSync disabled:
+
+| Workload | Scroll step | GPU-completed FPS | Compile avg / p95 | Compositor avg | Upload/frame | Allocation/frame | Cache / draws |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Font Glyph Browser | 40 px | 302.43 | 0.122 / 0.300 ms | 0.344 ms | 22,172 B | 30,199 B | 596/600 hits; 110 draws |
+| Font Glyph Browser | 1 px | 327.35 | 0.036 / 0.100 ms | 0.242 ms | 1,842 B | 14,328 B | 596/600 hits; 110 draws |
+| Data Virtualization control | 40 px | 249.86 | 2.170 / 3.100 ms | 2.304 ms | 12,429 B | 25,368 B | 595/600 hits; 35 draws |
+| Inter Typeface control | 40 px | 344.65 | 0.491 / 3.600 ms | 0.622 ms | 55,544 B | 11,188 B | 520/600 hits; 62 draws |
+
+The glyph result improves the preceding 230.51 completed-FPS checkpoint by 31.2%, reduces average
+compile time from 2.187 to 0.122 ms, reduces uploads by 78.6%, reduces allocation by 55.9%, and turns
+the former 365 measured range-boundary misses into 596/600 cache hits. The AOT screenshot shows the
+scrolled cards, icon outlines, decimal/hex labels, selected-glyph preview, theme colors, clips, and
+scrollbar with no browser or WebGPU errors.
+
+This measurement also sharpens the remaining 1000-FPS plan. The one-pixel workload performs only
+0.242 ms of compositor work yet has a 3.300 ms median submitted-frame interval. Its 110 draw calls
+and approximately 14 KiB of managed allocation remain waste, but eliminating them cannot by itself
+recover the other roughly 2.3 ms. The uncapped browser loop uses a `MessageChannel` admission task
+and fences after two submitted frames to bound latency; full-size swapchain acquisition,
+presentation, queue completion, main-thread scheduling, and full-target color writes remain in the
+measured interval. A 1000-FPS claim must not be manufactured by allowing an unbounded queue or by
+counting offscreen state updates as completed presentations.
+
+The next implementation slices are therefore concrete and ordered:
+
+1. **Cross-fragment instance batching.** Preserve painter order with stable batch keys and merge the
+   non-overlapping glyph-card background, icon, primary-label, and accent-label streams into bounded
+   instanced batches. Store slot-to-instance ranges so an entering cell patches only its fixed
+   slice. Target no more than eight page-content draws instead of 105 cell-local draws without
+   rebuilding all visible glyph arrays.
+2. **Delta-only slot bookkeeping.** Replace the row-boundary clear/reinsert of the active dictionary
+   with entering/leaving column deltas and a direct modulo lookup for hit testing. Keep the fixed
+   slot array and scratch ranges allocated after cold layout. Target less than 2 KiB managed
+   allocation per measured browser frame.
+3. **Coalesced uploads.** Sort dirty fixed slices, merge adjacent byte ranges, and issue one write per
+   retained vertex/index/text arena rather than one write per changed picture/range. A normal glyph
+   row boundary should require at most four dynamic queue writes and no unchanged instance upload.
+4. **DataGrid row instance records.** Stop compiling shaped entering-row pictures into general draw
+   ranges. Keep fixed text-instance slices per recycled row, patch glyph IDs/positions/brush indices
+   only for entering data, and preserve the existing 35-draw chrome ordering. Target compile plus
+   patch below 0.200 ms at a 40-pixel step.
+5. **Inter tile fragments.** Replace half-viewport root invalidation with stable vertical tile
+   handles. Shape/layout remains lazy and reusable on CPU; the next tile is warmed in the bounded
+   worker ring and published into a fixed tile slot. Scrolling patches one transform and only a tile
+   entry changes at a boundary, removing the current 80/600 root-version misses without eager
+   page-wide shaping.
+6. **Preserved scroll surface.** Add an offscreen retained color target divided into damage tiles.
+   Transform-only scroll copies or reprojects preserved tiles and redraws only the newly exposed
+   strip plus overlays. This follows WebRender tile-cache retention and Vello's sparse-work
+   principle: GPU work scales with damage rather than 3.69 million physical pixels. Full redraw
+   remains the correctness fallback for effects, backdrop reads, non-translation transforms,
+   incompatible clips, or device loss.
+7. **Browser pacing qualification.** Timestamp the admission task, WASM host frame, command decode,
+   queue completion, and presentation boundaries separately. Compare main-thread and dispatcher
+   worker modes. Tune the maximum in-flight bound only from latency and completion evidence; add an
+   offscreen throughput diagnostic mode solely to distinguish raster cost from swapchain pacing,
+   never as the public scrolling result.
+
+The 1000-FPS gate remains unchanged: every measured frame must advance validated scroll content,
+remain within a two-frame queue, use the same physical target and quality policy, and complete on the
+GPU. If the named browser/swapchain cannot present a 2560 x 1440 frame every millisecond even after
+damage-preserved rendering, the report must state the hardware/browser ceiling and separately give
+the internal retained-update throughput; it must not lower quality or relabel submitted work as
+completed work.
+
 This checkpoint supersedes the earlier sandbox-blocked AOT notes below. Those notes remain as an
 audit trail for why browser evidence was previously absent; they are no longer the current state.
 
