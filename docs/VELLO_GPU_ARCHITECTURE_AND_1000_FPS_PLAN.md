@@ -1555,6 +1555,57 @@ The replacement Phase 4 implementation therefore has these non-negotiable bounda
    200 FPS minimum and quality comparisons remain exact. A slower result stays experimental and is
    not enabled by default.
 
+##### Reproducible `e5b4c61` to current AOT comparison
+
+The historical single-run checkpoints above were not sufficient to answer whether the work that
+started at `e5b4c61901db4c984202badd31b663b229f546c3` improved production rendering. Two clean source
+worktrees were therefore published in Release browser AOT mode: the exact `e5b4c61` tree and current
+`9d05035`. The baseline artifact received only a `/tmp` benchmark-host query-to-environment shim,
+because deterministic URL-query selection did not exist at that revision; no rendering, layout,
+font, scene, shader, or scheduling code was changed. Each artifact ran three times in headed
+Chromium at 2560 x 1440 physical pixels, DPI 2, VSync disabled, 120 warm-up frames, 600 measured
+frames, and a 40-logical-pixel alternating scroll step. Baseline did not yet record GPU completion,
+so wall FPS is the common cross-revision measure.
+
+| Page | `e5b4c61` wall FPS, median (range) | Current wall FPS, median (range) | Change | Compile median | Allocation median | Interpretation |
+|---|---:|---:|---:|---:|---:|---|
+| Data Virtualization | 225.39 (170.10-226.04) | 234.99 (196.33-235.72) | +4.3% | 3.0898 -> 2.0783 ms | 33,253 -> 25,306 B/frame | Retained-scene work improved, but one current repeat was 195.67 completed FPS, so the browser floor is not sustained. |
+| Font Glyph Browser | 209.37 (197.63-210.95) | 252.53 (239.16-260.48) | +20.6% | 2.7060 -> 0.1562 ms | 82,336 -> 30,049 B/frame | The strongest production gain: roughly 596/600 scene hits and no atlas evictions instead of zero hits and 16 evictions. |
+| Inter Typeface | 366.32 (344.21-450.82) | 332.59 (330.32-332.85) | -9.2% | 0.9631 -> 0.5243 ms | 17,538 -> 25,609 B/frame | Not equal work: current draws 62/1,048 vector/3,688 text vertices versus 20/436/848 at baseline, about 3.7x total vertices and 3.1x draw calls. Absolute throughput and allocation still regress and must be recovered. |
+
+Current GPU-completed medians were 234.21, 251.68, and about 331.49 FPS respectively. Queue depth
+reached three for Data Virtualization and four for Inter in sampled runs, exceeding the intended
+two-frame bound and requiring a scheduler/back-pressure correction. The controlled current glyph
+median also did not reproduce the earlier 302.43-FPS single checkpoint. That value remains a strict
+no-regression target, but acceptance evidence must now report at least three repeats, median,
+range, completed-frame rate, queue depth, and equivalent draw/vertex workload rather than selecting
+a best single run.
+
+The comparison establishes a narrower conclusion than the earlier plan language: production Atlas
+rendering gained from retained-scene reuse, virtualization, batching, and atlas residency. It does
+not establish that the attempted Wavefront/Vello-like renderer succeeded. The only browser-valid
+Wavefront trials remained at 160.78-172.89 completed FPS and were reverted. The replacement engine
+must therefore be judged as a new isolated pipeline, not credited with the Atlas gains above.
+
+##### Replacement analytic-fine checkpoint
+
+The first isolated replacement stage is now implemented in `GpuAnalyticTileRenderer` and
+`AnalyticTileFine.wgsl`. It consumes bounded painter-ordered tile commands and tile-local line
+segments, evaluates Vello-derived analytic area coverage for nonzero and even-odd fills, and blends
+premultiplied source-over color. A 4 x 16 workgroup renders one 16 x 16 tile with four pixels per
+invocation. Persistent geometric-growth buffers and bind groups remove per-dispatch resource churn;
+2D dispatch indexing supports more than 65,535 tiles without a shader barrier, atomics, BVH, or SDF
+fallback in the admitted path.
+
+The CPU oracle, ABI tests, fill-rule and painter-order tests, fractional sloped-edge coverage test,
+shader-source audit, and a native WebGPU full-pixel comparison pass with at most one byte of channel
+difference. This is deliberately not connected to `DrawingContext`, UI layout, or production routing
+yet. Browser-AOT shader creation, upstream exact path counting/allocation/tiling/backdrop, coarse
+PTCL production, overflow routing, and full quality/performance gates remain mandatory. Because the
+fine stage starts from transparent tile output, later integration must either provide the complete
+supported painter stream for the tile or composite an explicit offscreen result; unsupported
+interleaving must fall back for the whole affected ordering domain rather than reorder draws.
+
 This pivot follows the inspected Vello `path_count.wgsl`, `tile_alloc.wgsl`, `path_tiling.wgsl`,
 `backdrop.wgsl`, `coarse.wgsl`, and `fine.wgsl` stages rather than adapting only their names around
 the existing evaluator. The primary-source links are recorded below.
@@ -1565,14 +1616,14 @@ environment, but macOS application startup could not establish its GUI services 
 samples; the unobservable run was cancelled. This is not performance evidence and does not relax the
 same-binary desktop/browser measurement gate.
 
-Deliverables:
+Historical Wavefront deliverables (rejected as the production Phase 4 route):
 
 1. Stop recreating wavefront GPU buffers. Convert all geometry, line, instance, bin, and work queues to persistent arenas.
 2. Replace cell-centric `for each instance` binning with stable block/bin count-scan-scatter. **Implemented through the coverage-word route and the bounded GPU stable-radix overlap-pair route.**
 3. Remove the fixed 64-shape cell limit and add explicit capacity accounting.
-4. Replace full-screen per-pixel BVH traversal with tile work that visits only edge segments and solid interior spans. **Implemented with bounded shared edge commands, exact row backdrops, and correctness fallback.**
+4. Replace full-screen per-pixel BVH traversal with tile work that visits only edge segments and solid interior spans. **The earlier bounded shared-edge/SDF implementation was browser-invalid or too slow and is not an accepted implementation of this deliverable.**
 5. Add indirect setup stages so path count determines tile/segment/coarse work without CPU readback.
-6. Remove the full-window background copy when source-over rendering can target the destination directly. Keep explicit layer inputs only for blend modes that need destination reads. **Implemented for ordinary Wavefront source-over through sparse ping-pong compute plus indirect tile replacement.**
+6. Remove the full-window background copy when source-over rendering can target the destination directly. Keep explicit layer inputs only for blend modes that need destination reads. **The earlier sparse ping-pong Wavefront experiment is rejected; the replacement analytic pipeline has not reached production compositing.**
 7. Use adaptive curve flattening and retain flattened geometry until geometry or scale tolerance changes.
 8. Compare three representations per workload: existing coverage atlas, CPU sparse strips, and GPU tile pipeline.
 
