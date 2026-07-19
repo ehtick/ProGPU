@@ -1,7 +1,7 @@
 # Vello GPU Architecture Analysis and ProGPU 1000 FPS Scrolling Plan
 
-Status: accepted architecture; implementation in progress  
-Research date: 2026-07-18  
+Status: accepted architecture; implementation and AOT qualification in progress
+Research and measurement dates: 2026-07-18 through 2026-07-19
 ProGPU baseline revision analyzed: `06451e53e53d28fff946b2942dd24e5cc33210b9`
 Vello revision inspected: `8ecea46dc79bbb10315c101f9dbd0955c627dab8` (2026-07-16)
 
@@ -123,6 +123,78 @@ closed a false-success hole where an invalid vector shader produced approximatel
 capability is not yet sufficient evidence of usable timing on the current Metal adapter: a traced
 glyph run reported 601 failed timestamp readbacks and zero valid samples. Phase 0 therefore remains
 open for backend-specific timestamp qualification even though queue-completion accounting is valid.
+
+### Browser AOT measurement checkpoint (2026-07-19)
+
+The current branch was successfully published with managed WebAssembly AOT and served locally from
+the exact publish output. The browser benchmark is now selected through query parameters that are
+translated into the same environment-variable contract used by the desktop harness. This removes
+manual navigation timing from page selection and makes warmup, measured frame count, scroll delta,
+VSync, completion tracking, and vector-engine selection reproducible in a browser AOT run.
+
+Chromium on the measured machine advertises the WebGPU `timestamp-query` feature while the command
+encoder does not expose `writeTimestamp`. Requesting the advertised feature is therefore not enough.
+The browser host now qualifies both the adapter feature and the actual encoder method. Queue
+completion metrics remain enabled, while pass timestamps are explicitly reported as unsupported;
+the prior failure loop is gone and the measured origins produced no uncaptured WebGPU errors.
+
+All results below used a 2560 x 1440 physical Bgra8Unorm target, DPI 2, one sample, VSync disabled,
+120 warmup frames, 600 measured frames, a 40-logical-pixel deterministic scroll step, Atlas vector
+rendering, completion tracking, and a maximum queue depth of two.
+
+| Browser AOT page | GPU-completed FPS | Compile avg / p95 | Allocation/frame | Upload/frame | Cache behavior |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Data Virtualization | 238.21 | 2.685 / 3.600 ms | 27,499 B | 80,533 B | 0 hits; 18.57 fragment reuses and 1.43 updates/frame |
+| Font Glyph Browser | 223.97 | 2.155 / 4.400 ms | 68,435 B | 103,148 B | 236 hits; range-boundary misses dominate |
+| Inter Typeface | 470.27 | 0.463 / 3.400 ms | 26,221 B | 55,395 B | 520 hits |
+| Markdown | 464.00 | 0.206 / 0.100 ms | recorded in benchmark artifact | retained replay | 573 hits in the reference run |
+
+The single-font, single-line text layout fast path reuses one thread-local pool-backed shaping buffer
+and directly materializes the final retained glyph runs. It still invokes the same OpenType shaper,
+feature set, glyph IDs, advances, offsets, and fallback decision. On Data Virtualization it improved
+completed throughput from 233.00 to 238.21 FPS and reduced allocation from 33,784 to 27,499 bytes per
+frame. It does not solve the principal cost: compiling the roughly 1.43 entering rows still takes
+about 2.69 ms per frame.
+
+Transform-only control runs with a one-pixel scroll step isolate the mutation-boundary cost:
+
+| Page | 40 px step | 1 px transform-only step | Interpretation |
+| --- | ---: | ---: | --- |
+| Data Virtualization | 238 completed FPS | 552 completed FPS | row entry/rebind/compile is the dominant 40 px cost |
+| Font Glyph Browser | 224 completed FPS | 534 completed FPS | realized-range turnover dominates; atlas work is small |
+
+Even transform-only replay tops out near 530-550 completed FPS at this physical target. Therefore the
+1000 FPS target cannot be reached on this browser/GPU by control changes alone. The remaining path
+must reduce both presentation/fill cost and command replay: dirty-rectangle or preserved-tile
+scrolling, partial target updates where the swapchain permits them, fewer full-frame color writes,
+and retained bundle/indirect replay. The benchmark reports a minimum 14.75 MB color write per frame;
+1000 FPS would require at least 13.73 GiB/s of color writes before blending, overdraw, texture reads,
+or presentation copies.
+
+A larger hysteretic overscan experiment was measured and rejected. It reduced average DataGrid
+compile time to about 2.24 ms but left throughput flat at 233.88 FPS and worsened compile p95 to
+17.1 ms by batching the same 1.43 entering rows into larger bursts. Overscan is not a substitute for
+incremental row records and bounded patch uploads.
+
+Quality and interaction qualification on this AOT output found:
+
+- DXF initial zoom-to-fit is centered. Wheel zoom retained the selected world point under the
+  cursor, drag pan matched the pointer delta, and the fit command restored the original bounds.
+- Data Virtualization, Inter, Markdown, navigation icons, and ordinary text rendered sharply with no
+  browser errors in the sampled pages.
+- Font Glyph Browser is a correctness blocker: benchmark diagnostics report 28 realized cells and
+  28 emitted glyph commands, but the cell surface is visually empty and pointer hit testing reaches
+  the ItemsControl rather than a cell. Font parsing, metrics, the large glyph preview, and atlas
+  generation are working, so this is currently classified as retained virtualized-child
+  placement/hit-test replay, not missing glyph data. The 224 FPS number is retained for diagnosis
+  only and is not an acceptable performance success until every realized cell is visible.
+- The local DXF picker reaches the browser file-input path, but the in-app browser automation surface
+  does not support assigning a file to a chooser. Source and focused tests verify cancellation-safe
+  direct byte transfer into the WASM filesystem; an interactive Chrome/native chooser run remains a
+  separate platform qualification gate.
+
+This checkpoint supersedes the earlier sandbox-blocked AOT notes below. Those notes remain as an
+audit trail for why browser evidence was previously absent; they are no longer the current state.
 
 ### Working-tree checkpoint: non-blocking per-pass GPU timestamps
 
