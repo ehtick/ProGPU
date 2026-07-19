@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Generic;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Microsoft.UI.Xaml;
@@ -811,6 +812,30 @@ public sealed class SamplePerformanceRegressionTests
 
         Assert.True(visual.ChangeVersion > visualVersion);
         Assert.True(root.ChangeVersion > rootVersion);
+    }
+
+    [Fact]
+    public void SampleAnimationRegistryUpdatesOnlyCollectedAnimatedElements()
+    {
+        var first = new ProGPU.Samples.MotionMarkShowcaseVisual();
+        var second = new ProGPU.Samples.MotionMarkShowcaseVisual();
+        var root = new Grid();
+        var nested = new Border { Child = first };
+        root.AddChild(nested);
+        root.AddChild(new Border());
+        root.AddChild(second);
+        root.Measure(new Vector2(900f, 620f));
+        root.Arrange(new Rect(0f, 0f, 900f, 620f));
+        var animations = new List<ProGPU.Samples.IAnimatedElement>();
+
+        ProGPU.Samples.VisualExtensions.CollectSampleAnimations(root, animations);
+
+        Assert.Equal(2, animations.Count);
+        long firstVersion = first.ChangeVersion;
+        long secondVersion = second.ChangeVersion;
+        ProGPU.Samples.VisualExtensions.UpdateSampleAnimations(animations, 1f / 60f);
+        Assert.True(first.ChangeVersion > firstVersion);
+        Assert.True(second.ChangeVersion > secondVersion);
     }
 
     [Fact]

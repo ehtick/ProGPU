@@ -1163,6 +1163,18 @@ Implementation checkpoint (2026-07-18): the first sample-level mutation cleanup 
   circular animation reuses bounded per-glyph index records and the same zero-position array.
   Source regressions audit these `OnRender` methods so brush, gradient, path, timing and glyph lookup
   allocations cannot silently return.
+- Core frame animation now maintains a subtree activity count. A static root returns from
+  `UpdateAnimations` in O(1), while an active frame visits only ancestor paths and children whose
+  subtrees contain composition or control-owned animation. Counts follow reparenting, and replacing
+  an animation on an already-active visual does not double-count it. `ProgressBar` uses the same
+  contract: indeterminate state advances by elapsed time and invalidates before compilation, while
+  `OnRender` is side-effect free.
+- Sample-only `IAnimatedElement` discovery is performed once when the active navigation page changes.
+  The host then updates a flat retained list rather than recursively walking the entire navigation,
+  page, and control tree every frame. This removes an O(N) host cost from every static page and makes
+  an animated page's sample callback work O(A), where A is its registered animated-element count.
+  Behavioral and source regressions protect count propagation, flat-list discovery, and the absence
+  of render-time animation mutation.
 
 The Release sample project compiles with zero warnings after this slice. Sustained completed-GPU
 measurements remain pending because the managed environment cannot launch a WebGPU browser or bind a
@@ -1247,6 +1259,13 @@ progress before cancellation; build servers were shut down. A desktop Wavefront 
 also attempted with the new explicit engine selector, but the sandbox could not connect to macOS
 LaunchServices/GUI services and produced no benchmark record. These are validation gaps: neither an
 AOT success nor a throughput result is inferred from them.
+
+The stable GPU-radix checkpoint repeated a clean Release AOT publish into an isolated `/tmp` output
+with shared compilation, MSBuild server reuse, and node reuse disabled. It again completed every
+managed dependency through `ProGPU.Samples`, then emitted no ILLink/AOT progress for a further bounded
+window and was cancelled. The same shader module did compile and execute through native WebGPU in the
+16,384-pair painter-order regression, but browser AOT publication and browser runtime performance
+remain unqualified; native success is not substituted for that gate.
 
 Deliverables:
 

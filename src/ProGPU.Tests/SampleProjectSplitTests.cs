@@ -273,6 +273,24 @@ public sealed class SampleProjectSplitTests
         Assert.Contains("_slidingCard.Transform", keyframes, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void FrameUpdatesAvoidWholeTreeSampleWalksAndRenderTimeAnimationMutation()
+    {
+        var controller = Read("src", "ProGPU.Samples", "Windows", "MainWindowController.cs");
+        var progressSource = Read("src", "ProGPU.WinUI", "Controls", "ProgressBar.cs");
+        var progressRender = ExtractMethodBody(progressSource, "public override void OnRender");
+        var progressUpdate = ExtractMethodBody(progressSource, "protected override void OnUpdateAnimation");
+
+        Assert.Contains("ActiveSampleAnimations.UpdateSampleAnimations", controller, StringComparison.Ordinal);
+        Assert.Contains("CollectSampleAnimations(ActiveSampleAnimations)", controller, StringComparison.Ordinal);
+        Assert.DoesNotContain("AppState._rootGrid?.UpdateSampleAnimations", controller, StringComparison.Ordinal);
+        Assert.Contains("SetCustomFrameAnimationActive(value)", progressSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("Invalidate();", progressRender, StringComparison.Ordinal);
+        Assert.DoesNotContain("_indeterminateOffset +=", progressRender, StringComparison.Ordinal);
+        Assert.Contains("_indeterminateOffset =", progressUpdate, StringComparison.Ordinal);
+        Assert.Contains("Invalidate();", progressUpdate, StringComparison.Ordinal);
+    }
+
     private static FrameworkElement? FindByName(FrameworkElement element, string name)
     {
         if (element.Name == name) return element;

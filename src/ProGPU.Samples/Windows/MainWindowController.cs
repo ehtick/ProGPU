@@ -1,5 +1,6 @@
 using Thickness = Microsoft.UI.Xaml.Thickness;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Numerics;
 using Silk.NET.Windowing;
@@ -28,6 +29,8 @@ namespace ProGPU.Samples;
 
 public static unsafe class MainWindowController
 {
+    private static readonly List<IAnimatedElement> ActiveSampleAnimations = new();
+
     public static void Start(Window window)
     {
         SamplePerformanceBenchmark.AttachWindow(window);
@@ -104,6 +107,7 @@ public static unsafe class MainWindowController
         if (AppState._wgpuContext == null || AppState._font == null) return;
 
         DetachSceneGraphHandlers();
+        ActiveSampleAnimations.Clear();
 
         // 1. Root Grid containing Header + Main Body + Bottom Diagnostics Bar
         AppState._rootGrid = new Microsoft.UI.Xaml.Controls.Grid
@@ -365,6 +369,7 @@ public static unsafe class MainWindowController
             {
                 LolsPage.ResetAndStop();
             }
+            RefreshSampleAnimations();
             AppState._rootGrid?.Invalidate();
         };
 
@@ -547,7 +552,7 @@ public static unsafe class MainWindowController
     {
         long updateStart = Stopwatch.GetTimestamp();
         UIThread.RunPending();
-        AppState._rootGrid?.UpdateSampleAnimations((float)delta);
+        ActiveSampleAnimations.UpdateSampleAnimations((float)delta);
 
         if (AppState._animateGear && IsGearPageActive())
         {
@@ -569,6 +574,12 @@ public static unsafe class MainWindowController
         }
 
         SamplePerformanceBenchmark.RecordHostUpdate(Stopwatch.GetElapsedTime(updateStart));
+    }
+
+    private static void RefreshSampleAnimations()
+    {
+        ActiveSampleAnimations.Clear();
+        AppState._navigationView?.Content?.CollectSampleAnimations(ActiveSampleAnimations);
     }
 
     private static bool IsGearPageActive()

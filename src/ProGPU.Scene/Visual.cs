@@ -35,6 +35,8 @@ public class Visual
     private Vector3 _centerPoint = Vector3.Zero;
     private Vector2 _renderTransformOrigin = new Vector2(0.5f, 0.5f);
     private readonly Dictionary<string, CompositionAnimation> _activeAnimations = new(StringComparer.OrdinalIgnoreCase);
+    private int _animationSubtreeCount;
+    private bool _customFrameAnimationActive;
     private Rect? _clipBounds;
     private Rect? _outerClipBounds;
     private PathGeometry? _geometryClip;
@@ -69,7 +71,9 @@ public class Visual
             if (_parent != value)
             {
                 var oldParent = _parent;
+                oldParent?.AdjustAnimationSubtreeCount(-_animationSubtreeCount);
                 _parent = value;
+                _parent?.AdjustAnimationSubtreeCount(_animationSubtreeCount);
                 OnParentChanged(oldParent, _parent);
             }
         }
@@ -501,30 +505,100 @@ public class Visual
 
     public void StartAnimation(string propertyName, CompositionAnimation animation)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(propertyName);
+        ArgumentNullException.ThrowIfNull(animation);
+        bool wasActive = HasLocalFrameAnimation;
         _activeAnimations[propertyName] = animation;
+        if (!wasActive && HasLocalFrameAnimation)
+        {
+            AdjustAnimationSubtreeCount(1);
+        }
         Invalidate();
     }
 
     public void StopAnimation(string propertyName)
     {
+        bool wasActive = HasLocalFrameAnimation;
         if (_activeAnimations.Remove(propertyName))
         {
+            if (wasActive && !HasLocalFrameAnimation)
+            {
+                AdjustAnimationSubtreeCount(-1);
+            }
             Invalidate();
         }
     }
 
     public void UpdateAnimations(float elapsedSeconds)
     {
+        if (_animationSubtreeCount == 0)
+        {
+            return;
+        }
+
         TickAnimations(elapsedSeconds);
+        if (_customFrameAnimationActive)
+        {
+            OnUpdateAnimation(elapsedSeconds);
+        }
 
         if (this is ContainerVisual container)
         {
             var children = container.Children;
             for (int i = 0; i < children.Count; i++)
             {
-                children[i].UpdateAnimations(elapsedSeconds);
+                if (children[i]._animationSubtreeCount != 0)
+                {
+                    children[i].UpdateAnimations(elapsedSeconds);
+                }
             }
         }
+    }
+
+    /// <summary>
+    /// Enables a control-owned frame animation without forcing static visual trees to be traversed.
+    /// State must be advanced and invalidated here, before layout and compositor compilation.
+    /// </summary>
+    protected void SetCustomFrameAnimationActive(bool active)
+    {
+        if (_customFrameAnimationActive == active)
+        {
+            return;
+        }
+
+        bool wasActive = HasLocalFrameAnimation;
+        _customFrameAnimationActive = active;
+        if (wasActive != HasLocalFrameAnimation)
+        {
+            AdjustAnimationSubtreeCount(active ? 1 : -1);
+        }
+    }
+
+    protected virtual void OnUpdateAnimation(float elapsedSeconds)
+    {
+    }
+
+    /// <summary>
+    /// Gets the number of visuals with frame animation state in this subtree.
+    /// Exposed to derived controls for diagnostics without making the counter public API.
+    /// </summary>
+    protected int AnimationSubtreeCount => _animationSubtreeCount;
+
+    private bool HasLocalFrameAnimation => _customFrameAnimationActive || _activeAnimations.Count != 0;
+
+    private void AdjustAnimationSubtreeCount(int delta)
+    {
+        if (delta == 0)
+        {
+            return;
+        }
+
+        _animationSubtreeCount = checked(_animationSubtreeCount + delta);
+        if (_animationSubtreeCount < 0)
+        {
+            throw new InvalidOperationException("Visual animation subtree accounting became negative.");
+        }
+        Parent?.AdjustAnimationSubtreeCount(delta);
     }
 
     public void TickAnimations(float elapsedSeconds)

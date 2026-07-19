@@ -10,6 +10,25 @@ namespace ProGPU.Tests;
 
 public sealed class VisualChangeVersionTests
 {
+    private sealed class CustomAnimatedVisual : Visual
+    {
+        public int UpdateCount { get; private set; }
+
+        public int ActiveAnimationCount => AnimationSubtreeCount;
+
+        public void SetActive(bool active) => SetCustomFrameAnimationActive(active);
+
+        protected override void OnUpdateAnimation(float elapsedSeconds)
+        {
+            UpdateCount++;
+        }
+    }
+
+    private sealed class AnimationContainerVisual : ContainerVisual
+    {
+        public int ActiveAnimationCount => AnimationSubtreeCount;
+    }
+
     [Fact]
     public void PropertyChangeIncrementsChangeVersionEvenWhenAlreadyDirty()
     {
@@ -248,6 +267,41 @@ public sealed class VisualChangeVersionTests
 
         Assert.True(addVersion > initialVersion);
         Assert.True(parent.ChangeVersion > addVersion);
+    }
+
+    [Fact]
+    public void AnimationTraversalSkipsInactiveBranchesAndTracksReparenting()
+    {
+        var root = new AnimationContainerVisual();
+        var activeBranch = new AnimationContainerVisual();
+        var inactiveBranch = new AnimationContainerVisual();
+        var animated = new CustomAnimatedVisual();
+        root.AddChild(activeBranch);
+        root.AddChild(inactiveBranch);
+        activeBranch.AddChild(animated);
+
+        animated.SetActive(true);
+
+        Assert.Equal(1, animated.ActiveAnimationCount);
+        Assert.Equal(1, activeBranch.ActiveAnimationCount);
+        Assert.Equal(0, inactiveBranch.ActiveAnimationCount);
+        Assert.Equal(1, root.ActiveAnimationCount);
+
+        root.UpdateAnimations(1f / 60f);
+        Assert.Equal(1, animated.UpdateCount);
+
+        inactiveBranch.AddChild(animated);
+        Assert.Equal(0, activeBranch.ActiveAnimationCount);
+        Assert.Equal(1, inactiveBranch.ActiveAnimationCount);
+        Assert.Equal(1, root.ActiveAnimationCount);
+
+        root.UpdateAnimations(1f / 60f);
+        Assert.Equal(2, animated.UpdateCount);
+
+        animated.SetActive(false);
+        Assert.Equal(0, animated.ActiveAnimationCount);
+        Assert.Equal(0, inactiveBranch.ActiveAnimationCount);
+        Assert.Equal(0, root.ActiveAnimationCount);
     }
 
     [Fact]
