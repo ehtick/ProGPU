@@ -60,6 +60,17 @@ public class ShaderResourceTests
         Assert.Contains("fn build_grid_cells_from_pairs(", source, StringComparison.Ordinal);
         Assert.Contains("minimum_device_scale(transform)", source, StringComparison.Ordinal);
         Assert.Contains("cell_shape_classes[pair_idx]", source, StringComparison.Ordinal);
+        Assert.Contains("const EDGE_COMMAND_LINE_CAPACITY = 256u", source, StringComparison.Ordinal);
+        Assert.Contains("fn build_edge_command(", source, StringComparison.Ordinal);
+        Assert.Contains("fn evaluate_edge_command(", source, StringComparison.Ordinal);
+        Assert.Contains("edge_command_row_backdrops[row]", source, StringComparison.Ordinal);
+        Assert.Contains("if (edge_command_overflow == 0u)", source, StringComparison.Ordinal);
+        Assert.Contains("evaluation = evaluate_shape(local_pos, instance.bvh_root_idx)", source, StringComparison.Ordinal);
+        Assert.Contains("let pixel_visible =", source, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "if (pixel_coord.x >= uniforms.screenWidth || pixel_coord.y >= uniforms.screenHeight)",
+            source,
+            StringComparison.Ordinal);
         Assert.DoesNotContain(
             "let cell_idx = (pixel_coord.y / 16u)",
             source,

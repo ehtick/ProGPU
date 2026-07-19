@@ -1,6 +1,6 @@
-// Algorithm: Retain flattened vector curves and transform-indexed shape instances, patch stable spatial transforms independently, consume deterministic GPU coverage-bitmaps, GPU-emitted overlap pairs grouped by four stable 8-bit radix passes, or compact stable CPU sparse bins, conservatively classify solid/outside cell-shape pairs, and indirectly dispatch only active 16x16 cells to a sparse output texture.
-// Time complexity: O(dC*S) for newly appended curves (O(C*S) only after an arena grow replay), O(dT) CPU upload for changed retained transforms, O(O + G*ceil(I/32) + G + O*log L) for bitmap binning, O(I + O + 4*(O*256 + H)) for the portable stable-radix pair route with H=256*ceil(O/256) histogram counters, or O(O*log L) after compact CPU bins are uploaded, plus O(Pa*Ke*log L + Pa*Ks) for the fine path; fixed 256-way local rank preserves painter order without subgroup requirements.
-// Space complexity: O(C*S + I + T + min(G*ceil(I/32), B) + A + O + H + G + W*Hpx), where A is active cells, B is the admitted bitmap-word cap, H is radix histogram storage, and W*Hpx is one sparse ping-pong texture; the radix route is capped at 2,097,152 pairs, there is no fixed per-cell overlap cap, and no full-window texture copy.
+// Algorithm: Retain flattened vector curves and transform-indexed shape instances, patch stable spatial transforms independently, consume deterministic GPU coverage-bitmaps, GPU-emitted overlap pairs grouped by four stable 8-bit radix passes, or compact stable CPU sparse bins, conservatively classify solid/outside cell-shape pairs, build one bounded tile-local edge command plus 16 exact row backdrops per edge pair in workgroup memory, and indirectly dispatch only active 16x16 cells to a sparse output texture.
+// Time complexity: O(dC*S) for newly appended curves (O(C*S) only after an arena grow replay), O(dT) CPU upload for changed retained transforms, O(O + G*ceil(I/32) + G + O*log L) for bitmap binning, O(I + O + 4*(O*256 + H)) for the portable stable-radix pair route with H=256*ceil(O/256) histogram counters, or O(O*log L) after compact CPU bins are uploaded, plus O(Ke*L + Pa*Ke*min(Lt,256)) for ordinary coarse/fine work and O(Pa*Ke*log L) only for overflowing commands; fixed 256-way local rank preserves painter order without subgroup requirements.
+// Space complexity: O(C*S + I + T + min(G*ceil(I/32), B) + A + O + H + G + W*Hpx) device storage plus 3,144 bytes of fixed module workgroup storage (1,096 bytes for edge commands), where A is active cells, B is the admitted bitmap-word cap, H is radix histogram storage, Lt is the tile-local line count, and W*Hpx is one sparse ping-pong texture; edge commands cap at 256 local line indices and fall back without dropping coverage, the radix route is capped at 2,097,152 pairs, and there is no full-window texture copy.
 struct BvhNode {
     min_bounds: vec2<f32>,
     max_bounds: vec2<f32>,
@@ -121,6 +121,16 @@ struct RadixParams {
 
 var<workgroup> radix_workgroup_histogram: array<atomic<u32>, 256>;
 var<workgroup> radix_workgroup_digits: array<u32, 256>;
+// Fine rasterization has one 16x16 workgroup per active cell. Lane zero builds this Vello-style
+// tile command once for each painter-ordered edge pair. Sixteen row backdrops retain exact winding
+// contributions from lines wholly to the right; the local list contains only lines that can affect
+// winding or half-pixel signed-distance coverage inside the tile. Commands exceeding the fixed
+// line capacity set overflow and use the existing per-pixel BVH evaluator for that pair.
+const EDGE_COMMAND_LINE_CAPACITY = 256u;
+var<workgroup> edge_command_line_count: u32;
+var<workgroup> edge_command_overflow: u32;
+var<workgroup> edge_command_line_indices: array<u32, 256>;
+var<workgroup> edge_command_row_backdrops: array<i32, 16>;
 
 
 fn evaluate_curve(curve: BezierCurve, t: f32) -> vec2<f32> {
@@ -220,6 +230,22 @@ fn check_line_intersection(pixel_pos: vec2<f32>, line: LineSegment) -> i32 {
     return 0;
 }
 
+fn transformed_device_line(line: LineSegment, transform: mat4x4<f32>) -> LineSegment {
+    return LineSegment(
+        (transform * vec4<f32>(line.start, 0.0, 1.0)).xy * uniforms.dpiScale,
+        (transform * vec4<f32>(line.end, 0.0, 1.0)).xy * uniforms.dpiScale);
+}
+
+fn line_distance(point: vec2<f32>, line: LineSegment) -> f32 {
+    let ab = line.end - line.start;
+    let length_squared = dot(ab, ab);
+    if (length_squared <= 1e-12) {
+        return distance(point, line.start);
+    }
+    let t = clamp(dot(point - line.start, ab) / length_squared, 0.0, 1.0);
+    return distance(point, line.start + t * ab);
+}
+
 struct ShapeEvaluation {
     winding: i32,
     min_distance: f32,
@@ -286,6 +312,88 @@ fn instance_transform(inst: ShapeInstance) -> mat4x4<f32> {
 
 fn instance_inverse_transform(inst: ShapeInstance) -> mat4x4<f32> {
     return inst.inv_transform * shape_transforms[inst.transform_index].inv_transform;
+}
+
+fn build_edge_command(
+    root_node: u32,
+    transform: mat4x4<f32>,
+    cell_origin: vec2<f32>,
+    cell_size: vec2<f32>) {
+    edge_command_line_count = 0u;
+    edge_command_overflow = 0u;
+    for (var row = 0u; row < 16u; row = row + 1u) {
+        edge_command_row_backdrops[row] = 0;
+    }
+
+    let cell_end = cell_origin + cell_size;
+    var stack: array<u32, 16>;
+    var stack_ptr = 0u;
+    var current_node = root_node;
+    while (true) {
+        let node = bvh_nodes[current_node];
+        if (node.primitive_count > 0u) {
+            let end_line = node.left_child_or_first_line + node.primitive_count;
+            for (var line_idx = node.left_child_or_first_line; line_idx < end_line; line_idx = line_idx + 1u) {
+                let device_line = transformed_device_line(output_lines[line_idx], transform);
+                let line_min = min(device_line.start, device_line.end);
+                let line_max = max(device_line.start, device_line.end);
+
+                // Pixel centers span [origin + 0.5, end - 0.5]. Half-pixel AA support therefore
+                // expands that domain exactly to the closed cell bounds used here.
+                if (line_max.y < cell_origin.y || line_min.y > cell_end.y || line_max.x < cell_origin.x) {
+                    continue;
+                }
+
+                if (line_min.x > cell_end.x) {
+                    // This line is to the right of every pixel in the tile. Preserve its exact
+                    // center-sample winding contribution per row instead of putting it in the
+                    // local edge list.
+                    for (var row = 0u; row < 16u; row = row + 1u) {
+                        if (f32(row) < cell_size.y) {
+                            let row_point = vec2<f32>(cell_end.x, cell_origin.y + f32(row) + 0.5);
+                            edge_command_row_backdrops[row] += check_line_intersection(row_point, device_line);
+                        }
+                    }
+                } else if (edge_command_line_count < EDGE_COMMAND_LINE_CAPACITY) {
+                    edge_command_line_indices[edge_command_line_count] = line_idx;
+                    edge_command_line_count = edge_command_line_count + 1u;
+                } else {
+                    edge_command_overflow = 1u;
+                }
+            }
+        } else {
+            if (stack_ptr >= 16u) {
+                edge_command_overflow = 1u;
+                break;
+            }
+            stack[stack_ptr] = node.right_child;
+            stack_ptr = stack_ptr + 1u;
+            current_node = node.left_child_or_first_line;
+            continue;
+        }
+
+        if (stack_ptr == 0u) {
+            break;
+        }
+        stack_ptr = stack_ptr - 1u;
+        current_node = stack[stack_ptr];
+    }
+}
+
+fn evaluate_edge_command(
+    device_pos: vec2<f32>,
+    row: u32,
+    transform: mat4x4<f32>) -> ShapeEvaluation {
+    var winding = edge_command_row_backdrops[row];
+    var min_dist = 99999.0;
+    for (var command_idx = 0u; command_idx < edge_command_line_count; command_idx = command_idx + 1u) {
+        let line = transformed_device_line(
+            output_lines[edge_command_line_indices[command_idx]],
+            transform);
+        winding += check_line_intersection(device_pos, line);
+        min_dist = min(min_dist, line_distance(device_pos, line));
+    }
+    return ShapeEvaluation(winding, min_dist);
 }
 
 fn active_grid_cell(active_idx: u32, cell_idx: u32) -> GridCell {
@@ -650,14 +758,19 @@ fn wavefront_render(
     let cell_idx = active_cell_indices[active_idx];
     let cell_coord = vec2<u32>(cell_idx % uniforms.gridStride, cell_idx / uniforms.gridStride);
     let pixel_coord = cell_coord * 16u + local_id.xy;
-    if (pixel_coord.x >= uniforms.screenWidth || pixel_coord.y >= uniforms.screenHeight) {
-        return;
+    let pixel_visible = pixel_coord.x < uniforms.screenWidth && pixel_coord.y < uniforms.screenHeight;
+    var current_color = vec4<f32>(0.0);
+    if (pixel_visible) {
+        current_color = textureLoad(screen_texture, vec2<i32>(pixel_coord), 0);
     }
-
-    var current_color = textureLoad(screen_texture, vec2<i32>(pixel_coord), 0);
 
     let cell = active_grid_cell(active_idx, cell_idx);
     let logical_pos = (vec2<f32>(pixel_coord) + vec2<f32>(0.5)) / uniforms.dpiScale;
+    let device_pos = vec2<f32>(pixel_coord) + vec2<f32>(0.5);
+    let cell_origin = vec2<f32>(cell_coord * 16u);
+    let screen_size = vec2<f32>(f32(uniforms.screenWidth), f32(uniforms.screenHeight));
+    let cell_size = min(vec2<f32>(16.0), screen_size - cell_origin);
+    let lane_index = local_id.y * 16u + local_id.x;
 
     for (var i = 0u; i < cell.shape_count; i = i + 1u) {
         let pair_idx = cell.shape_start_offset + i;
@@ -667,28 +780,44 @@ fn wavefront_render(
         }
         let instance_idx = cell_shape_indices[pair_idx];
         let instance = shape_instances[instance_idx];
-        let inverse_transform = instance_inverse_transform(instance);
         let transform = instance_transform(instance);
 
-        let local_pos_3d = inverse_transform * vec4<f32>(logical_pos, 0.0, 1.0);
-        let local_pos = local_pos_3d.xy;
-
-        if (cell_class == 2u || point_in_aabb(local_pos, instance.min_bounds, instance.max_bounds)) {
-            var coverage = 1.0;
-            if (cell_class == 0u) {
-                let evaluation = evaluate_shape(local_pos, instance.bvh_root_idx);
-                var sd = evaluation.min_distance;
-                if (evaluation.winding != 0) {
-                    sd = -evaluation.min_distance;
-                }
-
-                let scale_factor = length(transform[0].xy);
-                let screen_dist = sd * scale_factor;
-                let physical_dist = screen_dist * uniforms.dpiScale;
-
-                let adjusted_dist = physical_dist - uniforms.fontWeightOffset;
-                coverage = 1.0 - smoothstep(-0.5, 0.5, adjusted_dist);
+        if (cell_class == 2u) {
+            if (pixel_visible) {
+                let linear_text = pow(instance.color.rgb, vec3<f32>(2.2));
+                let srgb_output = pow(linear_text, vec3<f32>(1.0 / 2.2));
+                let blended_alpha = current_color.a + (1.0 - current_color.a);
+                current_color = vec4<f32>(srgb_output, blended_alpha);
             }
+            continue;
+        }
+
+        // Every lane reaches both barriers for an uncertain edge pair, including lanes outside a
+        // partial edge tile. Solid/outside commands never enter this branch, so their established
+        // constant paths do not pay workgroup synchronization cost.
+        if (lane_index == 0u) {
+            build_edge_command(instance.bvh_root_idx, transform, cell_origin, cell_size);
+        }
+        workgroupBarrier();
+
+        if (pixel_visible) {
+            let inverse_transform = instance_inverse_transform(instance);
+            let local_pos_3d = inverse_transform * vec4<f32>(logical_pos, 0.0, 1.0);
+            let local_pos = local_pos_3d.xy;
+
+            var evaluation: ShapeEvaluation;
+            if (edge_command_overflow == 0u) {
+                evaluation = evaluate_edge_command(device_pos, local_id.y, transform);
+            } else {
+                evaluation = evaluate_shape(local_pos, instance.bvh_root_idx);
+                evaluation.min_distance *= length(transform[0].xy) * uniforms.dpiScale;
+            }
+            var sd = evaluation.min_distance;
+            if (evaluation.winding != 0) {
+                sd = -evaluation.min_distance;
+            }
+            let adjusted_dist = sd - uniforms.fontWeightOffset;
+            let coverage = 1.0 - smoothstep(-0.5, 0.5, adjusted_dist);
 
             if (coverage > 0.0) {
                 let text_color = instance.color;
@@ -704,7 +833,10 @@ fn wavefront_render(
                 current_color = vec4<f32>(srgb_output, blended_alpha);
             }
         }
+        workgroupBarrier();
     }
 
-    textureStore(screen_texture_write, vec2<i32>(pixel_coord), current_color);
+    if (pixel_visible) {
+        textureStore(screen_texture_write, vec2<i32>(pixel_coord), current_color);
+    }
 }

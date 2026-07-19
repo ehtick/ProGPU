@@ -934,7 +934,7 @@ are implemented and CPU-qualified.
   or texture generation changes. Native pipeline creation, encoded compute plus indirect render,
   1x/2x path pixels, and Wavefront glyph pixels pass on the available headless WebGPU adapter.
 
-The retained bitmap uses `G * ceil(I / 32)` 32-bit words. It is a correctness-first portable implementation of Vello's stable coverage-bitmap concept, not the final memory layout. Large sparse dynamic scenes now have the stable radix-grouped overlap-pair route described below, selected by bounded occupancy and pair-count gates. Active-cell compaction eliminates empty-tile fine work, coarse classification removes solid/outside BVH walks, and sparse indirect replacement removes the previous full-target copy. Edge pixels still traverse candidate BVHs, so a Vello-style edge/backdrop coarse command remains required before this can become the default.
+The retained bitmap uses `G * ceil(I / 32)` 32-bit words. It is a correctness-first portable implementation of Vello's stable coverage-bitmap concept, not the final memory layout. Large sparse dynamic scenes now have the stable radix-grouped overlap-pair route described below, selected by bounded occupancy and pair-count gates. Active-cell compaction eliminates empty-tile fine work, coarse classification removes solid/outside BVH walks, sparse indirect replacement removes the previous full-target copy, and the workgroup-local edge/backdrop command described below removes ordinary per-pixel BVH traversal. Backend calibration and the remaining clip/layer feature surface—not the old full-screen algorithm—now gate default routing.
 
 The first bounded admission route is now implemented rather than allowing that bitmap to grow
 without limit:
@@ -988,17 +988,49 @@ The next Phase 4C checkpoint also implements the bounded all-GPU overlap-pair ro
   bin-upload bytes.
 
 The CPU still performs the exact `O(I)` transformed-bounds preflight used for capacity rejection; it
-does not construct or upload bins on the GPU-radix route. Remaining Phase 4 work is Vello-style
-edge-segment/backdrop coarse commands so edge pixels no longer traverse candidate BVHs. The router
-must also be calibrated from sustained desktop and browser AOT timestamps before Wavefront can become
-the default.
+does not construct or upload bins on the GPU-radix route.
+
+The Vello-style edge/backdrop checkpoint is also implemented:
+
+- One lane in each 16 x 16 fine workgroup walks an uncertain cell/shape pair once and constructs a
+  shared command containing at most 256 tile-local flattened-line indices. All 256 pixel lanes reuse
+  that command, replacing the former 256 independent BVH traversals with one coarse traversal plus
+  direct line evaluation. Solid and outside classifications keep their constant paths.
+- Lines wholly to the right of the cell are not copied into the local command. Their exact half-open
+  winding contribution is retained as 16 signed row backdrops evaluated at pixel-center Y positions.
+  Lines left of the cell or outside its half-pixel AA support are discarded. This adapts Vello's
+  tile segments plus backdrop prefix to ProGPU's signed-distance coverage rather than copying Vello's
+  multisample fine rasterizer.
+- Workgroup storage is fixed: 256 indices, 16 32-bit backdrops, and two state words (1,096 bytes).
+  A command whose local list or BVH stack exceeds the bound sets an overflow flag and runs the prior
+  per-pixel evaluator for that painter pair. No line, winding contribution, or coverage is dropped,
+  and no unbounded per-frame command buffer is allocated.
+- Partial framebuffer-edge cells no longer return lanes before a workgroup barrier. Every lane
+  participates in command construction and lifetime barriers, while texture access remains guarded
+  by physical framebuffer bounds.
+- The direct command computes distances after affine transformation in physical device pixels. It
+  therefore preserves the existing half-pixel smoothstep and font-weight offset while avoiding the
+  prior ordinary-path approximation based only on the transformed X-basis length. The overflow path
+  intentionally retains the old equation for pixel compatibility.
+- Native WebGPU pipeline compilation, encoded Wavefront execution, the 16,384-pair stable-radix
+  painter test, ordinary path/text checks, and a new subpixel rectangle regression pass on the
+  available Metal adapter. The rectangle crosses three cells: its left edge uses a tile-local segment,
+  its fill in the first cell depends entirely on the right-edge row backdrop, and both fractional
+  edges remain antialiased. A separate 300-segment single-cell polygon exceeds the 256-line command
+  capacity and proves the BVH fallback retains full center coverage.
+
+The router must still be calibrated from sustained desktop and browser AOT timestamps before
+Wavefront can become the default. A Release desktop benchmark binary built successfully in this
+environment, but macOS application startup could not establish its GUI services and emitted no frame
+samples; the unobservable run was cancelled. This is not performance evidence and does not relax the
+same-binary desktop/browser measurement gate.
 
 Deliverables:
 
 1. Stop recreating wavefront GPU buffers. Convert all geometry, line, instance, bin, and work queues to persistent arenas.
 2. Replace cell-centric `for each instance` binning with stable block/bin count-scan-scatter. **Implemented through the coverage-word route and the bounded GPU stable-radix overlap-pair route.**
 3. Remove the fixed 64-shape cell limit and add explicit capacity accounting.
-4. Replace full-screen per-pixel BVH traversal with tile work that visits only edge segments and solid interior spans.
+4. Replace full-screen per-pixel BVH traversal with tile work that visits only edge segments and solid interior spans. **Implemented with bounded shared edge commands, exact row backdrops, and correctness fallback.**
 5. Add indirect setup stages so path count determines tile/segment/coarse work without CPU readback.
 6. Remove the full-window background copy when source-over rendering can target the destination directly. Keep explicit layer inputs only for blend modes that need destination reads. **Implemented for ordinary Wavefront source-over through sparse ping-pong compute plus indirect tile replacement.**
 7. Use adaptive curve flattening and retain flattened geometry until geometry or scale tolerance changes.
@@ -1417,6 +1449,9 @@ Primary source snapshot:
 - [Path tiling shader](https://github.com/linebender/vello/blob/8ecea46dc79bbb10315c101f9dbd0955c627dab8/vello_shaders/shader/path_tiling.wgsl)
 - [Coarse shader](https://github.com/linebender/vello/blob/8ecea46dc79bbb10315c101f9dbd0955c627dab8/vello_shaders/shader/coarse.wgsl)
 - [Fine compute rasterizer](https://github.com/linebender/vello/blob/8ecea46dc79bbb10315c101f9dbd0955c627dab8/vello_shaders/shader/fine.wgsl)
+- [Current Vello row-backdrop prefix shader](https://github.com/linebender/vello/blob/main/vello_shaders/shader/backdrop.wgsl)
+- [Current Vello coarse command shader](https://github.com/linebender/vello/blob/main/vello_shaders/shader/coarse.wgsl)
+- [Current Vello fine tile rasterizer](https://github.com/linebender/vello/blob/main/vello_shaders/shader/fine.wgsl)
 - [Sparse-strip project status and design](https://github.com/linebender/vello/blob/8ecea46dc79bbb10315c101f9dbd0955c627dab8/sparse_strips/README.md)
 - [Sparse strip generation](https://github.com/linebender/vello/blob/8ecea46dc79bbb10315c101f9dbd0955c627dab8/sparse_strips/vello_common/src/strip_generator.rs)
 - [Sparse strip representation and analytic coverage](https://github.com/linebender/vello/blob/8ecea46dc79bbb10315c101f9dbd0955c627dab8/sparse_strips/vello_common/src/strip.rs)

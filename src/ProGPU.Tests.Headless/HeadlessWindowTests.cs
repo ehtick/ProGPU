@@ -692,6 +692,95 @@ public class HeadlessWindowTests : IDisposable
     }
 
     [Fact]
+    public void Test_Wavefront_EdgeCommandPreservesRowBackdropAndAntialiasing()
+    {
+        const uint width = 64;
+        const uint height = 32;
+        using var window = new HeadlessWindow(width, height, renderFormat: TextureFormat.Bgra8Unorm);
+        window.Compositor.VectorEngine = ProGPU.Scene.Compositor.VectorRenderingEngine.Wavefront;
+
+        var path = new PathGeometry();
+        var figure = new PathFigure(new Vector2(15.25f, 4.25f), isClosed: true);
+        figure.Segments.Add(new ProGPU.Vector.LineSegment(new Vector2(48.75f, 4.25f)));
+        figure.Segments.Add(new ProGPU.Vector.LineSegment(new Vector2(48.75f, 27.75f)));
+        figure.Segments.Add(new ProGPU.Vector.LineSegment(new Vector2(15.25f, 27.75f)));
+        path.Figures.Add(figure);
+        window.Content = new PathIcon
+        {
+            Data = path,
+            Foreground = new SolidColorBrush(0xFF0000FF),
+            Width = width,
+            Height = height
+        };
+
+        try
+        {
+            window.Render();
+            byte[] pixels = window.ReadPixels();
+            byte background = pixels[(16 * width + 2) * 4];
+            byte outside = pixels[(16 * width + 14) * 4];
+            byte leftEdge = pixels[(16 * width + 15) * 4];
+            byte inside = pixels[(16 * width + 20) * 4];
+            byte rightEdge = pixels[(16 * width + 48) * 4];
+            byte rightOutside = pixels[(16 * width + 50) * 4];
+
+            // Cell zero cannot see the right edge directly; its row backdrop must carry the
+            // winding state while the local left edge supplies fractional signed-distance AA.
+            Assert.Equal(background, outside);
+            Assert.InRange(leftEdge, (byte)(background + 1), (byte)254);
+            Assert.Equal(255, inside);
+            Assert.InRange(rightEdge, (byte)(background + 1), (byte)254);
+            Assert.Equal(background, rightOutside);
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
+    [Fact]
+    public void Test_Wavefront_EdgeCommandOverflowFallsBackWithoutDroppingCoverage()
+    {
+        const uint width = 32;
+        const uint height = 32;
+        const int segmentCount = 300;
+        using var window = new HeadlessWindow(width, height, renderFormat: TextureFormat.Bgra8Unorm);
+        window.Compositor.VectorEngine = ProGPU.Scene.Compositor.VectorRenderingEngine.Wavefront;
+
+        var path = new PathGeometry();
+        var figure = new PathFigure(new Vector2(15f, 8f), isClosed: true);
+        for (int index = 1; index < segmentCount; index++)
+        {
+            float angle = index * (MathF.PI * 2f / segmentCount);
+            figure.Segments.Add(new ProGPU.Vector.LineSegment(
+                new Vector2(8f + MathF.Cos(angle) * 7f, 8f + MathF.Sin(angle) * 7f)));
+        }
+        path.Figures.Add(figure);
+        window.Content = new PathIcon
+        {
+            Data = path,
+            Foreground = new SolidColorBrush(0xFF0000FF),
+            Width = width,
+            Height = height
+        };
+
+        try
+        {
+            window.Render();
+            byte[] pixels = window.ReadPixels();
+            int center = (8 * (int)width + 8) * 4;
+            Assert.Equal(255, pixels[center]);
+            Assert.Equal(0, pixels[center + 1]);
+            Assert.Equal(0, pixels[center + 2]);
+            Assert.Equal(255, pixels[center + 3]);
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
+    [Fact]
     public void Test_Wavefront_RetainedTransformPatchesWithoutInstanceUpload()
     {
         using var window = new HeadlessWindow(
