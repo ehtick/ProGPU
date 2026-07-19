@@ -103,6 +103,18 @@ public class Thumb : Control
         base.OnPointerReleased(e);
      }
 
+    public override void OnPointerCanceled(PointerRoutedEventArgs e)
+    {
+        _isDragging = false;
+        base.OnPointerCanceled(e);
+    }
+
+    public override void OnPointerCaptureLost(PointerRoutedEventArgs e)
+    {
+        _isDragging = false;
+        base.OnPointerCaptureLost(e);
+    }
+
     public override void OnRender(DrawingContext context)
     {
         var bg = GetCurrentBackground();
@@ -118,4 +130,3 @@ public class Thumb : Control
         base.OnRender(context);
     }
 }
-

@@ -484,6 +484,18 @@ public class ColorPicker : Control
             base.OnPointerReleased(e);
         }
 
+        public override void OnPointerCanceled(PointerRoutedEventArgs e)
+        {
+            _isDragging = false;
+            base.OnPointerCanceled(e);
+        }
+
+        public override void OnPointerCaptureLost(PointerRoutedEventArgs e)
+        {
+            _isDragging = false;
+            base.OnPointerCaptureLost(e);
+        }
+
         public override void OnPointerMoved(PointerRoutedEventArgs e)
         {
             if (_isDragging && IsEnabled)

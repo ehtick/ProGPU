@@ -418,6 +418,18 @@ public class TextBox : Control, ITextInputClient
         }
     }
 
+    public override void OnPointerCanceled(PointerRoutedEventArgs e)
+    {
+        _isDraggingSelection = false;
+        base.OnPointerCanceled(e);
+    }
+
+    public override void OnPointerCaptureLost(PointerRoutedEventArgs e)
+    {
+        _isDraggingSelection = false;
+        base.OnPointerCaptureLost(e);
+    }
+
     public override void OnPointerMoved(PointerRoutedEventArgs e)
     {
         if (IsEnabled)

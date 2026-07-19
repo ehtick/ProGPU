@@ -337,6 +337,18 @@ public class ScrollViewer : ContentControl
         base.OnPointerReleased(e);
     }
 
+    public override void OnPointerCanceled(PointerRoutedEventArgs e)
+    {
+        _isDraggingVert = false;
+        base.OnPointerCanceled(e);
+    }
+
+    public override void OnPointerCaptureLost(PointerRoutedEventArgs e)
+    {
+        _isDraggingVert = false;
+        base.OnPointerCaptureLost(e);
+    }
+
     public override void OnPointerEntered(PointerRoutedEventArgs e)
     {
         if (IsEnabled)

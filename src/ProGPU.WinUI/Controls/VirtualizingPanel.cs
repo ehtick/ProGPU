@@ -306,6 +306,20 @@ public class VirtualizingPanel : Panel, IScrollViewportAware
             base.OnPointerReleased(e);
         }
 
+        public override void OnPointerCanceled(PointerRoutedEventArgs e)
+        {
+            _isDragging = false;
+            Invalidate();
+            base.OnPointerCanceled(e);
+        }
+
+        public override void OnPointerCaptureLost(PointerRoutedEventArgs e)
+        {
+            _isDragging = false;
+            Invalidate();
+            base.OnPointerCaptureLost(e);
+        }
+
         public override void OnPointerEntered(PointerRoutedEventArgs e)
         {
             if (IsEnabled)

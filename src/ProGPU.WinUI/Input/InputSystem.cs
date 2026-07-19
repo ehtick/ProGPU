@@ -56,6 +56,8 @@ internal sealed class PointerContactState
     public bool HoldingStarted { get; set; }
     public CancellationTokenSource? HoldingCancellation { get; set; }
     public FrameworkElement? ManipulationTarget { get; set; }
+    public FrameworkElement? OverTarget { get; set; }
+    public bool CanceledByManipulation { get; set; }
     public bool StartedWithRightButton { get; init; }
 }
 
@@ -523,7 +525,11 @@ public static class InputSystem
         {
             if (input.DeviceType == PointerDeviceType.Touch)
             {
-                target.OnPointerEntered(CreatePointerArgs(target, input, pointer));
+                UpdateContactOver(contact, target, input);
+            }
+            else
+            {
+                UpdateHover(input);
             }
             target.OnPointerPressed(CreatePointerArgs(target, input, pointer));
             BeginHolding(contact);
@@ -573,7 +579,10 @@ public static class InputSystem
             CancelHolding(contact, raiseCanceled: true);
         }
 
-        var target = Current.CapturedElements.GetValueOrDefault(input.PointerId) ?? contact.Target ?? HitTest(input.Position);
+        var hit = HitTest(input.Position);
+        if (input.DeviceType == PointerDeviceType.Touch) UpdateContactOver(contact, hit, input);
+        else UpdateHover(input);
+        var target = Current.CapturedElements.GetValueOrDefault(input.PointerId) ?? hit;
         target?.OnPointerMoved(CreatePointerArgs(target, input, contact.Pointer));
         UpdateManipulation(contact);
     }
@@ -589,18 +598,24 @@ public static class InputSystem
             DragDropManager.IsDragging && contact.LastEvent.IsLeftButtonPressed && !input.IsLeftButtonPressed;
         contact.LastEvent = input;
         contact.Pointer.IsInContact = false;
-        var target = Current.CapturedElements.GetValueOrDefault(input.PointerId) ?? contact.Target ?? HitTest(input.Position);
+        var hit = HitTest(input.Position);
+        if (!canceled)
+        {
+            if (input.DeviceType == PointerDeviceType.Touch) UpdateContactOver(contact, hit, input);
+            else UpdateHover(input);
+        }
+        var target = Current.CapturedElements.GetValueOrDefault(input.PointerId) ?? (canceled ? contact.Target : hit);
         var args = CreatePointerArgs(target, input, contact.Pointer, canceled);
         if (completesDrag)
         {
             DragDropManager.CompleteDrop(input.Position);
             target?.OnPointerCanceled(args);
         }
-        else if (canceled) target?.OnPointerCanceled(args);
-        else target?.OnPointerReleased(args);
+        else if (canceled && !contact.CanceledByManipulation) target?.OnPointerCanceled(args);
+        else if (!canceled && !contact.CanceledByManipulation) target?.OnPointerReleased(args);
 
         EndManipulation(contact, canceled || completesDrag);
-        if (!canceled && !completesDrag) CompleteGesture(contact, input);
+        if (!canceled && !completesDrag && !contact.CanceledByManipulation) CompleteGesture(contact, input);
         else CancelHolding(contact, raiseCanceled: true);
 
         if (Current.CapturedElements.Remove(input.PointerId, out var captured)) RaiseCaptureLost(captured, input, contact.Pointer);
@@ -609,7 +624,7 @@ public static class InputSystem
         Current.PointerContacts.Remove(input.PointerId);
 
         if (input.DeviceType is PointerDeviceType.Mouse or PointerDeviceType.Pen) UpdateHover(input);
-        else target?.OnPointerExited(CreatePointerArgs(target, input, contact.Pointer, canceled));
+        else UpdateContactOver(contact, null, input, canceled);
     }
 
     private static void OnPointerWheelCore(PointerInputEvent input)
@@ -660,6 +675,28 @@ public static class InputSystem
         for (var index = common + 1; index < newPath.Count; index++) newPath[index].OnPointerEntered(CreatePointerArgs(newPath[index], input, pointer));
         _hoveredElement = hit;
         ResetHoverTimer(hit);
+    }
+
+    private static void UpdateContactOver(
+        PointerContactState contact,
+        FrameworkElement? hit,
+        PointerInputEvent input,
+        bool canceled = false)
+    {
+        if (ReferenceEquals(hit, contact.OverTarget)) return;
+        var oldPath = GetVisualPath(contact.OverTarget);
+        var newPath = GetVisualPath(hit);
+        var common = -1;
+        for (var index = 0; index < Math.Min(oldPath.Count, newPath.Count) && ReferenceEquals(oldPath[index], newPath[index]); index++) common = index;
+        for (var index = oldPath.Count - 1; index > common; index--)
+        {
+            oldPath[index].OnPointerExited(CreatePointerArgs(oldPath[index], input, contact.Pointer, canceled));
+        }
+        for (var index = common + 1; index < newPath.Count; index++)
+        {
+            newPath[index].OnPointerEntered(CreatePointerArgs(newPath[index], input, contact.Pointer, canceled));
+        }
+        contact.OverTarget = hit;
     }
 
     private static bool IsDescendantOf(FrameworkElement? element, FrameworkElement ancestor)
@@ -793,8 +830,10 @@ public static class InputSystem
 
     private static void BeginManipulation(PointerContactState contact)
     {
+        if (contact.Pointer.PointerDeviceType == PointerDeviceType.Mouse) return;
         var target = FindManipulationTarget(contact.Target);
         if (target == null) return;
+        if (Current.CapturedElements.ContainsKey(contact.Pointer.PointerId)) return;
         contact.ManipulationTarget = target;
         if (!Current.Manipulations.TryGetValue(target, out var session))
         {
@@ -869,7 +908,8 @@ public static class InputSystem
             session.PreviousAngle = angle;
         }
 
-        var meaningful = translation.LengthSquared() > 0.01f || MathF.Abs(scale - 1f) > 0.001f || MathF.Abs(rotation) > 0.01f;
+        var meaningful = session.PointerIds.Any(id =>
+            Current.PointerContacts.TryGetValue(id, out var state) && state.ExceededTapThreshold);
         if (!session.Started && !meaningful) return;
         if (!session.Started)
         {
@@ -878,6 +918,7 @@ public static class InputSystem
             {
                 if (!Current.PointerContacts.TryGetValue(id, out var state)) continue;
                 state.ExceededTapThreshold = true;
+                state.CanceledByManipulation = true;
                 state.Target?.OnPointerCanceled(CreatePointerArgs(state.Target, state.LastEvent, state.Pointer, canceled: true));
             }
             session.Target.OnManipulationStarted(new ManipulationStartedRoutedEventArgs
