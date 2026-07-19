@@ -1305,6 +1305,12 @@ after Debug and Release native WebGPU qualification. Every managed dependency ag
 cancelled. This fifth identical boundary confirms that the new shader and managed call graph build,
 but it is still not a published AOT site or browser runtime result.
 
+A previously completed AOT artifact was available for interaction-only browser checks, but the
+managed sandbox rejects local TCP listener creation on `127.0.0.1:8081`. The in-app browser connected
+normally and reported `ERR_CONNECTION_REFUSED`, confirming that no server was reachable. That older
+artifact was not treated as validation of the current commits, and no browser FPS, image-quality, or
+file-picker result is claimed from it.
+
 Deliverables:
 
 1. Keep the browser worker path in Release AOT and measure JS, WASM, worker, and WebGPU API time separately.
