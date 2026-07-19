@@ -19,8 +19,6 @@ public class Visual
     private long _changeVersion;
     private long _contentVersion;
     private long _placementVersion;
-    private long _localPlacementVersion;
-    private long _descendantPlacementVersion;
     private bool _cacheAsLayer;
     public virtual bool HasTemplate => false;
     private Vector3 _scale = Vector3.One;
@@ -164,10 +162,6 @@ public class Visual
     /// whose retained command content may remain reusable.
     /// </summary>
     public long PlacementVersion => _placementVersion;
-
-    public long LocalPlacementVersion => _localPlacementVersion;
-
-    public long DescendantPlacementVersion => _descendantPlacementVersion;
 
     public bool CacheAsLayer
     {
@@ -317,28 +311,20 @@ public class Visual
 
     public void Invalidate()
     {
-        InvalidateCore(VisualChangeKind.Content, isLocalChange: true);
+        InvalidateCore(VisualChangeKind.Content);
     }
 
     private void InvalidatePlacement()
     {
-        InvalidateCore(VisualChangeKind.Placement, isLocalChange: true);
+        InvalidateCore(VisualChangeKind.Placement);
     }
 
-    private void InvalidateCore(VisualChangeKind kind, bool isLocalChange)
+    private void InvalidateCore(VisualChangeKind kind)
     {
         AdvanceVersion(ref _changeVersion);
         if (kind == VisualChangeKind.Placement)
         {
             AdvanceVersion(ref _placementVersion);
-            if (isLocalChange)
-            {
-                AdvanceVersion(ref _localPlacementVersion);
-            }
-            else
-            {
-                AdvanceVersion(ref _descendantPlacementVersion);
-            }
         }
         else
         {
@@ -346,7 +332,7 @@ public class Visual
         }
 
         _isDirty = true;
-        Parent?.InvalidateCore(kind, isLocalChange: false);
+        Parent?.InvalidateCore(kind);
     }
 
     private static void AdvanceVersion(ref long version)
