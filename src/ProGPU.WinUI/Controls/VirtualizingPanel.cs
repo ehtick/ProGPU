@@ -9,6 +9,23 @@ using Microsoft.UI.Xaml.Input;
 
 namespace Microsoft.UI.Xaml.Controls;
 
+/// <summary>
+/// Optional high-throughput contract for leaf virtualization containers. The panel keeps each
+/// fragment handle attached to one stable modulo slot and changes only its recorded content when
+/// that slot is rebound. Implementations record in absolute content coordinates so one shared
+/// scroll transform moves the complete retained surface.
+/// </summary>
+public interface IRetainedVirtualizedItemFragment
+{
+    SceneFragmentHandle RetainedFragment { get; }
+
+    /// <summary>
+    /// Updates the immutable picture for the current item and absolute content bounds. Returns
+    /// true only when the fragment version changed.
+    /// </summary>
+    bool UpdateRetainedFragment(Rect bounds);
+}
+
 public class VirtualizingPanel : Panel, IScrollViewportAware
 {
     private float _scrollOffset = 0f;

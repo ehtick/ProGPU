@@ -348,6 +348,63 @@ public sealed class SamplePerformanceRegressionTests
     }
 
     [Fact]
+    public void RetainedGridBoundaryRebindPatchesOnlyEnteringModuloSlots()
+    {
+        var panel = new UniformVirtualizingGridPanel
+        {
+            ItemsCount = 1_000,
+            ItemWidth = 80f,
+            ItemHeight = 80f,
+            CreateVisualFactory = static () => new RetainedGridItem(),
+            BindVisualCallback = static (visual, index) => ((RetainedGridItem)visual).Bind(index)
+        };
+        var scrollViewer = new ScrollViewer { Content = panel };
+        using var window = new HeadlessWindow(320, 240) { Content = scrollViewer };
+
+        window.Render();
+        window.Render();
+        window.Render();
+        Assert.True(
+            window.Compositor.Metrics.SceneCacheHit,
+            window.Compositor.Metrics.SceneCacheMissReason);
+        Assert.True(panel.UsesRetainedItemFragments);
+        Visual[] stableSlots = panel.Children.Select(static child => child).ToArray();
+        long retainedVersion = scrollViewer.ChangeVersion;
+        int columns = panel.ColumnsCount;
+
+        for (int row = 1; row <= 20; row++)
+        {
+            scrollViewer.VerticalOffset = row * 80f;
+            Assert.Equal(retainedVersion, scrollViewer.ChangeVersion);
+            window.Render();
+
+            Assert.True(
+                window.Compositor.Metrics.SceneCacheHit,
+                $"row={row}: {window.Compositor.Metrics.SceneCacheMissReason}");
+            Assert.Equal(columns, window.Compositor.Metrics.SceneFragmentUpdateCount);
+            Assert.Equal(row * columns, panel.FirstRealizedIndex);
+            Assert.Equal(stableSlots, panel.Children);
+        }
+
+        var firstVisible = stableSlots
+            .OfType<RetainedGridItem>()
+            .Single(item => item.Index == panel.FirstRealizedIndex);
+        panel.OnPointerMoved(new PointerRoutedEventArgs
+        {
+            ScreenPosition = new Vector2(10f, 10f)
+        });
+        Assert.True(firstVisible.IsPointerOver);
+        Assert.Equal(1, firstVisible.PointerEnteredCount);
+
+        panel.OnPointerPressed(new PointerRoutedEventArgs
+        {
+            ScreenPosition = new Vector2(10f, 10f),
+            IsLeftButtonPressed = true
+        });
+        Assert.Equal(1, firstVisible.PointerPressedCount);
+    }
+
+    [Fact]
     public void StandaloneVirtualizingStackPanelPatchesOneRetainedScrollTransform()
     {
         var panel = new VirtualizingStackPanel
@@ -1355,6 +1412,60 @@ public sealed class SamplePerformanceRegressionTests
 
         public Type? GetDataGridValueType(string propertyName) =>
             propertyName == "Value" ? typeof(int) : null;
+    }
+
+    private sealed class RetainedGridItem : FrameworkElement, IRetainedVirtualizedItemFragment
+    {
+        private readonly GpuPictureRecorder _recorder = new();
+        private readonly SolidColorBrush _evenBrush = new(new Vector4(0.8f, 0.1f, 0.1f, 1f));
+        private readonly SolidColorBrush _oddBrush = new(new Vector4(0.1f, 0.8f, 0.1f, 1f));
+        private int _index = -1;
+        private Rect _bounds;
+        private bool _dirty = true;
+
+        public RetainedGridItem()
+        {
+            var recorder = new GpuPictureRecorder();
+            recorder.BeginRecording(new Rect(0f, 0f, 1f, 1f));
+            RetainedFragment = new SceneFragmentHandle(recorder.EndRecording());
+            PointerEntered += (_, _) => PointerEnteredCount++;
+            PointerPressed += (_, _) => PointerPressedCount++;
+        }
+
+        public SceneFragmentHandle RetainedFragment { get; }
+        public int Index => _index;
+        public int PointerEnteredCount { get; private set; }
+        public int PointerPressedCount { get; private set; }
+
+        public void Bind(int index)
+        {
+            if (_index != index)
+            {
+                _index = index;
+                _dirty = true;
+            }
+        }
+
+        public bool UpdateRetainedFragment(Rect bounds)
+        {
+            if (!_dirty && _bounds == bounds)
+            {
+                return false;
+            }
+            _dirty = false;
+            _bounds = bounds;
+            var context = _recorder.BeginRecording(bounds);
+            context.DrawRectangle(
+                (_index / 4 & 1) == 0 ? _evenBrush : _oddBrush,
+                null,
+                bounds);
+            RetainedFragment.ReplacePicture(_recorder.EndRecording());
+            return true;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+        }
     }
 
     private sealed class DeferredViewportHost : FrameworkElement
