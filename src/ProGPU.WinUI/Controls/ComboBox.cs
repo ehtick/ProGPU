@@ -11,6 +11,7 @@ using Silk.NET.Input;
 using ProGPU.Layout;
 using ProGPU.Vector;
 using ProGPU.Scene;
+using Windows.Devices.Input;
 
 namespace Microsoft.UI.Xaml.Controls;
 
@@ -21,6 +22,7 @@ public class ComboBox : Control
     private string _placeholderText = "Select item...";
     private float _fontSize = 14f;
     private Border? _dropDownPopup;
+    private uint _pendingTouchPointerId;
     public Border? DropDownPopup => _dropDownPopup;
 
     public ObservableCollection<ComboBoxItem> Items { get; }
@@ -245,8 +247,16 @@ public class ComboBox : Control
     {
         if (IsEnabled)
         {
+            if (e.Pointer.PointerDeviceType is PointerDeviceType.Touch or PointerDeviceType.Pen)
+            {
+                _pendingTouchPointerId = e.Pointer.PointerId;
+                e.Handled = true;
+                base.OnPointerPressed(e);
+                return;
+            }
+
             // Toggle dropdown if clicked on the header button area
-            if (e.Position.Y < 32f)
+            if (e.GetCurrentPoint(this).Position.Y < 32f)
             {
                 IsDropDownOpen = !IsDropDownOpen;
                 e.Handled = true;
@@ -254,6 +264,26 @@ public class ComboBox : Control
 
             base.OnPointerPressed(e); // Sets focus to this ComboBox
         }
+    }
+
+    public override void OnPointerReleased(PointerRoutedEventArgs e)
+    {
+        if (_pendingTouchPointerId == e.Pointer.PointerId)
+        {
+            if (IsEnabled && IsPointerPressed && IsPointerOver && e.GetCurrentPoint(this).Position.Y < 32f)
+            {
+                IsDropDownOpen = !IsDropDownOpen;
+                e.Handled = true;
+            }
+            _pendingTouchPointerId = 0;
+        }
+        base.OnPointerReleased(e);
+    }
+
+    public override void OnPointerCanceled(PointerRoutedEventArgs e)
+    {
+        if (_pendingTouchPointerId == e.Pointer.PointerId) _pendingTouchPointerId = 0;
+        base.OnPointerCanceled(e);
     }
 
     public override void OnKeyDown(KeyRoutedEventArgs e)

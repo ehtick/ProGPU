@@ -16,6 +16,7 @@ using ProGPU.Scene;
 using ProGPU.Text;
 using System.Collections.Concurrent;
 using System.Globalization;
+using Windows.Devices.Input;
 
 namespace Microsoft.UI.Xaml.Controls;
 
@@ -71,6 +72,11 @@ public class DataGrid : Control
     private DateTime _lastClickTime = DateTime.MinValue;
     private int _lastClickRow = -1;
     private int _lastClickCol = -1;
+    private uint _pendingTouchPointerId;
+    private int _pendingTouchRow = -1;
+    private int _pendingTouchColumn = -1;
+    private int _pendingTouchSortColumn = -1;
+    private float _touchInertiaVelocity;
 
     public List<DataGridColumn> Columns { get; } = new();
 
@@ -149,6 +155,9 @@ public class DataGrid : Control
     public DataGrid()
     {
         Padding = new Thickness(0);
+        ManipulationMode = ManipulationModes.TranslateY |
+            ManipulationModes.TranslateRailsY |
+            ManipulationModes.TranslateInertia;
 
         var defaultStyle = ThemeManager.GetDefaultStyle(GetType());
         if (defaultStyle != null)
@@ -514,6 +523,29 @@ public class DataGrid : Control
 
     public override void OnPointerPressed(PointerRoutedEventArgs e)
     {
+        var position = e.GetCurrentPoint(this).Position;
+        if (IsEnabled && e.Pointer.PointerDeviceType is PointerDeviceType.Touch or PointerDeviceType.Pen)
+        {
+            ClearPendingTouchAction();
+            _pendingTouchPointerId = e.Pointer.PointerId;
+            if (position.Y <= _headerHeight)
+            {
+                _pendingTouchSortColumn = GetColumnIndexAt(position.X);
+            }
+            else if (position.X < Size.X - 12f)
+            {
+                _pendingTouchRow = GetRowIndexAt(position.Y);
+                _pendingTouchColumn = GetColumnIndexAt(position.X);
+            }
+
+            if (_pendingTouchSortColumn >= 0 || _pendingTouchRow >= 0)
+            {
+                e.Handled = true;
+            }
+            base.OnPointerPressed(e);
+            return;
+        }
+
         if (IsEnabled)
         {
             // Click inside Header: Column Sorting / Resizing
@@ -619,6 +651,26 @@ public class DataGrid : Control
 
     public override void OnPointerReleased(PointerRoutedEventArgs e)
     {
+        if (_pendingTouchPointerId == e.Pointer.PointerId)
+        {
+            var position = e.GetCurrentPoint(this).Position;
+            if (IsEnabled && IsPointerPressed && IsPointerOver)
+            {
+                if (_pendingTouchSortColumn >= 0 && position.Y <= _headerHeight &&
+                    GetColumnIndexAt(position.X) == _pendingTouchSortColumn)
+                {
+                    SortColumn(_pendingTouchSortColumn);
+                    e.Handled = true;
+                }
+                else if (_pendingTouchRow >= 0 && GetRowIndexAt(position.Y) == _pendingTouchRow &&
+                    GetColumnIndexAt(position.X) == _pendingTouchColumn)
+                {
+                    SelectRow(_pendingTouchRow, _pendingTouchColumn);
+                    e.Handled = true;
+                }
+            }
+            ClearPendingTouchAction();
+        }
         _isDraggingScroll = false;
         if (_resizingColumnIndex != -1)
         {
@@ -626,6 +678,53 @@ public class DataGrid : Control
             InputSystem.ReleasePointerCapture();
         }
         base.OnPointerReleased(e);
+    }
+
+    public override void OnPointerCanceled(PointerRoutedEventArgs e)
+    {
+        ClearPendingTouchAction();
+        _isDraggingScroll = false;
+        _resizingColumnIndex = -1;
+        base.OnPointerCanceled(e);
+    }
+
+    public override void OnManipulationStarted(ManipulationStartedRoutedEventArgs e)
+    {
+        _touchInertiaVelocity = 0f;
+        base.OnManipulationStarted(e);
+    }
+
+    public override void OnManipulationDelta(ManipulationDeltaRoutedEventArgs e)
+    {
+        var oldOffset = ScrollOffset;
+        ScrollOffset -= e.Delta.Translation.Y;
+        if (oldOffset != ScrollOffset) e.Handled = true;
+        base.OnManipulationDelta(e);
+    }
+
+    public override void OnManipulationCompleted(ManipulationCompletedRoutedEventArgs e)
+    {
+        _touchInertiaVelocity = e.IsInertial ? -e.Velocities.Linear.Y : 0f;
+        base.OnManipulationCompleted(e);
+    }
+
+    protected override void OnUpdateAnimations(float elapsedSeconds)
+    {
+        base.OnUpdateAnimations(elapsedSeconds);
+        if (elapsedSeconds <= 0f || MathF.Abs(_touchInertiaVelocity) < 2f)
+        {
+            _touchInertiaVelocity = 0f;
+            return;
+        }
+
+        var oldOffset = ScrollOffset;
+        ScrollOffset += _touchInertiaVelocity * elapsedSeconds;
+        if (oldOffset == ScrollOffset)
+        {
+            _touchInertiaVelocity = 0f;
+            return;
+        }
+        _touchInertiaVelocity *= MathF.Pow(0.88f, elapsedSeconds * 60f);
     }
 
     public override void OnPointerExited(PointerRoutedEventArgs e)
@@ -728,6 +827,60 @@ public class DataGrid : Control
             return;
         }
         base.OnPointerMoved(e);
+    }
+
+    private int GetRowIndexAt(float y)
+    {
+        if (y <= _headerHeight) return -1;
+        var row = (int)((y - _headerHeight + ScrollOffset) / _rowHeight);
+        return row >= 0 && row < _itemsSource.Count ? row : -1;
+    }
+
+    private int GetColumnIndexAt(float x)
+    {
+        var runningX = Padding.Left;
+        for (var index = 0; index < Columns.Count; index++)
+        {
+            if (x >= runningX && x <= runningX + Columns[index].ActualWidth) return index;
+            runningX += Columns[index].ActualWidth;
+        }
+        return -1;
+    }
+
+    private void SortColumn(int columnIndex)
+    {
+        if (columnIndex < 0 || columnIndex >= Columns.Count) return;
+        var column = Columns[columnIndex];
+        if (SortingColumn == column) column.IsAscending = !column.IsAscending;
+        else column.IsAscending = true;
+        SortItems(column);
+    }
+
+    private void SelectRow(int row, int columnIndex)
+    {
+        if (row < 0 || row >= _itemsSource.Count) return;
+        SelectedIndex = row;
+        if (columnIndex < 0) return;
+
+        var now = DateTime.UtcNow;
+        if ((now - _lastClickTime).TotalMilliseconds < 300 && row == _lastClickRow && columnIndex == _lastClickCol)
+        {
+            BeginEdit(row, columnIndex);
+        }
+        else
+        {
+            _lastClickTime = now;
+            _lastClickRow = row;
+            _lastClickCol = columnIndex;
+        }
+    }
+
+    private void ClearPendingTouchAction()
+    {
+        _pendingTouchPointerId = 0;
+        _pendingTouchRow = -1;
+        _pendingTouchColumn = -1;
+        _pendingTouchSortColumn = -1;
     }
 
     private float MeasureTextWidth(string text, TtfFont font, float fontSize)

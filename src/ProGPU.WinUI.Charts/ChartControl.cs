@@ -255,11 +255,13 @@ namespace Microsoft.UI.Xaml.Controls
                 if (_sliderLeftHandle.Contains(pos))
                 {
                     _isDraggingSliderLeft = true;
+                    CapturePointer(e.Pointer);
                     e.Handled = true;
                 }
                 else if (_sliderRightHandle.Contains(pos))
                 {
                     _isDraggingSliderRight = true;
+                    CapturePointer(e.Pointer);
                     e.Handled = true;
                 }
                 else if (pos.X >= _sliderLeftHandle.X && pos.X <= _sliderRightHandle.X + _sliderRightHandle.Width)
@@ -267,6 +269,7 @@ namespace Microsoft.UI.Xaml.Controls
                     _isDraggingSliderMiddle = true;
                     _dragStartZoomStart = _zoomStart;
                     _dragStartZoomEnd = _zoomEnd;
+                    CapturePointer(e.Pointer);
                     e.Handled = true;
                 }
                 else
@@ -294,6 +297,8 @@ namespace Microsoft.UI.Xaml.Controls
                 _isPanning = true;
                 _dragStartZoomStart = _zoomStart;
                 _dragStartZoomEnd = _zoomEnd;
+                SetCrosshairX(InvertX(pos.X));
+                CapturePointer(e.Pointer);
                 e.Handled = true;
             }
 
@@ -402,12 +407,33 @@ namespace Microsoft.UI.Xaml.Controls
 
         public override void OnPointerReleased(PointerRoutedEventArgs e)
         {
+            var hadInteraction = HasActivePointerInteraction();
+            ResetPointerInteraction();
+            if (hadInteraction) ReleasePointerCapture(e.Pointer);
+            base.OnPointerReleased(e);
+        }
+
+        public override void OnPointerCanceled(PointerRoutedEventArgs e)
+        {
+            ResetPointerInteraction();
+            base.OnPointerCanceled(e);
+        }
+
+        public override void OnPointerCaptureLost(PointerRoutedEventArgs e)
+        {
+            ResetPointerInteraction();
+            base.OnPointerCaptureLost(e);
+        }
+
+        private bool HasActivePointerInteraction() =>
+            _isDraggingSliderLeft || _isDraggingSliderRight || _isDraggingSliderMiddle || _isPanning;
+
+        private void ResetPointerInteraction()
+        {
             _isDraggingSliderLeft = false;
             _isDraggingSliderRight = false;
             _isDraggingSliderMiddle = false;
             _isPanning = false;
-
-            base.OnPointerReleased(e);
         }
 
         public override void OnPointerWheelChanged(PointerRoutedEventArgs e)
