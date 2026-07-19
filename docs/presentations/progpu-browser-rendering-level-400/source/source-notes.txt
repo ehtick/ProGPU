@@ -20,7 +20,7 @@ src/ProGPU.Browser/BrowserWebGpuApi.cs: Silk pointer values are opaque generatio
 
 src/ProGPU.Browser/BrowserAssets/progpu-browser.js: feature-based transport selection; direct view of current WASM memory on main thread; packet copy and one microtask-coalesced dispatch-batch to worker; navigator.gpu adapter/device negotiation; createShaderModule({code}); requireResource stale-handle guard; current surface texture acquisition; async map/copy/write; serialized worker message chain; device-loss reload.
 
-src/ProGPU.Browser/BrowserWindowHost.cs and BrowserInputDispatcher.cs: requestAnimationFrame loop; physical framebuffer metrics and DPR; dispatcher/input/layout/render call order; 32-byte input records, 256 records per stack batch, max four batches/frame; pointer move and wheel coalescing in JavaScript.
+src/ProGPU.Browser/BrowserWindowHost.cs and BrowserInputDispatcher.cs: requestAnimationFrame loop; physical framebuffer metrics and DPR; dispatcher/input/layout/render call order; 64-byte input records with pointer identity/device/contact metadata, 256 records per stack batch, max four batches/frame; per-pointer move coalescing in JavaScript.
 
 src/ProGPU.WinUI/Core/Window.cs: UIThread, callbacks, swapchain setup, animation, layout, surface acquire, compositor, present, and release sequencing; external host uses identical RenderFrameCore.
 
