@@ -41,6 +41,16 @@ const VERSION = 1;
 const HEADER_SIZE = 16;
 const COMMAND_HEADER_SIZE = 8;
 const DIAGNOSTICS_VISIBILITY_KEY = 'progpu.browser.diagnostics.visible';
+const BENCHMARK_QUERY_VARIABLES = Object.freeze({
+  benchmarkPage: 'PROGPU_SAMPLE_BENCHMARK_PAGE',
+  benchmarkWarmupFrames: 'PROGPU_SAMPLE_BENCHMARK_WARMUP_FRAMES',
+  benchmarkMeasureFrames: 'PROGPU_SAMPLE_BENCHMARK_MEASURE_FRAMES',
+  benchmarkVsync: 'PROGPU_SAMPLE_BENCHMARK_VSYNC',
+  benchmarkScroll: 'PROGPU_SAMPLE_BENCHMARK_SCROLL',
+  benchmarkScrollStep: 'PROGPU_SAMPLE_BENCHMARK_SCROLL_STEP',
+  benchmarkGpuCompletion: 'PROGPU_SAMPLE_BENCHMARK_GPU_COMPLETION',
+  benchmarkVectorEngine: 'PROGPU_SAMPLE_BENCHMARK_VECTOR_ENGINE'
+});
 const uncappedFrameResolvers = [];
 const uncappedGpuFenceResolvers = [];
 const MAX_UNCAPPED_FRAMES_IN_FLIGHT = 2;
@@ -561,17 +571,22 @@ async function initializeGpu(request, canvas, executionMode, diagnostics) {
   if (!state.adapter) throw new Error('No WebGPU adapter matched the requested power preference.');
 
   const supportsBgraStorage = state.adapter.features.has('bgra8unorm-storage');
-  const supportsTimestampQuery = state.adapter.features.has('timestamp-query');
+  const advertisesTimestampQuery = state.adapter.features.has('timestamp-query');
   const requiredFeatures = [];
   let activeProfile = request.gpuProfile === 'Full' ? 1 : 0;
   if (request.gpuProfile === 'Full' && supportsBgraStorage) requiredFeatures.push('bgra8unorm-storage');
-  if (supportsTimestampQuery) requiredFeatures.push('timestamp-query');
+  if (advertisesTimestampQuery) requiredFeatures.push('timestamp-query');
   if (request.gpuProfile === 'Full' && !supportsBgraStorage) {
     activeProfile = 0;
     diagnostics.push('Full profile downgraded: bgra8unorm-storage is unavailable; dependent Wavefront storage output is disabled.');
   }
 
   state.device = await state.adapter.requestDevice({ requiredFeatures });
+  const supportsTimestampQuery = advertisesTimestampQuery &&
+    typeof state.device.createCommandEncoder().writeTimestamp === 'function';
+  if (advertisesTimestampQuery && !supportsTimestampQuery) {
+    diagnostics.push('Timestamp queries are advertised, but command-encoder timestamp writes are unavailable; GPU pass timing is disabled.');
+  }
   state.format = navigator.gpu.getPreferredCanvasFormat();
   state.context.configure({ device: state.device, format: state.format, alphaMode: 'premultiplied' });
   state.device.addEventListener('uncapturederror', event => {
@@ -1359,6 +1374,16 @@ function updateCounters(frames, dispatches, commandBytes) {
   document.querySelector('#counter-bytes').textContent = Number(commandBytes).toLocaleString();
 }
 
+function readBenchmarkEnvironment() {
+  const query = new URLSearchParams(globalThis.location.search);
+  const environment = {};
+  for (const [queryName, variableName] of Object.entries(BENCHMARK_QUERY_VARIABLES)) {
+    const value = query.get(queryName)?.trim();
+    if (value) environment[variableName] = value;
+  }
+  return environment;
+}
+
 async function handleDispatcherWorkerMessage(event) {
   const message = event.data;
   try {
@@ -1438,7 +1463,7 @@ if (isDispatcherWorker) {
   });
 } else {
   initializeDiagnosticsVisibility();
-  runtime = await dotnet.create();
+  runtime = await dotnet.withEnvironmentVariables(readBenchmarkEnvironment()).create();
   runtime.setModuleImports('progpu-browser', { initialize, dispatch, dispatchUpload, mapBuffer, copyMappedBuffer, writeMappedBuffer, releaseMappedBuffer, waitForSubmittedWorkDone, nextAnimationFrame, writeCanvasMetrics, drainInputEvents, setCanvasCursor, setClipboardText, getClipboardText, pickStorage, getPickedStorageLength, copyPickedStorage, clearPickedStorage, downloadText, getDiagnosticsVisible, setDiagnosticsVisible, setStatus, updateCounters });
   const browserExports = await runtime.getAssemblyExports('ProGPU.Browser.dll');
   state.dispatchImmediatePointer = browserExports.ProGPU.Browser.BrowserInputDispatcher.DispatchImmediatePointer;

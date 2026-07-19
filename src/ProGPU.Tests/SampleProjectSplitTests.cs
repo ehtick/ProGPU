@@ -167,6 +167,32 @@ public sealed class SampleProjectSplitTests
     }
 
     [Fact]
+    public void BrowserBenchmarkQueryUsesTheSharedDeterministicHarness()
+    {
+        var browserMain = Read("src", "ProGPU.Samples.Browser", "wwwroot", "main.js");
+
+        Assert.Contains("benchmarkPage: 'PROGPU_SAMPLE_BENCHMARK_PAGE'", browserMain, StringComparison.Ordinal);
+        Assert.Contains("benchmarkWarmupFrames: 'PROGPU_SAMPLE_BENCHMARK_WARMUP_FRAMES'", browserMain, StringComparison.Ordinal);
+        Assert.Contains("benchmarkMeasureFrames: 'PROGPU_SAMPLE_BENCHMARK_MEASURE_FRAMES'", browserMain, StringComparison.Ordinal);
+        Assert.Contains("benchmarkVsync: 'PROGPU_SAMPLE_BENCHMARK_VSYNC'", browserMain, StringComparison.Ordinal);
+        Assert.Contains("benchmarkScroll: 'PROGPU_SAMPLE_BENCHMARK_SCROLL'", browserMain, StringComparison.Ordinal);
+        Assert.Contains("benchmarkGpuCompletion: 'PROGPU_SAMPLE_BENCHMARK_GPU_COMPLETION'", browserMain, StringComparison.Ordinal);
+        Assert.Contains("benchmarkVectorEngine: 'PROGPU_SAMPLE_BENCHMARK_VECTOR_ENGINE'", browserMain, StringComparison.Ordinal);
+        Assert.Contains("dotnet.withEnvironmentVariables(readBenchmarkEnvironment()).create()", browserMain, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BrowserTimestampCapabilityRequiresUsableEncoderWrites()
+    {
+        var browserAsset = Read("src", "ProGPU.Browser", "BrowserAssets", "progpu-browser.js");
+
+        Assert.Contains("const advertisesTimestampQuery = state.adapter.features.has('timestamp-query');", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("typeof state.device.createCommandEncoder().writeTimestamp === 'function'", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("GPU pass timing is disabled", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("supportsTimestampQuery,", browserAsset, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void BrowserFilePickerUsesCancellationSafeDirectByteTransfer()
     {
         var browserAsset = Read("src", "ProGPU.Browser", "BrowserAssets", "progpu-browser.js");
