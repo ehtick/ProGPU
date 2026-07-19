@@ -51,6 +51,13 @@ public class ShaderResourceTests
         Assert.Contains("fn instance_transform(", source, StringComparison.Ordinal);
         Assert.Contains("fn active_grid_cell(", source, StringComparison.Ordinal);
         Assert.Contains("uniforms.binningMode == 1u", source, StringComparison.Ordinal);
+        Assert.Contains("fn count_instance_pairs(", source, StringComparison.Ordinal);
+        Assert.Contains("fn emit_overlap_pairs(", source, StringComparison.Ordinal);
+        Assert.Contains("fn radix_histogram(", source, StringComparison.Ordinal);
+        Assert.Contains("fn radix_scatter(", source, StringComparison.Ordinal);
+        Assert.Contains("digit * radix_params.block_count + workgroup_id.x", source, StringComparison.Ordinal);
+        Assert.Contains("radix_histogram_offsets[histogram_idx] + local_rank", source, StringComparison.Ordinal);
+        Assert.Contains("fn build_grid_cells_from_pairs(", source, StringComparison.Ordinal);
         Assert.Contains("minimum_device_scale(transform)", source, StringComparison.Ordinal);
         Assert.Contains("cell_shape_classes[pair_idx]", source, StringComparison.Ordinal);
         Assert.DoesNotContain(

@@ -345,6 +345,100 @@ public class HeadlessWindowTests : IDisposable
     }
 
     [Fact]
+    public unsafe void Test_WavefrontStableGpuPairBinningPreservesPainterOrder()
+    {
+        const uint gridSide = 128;
+        const uint textureSize = gridSide * 16u;
+        var context = HeadlessWindow.Shared.Context;
+        bool hasError = false;
+        string errorDetails = string.Empty;
+
+        void OnWebGpuError(ErrorType type, string message)
+        {
+            hasError = true;
+            errorDetails += $"{type}: {message}\n";
+        }
+
+        WgpuContext.OnWebGpuError += OnWebGpuError;
+        try
+        {
+            using var engine = new WavefrontVectorEngine(context);
+            using var destination = new GpuTexture(
+                context,
+                textureSize,
+                textureSize,
+                TextureFormat.Bgra8Unorm,
+                TextureUsage.TextureBinding | TextureUsage.StorageBinding | TextureUsage.CopySrc | TextureUsage.RenderAttachment,
+                "Wavefront Stable GPU Pair Destination");
+            var path = new PathGeometry();
+            var figure = new PathFigure(new Vector2(2f, 2f), isClosed: true);
+            figure.Segments.Add(new ProGPU.Vector.LineSegment(new Vector2(14f, 2f)));
+            figure.Segments.Add(new ProGPU.Vector.LineSegment(new Vector2(14f, 14f)));
+            figure.Segments.Add(new ProGPU.Vector.LineSegment(new Vector2(2f, 14f)));
+            path.Figures.Add(figure);
+            var white = new SolidColorBrush(new Vector4(1f, 1f, 1f, 1f));
+            var red = new SolidColorBrush(new Vector4(1f, 0f, 0f, 1f));
+            var green = new SolidColorBrush(new Vector4(0f, 1f, 0f, 1f));
+
+            engine.BeginFrame();
+            // Deliberately reverse the cell keys. The final two painter-ordered records overlap
+            // cell zero and prove equal-key stability after four radix passes.
+            for (uint cell = gridSide * gridSide - 2u; cell > 0u; cell--)
+            {
+                uint x = cell % gridSide;
+                uint y = cell / gridSide;
+                engine.DrawPath(path, Matrix4x4.CreateTranslation(x * 16f, y * 16f, 0f), white);
+            }
+            engine.DrawPath(path, Matrix4x4.Identity, red);
+            engine.DrawPath(path, Matrix4x4.Identity, green);
+
+            var encoderDescriptor = new CommandEncoderDescriptor();
+            var encoder = context.Api.DeviceCreateCommandEncoder(context.Device, &encoderDescriptor);
+            Assert.NotEqual(nint.Zero, (nint)encoder);
+            engine.EndFrame(encoder, destination, 1f);
+            var colorAttachment = new RenderPassColorAttachment
+            {
+                View = destination.ViewPtr,
+                LoadOp = LoadOp.Load,
+                StoreOp = StoreOp.Store
+            };
+            var renderPassDescriptor = new RenderPassDescriptor
+            {
+                ColorAttachmentCount = 1,
+                ColorAttachments = &colorAttachment
+            };
+            var renderPass = context.Api.CommandEncoderBeginRenderPass(encoder, &renderPassDescriptor);
+            Assert.NotEqual(nint.Zero, (nint)renderPass);
+            engine.RecordSparseComposite(renderPass);
+            context.Api.RenderPassEncoderEnd(renderPass);
+            context.Api.RenderPassEncoderRelease(renderPass);
+            var commandDescriptor = new CommandBufferDescriptor();
+            var commandBuffer = context.Api.CommandEncoderFinish(encoder, &commandDescriptor);
+            Assert.NotEqual(nint.Zero, (nint)commandBuffer);
+            context.Api.QueueSubmit(context.Queue, 1, &commandBuffer);
+            context.Api.CommandBufferRelease(commandBuffer);
+            context.Api.CommandEncoderRelease(encoder);
+
+            Assert.Equal(WavefrontBinningMode.GpuStableRadixPairs, engine.LastBinningMode);
+            Assert.Equal(gridSide * gridSide, engine.LastCellPairCount);
+            Assert.Equal(0u, engine.LastCpuBinningUploadBytes);
+
+            byte[] pixels = destination.ReadPixels();
+            int center = checked((int)((8u * textureSize + 8u) * 4u));
+            Assert.Equal(0, pixels[center]);
+            Assert.Equal(255, pixels[center + 1]);
+            Assert.Equal(0, pixels[center + 2]);
+            Assert.Equal(255, pixels[center + 3]);
+        }
+        finally
+        {
+            WgpuContext.OnWebGpuError -= OnWebGpuError;
+        }
+
+        Assert.False(hasError, $"WebGPU validation errors occurred:\n{errorDetails}");
+    }
+
+    [Fact]
     public unsafe void Test_WavefrontGeometryMissUploadsAndFlattensOnlyAppendedRanges()
     {
         var context = HeadlessWindow.Shared.Context;

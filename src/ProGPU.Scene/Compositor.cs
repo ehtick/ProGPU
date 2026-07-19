@@ -148,6 +148,8 @@ public struct CompositorMetrics
     public uint WavefrontCellPairCount;
     public uint WavefrontCpuActiveCellCount;
     public uint WavefrontCpuBinningUploadBytes;
+    public uint WavefrontGpuPairBufferBytes;
+    public uint WavefrontRadixHistogramCount;
     public int DrawCallsCount;
     public int VectorVerticesCount;
     public int TextVerticesCount;
@@ -3166,6 +3168,8 @@ SceneStateUploadComplete:
             WavefrontCellPairCount = _wavefrontEngine?.LastCellPairCount ?? 0,
             WavefrontCpuActiveCellCount = _wavefrontEngine?.LastCpuActiveCellCount ?? 0,
             WavefrontCpuBinningUploadBytes = _wavefrontEngine?.LastCpuBinningUploadBytes ?? 0,
+            WavefrontGpuPairBufferBytes = _wavefrontEngine?.LastGpuPairBufferBytes ?? 0,
+            WavefrontRadixHistogramCount = _wavefrontEngine?.LastRadixHistogramCount ?? 0,
             DrawCallsCount = _drawCalls.Count,
             VectorVerticesCount = _vectorVerticesList.Count,
             TextVerticesCount = _textVerticesList.Count,

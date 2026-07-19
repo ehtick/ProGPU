@@ -934,7 +934,7 @@ are implemented and CPU-qualified.
   or texture generation changes. Native pipeline creation, encoded compute plus indirect render,
   1x/2x path pixels, and Wavefront glyph pixels pass on the available headless WebGPU adapter.
 
-The retained bitmap uses `G * ceil(I / 32)` 32-bit words. It is a correctness-first portable implementation of Vello's stable coverage-bitmap concept, not the final memory layout. Phase 4C must replace it for large dynamic scenes with block-local bin records or stable radix-grouped overlap pairs selected by measured occupancy. Active-cell compaction eliminates empty-tile fine work, coarse classification removes solid/outside BVH walks, and sparse indirect replacement removes the previous full-target copy. Edge pixels still traverse candidate BVHs, so a Vello-style edge/backdrop coarse command remains required before this can become the default.
+The retained bitmap uses `G * ceil(I / 32)` 32-bit words. It is a correctness-first portable implementation of Vello's stable coverage-bitmap concept, not the final memory layout. Large sparse dynamic scenes now have the stable radix-grouped overlap-pair route described below, selected by bounded occupancy and pair-count gates. Active-cell compaction eliminates empty-tile fine work, coarse classification removes solid/outside BVH walks, and sparse indirect replacement removes the previous full-target copy. Edge pixels still traverse candidate BVHs, so a Vello-style edge/backdrop coarse command remains required before this can become the default.
 
 The first bounded admission route is now implemented rather than allowing that bitmap to grow
 without limit:
@@ -964,13 +964,39 @@ without limit:
   the constants to be calibrated from matched final binaries instead of intuition.
 
 This closes the unbounded-memory failure mode and the redundant static-frame binning regression.
-It does **not** complete the intended all-GPU Phase 4C path: a GPU overlap-pair generator plus stable
-radix/block grouping is still required to avoid CPU `O(G + O)` uploads for very large moving scenes.
+
+The next Phase 4C checkpoint also implements the bounded all-GPU overlap-pair route:
+
+- One 64-lane dispatch computes each instance's exact covered-cell count. The reusable hierarchical
+  scan reserves a deterministic painter-ordered range for that instance, and a second dispatch emits
+  `(cell index, instance index)` records without atomics or CPU bin uploads.
+- Four portable stable 8-bit radix passes group the pairs by 32-bit cell index. Each 256-pair block
+  writes a digit-major 256-bin histogram; one ordinary global exclusive scan simultaneously produces
+  the base of each digit and the prefix of earlier blocks. Scatter adds a fixed local painter-order
+  rank, so equal cell keys retain instance order without subgroup features or scheduling assumptions.
+- The final sorted run endpoints build exact `GridCell` records. A lower-bound search at each run end
+  avoids cross-invocation start/count races, after which the existing row-major active-cell scan,
+  indirect dispatch, conservative coarse classifier, sparse fine compute, and indirect composite are
+  reused unchanged.
+- The route is admitted when the bitmap is inefficient and the exact pair count is between 16,384
+  and 2,097,152. Four persistent pair streams require 16 bytes per pair; the digit-major histogram has
+  `256 * ceil(O / 256)` counters. Smaller sparse lists keep the lower-dispatch CPU path, while larger
+  lists retain the explicit bounded fallback instead of allocating an unbounded GPU sort arena.
+- Benchmark schema 7 reports the selected route, pair-stream bytes and radix histogram count. A native
+  16,384-pair test reverses the input cell keys, overlaps the final two shapes, reads the rendered
+  output, and proves both WebGPU pipeline execution and equal-key painter-order stability with zero CPU
+  bin-upload bytes.
+
+The CPU still performs the exact `O(I)` transformed-bounds preflight used for capacity rejection; it
+does not construct or upload bins on the GPU-radix route. Remaining Phase 4 work is Vello-style
+edge-segment/backdrop coarse commands so edge pixels no longer traverse candidate BVHs. The router
+must also be calibrated from sustained desktop and browser AOT timestamps before Wavefront can become
+the default.
 
 Deliverables:
 
 1. Stop recreating wavefront GPU buffers. Convert all geometry, line, instance, bin, and work queues to persistent arenas.
-2. Replace cell-centric `for each instance` binning with stable block/bin count-scan-scatter.
+2. Replace cell-centric `for each instance` binning with stable block/bin count-scan-scatter. **Implemented through the coverage-word route and the bounded GPU stable-radix overlap-pair route.**
 3. Remove the fixed 64-shape cell limit and add explicit capacity accounting.
 4. Replace full-screen per-pixel BVH traversal with tile work that visits only edge segments and solid interior spans.
 5. Add indirect setup stages so path count determines tile/segment/coarse work without CPU readback.

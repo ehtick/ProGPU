@@ -1,6 +1,6 @@
-// Algorithm: Retain flattened vector curves and transform-indexed shape instances, patch stable spatial transforms independently, consume either deterministic GPU coverage-bitmaps or compact stable CPU sparse bins, conservatively classify solid/outside cell-shape pairs, and indirectly dispatch only active 16x16 cells to a sparse output texture.
-// Time complexity: O(dC*S) for newly appended curves (O(C*S) only after an arena grow replay), O(dT) CPU upload for changed retained transforms, O(O + G*ceil(I/32) + G + O*log L) for GPU bitmap binning/compaction/coarse classification or O(O*log L) after compact CPU bins are uploaded, and O(Pa*Ke*log L + Pa*Ks) for the fine path, where dC is new curves, C retained curves, S is the CPU-selected adaptive subdivision count bounded by 256, dT changed transforms, O instance/cell overlaps, G cells, I instances, Pa pixels in active cells, Ke edge candidates, Ks solid candidates, and L primitives per shape.
-// Space complexity: O(C*S + I + T + min(G*ceil(I/32), B) + A + O + G + W*H), where A is active cells and B is the fixed admitted bitmap-word cap, for retained geometry/transform/bin arenas and one sparse ping-pong texture; there is no fixed per-cell overlap cap and no full-window texture copy.
+// Algorithm: Retain flattened vector curves and transform-indexed shape instances, patch stable spatial transforms independently, consume deterministic GPU coverage-bitmaps, GPU-emitted overlap pairs grouped by four stable 8-bit radix passes, or compact stable CPU sparse bins, conservatively classify solid/outside cell-shape pairs, and indirectly dispatch only active 16x16 cells to a sparse output texture.
+// Time complexity: O(dC*S) for newly appended curves (O(C*S) only after an arena grow replay), O(dT) CPU upload for changed retained transforms, O(O + G*ceil(I/32) + G + O*log L) for bitmap binning, O(I + O + 4*(O*256 + H)) for the portable stable-radix pair route with H=256*ceil(O/256) histogram counters, or O(O*log L) after compact CPU bins are uploaded, plus O(Pa*Ke*log L + Pa*Ks) for the fine path; fixed 256-way local rank preserves painter order without subgroup requirements.
+// Space complexity: O(C*S + I + T + min(G*ceil(I/32), B) + A + O + H + G + W*Hpx), where A is active cells, B is the admitted bitmap-word cap, H is radix histogram storage, and W*Hpx is one sparse ping-pong texture; the radix route is capped at 2,097,152 pairs, there is no fixed per-cell overlap cap, and no full-window texture copy.
 struct BvhNode {
     min_bounds: vec2<f32>,
     max_bounds: vec2<f32>,
@@ -84,6 +84,13 @@ struct DrawIndirectArgs {
     first_instance: u32,
 };
 
+struct RadixParams {
+    shift: u32,
+    source_index: u32,
+    pair_count: u32,
+    block_count: u32,
+};
+
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(3) var<storage, read> bvh_nodes: array<BvhNode>;
 @group(0) @binding(4) var<storage, read> shape_instances: array<ShapeInstance>;
@@ -103,6 +110,17 @@ struct DrawIndirectArgs {
 @group(0) @binding(19) var<storage, read_write> cell_shape_classes: array<u32>;
 @group(0) @binding(20) var<storage, read_write> active_draw_args: array<DrawIndirectArgs>;
 @group(0) @binding(21) var<storage, read> shape_transforms: array<ShapeTransform>;
+@group(0) @binding(22) var<storage, read_write> pair_cell_keys_a: array<u32>;
+@group(0) @binding(23) var<storage, read_write> pair_cell_keys_b: array<u32>;
+@group(0) @binding(24) var<storage, read_write> pair_instance_indices_b: array<u32>;
+@group(0) @binding(25) var<uniform> radix_params: RadixParams;
+@group(0) @binding(26) var<storage, read_write> instance_pair_counts: array<u32>;
+@group(0) @binding(27) var<storage, read> instance_pair_offsets: array<u32>;
+@group(0) @binding(28) var<storage, read_write> radix_histogram_counts: array<u32>;
+@group(0) @binding(29) var<storage, read> radix_histogram_offsets: array<u32>;
+
+var<workgroup> radix_workgroup_histogram: array<atomic<u32>, 256>;
+var<workgroup> radix_workgroup_digits: array<u32, 256>;
 
 
 fn evaluate_curve(curve: BezierCurve, t: f32) -> vec2<f32> {
@@ -299,6 +317,160 @@ fn transformed_device_bounds(inst: ShapeInstance) -> vec4<f32> {
     let bounds_min = min(min(p0, p1), min(p2, p3));
     let bounds_max = max(max(p0, p1), max(p2, p3));
     return vec4<f32>(bounds_min, bounds_max);
+}
+
+fn covered_cell_range(inst: ShapeInstance) -> vec4<u32> {
+    let bounds = transformed_device_bounds(inst);
+    let screen_max = vec2<f32>(f32(uniforms.screenWidth), f32(uniforms.screenHeight));
+    if (any(bounds.zw < vec2<f32>(0.0)) || any(bounds.xy > screen_max)) {
+        return vec4<u32>(1u, 1u, 0u, 0u);
+    }
+    let clipped_min = clamp(bounds.xy, vec2<f32>(0.0), max(screen_max - vec2<f32>(1.0), vec2<f32>(0.0)));
+    let clipped_max = clamp(bounds.zw, vec2<f32>(0.0), max(screen_max - vec2<f32>(1.0), vec2<f32>(0.0)));
+    let min_cell = vec2<u32>(clipped_min) / 16u;
+    let max_cell = vec2<u32>(clipped_max) / 16u;
+    return vec4<u32>(min_cell, max_cell);
+}
+
+// One invocation computes the exact rectangle-overlap count for one painter-ordered instance.
+// The reusable hierarchical scan turns these counts into race-free, painter-ordered pair ranges.
+@compute @workgroup_size(64)
+fn count_instance_pairs(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let instance_idx = global_id.x;
+    if (instance_idx >= uniforms.instanceCount) {
+        return;
+    }
+    let cell_range = covered_cell_range(shape_instances[instance_idx]);
+    if (cell_range.x > cell_range.z || cell_range.y > cell_range.w) {
+        instance_pair_counts[instance_idx] = 0u;
+        return;
+    }
+    instance_pair_counts[instance_idx] =
+        (cell_range.z - cell_range.x + 1u) * (cell_range.w - cell_range.y + 1u);
+}
+
+// Emit one (cell, instance) record per exact overlap. Instance scan offsets preserve the input
+// painter order before sorting; row-major enumeration makes the output deterministic as well.
+@compute @workgroup_size(64)
+fn emit_overlap_pairs(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let instance_idx = global_id.x;
+    if (instance_idx >= uniforms.instanceCount) {
+        return;
+    }
+    let cell_range = covered_cell_range(shape_instances[instance_idx]);
+    if (cell_range.x > cell_range.z || cell_range.y > cell_range.w) {
+        return;
+    }
+    var output_idx = instance_pair_offsets[instance_idx];
+    for (var cell_y = cell_range.y; cell_y <= cell_range.w; cell_y = cell_y + 1u) {
+        for (var cell_x = cell_range.x; cell_x <= cell_range.z; cell_x = cell_x + 1u) {
+            if (output_idx < uniforms.pairCount) {
+                pair_cell_keys_a[output_idx] = cell_y * uniforms.gridStride + cell_x;
+                cell_shape_indices[output_idx] = instance_idx;
+            }
+            output_idx = output_idx + 1u;
+        }
+    }
+}
+
+fn radix_source_key(pair_idx: u32) -> u32 {
+    if (radix_params.source_index == 0u) {
+        return pair_cell_keys_a[pair_idx];
+    }
+    return pair_cell_keys_b[pair_idx];
+}
+
+// One workgroup builds all 256 digit counts for one consecutive 256-pair block. Counts are
+// written digit-major, so one ordinary global exclusive scan produces both each digit's base and
+// every prior block's contribution for that digit.
+@compute @workgroup_size(256)
+fn radix_histogram(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+    @builtin(workgroup_id) workgroup_id: vec3<u32>) {
+    atomicStore(&radix_workgroup_histogram[local_id.x], 0u);
+    workgroupBarrier();
+
+    let pair_idx = global_id.x;
+    if (pair_idx < radix_params.pair_count) {
+        let digit = (radix_source_key(pair_idx) >> radix_params.shift) & 255u;
+        atomicAdd(&radix_workgroup_histogram[digit], 1u);
+    }
+    workgroupBarrier();
+
+    let digit = local_id.x;
+    let histogram_idx = digit * radix_params.block_count + workgroup_id.x;
+    radix_histogram_counts[histogram_idx] = atomicLoad(&radix_workgroup_histogram[digit]);
+}
+
+// Stable scatter uses the scanned digit/block base plus a fixed local painter-order rank. The
+// rank loop has a constant upper bound of 255 comparisons, avoiding subgroup feature dependence.
+@compute @workgroup_size(256)
+fn radix_scatter(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(local_invocation_id) local_id: vec3<u32>,
+    @builtin(workgroup_id) workgroup_id: vec3<u32>) {
+    let pair_idx = global_id.x;
+    var digit = 256u;
+    if (pair_idx < radix_params.pair_count) {
+        digit = (radix_source_key(pair_idx) >> radix_params.shift) & 255u;
+    }
+    radix_workgroup_digits[local_id.x] = digit;
+    workgroupBarrier();
+
+    if (pair_idx >= radix_params.pair_count) {
+        return;
+    }
+    var local_rank = 0u;
+    for (var prior = 0u; prior < local_id.x; prior = prior + 1u) {
+        local_rank = local_rank + select(0u, 1u, radix_workgroup_digits[prior] == digit);
+    }
+    let histogram_idx = digit * radix_params.block_count + workgroup_id.x;
+    let output_idx = radix_histogram_offsets[histogram_idx] + local_rank;
+    let key = radix_source_key(pair_idx);
+    if (radix_params.source_index == 0u) {
+        pair_cell_keys_b[output_idx] = key;
+        pair_instance_indices_b[output_idx] = cell_shape_indices[pair_idx];
+    } else {
+        pair_cell_keys_a[output_idx] = key;
+        cell_shape_indices[output_idx] = pair_instance_indices_b[pair_idx];
+    }
+}
+
+// Grid initialization is a separate bounded dispatch so pair-run endpoints can write exact cell
+// ranges without atomics. Dispatch ordering provides the storage dependency.
+@compute @workgroup_size(256)
+fn clear_grid_cells(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let cell_idx = global_id.x;
+    if (cell_idx < uniforms.cellCount) {
+        grid_cells[cell_idx] = GridCell(0u, 0u);
+    }
+}
+
+// The fourth radix pass leaves cell keys in A and instance indices in the common painter list.
+// One invocation per run end finds its matching start by lower-bound and writes the complete cell
+// record exactly once, avoiding cross-invocation start/count races in a single dispatch.
+@compute @workgroup_size(256)
+fn build_grid_cells_from_pairs(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let pair_idx = global_id.x;
+    if (pair_idx >= uniforms.pairCount) {
+        return;
+    }
+    let cell_idx = pair_cell_keys_a[pair_idx];
+    if (pair_idx + 1u < uniforms.pairCount && pair_cell_keys_a[pair_idx + 1u] == cell_idx) {
+        return;
+    }
+    var low = 0u;
+    var high = pair_idx + 1u;
+    while (low < high) {
+        let middle = low + (high - low) / 2u;
+        if (pair_cell_keys_a[middle] < cell_idx) {
+            low = middle + 1u;
+        } else {
+            high = middle;
+        }
+    }
+    grid_cells[cell_idx] = GridCell(low, pair_idx + 1u - low);
 }
 
 // Fixed workgroup size: 64. One invocation transforms one instance and atomically sets its

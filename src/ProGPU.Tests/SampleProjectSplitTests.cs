@@ -156,10 +156,12 @@ public sealed class SampleProjectSplitTests
 
         Assert.Contains("PROGPU_SAMPLE_BENCHMARK_VECTOR_ENGINE", benchmark, StringComparison.Ordinal);
         Assert.Contains("writer.WriteString(\"vectorEngine\"", benchmark, StringComparison.Ordinal);
-        Assert.Contains("writer.WriteNumber(\"schemaVersion\", 6)", benchmark, StringComparison.Ordinal);
+        Assert.Contains("writer.WriteNumber(\"schemaVersion\", 7)", benchmark, StringComparison.Ordinal);
         Assert.Contains("writer.WriteString(\"wavefrontBinningMode\"", benchmark, StringComparison.Ordinal);
         Assert.Contains("writer.WriteBoolean(\"wavefrontBinningReused\"", benchmark, StringComparison.Ordinal);
         Assert.Contains("writer.WriteNumber(\"wavefrontCpuBinningUploadBytes\"", benchmark, StringComparison.Ordinal);
+        Assert.Contains("writer.WriteNumber(\"wavefrontGpuPairBufferBytes\"", benchmark, StringComparison.Ordinal);
+        Assert.Contains("writer.WriteNumber(\"wavefrontRadixHistogramCount\"", benchmark, StringComparison.Ordinal);
         Assert.Contains("--vector-engine", sweep, StringComparison.Ordinal);
         Assert.Contains("PROGPU_SAMPLE_BENCHMARK_VECTOR_ENGINE=\"$vector_engine\"", sweep, StringComparison.Ordinal);
     }

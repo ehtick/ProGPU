@@ -485,6 +485,8 @@ internal static class SamplePerformanceBenchmark
             $" wavefrontCellPairs={finalMetrics?.WavefrontCellPairCount ?? 0}" +
             $" wavefrontCpuActiveCells={finalMetrics?.WavefrontCpuActiveCellCount ?? 0}" +
             $" wavefrontCpuBinningUploadBytes={finalMetrics?.WavefrontCpuBinningUploadBytes ?? 0}" +
+            $" wavefrontGpuPairBufferBytes={finalMetrics?.WavefrontGpuPairBufferBytes ?? 0}" +
+            $" wavefrontRadixHistogramCount={finalMetrics?.WavefrontRadixHistogramCount ?? 0}" +
             $" gpuTimestampFailures={failedGpuTimestamps}" +
             $" gpuTimestampDrops={droppedGpuTimestamps}" +
             $" allocatedBytesPerFrame={allocatedBytes / divisor:F0}" +
@@ -623,7 +625,7 @@ internal static class SamplePerformanceBenchmark
         using (var writer = new Utf8JsonWriter(output))
         {
             writer.WriteStartObject();
-            writer.WriteNumber("schemaVersion", 6);
+            writer.WriteNumber("schemaVersion", 7);
             writer.WriteString("page", RequestedPage);
             writer.WriteString("platform", OperatingSystem.IsBrowser() ? "browser" : "desktop");
             writer.WriteString("backend", AppState._wgpuContext?.BackendKind.ToString());
@@ -728,6 +730,8 @@ internal static class SamplePerformanceBenchmark
             writer.WriteNumber("wavefrontCellPairs", compositorMetrics?.WavefrontCellPairCount ?? 0);
             writer.WriteNumber("wavefrontCpuActiveCells", compositorMetrics?.WavefrontCpuActiveCellCount ?? 0);
             writer.WriteNumber("wavefrontCpuBinningUploadBytes", compositorMetrics?.WavefrontCpuBinningUploadBytes ?? 0);
+            writer.WriteNumber("wavefrontGpuPairBufferBytes", compositorMetrics?.WavefrontGpuPairBufferBytes ?? 0);
+            writer.WriteNumber("wavefrontRadixHistogramCount", compositorMetrics?.WavefrontRadixHistogramCount ?? 0);
             writer.WriteNumber("sceneCacheHits", s_sceneCacheHitFrames);
             writer.WriteString("sceneCacheMiss", compositorMetrics?.SceneCacheMissReason ?? "none");
             writer.WriteNumber("draws", compositorMetrics?.DrawCallsCount ?? 0);

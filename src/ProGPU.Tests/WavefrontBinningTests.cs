@@ -115,7 +115,7 @@ public class WavefrontBinningTests
     }
 
     [Fact]
-    public void BinningRouterRejectsCoverageBitmapPastBoundedArena()
+    public void BinningRouterUsesStableGpuPairsPastBoundedBitmapArena()
     {
         uint cellCount = 32_400;
         uint instanceCount = 32_000;
@@ -123,8 +123,30 @@ public class WavefrontBinningTests
 
         Assert.True(requestedBytes > WavefrontVectorEngine.MaximumCoverageBitmapBytes);
         Assert.Equal(
-            WavefrontBinningMode.CpuSparseStable,
+            WavefrontBinningMode.GpuStableRadixPairs,
             WavefrontVectorEngine.SelectBinningMode(cellCount, instanceCount, pairCount: 32_000));
+    }
+
+    [Fact]
+    public void BinningRouterKeepsSmallSparsePairListsOnCpu()
+    {
+        Assert.Equal(
+            WavefrontBinningMode.CpuSparseStable,
+            WavefrontVectorEngine.SelectBinningMode(
+                cellCount: 32_400,
+                instanceCount: 32_000,
+                pairCount: WavefrontVectorEngine.MinimumGpuRadixPairCount - 1u));
+    }
+
+    [Fact]
+    public void BinningRouterBoundsGpuRadixPairArenas()
+    {
+        Assert.Equal(
+            WavefrontBinningMode.CpuSparseStable,
+            WavefrontVectorEngine.SelectBinningMode(
+                cellCount: 32_400,
+                instanceCount: 32_000,
+                pairCount: WavefrontVectorEngine.MaximumGpuRadixPairCount + 1u));
     }
 
     [Fact]
@@ -274,6 +296,17 @@ public class WavefrontBinningTests
         Assert.Equal(
             56,
             Marshal.OffsetOf<GpuWavefrontUniforms>(nameof(GpuWavefrontUniforms.BinningMode)).ToInt32());
+    }
+
+    [Fact]
+    public void RadixParametersUseFourAlignedStableBytePasses()
+    {
+        Assert.Equal(4u, WavefrontVectorEngine.RadixPassCount);
+        Assert.Equal(256, Marshal.SizeOf<GpuSortParamsAligned>());
+        Assert.Equal(0, Marshal.OffsetOf<GpuSortParamsAligned>(nameof(GpuSortParamsAligned.Shift)).ToInt32());
+        Assert.Equal(4, Marshal.OffsetOf<GpuSortParamsAligned>(nameof(GpuSortParamsAligned.SourceIndex)).ToInt32());
+        Assert.Equal(8, Marshal.OffsetOf<GpuSortParamsAligned>(nameof(GpuSortParamsAligned.PairCount)).ToInt32());
+        Assert.Equal(12, Marshal.OffsetOf<GpuSortParamsAligned>(nameof(GpuSortParamsAligned.BlockCount)).ToInt32());
     }
 
     [Fact]

@@ -80,7 +80,8 @@ public enum GpuCellShapeClass : uint
 public enum WavefrontBinningMode
 {
     GpuCoverageBitmap,
-    CpuSparseStable
+    CpuSparseStable,
+    GpuStableRadixPairs
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 16)]
@@ -107,15 +108,19 @@ public struct GpuWavefrontUniforms
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
 public struct GpuSortParams
 {
-    public uint Stage;
-    public uint Step;
+    public uint Shift;
+    public uint SourceIndex;
+    public uint PairCount;
+    public uint BlockCount;
 }
 
 [StructLayout(LayoutKind.Sequential, Size = 256)]
 public struct GpuSortParamsAligned
 {
-    public uint Stage;
-    public uint Step;
+    public uint Shift;
+    public uint SourceIndex;
+    public uint PairCount;
+    public uint BlockCount;
 }
 
 public unsafe class WavefrontVectorEngine : IDisposable
@@ -123,6 +128,11 @@ public unsafe class WavefrontVectorEngine : IDisposable
     public const uint MaximumPortableDispatchDimension = 65535;
     public const uint MaximumCoverageBitmapBytes = 16u * 1024u * 1024u;
     public const uint MaximumBitmapWordsPerSparsePair = 8u;
+    public const uint MinimumGpuRadixPairCount = 16u * 1024u;
+    public const uint MaximumGpuRadixPairCount = 2u * 1024u * 1024u;
+    public const uint RadixWorkgroupSize = 256u;
+    public const uint RadixBinCount = 256u;
+    public const uint RadixPassCount = 4u;
     public const float DeviceFlatteningTolerance = 0.125f;
     private const float MinimumCoverageScale = 1f / 65536f;
     private const float MaximumCoverageScale = 65536f;
@@ -139,6 +149,12 @@ public unsafe class WavefrontVectorEngine : IDisposable
     private ComputePipeline* _buildBinCoveragePipeline;
     private ComputePipeline* _countBinWordsPipeline;
     private ComputePipeline* _scatterBinWordsPipeline;
+    private ComputePipeline* _countInstancePairsPipeline;
+    private ComputePipeline* _emitOverlapPairsPipeline;
+    private ComputePipeline* _radixHistogramPipeline;
+    private ComputePipeline* _radixScatterPipeline;
+    private ComputePipeline* _clearGridCellsPipeline;
+    private ComputePipeline* _buildGridCellsFromPairsPipeline;
     private ComputePipeline* _markActiveCellsPipeline;
     private ComputePipeline* _scatterActiveCellsPipeline;
     private ComputePipeline* _finalizeActiveDispatchPipeline;
@@ -150,6 +166,12 @@ public unsafe class WavefrontVectorEngine : IDisposable
     private BindGroupLayout* _buildBinCoverageLayout;
     private BindGroupLayout* _countBinWordsLayout;
     private BindGroupLayout* _scatterBinWordsLayout;
+    private BindGroupLayout* _countInstancePairsLayout;
+    private BindGroupLayout* _emitOverlapPairsLayout;
+    private BindGroupLayout* _radixHistogramLayout;
+    private BindGroupLayout* _radixScatterLayout;
+    private BindGroupLayout* _clearGridCellsLayout;
+    private BindGroupLayout* _buildGridCellsFromPairsLayout;
     private BindGroupLayout* _markActiveCellsLayout;
     private BindGroupLayout* _scatterActiveCellsLayout;
     private BindGroupLayout* _finalizeActiveDispatchLayout;
@@ -175,6 +197,11 @@ public unsafe class WavefrontVectorEngine : IDisposable
     private GpuBuffer? _gridCellsBuffer;
     private GpuBuffer? _gridIndicesBuffer;
     private GpuBuffer? _coverageWordsBuffer;
+    private GpuBuffer? _pairCellKeysABuffer;
+    private GpuBuffer? _pairCellKeysBBuffer;
+    private GpuBuffer? _pairInstanceIndicesBBuffer;
+    private GpuBuffer? _radixParamsSourceBuffer;
+    private GpuBuffer? _radixParamsBuffer;
     private GpuBuffer? _activeCellIndicesBuffer;
     private GpuBuffer? _activeDispatchBuffer;
     private GpuBuffer? _activeDrawBuffer;
@@ -182,12 +209,20 @@ public unsafe class WavefrontVectorEngine : IDisposable
     private GpuBuffer? _uniformsBuffer;
     private readonly GpuPrefixScan _binWordScan;
     private readonly GpuPrefixScan _activeCellScan;
+    private readonly GpuPrefixScan _instancePairScan;
+    private readonly GpuPrefixScan _radixHistogramScan;
 
     private BindGroup* _flattenBindGroup;
     private BindGroup* _clearBinWordsBindGroup;
     private BindGroup* _buildBinCoverageBindGroup;
     private BindGroup* _countBinWordsBindGroup;
     private BindGroup* _scatterBinWordsBindGroup;
+    private BindGroup* _countInstancePairsBindGroup;
+    private BindGroup* _emitOverlapPairsBindGroup;
+    private BindGroup* _radixHistogramBindGroup;
+    private BindGroup* _radixScatterBindGroup;
+    private BindGroup* _clearGridCellsBindGroup;
+    private BindGroup* _buildGridCellsFromPairsBindGroup;
     private BindGroup* _markActiveCellsBindGroup;
     private BindGroup* _scatterActiveCellsBindGroup;
     private BindGroup* _finalizeActiveDispatchBindGroup;
@@ -254,6 +289,10 @@ public unsafe class WavefrontVectorEngine : IDisposable
 
     public uint LastCpuBinningUploadBytes { get; private set; }
 
+    public uint LastGpuPairBufferBytes { get; private set; }
+
+    public uint LastRadixHistogramCount { get; private set; }
+
     public bool LastGeometryArenaReplay { get; private set; }
 
     public int FramePathCount { get; private set; }
@@ -277,6 +316,8 @@ public unsafe class WavefrontVectorEngine : IDisposable
         InitializePipelines();
         _binWordScan = new GpuPrefixScan(context);
         _activeCellScan = new GpuPrefixScan(context);
+        _instancePairScan = new GpuPrefixScan(context);
+        _radixHistogramScan = new GpuPrefixScan(context);
     }
 
     private void InitializePipelines()
@@ -287,6 +328,12 @@ public unsafe class WavefrontVectorEngine : IDisposable
         _buildBinCoveragePipeline = _pipelineCache.GetOrCreateComputePipeline("WavefrontBinBuild", shaderModule, "build_bin_coverage");
         _countBinWordsPipeline = _pipelineCache.GetOrCreateComputePipeline("WavefrontBinCount", shaderModule, "count_bin_words");
         _scatterBinWordsPipeline = _pipelineCache.GetOrCreateComputePipeline("WavefrontBinScatter", shaderModule, "scatter_bin_words");
+        _countInstancePairsPipeline = _pipelineCache.GetOrCreateComputePipeline("WavefrontPairCount", shaderModule, "count_instance_pairs");
+        _emitOverlapPairsPipeline = _pipelineCache.GetOrCreateComputePipeline("WavefrontPairEmit", shaderModule, "emit_overlap_pairs");
+        _radixHistogramPipeline = _pipelineCache.GetOrCreateComputePipeline("WavefrontRadixHistogram", shaderModule, "radix_histogram");
+        _radixScatterPipeline = _pipelineCache.GetOrCreateComputePipeline("WavefrontRadixScatter", shaderModule, "radix_scatter");
+        _clearGridCellsPipeline = _pipelineCache.GetOrCreateComputePipeline("WavefrontGridClear", shaderModule, "clear_grid_cells");
+        _buildGridCellsFromPairsPipeline = _pipelineCache.GetOrCreateComputePipeline("WavefrontGridBuildFromPairs", shaderModule, "build_grid_cells_from_pairs");
         _markActiveCellsPipeline = _pipelineCache.GetOrCreateComputePipeline("WavefrontMarkActiveCells", shaderModule, "mark_active_cells");
         _scatterActiveCellsPipeline = _pipelineCache.GetOrCreateComputePipeline("WavefrontScatterActiveCells", shaderModule, "scatter_active_cells");
         _finalizeActiveDispatchPipeline = _pipelineCache.GetOrCreateComputePipeline("WavefrontFinalizeActiveDispatch", shaderModule, "finalize_active_dispatch");
@@ -309,6 +356,12 @@ public unsafe class WavefrontVectorEngine : IDisposable
         _buildBinCoverageLayout = _context.Api.ComputePipelineGetBindGroupLayout(_buildBinCoveragePipeline, 0);
         _countBinWordsLayout = _context.Api.ComputePipelineGetBindGroupLayout(_countBinWordsPipeline, 0);
         _scatterBinWordsLayout = _context.Api.ComputePipelineGetBindGroupLayout(_scatterBinWordsPipeline, 0);
+        _countInstancePairsLayout = _context.Api.ComputePipelineGetBindGroupLayout(_countInstancePairsPipeline, 0);
+        _emitOverlapPairsLayout = _context.Api.ComputePipelineGetBindGroupLayout(_emitOverlapPairsPipeline, 0);
+        _radixHistogramLayout = _context.Api.ComputePipelineGetBindGroupLayout(_radixHistogramPipeline, 0);
+        _radixScatterLayout = _context.Api.ComputePipelineGetBindGroupLayout(_radixScatterPipeline, 0);
+        _clearGridCellsLayout = _context.Api.ComputePipelineGetBindGroupLayout(_clearGridCellsPipeline, 0);
+        _buildGridCellsFromPairsLayout = _context.Api.ComputePipelineGetBindGroupLayout(_buildGridCellsFromPairsPipeline, 0);
         _markActiveCellsLayout = _context.Api.ComputePipelineGetBindGroupLayout(_markActiveCellsPipeline, 0);
         _scatterActiveCellsLayout = _context.Api.ComputePipelineGetBindGroupLayout(_scatterActiveCellsPipeline, 0);
         _finalizeActiveDispatchLayout = _context.Api.ComputePipelineGetBindGroupLayout(_finalizeActiveDispatchPipeline, 0);
@@ -506,6 +559,8 @@ public unsafe class WavefrontVectorEngine : IDisposable
         LastCellPairCount = 0;
         LastCpuActiveCellCount = 0;
         LastCpuBinningUploadBytes = 0;
+        LastGpuPairBufferBytes = 0;
+        LastRadixHistogramCount = 0;
         LastGeometryArenaReplay = false;
         FramePathCount = reuseRetainedInstances ? _retainedPathCount : 0;
         FrameGlyphCount = reuseRetainedInstances ? _retainedGlyphCount : 0;
@@ -756,6 +811,12 @@ public unsafe class WavefrontVectorEngine : IDisposable
             ? coverageWordCount
             : 0u;
         LastCellPairCount = pairCount;
+        if (binningMode == WavefrontBinningMode.GpuStableRadixPairs)
+        {
+            LastGpuPairBufferBytes = checked(pairCount * 4u * sizeof(uint));
+            LastRadixHistogramCount = checked(
+                DivRoundUp(pairCount, RadixWorkgroupSize) * RadixBinCount);
+        }
 
         EnsureGpuResources(
             width,
@@ -834,7 +895,12 @@ public unsafe class WavefrontVectorEngine : IDisposable
             CellCount = cellCount,
             PairCount = pairCount,
             CurveStart = curveStart,
-            BinningMode = binningMode == WavefrontBinningMode.CpuSparseStable ? 1u : 0u
+            BinningMode = binningMode switch
+            {
+                WavefrontBinningMode.CpuSparseStable => 1u,
+                WavefrontBinningMode.GpuStableRadixPairs => 2u,
+                _ => 0u
+            }
         };
         _uniformsBuffer!.WriteSingle(uniforms);
 
@@ -914,6 +980,14 @@ public unsafe class WavefrontVectorEngine : IDisposable
             _context.Api.ComputePassEncoderEnd(passActiveCells);
             _context.Api.ComputePassEncoderRelease(passActiveCells);
             _context.EndGpuTimestampStage(encoder, GpuTimestampStage.WavefrontCompaction);
+        }
+        else if (!reuseBinning && binningMode == WavefrontBinningMode.GpuStableRadixPairs)
+        {
+            RecordGpuStablePairBinning(
+                encoder,
+                cellCount,
+                checked((uint)_frameInstances.Count),
+                pairCount);
         }
 
         if (!reuseBinning)
@@ -1049,6 +1123,20 @@ public unsafe class WavefrontVectorEngine : IDisposable
         bindingsDirty |= EnsureBuffer(ref _gridCellsBuffer, ByteSize(cellCount, sizeof(GpuGridCell)), BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront Grid Cells Buffer");
         bindingsDirty |= EnsureBuffer(ref _gridIndicesBuffer, ByteSize(indexCount, sizeof(uint)), BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront Grid Indices Buffer");
         bindingsDirty |= EnsureBuffer(ref _coverageWordsBuffer, ByteSize(coverageWordCount, sizeof(uint)), BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront Coverage Words Buffer");
+        uint pairArenaCount = binningMode == WavefrontBinningMode.GpuStableRadixPairs ? indexCount : 1u;
+        bindingsDirty |= EnsureBuffer(ref _pairCellKeysABuffer, ByteSize(pairArenaCount, sizeof(uint)), BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront Pair Cell Keys A Buffer");
+        bindingsDirty |= EnsureBuffer(ref _pairCellKeysBBuffer, ByteSize(pairArenaCount, sizeof(uint)), BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront Pair Cell Keys B Buffer");
+        bindingsDirty |= EnsureBuffer(ref _pairInstanceIndicesBBuffer, ByteSize(pairArenaCount, sizeof(uint)), BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront Pair Instance Indices B Buffer");
+        bindingsDirty |= EnsureBuffer(
+            ref _radixParamsSourceBuffer,
+            checked(RadixPassCount * (uint)sizeof(GpuSortParamsAligned)),
+            BufferUsage.CopySrc | BufferUsage.CopyDst,
+            "Wavefront Radix Parameter Source Buffer");
+        bindingsDirty |= EnsureBuffer(
+            ref _radixParamsBuffer,
+            (uint)sizeof(GpuSortParamsAligned),
+            BufferUsage.Uniform | BufferUsage.CopyDst,
+            "Wavefront Radix Parameters Buffer");
         bindingsDirty |= EnsureBuffer(ref _activeCellIndicesBuffer, ByteSize(checked(cellCount + 1u), sizeof(uint)), BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront Active Cell Indices Buffer");
         bindingsDirty |= EnsureBuffer(ref _cellShapeClassesBuffer, ByteSize(indexCount, sizeof(uint)), BufferUsage.Storage | BufferUsage.CopyDst, "Wavefront Cell Shape Classes Buffer");
         bindingsDirty |= EnsureBuffer(
@@ -1068,8 +1156,21 @@ public unsafe class WavefrontVectorEngine : IDisposable
         bindingsDirty |= oldScanCapacity != _binWordScan.Capacity;
         uint oldActiveScanCapacity = _activeCellScan.Capacity;
         _activeCellScan.EnsureCapacity(
-            binningMode == WavefrontBinningMode.GpuCoverageBitmap ? cellCount : 1u);
+            binningMode == WavefrontBinningMode.CpuSparseStable ? 1u : cellCount);
         bindingsDirty |= oldActiveScanCapacity != _activeCellScan.Capacity;
+        uint oldInstancePairScanCapacity = _instancePairScan.Capacity;
+        _instancePairScan.EnsureCapacity(
+            binningMode == WavefrontBinningMode.GpuStableRadixPairs
+                ? checked((uint)_frameInstances.Count)
+                : 1u);
+        bindingsDirty |= oldInstancePairScanCapacity != _instancePairScan.Capacity;
+        uint radixBlockCount = binningMode == WavefrontBinningMode.GpuStableRadixPairs
+            ? DivRoundUp(indexCount, RadixWorkgroupSize)
+            : 1u;
+        uint radixHistogramCount = checked(radixBlockCount * RadixBinCount);
+        uint oldRadixScanCapacity = _radixHistogramScan.Capacity;
+        _radixHistogramScan.EnsureCapacity(radixHistogramCount);
+        bindingsDirty |= oldRadixScanCapacity != _radixHistogramScan.Capacity;
 
         if (destination.Format != TextureFormat.Bgra8Unorm)
         {
@@ -1155,20 +1256,130 @@ public unsafe class WavefrontVectorEngine : IDisposable
         ulong wordsPerCell = ((ulong)instanceCount + 31ul) / 32ul;
         ulong coverageWords = (ulong)cellCount * wordsPerCell;
         ulong coverageBytes = coverageWords * sizeof(uint);
-        if (coverageWords > uint.MaxValue || coverageBytes > MaximumCoverageBitmapBytes)
-        {
-            return WavefrontBinningMode.CpuSparseStable;
-        }
-
         // Small bitmaps are cheaper to leave on the GPU even when occupancy is low. Beyond that
         // fixed floor, avoid clearing/scanning more than eight bitmap words per useful overlap.
         const ulong smallBitmapWordFloor = 4096ul;
         ulong usefulWordBudget = Math.Max(
             smallBitmapWordFloor,
             (ulong)pairCount * MaximumBitmapWordsPerSparsePair);
-        return coverageWords <= usefulWordBudget
-            ? WavefrontBinningMode.GpuCoverageBitmap
-            : WavefrontBinningMode.CpuSparseStable;
+        if (coverageWords <= uint.MaxValue &&
+            coverageBytes <= MaximumCoverageBitmapBytes &&
+            coverageWords <= usefulWordBudget)
+        {
+            return WavefrontBinningMode.GpuCoverageBitmap;
+        }
+
+        // A sparse moving scene should not round-trip its exact bins through managed memory.
+        // Four stable 8-bit radix passes keep painter order while bounding the extra pair arenas.
+        if (pairCount >= MinimumGpuRadixPairCount && pairCount <= MaximumGpuRadixPairCount)
+        {
+            return WavefrontBinningMode.GpuStableRadixPairs;
+        }
+
+        return WavefrontBinningMode.CpuSparseStable;
+    }
+
+    private void RecordGpuStablePairBinning(
+        CommandEncoder* encoder,
+        uint cellCount,
+        uint instanceCount,
+        uint pairCount)
+    {
+        uint radixBlockCount = DivRoundUp(pairCount, RadixWorkgroupSize);
+        uint histogramCount = checked(radixBlockCount * RadixBinCount);
+        Span<GpuSortParamsAligned> radixPasses = stackalloc GpuSortParamsAligned[(int)RadixPassCount];
+        for (uint passIndex = 0; passIndex < RadixPassCount; passIndex++)
+        {
+            radixPasses[(int)passIndex] = new GpuSortParamsAligned
+            {
+                Shift = passIndex * 8u,
+                SourceIndex = passIndex & 1u,
+                PairCount = pairCount,
+                BlockCount = radixBlockCount
+            };
+        }
+        _radixParamsSourceBuffer!.Write(radixPasses);
+
+        var passDescriptor = new ComputePassDescriptor();
+        _context.BeginGpuTimestampStage(encoder, GpuTimestampStage.WavefrontBinning);
+        var passCount = _context.Api.CommandEncoderBeginComputePass(encoder, &passDescriptor);
+        _context.Api.ComputePassEncoderSetPipeline(passCount, _countInstancePairsPipeline);
+        _context.Api.ComputePassEncoderSetBindGroup(passCount, 0, _countInstancePairsBindGroup, 0, null);
+        _context.Api.ComputePassEncoderDispatchWorkgroups(
+            passCount,
+            DivRoundUp(instanceCount, 64u),
+            1,
+            1);
+        _context.Api.ComputePassEncoderEnd(passCount);
+        _context.Api.ComputePassEncoderRelease(passCount);
+
+        _instancePairScan.RecordExclusiveScan(encoder, instanceCount);
+
+        var passEmit = _context.Api.CommandEncoderBeginComputePass(encoder, &passDescriptor);
+        _context.Api.ComputePassEncoderSetPipeline(passEmit, _emitOverlapPairsPipeline);
+        _context.Api.ComputePassEncoderSetBindGroup(passEmit, 0, _emitOverlapPairsBindGroup, 0, null);
+        _context.Api.ComputePassEncoderDispatchWorkgroups(
+            passEmit,
+            DivRoundUp(instanceCount, 64u),
+            1,
+            1);
+        _context.Api.ComputePassEncoderEnd(passEmit);
+        _context.Api.ComputePassEncoderRelease(passEmit);
+
+        for (uint passIndex = 0; passIndex < RadixPassCount; passIndex++)
+        {
+            _context.Api.CommandEncoderCopyBufferToBuffer(
+                encoder,
+                _radixParamsSourceBuffer.BufferPtr,
+                passIndex * (uint)sizeof(GpuSortParamsAligned),
+                _radixParamsBuffer!.BufferPtr,
+                0,
+                (uint)sizeof(GpuSortParamsAligned));
+
+            var passHistogram = _context.Api.CommandEncoderBeginComputePass(encoder, &passDescriptor);
+            _context.Api.ComputePassEncoderSetPipeline(passHistogram, _radixHistogramPipeline);
+            _context.Api.ComputePassEncoderSetBindGroup(passHistogram, 0, _radixHistogramBindGroup, 0, null);
+            _context.Api.ComputePassEncoderDispatchWorkgroups(passHistogram, radixBlockCount, 1, 1);
+            _context.Api.ComputePassEncoderEnd(passHistogram);
+            _context.Api.ComputePassEncoderRelease(passHistogram);
+
+            _radixHistogramScan.RecordExclusiveScan(encoder, histogramCount);
+
+            var passScatter = _context.Api.CommandEncoderBeginComputePass(encoder, &passDescriptor);
+            _context.Api.ComputePassEncoderSetPipeline(passScatter, _radixScatterPipeline);
+            _context.Api.ComputePassEncoderSetBindGroup(passScatter, 0, _radixScatterBindGroup, 0, null);
+            _context.Api.ComputePassEncoderDispatchWorkgroups(passScatter, radixBlockCount, 1, 1);
+            _context.Api.ComputePassEncoderEnd(passScatter);
+            _context.Api.ComputePassEncoderRelease(passScatter);
+        }
+        _context.EndGpuTimestampStage(encoder, GpuTimestampStage.WavefrontBinning);
+
+        _context.BeginGpuTimestampStage(encoder, GpuTimestampStage.WavefrontCompaction);
+        var passGrid = _context.Api.CommandEncoderBeginComputePass(encoder, &passDescriptor);
+        _context.Api.ComputePassEncoderSetPipeline(passGrid, _clearGridCellsPipeline);
+        _context.Api.ComputePassEncoderSetBindGroup(passGrid, 0, _clearGridCellsBindGroup, 0, null);
+        _context.Api.ComputePassEncoderDispatchWorkgroups(passGrid, DivRoundUp(cellCount, 256u), 1, 1);
+        _context.Api.ComputePassEncoderSetPipeline(passGrid, _buildGridCellsFromPairsPipeline);
+        _context.Api.ComputePassEncoderSetBindGroup(passGrid, 0, _buildGridCellsFromPairsBindGroup, 0, null);
+        _context.Api.ComputePassEncoderDispatchWorkgroups(passGrid, DivRoundUp(pairCount, 256u), 1, 1);
+        _context.Api.ComputePassEncoderSetPipeline(passGrid, _markActiveCellsPipeline);
+        _context.Api.ComputePassEncoderSetBindGroup(passGrid, 0, _markActiveCellsBindGroup, 0, null);
+        _context.Api.ComputePassEncoderDispatchWorkgroups(passGrid, DivRoundUp(cellCount, 256u), 1, 1);
+        _context.Api.ComputePassEncoderEnd(passGrid);
+        _context.Api.ComputePassEncoderRelease(passGrid);
+
+        _activeCellScan.RecordExclusiveScan(encoder, cellCount);
+
+        var passActive = _context.Api.CommandEncoderBeginComputePass(encoder, &passDescriptor);
+        _context.Api.ComputePassEncoderSetPipeline(passActive, _scatterActiveCellsPipeline);
+        _context.Api.ComputePassEncoderSetBindGroup(passActive, 0, _scatterActiveCellsBindGroup, 0, null);
+        _context.Api.ComputePassEncoderDispatchWorkgroups(passActive, DivRoundUp(cellCount, 256u), 1, 1);
+        _context.Api.ComputePassEncoderSetPipeline(passActive, _finalizeActiveDispatchPipeline);
+        _context.Api.ComputePassEncoderSetBindGroup(passActive, 0, _finalizeActiveDispatchBindGroup, 0, null);
+        _context.Api.ComputePassEncoderDispatchWorkgroups(passActive, 1, 1, 1);
+        _context.Api.ComputePassEncoderEnd(passActive);
+        _context.Api.ComputePassEncoderRelease(passActive);
+        _context.EndGpuTimestampStage(encoder, GpuTimestampStage.WavefrontCompaction);
     }
 
     private void UploadCpuSparseBins(
@@ -1623,6 +1834,49 @@ public unsafe class WavefrontVectorEngine : IDisposable
         scatterEntries[4] = BufferEntry(14, _binWordScan.OutputBuffer);
         _scatterBinWordsBindGroup = CreateBindGroup(_scatterBinWordsLayout, scatterEntries, 5, "wavefront bin scatter");
 
+        var countPairEntries = stackalloc BindGroupEntry[4];
+        countPairEntries[0] = BufferEntry(0, _uniformsBuffer!);
+        countPairEntries[1] = BufferEntry(4, _instancesBuffer!);
+        countPairEntries[2] = BufferEntry(21, _shapeTransformsBuffer!);
+        countPairEntries[3] = BufferEntry(26, _instancePairScan.InputBuffer);
+        _countInstancePairsBindGroup = CreateBindGroup(_countInstancePairsLayout, countPairEntries, 4, "wavefront pair count");
+
+        var emitPairEntries = stackalloc BindGroupEntry[6];
+        emitPairEntries[0] = BufferEntry(0, _uniformsBuffer!);
+        emitPairEntries[1] = BufferEntry(4, _instancesBuffer!);
+        emitPairEntries[2] = BufferEntry(6, _gridIndicesBuffer!);
+        emitPairEntries[3] = BufferEntry(21, _shapeTransformsBuffer!);
+        emitPairEntries[4] = BufferEntry(22, _pairCellKeysABuffer!);
+        emitPairEntries[5] = BufferEntry(27, _instancePairScan.OutputBuffer);
+        _emitOverlapPairsBindGroup = CreateBindGroup(_emitOverlapPairsLayout, emitPairEntries, 6, "wavefront pair emit");
+
+        var radixHistogramEntries = stackalloc BindGroupEntry[4];
+        radixHistogramEntries[0] = BufferEntry(22, _pairCellKeysABuffer!);
+        radixHistogramEntries[1] = BufferEntry(23, _pairCellKeysBBuffer!);
+        radixHistogramEntries[2] = BufferEntry(25, _radixParamsBuffer!);
+        radixHistogramEntries[3] = BufferEntry(28, _radixHistogramScan.InputBuffer);
+        _radixHistogramBindGroup = CreateBindGroup(_radixHistogramLayout, radixHistogramEntries, 4, "wavefront radix histogram");
+
+        var radixScatterEntries = stackalloc BindGroupEntry[6];
+        radixScatterEntries[0] = BufferEntry(6, _gridIndicesBuffer!);
+        radixScatterEntries[1] = BufferEntry(22, _pairCellKeysABuffer!);
+        radixScatterEntries[2] = BufferEntry(23, _pairCellKeysBBuffer!);
+        radixScatterEntries[3] = BufferEntry(24, _pairInstanceIndicesBBuffer!);
+        radixScatterEntries[4] = BufferEntry(25, _radixParamsBuffer!);
+        radixScatterEntries[5] = BufferEntry(29, _radixHistogramScan.OutputBuffer);
+        _radixScatterBindGroup = CreateBindGroup(_radixScatterLayout, radixScatterEntries, 6, "wavefront radix scatter");
+
+        var clearGridEntries = stackalloc BindGroupEntry[2];
+        clearGridEntries[0] = BufferEntry(0, _uniformsBuffer!);
+        clearGridEntries[1] = BufferEntry(5, _gridCellsBuffer!);
+        _clearGridCellsBindGroup = CreateBindGroup(_clearGridCellsLayout, clearGridEntries, 2, "wavefront grid clear");
+
+        var buildGridEntries = stackalloc BindGroupEntry[3];
+        buildGridEntries[0] = BufferEntry(0, _uniformsBuffer!);
+        buildGridEntries[1] = BufferEntry(5, _gridCellsBuffer!);
+        buildGridEntries[2] = BufferEntry(22, _pairCellKeysABuffer!);
+        _buildGridCellsFromPairsBindGroup = CreateBindGroup(_buildGridCellsFromPairsLayout, buildGridEntries, 3, "wavefront grid build from pairs");
+
         var markActiveEntries = stackalloc BindGroupEntry[3];
         markActiveEntries[0] = BufferEntry(0, _uniformsBuffer!);
         markActiveEntries[1] = BufferEntry(5, _gridCellsBuffer!);
@@ -1709,6 +1963,12 @@ public unsafe class WavefrontVectorEngine : IDisposable
         ReleaseBindGroup(ref _buildBinCoverageBindGroup);
         ReleaseBindGroup(ref _countBinWordsBindGroup);
         ReleaseBindGroup(ref _scatterBinWordsBindGroup);
+        ReleaseBindGroup(ref _countInstancePairsBindGroup);
+        ReleaseBindGroup(ref _emitOverlapPairsBindGroup);
+        ReleaseBindGroup(ref _radixHistogramBindGroup);
+        ReleaseBindGroup(ref _radixScatterBindGroup);
+        ReleaseBindGroup(ref _clearGridCellsBindGroup);
+        ReleaseBindGroup(ref _buildGridCellsFromPairsBindGroup);
         ReleaseBindGroup(ref _markActiveCellsBindGroup);
         ReleaseBindGroup(ref _scatterActiveCellsBindGroup);
         ReleaseBindGroup(ref _finalizeActiveDispatchBindGroup);
@@ -1734,6 +1994,8 @@ public unsafe class WavefrontVectorEngine : IDisposable
         ReleaseBindGroups();
         _binWordScan.Dispose();
         _activeCellScan.Dispose();
+        _instancePairScan.Dispose();
+        _radixHistogramScan.Dispose();
         _bvhBuffer?.Dispose();
         _rawCurvesBuffer?.Dispose();
         _linesBuffer?.Dispose();
@@ -1742,6 +2004,11 @@ public unsafe class WavefrontVectorEngine : IDisposable
         _gridCellsBuffer?.Dispose();
         _gridIndicesBuffer?.Dispose();
         _coverageWordsBuffer?.Dispose();
+        _pairCellKeysABuffer?.Dispose();
+        _pairCellKeysBBuffer?.Dispose();
+        _pairInstanceIndicesBBuffer?.Dispose();
+        _radixParamsSourceBuffer?.Dispose();
+        _radixParamsBuffer?.Dispose();
         _activeCellIndicesBuffer?.Dispose();
         _activeDispatchBuffer?.Dispose();
         _activeDrawBuffer?.Dispose();
@@ -1753,6 +2020,12 @@ public unsafe class WavefrontVectorEngine : IDisposable
         _context.Api.BindGroupLayoutRelease(_buildBinCoverageLayout);
         _context.Api.BindGroupLayoutRelease(_countBinWordsLayout);
         _context.Api.BindGroupLayoutRelease(_scatterBinWordsLayout);
+        _context.Api.BindGroupLayoutRelease(_countInstancePairsLayout);
+        _context.Api.BindGroupLayoutRelease(_emitOverlapPairsLayout);
+        _context.Api.BindGroupLayoutRelease(_radixHistogramLayout);
+        _context.Api.BindGroupLayoutRelease(_radixScatterLayout);
+        _context.Api.BindGroupLayoutRelease(_clearGridCellsLayout);
+        _context.Api.BindGroupLayoutRelease(_buildGridCellsFromPairsLayout);
         _context.Api.BindGroupLayoutRelease(_markActiveCellsLayout);
         _context.Api.BindGroupLayoutRelease(_scatterActiveCellsLayout);
         _context.Api.BindGroupLayoutRelease(_finalizeActiveDispatchLayout);
