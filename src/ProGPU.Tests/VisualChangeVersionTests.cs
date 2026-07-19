@@ -68,44 +68,6 @@ public sealed class VisualChangeVersionTests
     }
 
     [Fact]
-    public void PlacementChangeAdvancesOnlyPlacementVersionThroughAncestors()
-    {
-        var parent = new ContainerVisual();
-        var child = new Visual();
-        parent.AddChild(child);
-        long parentContent = parent.ContentVersion;
-        long parentPlacement = parent.PlacementVersion;
-        long childContent = child.ContentVersion;
-        long childPlacement = child.PlacementVersion;
-
-        child.Offset = new Vector2(14f, 27f);
-
-        Assert.Equal(childContent, child.ContentVersion);
-        Assert.True(child.PlacementVersion > childPlacement);
-        Assert.Equal(parentContent, parent.ContentVersion);
-        Assert.True(parent.PlacementVersion > parentPlacement);
-    }
-
-    [Fact]
-    public void ContentChangeAdvancesOnlyContentVersionThroughAncestors()
-    {
-        var parent = new ContainerVisual();
-        var child = new Visual();
-        parent.AddChild(child);
-        long parentContent = parent.ContentVersion;
-        long parentPlacement = parent.PlacementVersion;
-        long childContent = child.ContentVersion;
-        long childPlacement = child.PlacementVersion;
-
-        child.Size = new Vector2(40f, 22f);
-
-        Assert.True(child.ContentVersion > childContent);
-        Assert.Equal(childPlacement, child.PlacementVersion);
-        Assert.True(parent.ContentVersion > parentContent);
-        Assert.Equal(parentPlacement, parent.PlacementVersion);
-    }
-
-    [Fact]
     public void ClipBoundsChangeIncrementsVisualAndParentChangeVersion()
     {
         var parent = new ContainerVisual();

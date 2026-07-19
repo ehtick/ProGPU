@@ -17,8 +17,6 @@ public class Visual
     private Matrix4x4 _transform = Matrix4x4.Identity;
     private bool _isDirty = true;
     private long _changeVersion;
-    private long _contentVersion;
-    private long _placementVersion;
     private bool _cacheAsLayer;
     public virtual bool HasTemplate => false;
     private Vector3 _scale = Vector3.One;
@@ -76,7 +74,7 @@ public class Visual
             if (_offset != value)
             {
                 _offset = value;
-                InvalidatePlacement();
+                Invalidate();
             }
         }
     }
@@ -115,7 +113,7 @@ public class Visual
             if (_opacity != value)
             {
                 _opacity = value;
-                InvalidatePlacement();
+                Invalidate();
             }
         }
     }
@@ -128,7 +126,7 @@ public class Visual
             if (_transform != value)
             {
                 _transform = value;
-                InvalidatePlacement();
+                Invalidate();
             }
         }
     }
@@ -151,18 +149,6 @@ public class Visual
 
     public long ChangeVersion => _changeVersion;
 
-    /// <summary>
-    /// Advances for local or descendant command, material, structural, or
-    /// unsupported state changes. Placement-only changes do not advance it.
-    /// </summary>
-    public long ContentVersion => _contentVersion;
-
-    /// <summary>
-    /// Advances for local or descendant transform/opacity placement changes
-    /// whose retained command content may remain reusable.
-    /// </summary>
-    public long PlacementVersion => _placementVersion;
-
     public bool CacheAsLayer
     {
         get => _cacheAsLayer;
@@ -184,7 +170,7 @@ public class Visual
             if (_scale != value)
             {
                 _scale = value;
-                InvalidatePlacement();
+                Invalidate();
             }
         }
     }
@@ -197,7 +183,7 @@ public class Visual
             if (_rotation != value)
             {
                 _rotation = value;
-                InvalidatePlacement();
+                Invalidate();
             }
         }
     }
@@ -210,7 +196,7 @@ public class Visual
             if (_centerPoint != value)
             {
                 _centerPoint = value;
-                InvalidatePlacement();
+                Invalidate();
             }
         }
     }
@@ -223,7 +209,7 @@ public class Visual
             if (_renderTransformOrigin != value)
             {
                 _renderTransformOrigin = value;
-                InvalidatePlacement();
+                Invalidate();
             }
         }
     }
@@ -311,40 +297,17 @@ public class Visual
 
     public void Invalidate()
     {
-        InvalidateCore(VisualChangeKind.Content);
-    }
-
-    private void InvalidatePlacement()
-    {
-        InvalidateCore(VisualChangeKind.Placement);
-    }
-
-    private void InvalidateCore(VisualChangeKind kind)
-    {
-        AdvanceVersion(ref _changeVersion);
-        if (kind == VisualChangeKind.Placement)
+        unchecked
         {
-            AdvanceVersion(ref _placementVersion);
-        }
-        else
-        {
-            AdvanceVersion(ref _contentVersion);
+            _changeVersion++;
+            if (_changeVersion < 0)
+            {
+                _changeVersion = 1;
+            }
         }
 
         _isDirty = true;
-        Parent?.InvalidateCore(kind);
-    }
-
-    private static void AdvanceVersion(ref long version)
-    {
-        unchecked
-        {
-            version++;
-            if (version < 0)
-            {
-                version = 1;
-            }
-        }
+        Parent?.Invalidate();
     }
 
     public virtual void OnRender(DrawingContext context)
@@ -434,8 +397,7 @@ public class Visual
     {
         if (_activeAnimations.Count == 0) return;
 
-        bool placementChanged = false;
-        bool contentChanged = false;
+        bool changed = false;
 
         var activeAnimationEnumerator = _activeAnimations.GetEnumerator();
         while (activeAnimationEnumerator.MoveNext())
@@ -456,7 +418,7 @@ public class Visual
                     if (_opacity != fOpacity)
                     {
                         _opacity = fOpacity;
-                        placementChanged = true;
+                        changed = true;
                     }
                 }
             }
@@ -467,7 +429,7 @@ public class Visual
                     if (_rotation != fRotation)
                     {
                         _rotation = fRotation;
-                        placementChanged = true;
+                        changed = true;
                     }
                 }
             }
@@ -478,7 +440,7 @@ public class Visual
                     if (_offset != vOffset)
                     {
                         _offset = vOffset;
-                        placementChanged = true;
+                        changed = true;
                     }
                 }
             }
@@ -489,7 +451,7 @@ public class Visual
                     if (_size != vSize)
                     {
                         _size = vSize;
-                        contentChanged = true;
+                        changed = true;
                     }
                 }
             }
@@ -500,7 +462,7 @@ public class Visual
                     if (_scale != vScale)
                     {
                         _scale = vScale;
-                        placementChanged = true;
+                        changed = true;
                     }
                 }
                 else if (value is Vector2 vScale2)
@@ -509,31 +471,21 @@ public class Visual
                     if (_scale != vScale3)
                     {
                         _scale = vScale3;
-                        placementChanged = true;
+                        changed = true;
                     }
                 }
             }
         }
 
-        if (contentChanged)
+        if (changed)
         {
             Invalidate();
-        }
-        else if (placementChanged)
-        {
-            InvalidatePlacement();
         }
     }
 
     private static bool IsAnimationProperty(string propertyName, string expected)
     {
         return string.Equals(propertyName, expected, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private enum VisualChangeKind : byte
-    {
-        Content,
-        Placement
     }
 }
 
