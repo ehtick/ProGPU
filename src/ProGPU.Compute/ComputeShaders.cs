@@ -12,6 +12,8 @@ public static class ComputeShaders
 
     public static readonly string SceneScatter = ShaderResource.Load(typeof(ComputeShaders), "SceneScatter.wgsl");
 
+    public static readonly string AnalyticTileFine = ShaderResource.Load(typeof(ComputeShaders), "AnalyticTileFine.wgsl");
+
     public static readonly string WavefrontComposite = ShaderResource.Load(typeof(ComputeShaders), "WavefrontComposite.wgsl");
 
     public static readonly string NonlinearColorFilter = ShaderResource.Load(typeof(ComputeShaders), "NonlinearColorFilter.wgsl");
