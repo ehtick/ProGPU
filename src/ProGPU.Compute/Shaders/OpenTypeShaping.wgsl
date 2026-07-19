@@ -141,6 +141,13 @@ struct LookupTask {
     feature_tag: u32,
 };
 
+// Contextual GSUB/GPOS entry points run as a single invocation. Keeping their
+// bounded task stack in invocation-private storage avoids passing a large
+// function-local array through the complete lookup call graph. This preserves
+// the 64-task recursion bound while keeping Metal shader compilation tractable.
+var<private> lookup_tasks: array<LookupTask, 64>;
+var<private> lookup_task_count: u32;
+
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> input_scalars: array<InputScalar>;
 @group(0) @binding(2) var<storage, read> cmap_ranges: array<CmapRange>;
@@ -2863,8 +2870,7 @@ fn lookup_from_index(table_base: u32, lookup_index: u32) -> u32 {
 }
 
 fn schedule_records(record_offset: u32, record_count: u32, position: u32,
-    lookup_offset: u32, lookup_flags: u32, depth: u32, feature_value: u32, feature_tag: u32,
-    tasks: ptr<function, array<LookupTask, 64>>, task_count: ptr<function, u32>) -> bool {
+    lookup_offset: u32, lookup_flags: u32, depth: u32, feature_value: u32, feature_tag: u32) -> bool {
     var record = record_count;
     loop {
         if (record == 0u) { break; }
@@ -2873,11 +2879,11 @@ fn schedule_records(record_offset: u32, record_count: u32, position: u32,
         let target_index = eligible_at(position, sequence_index, lookup_offset, lookup_flags);
         var target_serial = 0u;
         if (target_index >= 0) { target_serial = glyph_states[u32(target_index)].serial; }
-        if (*task_count >= 64u || depth >= 64u) {
+        if (lookup_task_count >= 64u || depth >= 64u) {
             run_state.status = 2u;
             return false;
         }
-        (*tasks)[*task_count] = LookupTask(
+        lookup_tasks[lookup_task_count] = LookupTask(
             table_u16(record_offset + record * 4u + 2u),
             target_serial,
             position,
@@ -2887,14 +2893,13 @@ fn schedule_records(record_offset: u32, record_count: u32, position: u32,
             depth + 1u,
             feature_value,
             feature_tag);
-        *task_count += 1u;
+        lookup_task_count += 1u;
     }
     return true;
 }
 
 fn apply_context_subtable(subtable: u32, position: u32, lookup_offset: u32, lookup_flags: u32,
-    depth: u32, feature_value: u32, feature_tag: u32, tasks: ptr<function, array<LookupTask, 64>>,
-    task_count: ptr<function, u32>) -> bool {
+    depth: u32, feature_value: u32, feature_tag: u32) -> bool {
     let format = table_u16(subtable);
     if (format == 1u) {
         let covered = coverage_index(subtable + table_u16(subtable + 2u), glyphs[position].glyph_id);
@@ -2920,7 +2925,7 @@ fn apply_context_subtable(subtable: u32, position: u32, lookup_offset: u32, look
             if (!matched) { continue; }
             run_state.skip_count = max(run_state.skip_count, u32(last) - position);
             return schedule_records(rule + 2u + glyph_count * 2u, record_count, position,
-                lookup_offset, lookup_flags, depth, feature_value, feature_tag, tasks, task_count);
+                lookup_offset, lookup_flags, depth, feature_value, feature_tag);
         }
     } else if (format == 2u) {
         let covered = coverage_index(subtable + table_u16(subtable + 2u), glyphs[position].glyph_id);
@@ -2950,7 +2955,7 @@ fn apply_context_subtable(subtable: u32, position: u32, lookup_offset: u32, look
             if (!matched) { continue; }
             run_state.skip_count = max(run_state.skip_count, u32(last) - position);
             return schedule_records(rule + 2u + glyph_count * 2u, record_count, position,
-                lookup_offset, lookup_flags, depth, feature_value, feature_tag, tasks, task_count);
+                lookup_offset, lookup_flags, depth, feature_value, feature_tag);
         }
     } else if (format == 3u) {
         let glyph_count = table_u16(subtable + 2u);
@@ -2969,7 +2974,7 @@ fn apply_context_subtable(subtable: u32, position: u32, lookup_offset: u32, look
         if (matched) {
             run_state.skip_count = max(run_state.skip_count, u32(last) - position);
             return schedule_records(subtable + 6u + glyph_count * 2u, record_count, position,
-                lookup_offset, lookup_flags, depth, feature_value, feature_tag, tasks, task_count);
+                lookup_offset, lookup_flags, depth, feature_value, feature_tag);
         }
     }
     return false;
@@ -2991,8 +2996,7 @@ fn match_backtrack_glyphs(offset: u32, count: u32, position: u32,
 }
 
 fn apply_chain_context_subtable(subtable: u32, position: u32, lookup_offset: u32, lookup_flags: u32,
-    depth: u32, feature_value: u32, feature_tag: u32, tasks: ptr<function, array<LookupTask, 64>>,
-    task_count: ptr<function, u32>) -> bool {
+    depth: u32, feature_value: u32, feature_tag: u32) -> bool {
     let format = table_u16(subtable);
     if (format == 1u) {
         let covered = coverage_index(subtable + table_u16(subtable + 2u), glyphs[position].glyph_id);
@@ -3036,7 +3040,7 @@ fn apply_chain_context_subtable(subtable: u32, position: u32, lookup_offset: u32
             let record_count = table_u16(cursor);
             run_state.skip_count = max(run_state.skip_count, u32(last) - position);
             return schedule_records(cursor + 2u, record_count, position, lookup_offset, lookup_flags,
-                depth, feature_value, feature_tag, tasks, task_count);
+                depth, feature_value, feature_tag);
         }
     } else if (format == 2u) {
         let covered = coverage_index(subtable + table_u16(subtable + 2u), glyphs[position].glyph_id);
@@ -3088,7 +3092,7 @@ fn apply_chain_context_subtable(subtable: u32, position: u32, lookup_offset: u32
             let record_count = table_u16(cursor);
             run_state.skip_count = max(run_state.skip_count, u32(last) - position);
             return schedule_records(cursor + 2u, record_count, position, lookup_offset, lookup_flags,
-                depth, feature_value, feature_tag, tasks, task_count);
+                depth, feature_value, feature_tag);
         }
     } else if (format == 3u) {
         var cursor = subtable + 2u;
@@ -3128,7 +3132,7 @@ fn apply_chain_context_subtable(subtable: u32, position: u32, lookup_offset: u32
         let record_count = table_u16(cursor);
         run_state.skip_count = max(run_state.skip_count, u32(last) - position);
         return schedule_records(cursor + 2u, record_count, position, lookup_offset, lookup_flags,
-            depth, feature_value, feature_tag, tasks, task_count);
+            depth, feature_value, feature_tag);
     }
     return false;
 }
@@ -3322,8 +3326,7 @@ fn apply_ligature(subtable: u32, position: u32, lookup_offset: u32, lookup_flags
 }
 
 fn apply_gsub_subtable(lookup_type: u32, subtable: u32, position: u32, value: u32, feature_tag: u32,
-    lookup_offset: u32, lookup_flags: u32, depth: u32,
-    tasks: ptr<function, array<LookupTask, 64>>, task_count: ptr<function, u32>) -> bool {
+    lookup_offset: u32, lookup_flags: u32, depth: u32) -> bool {
     if (lookup_type == 1u) { return apply_single_substitution(subtable, position); }
     if (lookup_type == 2u && table_u16(subtable) == 1u) { return replace_multiple(subtable, position); }
     if (lookup_type == 3u && table_u16(subtable) == 1u) {
@@ -3334,11 +3337,11 @@ fn apply_gsub_subtable(lookup_type: u32, subtable: u32, position: u32, value: u3
     }
     if (lookup_type == 5u) {
         return apply_context_subtable(subtable, position, lookup_offset, lookup_flags,
-            depth, value, feature_tag, tasks, task_count);
+            depth, value, feature_tag);
     }
     if (lookup_type == 6u) {
         return apply_chain_context_subtable(subtable, position, lookup_offset, lookup_flags,
-            depth, value, feature_tag, tasks, task_count);
+            depth, value, feature_tag);
     }
     if (lookup_type == 8u) {
         return apply_reverse_chain_subtable(subtable, position, lookup_offset, lookup_flags);
@@ -3346,8 +3349,8 @@ fn apply_gsub_subtable(lookup_type: u32, subtable: u32, position: u32, value: u3
     return false;
 }
 
-fn apply_lookup_at(lookup_offset: u32, position: u32, feature_value: u32, feature_tag: u32, depth: u32,
-    tasks: ptr<function, array<LookupTask, 64>>, task_count: ptr<function, u32>) -> bool {
+fn apply_lookup_at(lookup_offset: u32, position: u32, feature_value: u32, feature_tag: u32,
+    depth: u32) -> bool {
     if (lookup_offset == 0u || position >= run_state.glyph_count) { return false; }
     let lookup_type = table_u16(lookup_offset);
     let lookup_flags = table_u16(lookup_offset + 2u);
@@ -3361,7 +3364,7 @@ fn apply_lookup_at(lookup_offset: u32, position: u32, feature_value: u32, featur
             effective_subtable = subtable + table_u32(subtable + 4u);
         }
         if (apply_gsub_subtable(effective_type, effective_subtable, position, feature_value, feature_tag,
-                lookup_offset, lookup_flags, depth, tasks, task_count)) { return true; }
+                lookup_offset, lookup_flags, depth)) { return true; }
     }
     return false;
 }
@@ -3734,8 +3737,7 @@ fn execute_contextual_substitution_lookup_stage(@builtin(global_invocation_id) i
     if (id.x != 0u || (run_state.lookup_state & 4u) != 0u ||
             run_state.active_command == 0xffffffffu) { return; }
     touch_lookup_bindings();
-    var tasks: array<LookupTask, 64>;
-    var task_count = 0u;
+    lookup_task_count = 0u;
     for (var command_index = run_state.active_command;
             command_index < run_state.active_command_end; command_index++) {
         let command = lookup_commands[command_index];
@@ -3751,7 +3753,7 @@ fn execute_contextual_substitution_lookup_stage(@builtin(global_invocation_id) i
                 run_state.reserved1 = glyph_states[reverse_position].syllable;
                 run_state.reserved2 = command.command_flags;
                 _ = apply_lookup_at(command.lookup_offset, reverse_position, command.feature_value,
-                    command.feature_tag, 0u, &tasks, &task_count);
+                    command.feature_tag, 0u);
                 if (run_state.status != 0u) { return; }
             }
             continue;
@@ -3764,11 +3766,11 @@ fn execute_contextual_substitution_lookup_stage(@builtin(global_invocation_id) i
             run_state.reserved1 = glyph_states[position].syllable;
             run_state.reserved2 = command.command_flags;
             _ = apply_lookup_at(command.lookup_offset, position, command.feature_value,
-                command.feature_tag, 0u, &tasks, &task_count);
+                command.feature_tag, 0u);
             loop {
-                if (task_count == 0u || run_state.status != 0u) { break; }
-                task_count -= 1u;
-                let task = tasks[task_count];
+                if (lookup_task_count == 0u || run_state.status != 0u) { break; }
+                lookup_task_count -= 1u;
+                let task = lookup_tasks[lookup_task_count];
                 var target_index = find_serial(task.target_serial);
                 if (target_index < 0) {
                     target_index = eligible_at(task.origin_position, task.sequence_index,
@@ -3777,7 +3779,7 @@ fn execute_contextual_substitution_lookup_stage(@builtin(global_invocation_id) i
                 if (target_index < 0) { continue; }
                 let nested_lookup = lookup_from_index(table_directory.gsub_offset, task.lookup_index);
                 _ = apply_lookup_at(nested_lookup, u32(target_index), task.feature_value,
-                    task.feature_tag, task.depth, &tasks, &task_count);
+                    task.feature_tag, task.depth);
             }
             if (run_state.status != 0u) { return; }
             position += run_state.skip_count;
@@ -4288,8 +4290,7 @@ fn execute_positions(@builtin(global_invocation_id) id: vec3<u32>) {
             params.script_tag == 0x6d796d32u) {
         zero_mark_advances(!has_gpos && forward);
     }
-    var tasks: array<LookupTask, 64>;
-    var task_count = 0u;
+    lookup_task_count = 0u;
     for (var command_index = 0u; command_index < params.lookup_count; command_index++) {
         let command = lookup_commands[command_index];
         if (command.table_kind != 2u || command.feature_value == 0u) { continue; }
@@ -4297,11 +4298,11 @@ fn execute_positions(@builtin(global_invocation_id) id: vec3<u32>) {
             let cluster = u32(max(glyphs[position].cluster, 0));
             if (cluster < command.range_start || cluster >= command.range_end ||
                     lookup_ignored(position, command.lookup_offset, command.lookup_flags)) { continue; }
-            _ = apply_gpos_lookup_at(command.lookup_offset, position, 0u, &tasks, &task_count);
+            _ = apply_gpos_lookup_at(command.lookup_offset, position, 0u);
             loop {
-                if (task_count == 0u || run_state.status != 0u) { break; }
-                task_count -= 1u;
-                let task = tasks[task_count];
+                if (lookup_task_count == 0u || run_state.status != 0u) { break; }
+                lookup_task_count -= 1u;
+                let task = lookup_tasks[lookup_task_count];
                 var target_index = find_serial(task.target_serial);
                 if (target_index < 0) {
                     target_index = eligible_at(task.origin_position, task.sequence_index,
@@ -4309,7 +4310,7 @@ fn execute_positions(@builtin(global_invocation_id) id: vec3<u32>) {
                 }
                 if (target_index < 0) { continue; }
                 let nested_lookup = lookup_from_index(table_directory.gpos_offset, task.lookup_index);
-                _ = apply_gpos_lookup_at(nested_lookup, u32(target_index), task.depth, &tasks, &task_count);
+                _ = apply_gpos_lookup_at(nested_lookup, u32(target_index), task.depth);
             }
             if (run_state.status != 0u) { return; }
         }
@@ -4695,8 +4696,7 @@ fn resolve_attachments() {
 }
 
 fn apply_gpos_subtable(lookup_type: u32, subtable: u32, position: u32,
-    lookup_offset: u32, lookup_flags: u32, depth: u32,
-    tasks: ptr<function, array<LookupTask, 64>>, task_count: ptr<function, u32>) -> bool {
+    lookup_offset: u32, lookup_flags: u32, depth: u32) -> bool {
     if (lookup_type == 1u) { return apply_single_position(subtable, position); }
     if (lookup_type == 2u) {
         return apply_pair_position(subtable, position, lookup_offset, lookup_flags);
@@ -4709,17 +4709,16 @@ fn apply_gpos_subtable(lookup_type: u32, subtable: u32, position: u32,
     }
     if (lookup_type == 7u) {
         return apply_context_subtable(subtable, position, lookup_offset, lookup_flags,
-            depth, 1u, 0u, tasks, task_count);
+            depth, 1u, 0u);
     }
     if (lookup_type == 8u) {
         return apply_chain_context_subtable(subtable, position, lookup_offset, lookup_flags,
-            depth, 1u, 0u, tasks, task_count);
+            depth, 1u, 0u);
     }
     return false;
 }
 
-fn apply_gpos_lookup_at(lookup_offset: u32, position: u32, depth: u32,
-    tasks: ptr<function, array<LookupTask, 64>>, task_count: ptr<function, u32>) -> bool {
+fn apply_gpos_lookup_at(lookup_offset: u32, position: u32, depth: u32) -> bool {
     if (lookup_offset == 0u || position >= run_state.glyph_count) { return false; }
     let lookup_type = table_u16(lookup_offset);
     let lookup_flags = table_u16(lookup_offset + 2u);
@@ -4734,7 +4733,7 @@ fn apply_gpos_lookup_at(lookup_offset: u32, position: u32, depth: u32,
             effective_subtable = subtable + table_u32(subtable + 4u);
         }
         if (apply_gpos_subtable(effective_type, effective_subtable, position,
-                lookup_offset, lookup_flags, depth, tasks, task_count)) { return true; }
+                lookup_offset, lookup_flags, depth)) { return true; }
     }
     return false;
 }
