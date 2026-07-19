@@ -32,6 +32,8 @@ public class SkiaSharpFontManagerTests
             Assert.Equal(families[0], typeface.FamilyName);
             using var matched = styles.CreateTypeface(SKFontStyle.Bold);
             Assert.NotNull(matched);
+            using var matchedAlias = styles.MatchStyle(SKFontStyle.Bold);
+            Assert.NotNull(matchedAlias);
         }
 
         using (var missing = manager.GetFontStyles("ProGPU Missing Font Family"))
@@ -101,6 +103,47 @@ public class SkiaSharpFontManagerTests
 
         Assert.NotNull(typeface);
         Assert.Equal(familyName, typeface.FamilyName);
+    }
+
+    [Fact]
+    public void MatchCharacterKeepsRequestedSystemFamilyAheadOfGenericFallbacks()
+    {
+        string[] serifCandidates = OperatingSystem.IsMacOS()
+            ? ["Times", "Times New Roman"]
+            : OperatingSystem.IsWindows()
+                ? ["Times New Roman", "Georgia"]
+                : ["Noto Serif", "DejaVu Serif", "Liberation Serif"];
+
+        foreach (string familyName in serifCandidates)
+        {
+            using var requested = SKFontManager.Default.MatchFamily(familyName, SKFontStyle.Normal);
+            if (requested is null)
+            {
+                continue;
+            }
+
+            using var matched = SKFontManager.Default.MatchCharacter(
+                familyName,
+                SKFontStyle.Normal,
+                Array.Empty<string>(),
+                'A');
+
+            Assert.NotNull(matched);
+            Assert.Equal(requested.FamilyName, matched.FamilyName);
+            return;
+        }
+    }
+
+    [Fact]
+    public void MatchTypefaceUsesSharedFamilyStyleMatcher()
+    {
+        SKTypeface source = SKTypeface.Default;
+        using SKTypeface? matched = SKFontManager.Default.MatchTypeface(source, SKFontStyle.BoldItalic);
+
+        Assert.NotNull(matched);
+        Assert.Equal(source.FamilyName, matched.FamilyName);
+        Assert.Equal((int)SKFontStyleWeight.Bold, matched.FontWeight);
+        Assert.Equal(SKFontStyleSlant.Italic, matched.FontSlant);
     }
 
     [Fact]

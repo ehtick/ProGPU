@@ -36,6 +36,33 @@ public sealed class LayerRenderTests
     }
 
     [Fact]
+    public void PlacementOnlyRecompileReusesRetainedVisualCommands()
+    {
+        using var window = new HeadlessWindow(64, 64);
+        var visual = new PlacementCommandVisual();
+        window.Content = visual;
+
+        try
+        {
+            window.Render();
+            RgbaPixel background = ReadPixel(window.ReadPixels(), window.Width, 40, 40);
+
+            visual.Offset = new Vector2(12f, 0f);
+            window.Render();
+
+            Assert.False(window.Compositor.Metrics.SceneCacheHit);
+            Assert.Equal(1, visual.RenderCount);
+            byte[] pixels = window.ReadPixels();
+            AssertColorNear(background, ReadPixel(pixels, window.Width, 8, 10), tolerance: 1);
+            AssertRed(ReadPixel(pixels, window.Width, 20, 10));
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
+    [Fact]
     public void VisualInvalidationRecompilesSceneAndUpdatesPixels()
     {
         using var window = new HeadlessWindow(64, 64);
@@ -333,6 +360,25 @@ public sealed class LayerRenderTests
         {
             RenderCount++;
             context.DrawRectangle(_brush, null, new Rect(0f, 0f, 64f, 64f));
+        }
+    }
+
+    private sealed class PlacementCommandVisual : FrameworkElement
+    {
+        private readonly SolidColorBrush _brush = new(new Vector4(1f, 0f, 0f, 1f));
+
+        public int RenderCount { get; private set; }
+
+        public PlacementCommandVisual()
+        {
+            Width = 64f;
+            Height = 64f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            RenderCount++;
+            context.DrawRectangle(_brush, null, new Rect(4f, 4f, 16f, 16f));
         }
     }
 

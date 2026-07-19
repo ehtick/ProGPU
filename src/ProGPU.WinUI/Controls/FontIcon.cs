@@ -78,6 +78,15 @@ public class FontIcon : IconElement
         HeightConstraint = 20f;
     }
 
+    public override Rect? LocalRenderBounds
+    {
+        get
+        {
+            float padding = MathF.Max(FontSize * 2f, Size.Y);
+            return new Rect(-padding, -padding, Size.X + padding * 2f, Size.Y + padding * 2f);
+        }
+    }
+
     protected override Vector2 MeasureOverride(Vector2 availableSize)
     {
         float size = FontSize;

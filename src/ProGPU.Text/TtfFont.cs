@@ -5,6 +5,7 @@ using System.IO.Compression;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Xml;
 using OpenFontSharp;
 using OpenFontSharp.Tables.CFF;
@@ -115,9 +116,10 @@ public readonly struct BitmapGlyphData
         new(pixelsPerEm, bearingX, bearingY, graphicType, data);
 }
 
-public class TtfFont
+public partial class TtfFont
 {
     private const int MaxSvgDocumentBytes = 16 * 1024 * 1024;
+    private const int AsciiGlyphCacheLength = 128;
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
     public const uint JpegBitmapGraphicType = 0x6A706720;
@@ -127,6 +129,10 @@ public class TtfFont
     private readonly byte[] _data;
     private readonly SfntFontFace _face;
     private readonly Typeface? _cffTypeface;
+    private readonly object _asciiGlyphCacheLock = new();
+    private ushort[]? _asciiGlyphCache;
+    private byte[]? _asciiGlyphCacheStates;
+    private readonly Lazy<Typeface?> _layoutTypeface;
     private readonly Dictionary<string, (uint offset, uint length)> _tables = new();
     private readonly Dictionary<ushort, List<FontColorLayer>?> _svgColorLayerCache = new();
 
@@ -168,6 +174,8 @@ public class TtfFont
     // hmtx metrics
     private ushort _numberOfHMetrics;
     private uint _hmtxOffset;
+    private ushort _numberOfVMetrics;
+    private uint _vmtxOffset;
 
     // loca and glyf offsets
     private uint _locaOffset;
@@ -202,6 +210,9 @@ public class TtfFont
         _data = SfntFontContainer.Normalize(fontData);
         FaceIndex = faceIndex;
         _face = SfntFontFace.Load(_data, faceIndex);
+        _layoutTypeface = new Lazy<Typeface?>(
+            LoadLayoutTypeface,
+            LazyThreadSafetyMode.ExecutionAndPublication);
         FamilyName = GetName(SfntNameIds.PreferredFamilyName, SfntNameIds.FamilyName) ?? string.Empty;
         SubfamilyName = GetName(SfntNameIds.PreferredSubfamilyName, SfntNameIds.SubfamilyName) ?? string.Empty;
         FullName = GetName(SfntNameIds.FullName) ?? FamilyName;
@@ -223,12 +234,32 @@ public class TtfFont
         }
         ParseHeadTable();
         ParseHheaTable();
+        ParseVheaTable();
         ParseMaxpTable();
         ParseFontAttributes();
         ParsePostMetrics();
         ParseColrTable();
         ParseCpalTable();
     }
+
+    internal Typeface? LayoutTypeface => _layoutTypeface.Value;
+
+    private Typeface? LoadLayoutTypeface()
+    {
+        try
+        {
+            byte[] data = _face.BaseOffset == 0 ? _data : _face.CreateStandaloneFontData();
+            using var stream = new MemoryStream(data, writable: false);
+            return new OpenFontReader().Read(stream);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            ProGpuTextDiagnostics.WriteLine($"[TtfFont] OpenType layout tables unavailable for '{FullName}': {exception.Message}");
+            return null;
+        }
+    }
+
+    public IReadOnlyList<string> GetOpenTypeFeatureTags() => OpenTypeTextShaper.GetFeatureTags(this);
 
     public TtfFont(string filePath) : this(File.ReadAllBytes(filePath))
     {
@@ -283,6 +314,12 @@ public class TtfFont
                       (data[offset + 2] << 8) |
                       data[offset + 3]);
     }
+
+    private static uint ReadUInt24(ReadOnlySpan<byte> data, int offset) =>
+        (uint)((data[offset] << 16) | (data[offset + 1] << 8) | data[offset + 2]);
+
+    private static bool CanRead(ReadOnlySpan<byte> data, int offset, int length) =>
+        offset >= 0 && length >= 0 && offset <= data.Length - length;
     #endregion
 
     private void ParseTableDirectory()
@@ -401,6 +438,16 @@ public class TtfFont
         }
     }
 
+    private void ParseVheaTable()
+    {
+        if (!_tables.TryGetValue("vhea", out var vhea) || vhea.length < 36) return;
+        _numberOfVMetrics = ReadUShort(vhea.offset + 34);
+        if (_tables.TryGetValue("vmtx", out var vmtx))
+        {
+            _vmtxOffset = vmtx.offset;
+        }
+    }
+
     private void ParseMaxpTable()
     {
         if (!_tables.TryGetValue("maxp", out var maxp)) return;
@@ -414,7 +461,110 @@ public class TtfFont
 
     public ushort GetGlyphIndex(uint codePoint)
     {
-        return _face.TryGetGlyphIndex(codePoint, out var glyphIndex) ? glyphIndex : (ushort)0;
+        if (codePoint >= AsciiGlyphCacheLength)
+        {
+            return GetUncachedGlyphIndex(codePoint);
+        }
+
+        byte[]? states = Volatile.Read(ref _asciiGlyphCacheStates);
+        if (states is null)
+        {
+            lock (_asciiGlyphCacheLock)
+            {
+                if (_asciiGlyphCacheStates is null)
+                {
+                    Volatile.Write(ref _asciiGlyphCache, new ushort[AsciiGlyphCacheLength]);
+                    Volatile.Write(ref _asciiGlyphCacheStates, new byte[AsciiGlyphCacheLength]);
+                }
+                states = _asciiGlyphCacheStates;
+            }
+        }
+
+        int index = (int)codePoint;
+        if (Volatile.Read(ref states![index]) != 0)
+        {
+            return Volatile.Read(ref _asciiGlyphCache)![index];
+        }
+
+        ushort glyphIndex = GetUncachedGlyphIndex(codePoint);
+        Volatile.Read(ref _asciiGlyphCache)![index] = glyphIndex;
+        Volatile.Write(ref states[index], (byte)1);
+        return glyphIndex;
+    }
+
+    private ushort GetUncachedGlyphIndex(uint codePoint) =>
+        _face.TryGetGlyphIndex(codePoint, out var glyphIndex) ? glyphIndex : (ushort)0;
+
+    public bool TryGetVariationGlyph(uint codePoint, uint variationSelector, out ushort glyphIndex)
+    {
+        glyphIndex = 0;
+        if (!_face.TryGetTable("cmap", out ReadOnlyMemory<byte> cmapMemory)) return false;
+        ReadOnlySpan<byte> cmap = cmapMemory.Span;
+        if (!CanRead(cmap, 0, 4)) return false;
+        ushort tableCount = ReadUShort(cmap, 2);
+        for (var tableIndex = 0; tableIndex < tableCount; tableIndex++)
+        {
+            int recordOffset = 4 + tableIndex * 8;
+            if (!CanRead(cmap, recordOffset, 8)) break;
+            uint relative = ReadUInt(cmap, recordOffset + 4);
+            if (relative > int.MaxValue) continue;
+            int subtableOffset = (int)relative;
+            if (!CanRead(cmap, subtableOffset, 10) || ReadUShort(cmap, subtableOffset) != 14) continue;
+            uint recordCount = ReadUInt(cmap, subtableOffset + 6);
+            if (recordCount > int.MaxValue / 11) return false;
+            for (var recordIndex = 0; recordIndex < (int)recordCount; recordIndex++)
+            {
+                int selectorRecord = subtableOffset + 10 + recordIndex * 11;
+                if (!CanRead(cmap, selectorRecord, 11)) return false;
+                uint selector = ReadUInt24(cmap, selectorRecord);
+                if (selector != variationSelector) continue;
+
+                uint nonDefaultRelative = ReadUInt(cmap, selectorRecord + 7);
+                if (nonDefaultRelative != 0 && nonDefaultRelative <= int.MaxValue)
+                {
+                    int mappingsOffset = subtableOffset + (int)nonDefaultRelative;
+                    if (!CanRead(cmap, mappingsOffset, 4)) return false;
+                    uint mappingCount = ReadUInt(cmap, mappingsOffset);
+                    int low = 0;
+                    int high = mappingCount > int.MaxValue ? int.MaxValue : (int)mappingCount - 1;
+                    while (low <= high)
+                    {
+                        int middle = low + ((high - low) >> 1);
+                        int mappingOffset = mappingsOffset + 4 + middle * 5;
+                        if (!CanRead(cmap, mappingOffset, 5)) return false;
+                        uint candidate = ReadUInt24(cmap, mappingOffset);
+                        if (candidate == codePoint)
+                        {
+                            glyphIndex = ReadUShort(cmap, mappingOffset + 3);
+                            return true;
+                        }
+                        if (candidate < codePoint) low = middle + 1;
+                        else high = middle - 1;
+                    }
+                }
+
+                uint defaultRelative = ReadUInt(cmap, selectorRecord + 3);
+                if (defaultRelative == 0 || defaultRelative > int.MaxValue) return false;
+                int rangesOffset = subtableOffset + (int)defaultRelative;
+                if (!CanRead(cmap, rangesOffset, 4)) return false;
+                uint rangeCount = ReadUInt(cmap, rangesOffset);
+                for (var rangeIndex = 0; rangeIndex < rangeCount; rangeIndex++)
+                {
+                    int rangeOffset = rangesOffset + 4 + rangeIndex * 4;
+                    if (!CanRead(cmap, rangeOffset, 4)) return false;
+                    uint start = ReadUInt24(cmap, rangeOffset);
+                    uint end = start + cmap[rangeOffset + 3];
+                    if (codePoint < start) break;
+                    if (codePoint <= end)
+                    {
+                        glyphIndex = GetGlyphIndex(codePoint);
+                        return glyphIndex != 0;
+                    }
+                }
+                return false;
+            }
+        }
+        return false;
     }
 
     public bool HasGlyph(uint codePoint)
@@ -440,7 +590,7 @@ public class TtfFont
             using var stream = new MemoryStream(fontData, writable: false);
             return new OpenFontReader().Read(stream);
         }
-        catch (Exception ex) when (ex is OpenFontException or OpenFontNotSupportedException or
+        catch (Exception ex) when (ex is OpenFontException or OpenFontNotSupportedException or NotImplementedException or
                                    InvalidDataException or ArgumentException or IndexOutOfRangeException or
                                    NullReferenceException or OverflowException)
         {
@@ -1052,9 +1202,93 @@ public class TtfFont
             offset = _hmtxOffset + (uint)((_numberOfHMetrics - 1) * 4);
         }
 
-        ushort advanceWidth = ReadUShort(offset);
+        float advanceWidth = ReadUShort(offset) + GetVariationAdvanceDelta(glyphIndex);
         float scale = emSize / UnitsPerEm;
         return advanceWidth * scale;
+    }
+
+    public float GetAdvanceHeight(ushort glyphIndex, float emSize)
+    {
+        float advanceHeight;
+        if (_vmtxOffset == 0 || _numberOfVMetrics == 0)
+        {
+            advanceHeight = Ascender - Descender;
+        }
+        else
+        {
+            uint offset = glyphIndex < _numberOfVMetrics
+                ? _vmtxOffset + (uint)(glyphIndex * 4)
+                : _vmtxOffset + (uint)((_numberOfVMetrics - 1) * 4);
+            advanceHeight = ReadUShort(offset);
+        }
+        return advanceHeight * (emSize / UnitsPerEm);
+    }
+
+    public float GetVerticalOriginY(ushort glyphIndex, float emSize)
+    {
+        float origin = TryGetVorgOrigin(glyphIndex, out short vorgOrigin)
+            ? vorgOrigin
+            : GetTrueTypeVerticalOrigin(glyphIndex);
+        return origin * (emSize / UnitsPerEm);
+    }
+
+    private bool TryGetVorgOrigin(ushort glyphIndex, out short origin)
+    {
+        origin = 0;
+        if (!TryGetTable("VORG", out ReadOnlyMemory<byte> vorgMemory) || vorgMemory.Length < 8)
+        {
+            return false;
+        }
+
+        ReadOnlySpan<byte> vorg = vorgMemory.Span;
+        short defaultOrigin = ReadShort(vorg, 4);
+        ushort metricCount = ReadUShort(vorg, 6);
+        if (metricCount > (vorg.Length - 8) / 4)
+        {
+            return false;
+        }
+
+        int low = 0;
+        int high = metricCount - 1;
+        while (low <= high)
+        {
+            int mid = low + ((high - low) / 2);
+            int offset = 8 + mid * 4;
+            ushort candidate = ReadUShort(vorg, offset);
+            if (candidate == glyphIndex)
+            {
+                origin = ReadShort(vorg, offset + 2);
+                return true;
+            }
+            if (glyphIndex < candidate) high = mid - 1;
+            else low = mid + 1;
+        }
+
+        origin = defaultOrigin;
+        return true;
+    }
+
+    private float GetTrueTypeVerticalOrigin(ushort glyphIndex)
+    {
+        if (_vmtxOffset != 0 && _numberOfVMetrics != 0 &&
+            _face.TryGetGlyphBounds(glyphIndex, out SfntGlyphBounds bounds))
+        {
+            uint bearingOffset = glyphIndex < _numberOfVMetrics
+                ? _vmtxOffset + (uint)(glyphIndex * 4 + 2)
+                : _vmtxOffset + (uint)(_numberOfVMetrics * 4 + (glyphIndex - _numberOfVMetrics) * 2);
+            if (_tables.TryGetValue("vmtx", out var vmtx) && bearingOffset + 2 <= vmtx.offset + vmtx.length)
+            {
+                return bounds.YMax + ReadShort(bearingOffset);
+            }
+        }
+
+        if (TryGetGlyphBounds(glyphIndex, out _, out short yMin, out _, out short fallbackYMax))
+        {
+            int fontAdvance = Ascender - Descender;
+            int glyphHeight = fallbackYMax - yMin;
+            return fallbackYMax + ((fontAdvance - glyphHeight) >> 1);
+        }
+        return glyphIndex < NumGlyphs ? (Ascender - Descender) >> 1 : Ascender;
     }
 
     public float GetKerning(char left, char right, float emSize)
@@ -1196,24 +1430,67 @@ public class TtfFont
         }
     }
 
-    private readonly Dictionary<ushort, ParsedGlyph?> _glyphOutlineCache = new();
+    // Parsed outlines are immutable after publication. Keep cache hits lock-free: scrolling
+    // repeatedly asks for the same small glyph set, and serializing every hit on one font-wide
+    // monitor makes text compilation scale with contention instead of visible glyph count.
+    // The arrays are allocated on first outline demand and are bounded by the font's maxp glyph
+    // count, independent of document, row, or text-layout cardinality.
+    private readonly object _glyphOutlineCacheLock = new();
+    private ParsedGlyph?[]? _glyphOutlineCache;
+    private byte[]? _glyphOutlineCacheStates;
     private readonly Dictionary<ushort, PathGeometry?> _flippedOutlineCache = new();
 
     public PathGeometry? GetGlyphOutline(ushort glyphIndex)
     {
-        lock (_glyphOutlineCache)
+        byte[]? states = Volatile.Read(ref _glyphOutlineCacheStates);
+        if (states is not null && glyphIndex < states.Length)
         {
-            if (_glyphOutlineCache.TryGetValue(glyphIndex, out var cached))
+            byte state = Volatile.Read(ref states[glyphIndex]);
+            if (state != 0)
             {
-                return cached?.Geometry;
+                return Volatile.Read(ref _glyphOutlineCache)![glyphIndex]?.Geometry;
+            }
+        }
+
+        if (glyphIndex >= NumGlyphs)
+        {
+            return null;
+        }
+
+        lock (_glyphOutlineCacheLock)
+        {
+            EnsureGlyphOutlineCache();
+            states = _glyphOutlineCacheStates!;
+            if (states[glyphIndex] != 0)
+            {
+                return _glyphOutlineCache![glyphIndex]?.Geometry;
             }
 
             var result = HasTrueTypeOutlines
                 ? GetGlyphOutlineInternal(glyphIndex, new HashSet<ushort>(), 0)
                 : GetCffGlyphOutline(glyphIndex);
-            _glyphOutlineCache[glyphIndex] = result;
+            PublishGlyphOutline(glyphIndex, result);
             return result?.Geometry;
         }
+    }
+
+    private void EnsureGlyphOutlineCache()
+    {
+        if (_glyphOutlineCacheStates is not null)
+        {
+            return;
+        }
+
+        var outlines = new ParsedGlyph?[NumGlyphs];
+        var states = new byte[NumGlyphs];
+        Volatile.Write(ref _glyphOutlineCache, outlines);
+        Volatile.Write(ref _glyphOutlineCacheStates, states);
+    }
+
+    private void PublishGlyphOutline(ushort glyphIndex, ParsedGlyph? outline)
+    {
+        _glyphOutlineCache![glyphIndex] = outline;
+        Volatile.Write(ref _glyphOutlineCacheStates![glyphIndex], outline is null ? (byte)2 : (byte)1);
     }
 
     private ParsedGlyph? GetCffGlyphOutline(ushort glyphIndex)
@@ -1303,7 +1580,7 @@ public class TtfFont
             return false;
         }
 
-        if (!HasTrueTypeOutlines)
+        if (!HasTrueTypeOutlines || HasActiveVariations)
         {
             var outline = GetGlyphOutline(glyphIndex);
             if (outline is null || !outline.TryGetBounds(out var minimum, out var maximum))
@@ -1364,13 +1641,14 @@ public class TtfFont
 
         try
         {
-            if (_glyphOutlineCache.TryGetValue(glyphIndex, out var cached))
+            EnsureGlyphOutlineCache();
+            if (_glyphOutlineCacheStates![glyphIndex] != 0)
             {
-                return cached;
+                return _glyphOutlineCache![glyphIndex];
             }
 
             var result = ParseGlyphOutline(glyphIndex, ancestors, depth);
-            _glyphOutlineCache[glyphIndex] = result;
+            PublishGlyphOutline(glyphIndex, result);
             return result;
         }
         finally
@@ -1405,7 +1683,7 @@ public class TtfFont
 
         if (numberOfContours < 0)
         {
-            return ParseCompositeGlyphOutline(glyphOffset, ancestors, depth);
+            return ParseCompositeGlyphOutline(glyphIndex, glyphOffset, ancestors, depth);
         }
 
         if (numberOfContours == 0)
@@ -1504,6 +1782,8 @@ public class TtfFont
             coords[i].Y = lastY;
         }
 
+        ApplySimpleGlyphVariations(glyphIndex, coords, endPtsOfContours);
+
         // Process coordinates into PathGeometry (contour by contour)
         int ptIndex = 0;
         for (int c = 0; c < numberOfContours; c++)
@@ -1535,7 +1815,11 @@ public class TtfFont
         return new ParsedGlyph(geometry, coords);
     }
 
-    private ParsedGlyph? ParseCompositeGlyphOutline(uint glyphOffset, HashSet<ushort> ancestors, int depth)
+    private ParsedGlyph? ParseCompositeGlyphOutline(
+        ushort glyphIndex,
+        uint glyphOffset,
+        HashSet<ushort> ancestors,
+        int depth)
     {
         const ushort ArgumentsAreWords = 0x0001;
         const ushort ArgumentsAreXyValues = 0x0002;
@@ -1546,11 +1830,9 @@ public class TtfFont
         const ushort WeHaveTwoByTwo = 0x0080;
         const ushort ScaledComponentOffset = 0x0800;
 
-        var geometry = new PathGeometry();
-        var points = new List<Vector2>();
+        var components = new List<CompositeGlyphComponent>();
         var offset = glyphOffset + 10;
         ushort flags;
-
         do
         {
             if (offset + 4 > _data.Length)
@@ -1642,59 +1924,101 @@ public class TtfFont
                 offset += 8;
             }
 
-            var component = GetGlyphOutlineInternal(componentGlyphIndex, ancestors, depth + 1);
-            if (component == null)
-            {
-                continue;
-            }
+            components.Add(new CompositeGlyphComponent(
+                flags,
+                componentGlyphIndex,
+                argument1,
+                argument2,
+                m00,
+                m01,
+                m10,
+                m11));
+        }
+        while ((flags & MoreComponents) != 0);
 
-            var linearTransform = new Matrix4x4(
-                m00, m10, 0, 0,
-                m01, m11, 0, 0,
-                0, 0, 1, 0,
-                0, 0, 0, 1);
+        Vector2[] variationOffsets = GetCompositeGlyphVariationOffsets(
+            components.Count,
+            glyphIndex);
+        return BuildCompositeGlyph(components, variationOffsets, ancestors, depth);
 
-            Vector2 translation;
-            if ((flags & ArgumentsAreXyValues) != 0)
+        ParsedGlyph? BuildCompositeGlyph(
+            List<CompositeGlyphComponent> source,
+            Vector2[] deltas,
+            HashSet<ushort> glyphAncestors,
+            int glyphDepth)
+        {
+            var geometry = new PathGeometry();
+            var points = new List<Vector2>();
+            for (var componentIndex = 0; componentIndex < source.Count; componentIndex++)
             {
-                translation = new Vector2(argument1, argument2);
-                if ((flags & ScaledComponentOffset) != 0)
-                {
-                    translation = Vector2.TransformNormal(translation, linearTransform);
-                }
-            }
-            else
-            {
-                if ((uint)argument1 >= (uint)points.Count ||
-                    (uint)argument2 >= (uint)component.Points.Length)
+                CompositeGlyphComponent descriptor = source[componentIndex];
+                var component = GetGlyphOutlineInternal(descriptor.GlyphIndex, glyphAncestors, glyphDepth + 1);
+                if (component == null)
                 {
                     continue;
                 }
 
-                var componentPoint = Vector2.Transform(component.Points[argument2], linearTransform);
-                translation = points[argument1] - componentPoint;
+                var linearTransform = new Matrix4x4(
+                    descriptor.M00, descriptor.M10, 0, 0,
+                    descriptor.M01, descriptor.M11, 0, 0,
+                    0, 0, 1, 0,
+                    0, 0, 0, 1);
+
+                Vector2 translation;
+                if ((descriptor.Flags & ArgumentsAreXyValues) != 0)
+                {
+                    translation = new Vector2(descriptor.Argument1, descriptor.Argument2);
+                    if ((uint)componentIndex < (uint)deltas.Length)
+                    {
+                        translation += deltas[componentIndex];
+                    }
+                    if ((descriptor.Flags & ScaledComponentOffset) != 0)
+                    {
+                        translation = Vector2.TransformNormal(translation, linearTransform);
+                    }
+                }
+                else
+                {
+                    if ((uint)descriptor.Argument1 >= (uint)points.Count ||
+                        (uint)descriptor.Argument2 >= (uint)component.Points.Length)
+                    {
+                        continue;
+                    }
+
+                    var componentPoint = Vector2.Transform(component.Points[descriptor.Argument2], linearTransform);
+                    translation = points[descriptor.Argument1] - componentPoint;
+                }
+
+                if ((descriptor.Flags & RoundXyToGrid) != 0)
+                {
+                    translation = new Vector2(MathF.Round(translation.X), MathF.Round(translation.Y));
+                }
+
+                linearTransform.M41 = translation.X;
+                linearTransform.M42 = translation.Y;
+                var transformed = component.Geometry.CreateTransformed(linearTransform);
+                geometry.Figures.AddRange(transformed.Figures);
+                foreach (var point in component.Points)
+                {
+                    points.Add(Vector2.Transform(point, linearTransform));
+                }
             }
 
-            if ((flags & RoundXyToGrid) != 0)
-            {
-                translation = new Vector2(MathF.Round(translation.X), MathF.Round(translation.Y));
-            }
-
-            linearTransform.M41 = translation.X;
-            linearTransform.M42 = translation.Y;
-            var transformed = component.Geometry.CreateTransformed(linearTransform);
-            geometry.Figures.AddRange(transformed.Figures);
-            foreach (var point in component.Points)
-            {
-                points.Add(Vector2.Transform(point, linearTransform));
-            }
+            return geometry.Figures.Count == 0
+                ? null
+                : new ParsedGlyph(geometry, points.ToArray());
         }
-        while ((flags & MoreComponents) != 0);
-
-        return geometry.Figures.Count == 0
-            ? null
-            : new ParsedGlyph(geometry, points.ToArray());
     }
+
+    private readonly record struct CompositeGlyphComponent(
+        ushort Flags,
+        ushort GlyphIndex,
+        int Argument1,
+        int Argument2,
+        float M00,
+        float M01,
+        float M10,
+        float M11);
 
     private float ReadF2Dot14(uint offset)
     {
@@ -2066,131 +2390,128 @@ public class TtfFont
 
         for (ushort glyphId = 0; glyphId < NumGlyphs; glyphId++)
         {
-            var outline = GetGlyphOutline(glyphId);
-
-            uint startSegment = (uint)segments.Count;
-            float minX = float.MaxValue;
-            float minY = float.MaxValue;
-            float maxX = float.MinValue;
-            float maxY = float.MinValue;
-
-            if (outline != null)
-            {
-                foreach (var figure in outline.Figures)
-                {
-                    if (figure.Segments.Count == 0) continue;
-
-                    Vector2 currentPoint = figure.StartPoint;
-
-                    foreach (var segment in figure.Segments)
-                    {
-                        if (segment is LineSegment line)
-                        {
-                            var seg = new GpuSegment
-                            {
-                                P0 = currentPoint,
-                                P1 = line.Point,
-                                P2 = Vector2.Zero,
-                                SegmentType = 0,
-                                Pad0 = 0,
-                                Pad1 = 0,
-                                Pad2 = 0
-                            };
-                            segments.Add(seg);
-
-                            UpdateBoundingBoxWithLine(seg.P0, seg.P1, ref minX, ref minY, ref maxX, ref maxY);
-                            currentPoint = line.Point;
-                        }
-                        else if (segment is QuadraticBezierSegment quad)
-                        {
-                            var seg = new GpuSegment
-                            {
-                                P0 = currentPoint,
-                                P1 = quad.ControlPoint,
-                                P2 = quad.Point,
-                                SegmentType = 1,
-                                Pad0 = 0,
-                                Pad1 = 0,
-                                Pad2 = 0
-                            };
-                            segments.Add(seg);
-
-                            UpdateBoundingBoxWithQuad(seg.P0, seg.P1, seg.P2, ref minX, ref minY, ref maxX, ref maxY);
-                            currentPoint = quad.Point;
-                        }
-                        else if (segment is CubicBezierSegment cubic)
-                        {
-                            var seg = new GpuSegment
-                            {
-                                P0 = currentPoint,
-                                P1 = cubic.ControlPoint1,
-                                P2 = cubic.ControlPoint2,
-                                P3 = cubic.Point,
-                                SegmentType = 2,
-                                Pad0 = 0,
-                                Pad1 = 0,
-                                Pad2 = 0
-                            };
-                            segments.Add(seg);
-
-                            UpdateBoundingBoxWithCubic(seg.P0, seg.P1, seg.P2, seg.P3, ref minX, ref minY, ref maxX, ref maxY);
-                            currentPoint = cubic.Point;
-                        }
-                    }
-
-                    if (figure.IsClosed && currentPoint != figure.StartPoint)
-                    {
-                        var seg = new GpuSegment
-                        {
-                            P0 = currentPoint,
-                            P1 = figure.StartPoint,
-                            P2 = Vector2.Zero,
-                            SegmentType = 0,
-                            Pad0 = 0,
-                            Pad1 = 0,
-                            Pad2 = 0
-                        };
-                        segments.Add(seg);
-
-                        UpdateBoundingBoxWithLine(seg.P0, seg.P1, ref minX, ref minY, ref maxX, ref maxY);
-                        currentPoint = figure.StartPoint;
-                    }
-                }
-            }
-
-            uint segmentCount = (uint)segments.Count - startSegment;
-
-            if (segmentCount > 0)
-            {
-                records[glyphId] = new GpuGlyphRecord
-                {
-                    StartSegment = startSegment,
-                    SegmentCount = segmentCount,
-                    MinX = minX,
-                    MinY = minY,
-                    MaxX = maxX,
-                    MaxY = maxY,
-                    Pad0 = 0,
-                    Pad1 = 0
-                };
-            }
-            else
-            {
-                records[glyphId] = new GpuGlyphRecord
-                {
-                    StartSegment = 0,
-                    SegmentCount = 0,
-                    MinX = 0,
-                    MinY = 0,
-                    MaxX = 0,
-                    MaxY = 0,
-                    Pad0 = 0,
-                    Pad1 = 0
-                };
-            }
+            records[glyphId] = AppendGpuOutlineData(glyphId, segments);
         }
 
         return (records, segments.ToArray());
+    }
+
+    internal GpuGlyphRecord AppendGpuOutlineData(ushort glyphId, List<GpuSegment> segments)
+    {
+        ArgumentNullException.ThrowIfNull(segments);
+        var outline = GetGlyphOutline(glyphId);
+
+        uint startSegment = checked((uint)segments.Count);
+        float minX = float.MaxValue;
+        float minY = float.MaxValue;
+        float maxX = float.MinValue;
+        float maxY = float.MinValue;
+
+        if (outline != null)
+        {
+            foreach (var figure in outline.Figures)
+            {
+                if (figure.Segments.Count == 0) continue;
+
+                Vector2 currentPoint = figure.StartPoint;
+                foreach (var segment in figure.Segments)
+                {
+                    if (segment is LineSegment line)
+                    {
+                        var gpuSegment = new GpuSegment
+                        {
+                            P0 = currentPoint,
+                            P1 = line.Point,
+                            P2 = Vector2.Zero,
+                            SegmentType = 0
+                        };
+                        segments.Add(gpuSegment);
+                        UpdateBoundingBoxWithLine(
+                            gpuSegment.P0,
+                            gpuSegment.P1,
+                            ref minX,
+                            ref minY,
+                            ref maxX,
+                            ref maxY);
+                        currentPoint = line.Point;
+                    }
+                    else if (segment is QuadraticBezierSegment quadratic)
+                    {
+                        var gpuSegment = new GpuSegment
+                        {
+                            P0 = currentPoint,
+                            P1 = quadratic.ControlPoint,
+                            P2 = quadratic.Point,
+                            SegmentType = 1
+                        };
+                        segments.Add(gpuSegment);
+                        UpdateBoundingBoxWithQuad(
+                            gpuSegment.P0,
+                            gpuSegment.P1,
+                            gpuSegment.P2,
+                            ref minX,
+                            ref minY,
+                            ref maxX,
+                            ref maxY);
+                        currentPoint = quadratic.Point;
+                    }
+                    else if (segment is CubicBezierSegment cubic)
+                    {
+                        var gpuSegment = new GpuSegment
+                        {
+                            P0 = currentPoint,
+                            P1 = cubic.ControlPoint1,
+                            P2 = cubic.ControlPoint2,
+                            P3 = cubic.Point,
+                            SegmentType = 2
+                        };
+                        segments.Add(gpuSegment);
+                        UpdateBoundingBoxWithCubic(
+                            gpuSegment.P0,
+                            gpuSegment.P1,
+                            gpuSegment.P2,
+                            gpuSegment.P3,
+                            ref minX,
+                            ref minY,
+                            ref maxX,
+                            ref maxY);
+                        currentPoint = cubic.Point;
+                    }
+                }
+
+                if (figure.IsClosed && currentPoint != figure.StartPoint)
+                {
+                    var gpuSegment = new GpuSegment
+                    {
+                        P0 = currentPoint,
+                        P1 = figure.StartPoint,
+                        P2 = Vector2.Zero,
+                        SegmentType = 0
+                    };
+                    segments.Add(gpuSegment);
+                    UpdateBoundingBoxWithLine(
+                        gpuSegment.P0,
+                        gpuSegment.P1,
+                        ref minX,
+                        ref minY,
+                        ref maxX,
+                        ref maxY);
+                }
+            }
+        }
+
+        uint segmentCount = checked((uint)segments.Count) - startSegment;
+        return segmentCount == 0
+            ? default
+            : new GpuGlyphRecord
+            {
+                StartSegment = startSegment,
+                SegmentCount = segmentCount,
+                MinX = minX,
+                MinY = minY,
+                MaxX = maxX,
+                MaxY = maxY
+            };
     }
 
     private static void UpdateBoundingBoxWithLine(Vector2 p0, Vector2 p1, ref float minX, ref float minY, ref float maxX, ref float maxY)

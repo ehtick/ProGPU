@@ -2,6 +2,8 @@ using System.Buffers.Binary;
 using System.Runtime.InteropServices.JavaScript;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using ProGPU.Fonts.Inter;
+using ProGPU.Fonts.Noto;
 using ProGPU.Text;
 
 namespace ProGPU.Browser;
@@ -21,7 +23,9 @@ public sealed partial class BrowserWindowHost : IWindowHost, IDisposable
         ArgumentNullException.ThrowIfNull(capabilities);
         if (!capabilities.IsSupported) throw new PlatformNotSupportedException("WebGPU is unavailable.");
         _capabilities = capabilities;
-        var fallbackFont = BrowserFontResource.Default;
+        InterFontFamily.RegisterFonts();
+        NotoFontFamily.RegisterFallbacks();
+        var fallbackFont = InterFontFamily.Regular;
         FontApi.RegisterPlatformFallbackFont(fallbackFont);
         PopupService.DefaultFont ??= fallbackFont;
         ClipboardHelper.PlatformSetText = SetClipboardText;
@@ -57,6 +61,7 @@ public sealed partial class BrowserWindowHost : IWindowHost, IDisposable
         if (index < 0) return;
         var hosted = _windows[index];
         _windows.RemoveAt(index);
+        if (hosted.Window.InputState is { } inputState) BrowserInputDispatcher.Detach(inputState);
         hosted.Window.ShutdownExternalRenderer();
         hosted.Gpu.Dispose();
     }
@@ -73,7 +78,18 @@ public sealed partial class BrowserWindowHost : IWindowHost, IDisposable
         while (_windows.Count != 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var timestamp = await NextAnimationFrameAsync().WaitAsync(cancellationToken).ConfigureAwait(false);
+            bool vsync = false;
+            for (var index = 0; index < _windows.Count; index++)
+            {
+                var hosted = _windows[index];
+                if (hosted.IsVisible && hosted.Gpu.Context.VSync)
+                {
+                    vsync = true;
+                    break;
+                }
+            }
+
+            var timestamp = await NextAnimationFrameAsync(vsync).WaitAsync(cancellationToken).ConfigureAwait(false);
             var delta = previousTimestamp == 0 ? 0 : Math.Clamp((timestamp - previousTimestamp) / 1000.0, 0, 0.25);
             previousTimestamp = timestamp;
             var metrics = ReadCanvasMetrics();
@@ -110,7 +126,7 @@ public sealed partial class BrowserWindowHost : IWindowHost, IDisposable
     }
 
     [JSImport("nextAnimationFrame", "progpu-browser")]
-    private static partial Task<double> NextAnimationFrameAsync();
+    private static partial Task<double> NextAnimationFrameAsync(bool vsync);
 
     [JSImport("writeCanvasMetrics", "progpu-browser")]
     private static partial void WriteCanvasMetrics(nint destination);
@@ -133,17 +149,4 @@ public sealed partial class BrowserWindowHost : IWindowHost, IDisposable
 
     private readonly record struct CanvasMetrics(uint Width, uint Height, float DpiScale);
 
-    private static class BrowserFontResource
-    {
-        public static readonly TtfFont Default = Load();
-
-        private static TtfFont Load()
-        {
-            using var stream = typeof(BrowserWindowHost).Assembly.GetManifestResourceStream("ProGPU.Browser.Fonts.Roboto-Regular.ttf")
-                ?? throw new InvalidOperationException("The embedded browser fallback font is missing.");
-            using var memory = new MemoryStream(checked((int)stream.Length));
-            stream.CopyTo(memory);
-            return new TtfFont(memory.ToArray());
-        }
-    }
 }

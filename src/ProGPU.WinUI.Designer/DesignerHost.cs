@@ -74,7 +74,7 @@ public class DesignerHost : Grid
         }
 
         _interactionModeText.Inlines.Clear();
-        _interactionModeText.Inlines.Add(new Run(enabled ? "■ Design" : "▶ Interact"));
+        _interactionModeText.Inlines.Add(new Run(enabled ? "Design" : "Interact"));
         _interactionModeButton.Background = new ThemeResourceBrush(
             enabled ? "SystemAccentColor" : "ControlBackground");
         _interactionModeText.Foreground = new ThemeResourceBrush(
@@ -229,7 +229,7 @@ public class DesignerHost : Grid
         // Grid Lines Toggle
         var btnGridLines = new Button { Height = 28f, Margin = new Thickness(0, 0, 6, 0), CornerRadius = 4f, Padding = new Thickness(8, 0, 8, 0) };
         var rtbGrid = new RichTextBlock { Font = DesignerFont, FontSize = 10.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-        rtbGrid.Inlines.Add(new Run("🌐 Grid Lines"));
+        rtbGrid.Inlines.Add(new Run("Grid Lines"));
         btnGridLines.Content = rtbGrid;
         updateToggleStyle(btnGridLines, _designerCanvas.ShowGridLines);
         btnGridLines.Click += (s, e) => {
@@ -242,7 +242,7 @@ public class DesignerHost : Grid
         // Grid Snapping Toggle
         var btnSnapping = new Button { Height = 28f, Margin = new Thickness(0, 0, 6, 0), CornerRadius = 4f, Padding = new Thickness(8, 0, 8, 0) };
         var rtbSnap = new RichTextBlock { Font = DesignerFont, FontSize = 10.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-        rtbSnap.Inlines.Add(new Run("🧲 Snap"));
+        rtbSnap.Inlines.Add(new Run("Snap"));
         btnSnapping.Content = rtbSnap;
         updateToggleStyle(btnSnapping, _designerCanvas.GridSnappingEnabled);
         btnSnapping.Click += (s, e) => {
@@ -254,7 +254,7 @@ public class DesignerHost : Grid
         // Outlines Toggle
         var btnOutlines = new Button { Height = 28f, Margin = new Thickness(0, 0, 6, 0), CornerRadius = 4f, Padding = new Thickness(8, 0, 8, 0) };
         _outlinesLabelText = new RichTextBlock { Font = DesignerFont, FontSize = 10.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-        _outlinesLabelText.Inlines.Add(new Run("🖼️ Outlines"));
+        _outlinesLabelText.Inlines.Add(new Run("Outlines"));
         btnOutlines.Content = _outlinesLabelText;
         updateToggleStyle(btnOutlines, _designerCanvas.AlwaysShowPanelOutlines);
         btnOutlines.Click += (s, e) => {
@@ -267,7 +267,7 @@ public class DesignerHost : Grid
         // Responsive Mode Toggle
         var btnResponsive = new Button { Height = 28f, Margin = new Thickness(0, 0, 6, 0), CornerRadius = 4f, Padding = new Thickness(8, 0, 8, 0) };
         _webflowLabelText = new RichTextBlock { Font = DesignerFont, FontSize = 10.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-        _webflowLabelText.Inlines.Add(new Run("⚡ Responsive"));
+        _webflowLabelText.Inlines.Add(new Run("Responsive"));
         btnResponsive.Content = _webflowLabelText;
         updateToggleStyle(btnResponsive, _designerCanvas.IsResponsiveMode);
         btnResponsive.Click += (s, e) => {
@@ -295,7 +295,7 @@ public class DesignerHost : Grid
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center
         };
-        _interactionModeText.Inlines.Add(new Run("▶ Interact"));
+        _interactionModeText.Inlines.Add(new Run("Interact"));
         _interactionModeButton.Content = _interactionModeText;
         updateToggleStyle(_interactionModeButton, _designerCanvas.IsInteractionMode);
         _interactionModeButton.Click += (s, e) =>
@@ -312,17 +312,17 @@ public class DesignerHost : Grid
         
         var desktopBtn = new Button { Width = 80f, Height = 28f, CornerRadius = 4f, Margin = new Thickness(0), Padding = new Thickness(0) };
         _desktopText = new RichTextBlock { Font = DesignerFont, FontSize = 10.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-        _desktopText.Inlines.Add(new Run("🖥️ Desktop"));
+        _desktopText.Inlines.Add(new Run("Desktop"));
         desktopBtn.Content = _desktopText;
 
         var tabletBtn = new Button { Width = 75f, Height = 28f, CornerRadius = 0f, Margin = new Thickness(0), Padding = new Thickness(0) };
         _tabletText = new RichTextBlock { Font = DesignerFont, FontSize = 10.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-        _tabletText.Inlines.Add(new Run("📟 Tablet"));
+        _tabletText.Inlines.Add(new Run("Tablet"));
         tabletBtn.Content = _tabletText;
 
         var mobileBtn = new Button { Width = 75f, Height = 28f, CornerRadius = 4f, Margin = new Thickness(0), Padding = new Thickness(0) };
         _mobileText = new RichTextBlock { Font = DesignerFont, FontSize = 10.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-        _mobileText.Inlines.Add(new Run("📱 Mobile"));
+        _mobileText.Inlines.Add(new Run("Mobile"));
         mobileBtn.Content = _mobileText;
 
         Action updateBreakpointSegmentStyle = () => {
@@ -418,7 +418,7 @@ public class DesignerHost : Grid
         
         var undoBtn = new Button { Width = 65f, Height = 28f, CornerRadius = 4f, Margin = new Thickness(0), Background = new ThemeResourceBrush("ControlBackground"), BorderThickness = new Thickness(1), BorderBrush = new ThemeResourceBrush("ControlBorder"), Padding = new Thickness(0) };
         var undoText = new RichTextBlock { Font = DesignerFont, FontSize = 10.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-        undoText.Inlines.Add(new Run("↩️ Undo"));
+        undoText.Inlines.Add(new Run("Undo"));
         undoBtn.Content = undoText;
         undoBtn.Click += (s, e) => {
             TriggerUndo();
@@ -427,7 +427,7 @@ public class DesignerHost : Grid
 
         var redoBtn = new Button { Width = 65f, Height = 28f, CornerRadius = 4f, Margin = new Thickness(0), Background = new ThemeResourceBrush("ControlBackground"), BorderThickness = new Thickness(0, 1, 1, 1), BorderBrush = new ThemeResourceBrush("ControlBorder"), Padding = new Thickness(0) };
         var redoText = new RichTextBlock { Font = DesignerFont, FontSize = 10.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-        redoText.Inlines.Add(new Run("↪️ Redo"));
+        redoText.Inlines.Add(new Run("Redo"));
         redoBtn.Content = redoText;
         redoBtn.Click += (s, e) => {
             TriggerRedo();
@@ -438,7 +438,7 @@ public class DesignerHost : Grid
         // Clear Workspace button
         var clearBtn = new Button { Height = 28f, Margin = new Thickness(0, 0, 12, 0), CornerRadius = 4f, Background = new ThemeResourceBrush("ControlBackground"), BorderThickness = new Thickness(1), BorderBrush = new ThemeResourceBrush("ControlBorder"), Padding = new Thickness(10, 0, 10, 0) };
         var clearBtnText = new RichTextBlock { Font = DesignerFont, FontSize = 10.5f, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Foreground = new ThemeResourceBrush("TextPrimary") };
-        clearBtnText.Inlines.Add(new Run("🗑️ Clear"));
+        clearBtnText.Inlines.Add(new Run("Clear"));
         clearBtn.Content = clearBtnText;
         clearBtn.Click += (s, e) => {
             SaveUndoState();

@@ -72,6 +72,16 @@ public class ShaderResourceTests
     }
 
     [Fact]
+    public void OpenTypeShapingKeepsContextTasksInInvocationPrivateStorage()
+    {
+        string source = ShaderResource.Load(typeof(ComputeShaders), "OpenTypeShaping.wgsl");
+
+        Assert.Contains("var<private> lookup_tasks: array<LookupTask, 64>;", source, StringComparison.Ordinal);
+        Assert.Contains("var<private> lookup_task_count: u32;", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ptr<function, array<LookupTask", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void VectorShaderMapsSkiaSweepAngleRangesBeforeTiling()
     {
         Assert.Contains(

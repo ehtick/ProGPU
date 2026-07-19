@@ -455,7 +455,7 @@ public static class SamplePagePresenter
         scroll.Content = stack;
 
         var title = new RichTextBlock { Font = AppState.GetFont(), FontSize = 18f, Margin = new Thickness(0, 0, 0, 8) };
-        title.Inlines.Add(new Bold(new Run("🔤 Advanced Typography, Unicode & Language Scripts")));
+        title.Inlines.Add(new Bold(new Run("Advanced Typography, Unicode & Language Scripts")));
         stack.AddChild(title);
 
         var description = new RichTextBlock { Font = AppState.GetFont(), FontSize = 12f, Margin = new Thickness(0, 0, 0, 20), Foreground = new ThemeResourceBrush("TextSecondary") };
@@ -486,17 +486,19 @@ public static class SamplePagePresenter
         settingsStack.AddChild(fontLabel);
 
         var fontCombo = new ComboBox { Font = AppState.GetFont(), WidthConstraint = 240f, Margin = new Thickness(0, 0, 0, 16) };
-        var itemArial = new ComboBoxItem("Arial (Primary)");
+        var itemInter = new ComboBoxItem("Inter (UI Default)");
+        var itemArial = new ComboBoxItem("Arial");
         var itemTimes = new ComboBoxItem("Times New Roman");
         var itemCourier = new ComboBoxItem("Courier New");
         var itemGeorgia = new ComboBoxItem("Georgia");
         var itemComic = new ComboBoxItem("Comic Sans MS");
+        fontCombo.Items.Add(itemInter);
         fontCombo.Items.Add(itemArial);
         fontCombo.Items.Add(itemTimes);
         fontCombo.Items.Add(itemCourier);
         fontCombo.Items.Add(itemGeorgia);
         fontCombo.Items.Add(itemComic);
-        fontCombo.SelectedItem = itemArial;
+        fontCombo.SelectedItem = itemInter;
         settingsStack.AddChild(fontCombo);
 
         // Slider for Size
@@ -654,7 +656,7 @@ public static class SamplePagePresenter
         emojiHeader.Inlines.Add(new Bold(new Run("Real Font-Driven Color Emoji / Unicode Outlines")));
         emojiStack.AddChild(emojiHeader);
         var emojiBody = new RichTextBlock { Font = AppState.GetFont(), FontSize = 16f, Foreground = new ThemeResourceBrush("TextSecondary") };
-        emojiBody.Inlines.Add(new Run("Unicode premium symbols: ★, ♠, ♦, ♣, ♥, ✔, ▲, ▼ parsed directly from the system TTF binary and rendered onto the GPU canvas with zero CPU triangulation overhead!"));
+        emojiBody.Inlines.Add(new Run("Unicode premium symbols: ★, ♠, ♦, ♣, ♥, ▲, ▼ parsed directly from the system TTF binary and rendered onto the GPU canvas with zero CPU triangulation overhead!"));
         emojiStack.AddChild(emojiBody);
         textBlocks.Add(emojiBody);
         dashboardStack.AddChild(emojiCard);
@@ -664,7 +666,8 @@ public static class SamplePagePresenter
         {
             TtfFont f = fontCombo.SelectedItem?.Text switch
             {
-                "Arial (Primary)" => AppState.GetFont()!,
+                "Inter (UI Default)" => AppState.GetFont()!,
+                "Arial" => AppState.GetFontArial() ?? AppState.GetFont()!,
                 "Times New Roman" => AppState.GetFontTimes() ?? AppState.GetFont()!,
                 "Courier New" => AppState.GetFontCourier() ?? AppState.GetFont()!,
                 "Georgia" => AppState.GetFontGeorgia() ?? AppState.GetFont()!,
@@ -731,7 +734,7 @@ public static class SamplePagePresenter
 
         // Title and Header
         var title = new RichTextBlock { Font = AppState.GetFont(), FontSize = 18f, Margin = new Thickness(0, 0, 0, 8) };
-        title.Inlines.Add(new Bold(new Run("⌨️ Multi-Script Interactive Text Input")));
+        title.Inlines.Add(new Bold(new Run("Multi-Script Interactive Text Input")));
         rightStack.AddChild(title);
 
         var description = new RichTextBlock { Font = AppState.GetFont(), FontSize = 12f, Margin = new Thickness(0, 0, 0, 20), Foreground = new ThemeResourceBrush("TextSecondary") };
@@ -813,7 +816,7 @@ public static class SamplePagePresenter
         btnCyrillic.Click += (s, e) => { inputBox.Text = "Привет от ProGPU! Высокопроизводительный рендеринг текста."; inputBox.CaretIndex = inputBox.Text.Length; };
         btnGreek.Click += (s, e) => { inputBox.Text = "Καλώς ορίσατε στο ProGPU! Υψηλής απόδοσης γραφικά vector."; inputBox.CaretIndex = inputBox.Text.Length; };
         btnJapanese.Click += (s, e) => { inputBox.Text = "プロジーピーユーへようこそ！最高速度のGPU描画エンジン。"; inputBox.CaretIndex = inputBox.Text.Length; };
-        btnSymbols.Click += (s, e) => { inputBox.Text = "Dynamic symbols: ★ ♠ ♦ ♣ ♥ ✔ ▲ ▼ outlines parsed on GPU!"; inputBox.CaretIndex = inputBox.Text.Length; };
+        btnSymbols.Click += (s, e) => { inputBox.Text = "Dynamic symbols: ★ ♠ ♦ ♣ ♥ ▲ ▼ outlines parsed on GPU!"; inputBox.CaretIndex = inputBox.Text.Length; };
 
         // Right Content: TextBox & RichEditBox
         var labelInput = new RichTextBlock { Font = AppState.GetFont(), FontSize = 12f, Margin = new Thickness(0, 0, 0, 6) };

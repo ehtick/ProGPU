@@ -260,7 +260,9 @@ public class TabViewItem : ContentControl
                     context.DrawRoundedRectangle(closeBackdrop, null, backdropRect, 4f);
                 }
 
-                context.DrawText("×", activeFont, 14f, closeBrush, new Vector2(closeX - 1f, closeY - 2f));
+                var closePen = new Pen(closeBrush, 1.5f);
+                context.DrawLine(closePen, new Vector2(closeX + 2.5f, closeY + 2.5f), new Vector2(closeX + 9.5f, closeY + 9.5f));
+                context.DrawLine(closePen, new Vector2(closeX + 9.5f, closeY + 2.5f), new Vector2(closeX + 2.5f, closeY + 9.5f));
             }
         }
 

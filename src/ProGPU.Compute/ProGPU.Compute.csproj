@@ -9,5 +9,6 @@
     <ProjectReference Include="..\ProGPU.Backend\ProGPU.Backend.csproj" />
     <ProjectReference Include="..\ProGPU.Vector\ProGPU.Vector.csproj" />
     <ProjectReference Include="..\ProGPU.Text\ProGPU.Text.csproj" />
+    <ProjectReference Include="..\ProGPU.Text.Shaping\ProGPU.Text.Shaping.csproj" />
   </ItemGroup>
 </Project>

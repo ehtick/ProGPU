@@ -59,6 +59,7 @@ public unsafe class DxfStaticBuffer : IDisposable
     
     private int _disposeState;
     private int _activeRenderCount;
+    private Matrix4x4 _explicitModelToScreen = Matrix4x4.Identity;
 
     public bool IsDisposed => Volatile.Read(ref _disposeState) != 0;
 
@@ -324,27 +325,28 @@ public unsafe class DxfStaticBuffer : IDisposable
     
     public void UpdateViewport(Matrix4x4 projection, float zoom, Vector2 pan, Vector2 center, Vector2 screenCenter)
     {
-        if (UniformBuffer == null) return;
-        
-        var modelToScreen = new Matrix4x4(
+        // Static DXF vertices are recorded in control-local screen coordinates at
+        // zoom 1. Retain only the camera transform here. The compositor composes
+        // visual placement and the target projection immediately before drawing.
+        _explicitModelToScreen = new Matrix4x4(
             zoom, 0, 0, 0,
             0, zoom, 0, 0,
             0, 0, 1, 0,
             -screenCenter.X * zoom + screenCenter.X + pan.X, -screenCenter.Y * zoom + screenCenter.Y + pan.Y, 0, 1
         );
-
-        WriteViewportUniforms(projection, modelToScreen, GetCanvasSize(projection), 1.0f);
         _hasExplicitViewport = true;
     }
 
-    internal void UpdateDefaultViewport(Matrix4x4 projection, Vector2 canvasSize, float dpiScale)
+    internal void PrepareViewport(
+        Matrix4x4 projection,
+        Matrix4x4 placementTransform,
+        Vector2 canvasSize,
+        float dpiScale)
     {
-        if (_hasExplicitViewport)
-        {
-            return;
-        }
-
-        WriteViewportUniforms(projection, Matrix4x4.Identity, canvasSize, dpiScale);
+        var modelToScreen = _hasExplicitViewport
+            ? _explicitModelToScreen * placementTransform
+            : placementTransform;
+        WriteViewportUniforms(projection, modelToScreen, canvasSize, dpiScale);
     }
 
     internal RenderLease AcquireRenderLease()
@@ -387,13 +389,6 @@ public unsafe class DxfStaticBuffer : IDisposable
         };
 
         UniformBuffer.WriteSingle(uniformsData);
-    }
-
-    private static Vector2 GetCanvasSize(Matrix4x4 projection)
-    {
-        var width = projection.M11 != 0f ? MathF.Abs(2.0f / projection.M11) : 0f;
-        var height = projection.M22 != 0f ? MathF.Abs(2.0f / projection.M22) : 0f;
-        return new Vector2(width, height);
     }
 
     public void Dispose()

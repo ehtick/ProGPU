@@ -96,13 +96,74 @@ public sealed class SampleProjectSplitTests
     }
 
     [Fact]
-    public void BrowserHostRegistersItsEmbeddedFontForSkiaSharpDefaults()
+    public void BrowserHostRegistersBundledInterForSkiaSharpDefaults()
     {
         var browserHost = Read("src", "ProGPU.Browser", "BrowserWindowHost.cs");
         var typeface = Read("src", "SkiaSharp", "SKTypeface.cs");
 
+        Assert.Contains("InterFontFamily.RegisterFonts();", browserHost, StringComparison.Ordinal);
+        Assert.Contains("NotoFontFamily.RegisterFallbacks();", browserHost, StringComparison.Ordinal);
+        Assert.Contains("var fallbackFont = InterFontFamily.Regular;", browserHost, StringComparison.Ordinal);
         Assert.Contains("FontApi.RegisterPlatformFallbackFont(fallbackFont);", browserHost, StringComparison.Ordinal);
         Assert.Contains("ResolveDefaultTypeface(FontApi.GetSystemFonts(), FontApi.PlatformFallbackFont)", typeface, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BrowserFrameSchedulerHonorsVSyncAndUsesRollingGpuCompletionWindow()
+    {
+        var browserAsset = Read("src", "ProGPU.Browser", "BrowserAssets", "progpu-browser.js");
+        var browserHost = Read("src", "ProGPU.Browser", "BrowserWindowHost.cs");
+
+        Assert.Contains("function nextAnimationFrame(vsync)", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("if (vsync) return new Promise(resolve => requestAnimationFrame(resolve));", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("const uncappedFrameChannel = new MessageChannel();", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("uncappedFrameChannel.port2.postMessage(0);", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("const UNCAPPED_FRAMES_PER_COMPLETION = 3;", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("const MAX_UNCAPPED_COMPLETION_GROUPS = 2;", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("const uncappedGpuFenceResolvers = new Map();", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("uncappedGpuCompletions.push(captureUncappedGpuCompletion());", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("await uncappedGpuCompletions.shift();", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("state.device.queue.onSubmittedWorkDone()", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("type: 'uncapped-frame-fence', id", browserAsset, StringComparison.Ordinal);
+        Assert.DoesNotContain("uncappedFramesSinceFence", browserAsset, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "function nextAnimationFrame(vsync) {\n  queueMicrotask",
+            browserAsset.Replace("\r\n", "\n", StringComparison.Ordinal),
+            StringComparison.Ordinal);
+        Assert.Contains("hosted.Gpu.Context.VSync", browserHost, StringComparison.Ordinal);
+        Assert.Contains("NextAnimationFrameAsync(vsync)", browserHost, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BrowserBenchmarkQueryUsesExplicitEnvironmentAllowList()
+    {
+        var browserAsset = Read("src", "ProGPU.Browser", "BrowserAssets", "progpu-browser.js");
+
+        Assert.Contains("const BENCHMARK_QUERY_VARIABLES = Object.freeze({", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("benchmarkPage: 'PROGPU_SAMPLE_BENCHMARK_PAGE'", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("benchmarkMeasureFrames: 'PROGPU_SAMPLE_BENCHMARK_MEASURE_FRAMES'", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("benchmarkScrollStep: 'PROGPU_SAMPLE_BENCHMARK_SCROLL_STEP'", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("function readBenchmarkEnvironment()", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("dotnet.withEnvironmentVariables(readBenchmarkEnvironment()).create()", browserAsset, StringComparison.Ordinal);
+        Assert.DoesNotContain("Object.fromEntries(query", browserAsset, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BrowserFilePickerUsesCancellationSafeDirectByteTransfer()
+    {
+        var browserAsset = Read("src", "ProGPU.Browser", "BrowserAssets", "progpu-browser.js");
+        var storageServices = Read("src", "ProGPU.Browser", "BrowserStorageServices.cs");
+        var browserInput = Read("src", "ProGPU.Browser", "BrowserInputDispatcher.cs");
+
+        Assert.Contains("input.addEventListener('cancel'", browserAsset, StringComparison.Ordinal);
+        Assert.DoesNotContain("globalThis.addEventListener('focus'", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("runtime.getAssemblyExports('ProGPU.Browser.dll')", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("dispatchPointerEvent(3, event, point)", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("DispatchImmediatePointer", browserInput, StringComparison.Ordinal);
+        Assert.Contains("heap.set(bytes, destination);", browserAsset, StringComparison.Ordinal);
+        Assert.DoesNotContain("bytesToBase64", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("CopyPickedStorage((nint)destination, length)", storageServices, StringComparison.Ordinal);
+        Assert.Contains("ClearPickedStorage();", storageServices, StringComparison.Ordinal);
     }
 
     [Fact]

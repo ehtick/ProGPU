@@ -106,12 +106,79 @@ jobs:
             exit $LASTEXITCODE
           }
 
-          dotnet test `
-            src/ProGPU.Tests.Headless/ProGPU.Tests.Headless.csproj `
-            --configuration Release `
-            --runtime "${{ matrix.rid }}" `
-            --no-build `
-            --verbosity normal
+          $headlessArgs = @(
+            "test",
+            "src/ProGPU.Tests.Headless/ProGPU.Tests.Headless.csproj",
+            "--configuration",
+            "Release",
+            "--runtime",
+            "${{ matrix.rid }}",
+            "--no-build",
+            "--verbosity",
+            "normal"
+          )
+
+          if ($IsWindows) {
+            # Keep native WebGPU lifetime bounded on the hosted Windows runner.
+            # Sample pages share one retained headless device, while ordinary headless,
+            # image effects, ShaderToy, and the large multilingual specimen each get a
+            # fresh process. Image effects creates the largest transient texture graph.
+            $headlessArgs += @(
+              "--filter",
+              "FullyQualifiedName!~SamplePagesTests"
+            )
+          }
+
+          dotnet @headlessArgs
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+          if ($IsWindows) {
+            dotnet test `
+              src/ProGPU.Tests.Headless/ProGPU.Tests.Headless.csproj `
+              --configuration Release `
+              --runtime "${{ matrix.rid }}" `
+              --no-build `
+              --verbosity normal `
+              --filter "FullyQualifiedName~SamplePagesTests&FullyQualifiedName!~ShaderToy&FullyQualifiedName!~ImageEffects&FullyQualifiedName!~Test_TypographyScriptsPage_Renders"
+            if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+            }
+
+            dotnet test `
+              src/ProGPU.Tests.Headless/ProGPU.Tests.Headless.csproj `
+              --configuration Release `
+              --runtime "${{ matrix.rid }}" `
+              --no-build `
+              --verbosity normal `
+              --filter "FullyQualifiedName~SamplePagesTests.Test_ImageEffectsPage_Renders"
+            if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+            }
+
+            dotnet test `
+              src/ProGPU.Tests.Headless/ProGPU.Tests.Headless.csproj `
+              --configuration Release `
+              --runtime "${{ matrix.rid }}" `
+              --no-build `
+              --verbosity normal `
+              --filter "FullyQualifiedName~SamplePagesTests&FullyQualifiedName~ShaderToy"
+            if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+            }
+
+            dotnet test `
+              src/ProGPU.Tests.Headless/ProGPU.Tests.Headless.csproj `
+              --configuration Release `
+              --runtime "${{ matrix.rid }}" `
+              --no-build `
+              --verbosity normal `
+              --filter "FullyQualifiedName=ProGPU.Tests.Headless.SamplePagesTests.Test_TypographyScriptsPage_Renders"
+            if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+            }
+          }
 
       - name: Pack shipping packages
         shell: bash

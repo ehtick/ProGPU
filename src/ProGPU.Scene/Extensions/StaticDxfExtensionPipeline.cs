@@ -31,6 +31,7 @@ namespace ProGPU.Scene.Extensions
                 compositor.DrawStaticDxfBuffer(
                     (Silk.NET.WebGPU.RenderPassEncoder*)renderPassEncoder,
                     dc.DataParam,
+                    dc.Transform,
                     isOffscreen,
                     dc.MaskTexture,
                     dc.BlendMode);

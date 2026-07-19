@@ -869,9 +869,13 @@ public class DataGrid : Control
             // Draw Sorting indicator if active sorting
             if (SortingColumn == col)
             {
-                string sortIndicator = col.IsAscending ? " ▲" : " ▼";
                 float headerTextW = col.Header.Length * (FontSize * 0.6f); // approximate width
-                context.DrawText(sortIndicator, activeFont, FontSize - 2f, ThemeManager.GetBrush("SystemAccentColor"), new Vector2(runningX + 8f + headerTextW, textY));
+                float sortX = runningX + 12f + headerTextW;
+                float sortY = _headerHeight * 0.5f;
+                float direction = col.IsAscending ? -1f : 1f;
+                var sortPen = new Pen(ThemeManager.GetBrush("SystemAccentColor"), 1.5f);
+                context.DrawLine(sortPen, new Vector2(sortX - 3f, sortY - direction * 1.5f), new Vector2(sortX, sortY + direction * 1.5f));
+                context.DrawLine(sortPen, new Vector2(sortX, sortY + direction * 1.5f), new Vector2(sortX + 3f, sortY - direction * 1.5f));
             }
 
             // Draw highlight if this separator is hovered or being resized

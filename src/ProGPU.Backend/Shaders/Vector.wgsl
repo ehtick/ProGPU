@@ -1,6 +1,6 @@
-// Algorithm: Expand and transform batched vector primitives and meshes, evaluate analytic curves and arcs, then shade fills, strokes, gradients, vertex-color blends, and anti-aliased edges.
+// Algorithm: Expand and transform batched vector primitives and meshes, evaluate analytic curves and arcs, use exact single-evaluation box/rounded-box distance gradients for anti-aliasing, then shade fills, strokes, gradients, vertex-color blends, and edges; dedicated solid-rectangle and adaptively selected circular-rounded-rectangle entry points avoid the general material/path program for dense UI chrome.
 // Time complexity: O(1) per vertex or fragment under the shader's fixed primitive and gradient limits.
-// Space complexity: O(1) local storage and a bounded number of uniform/storage reads.
+// Space complexity: O(1) local storage and a bounded number of uniform/storage reads; masked variants add one mask-texture sample per fragment.
 struct Brush {
     brushType: u32,
     opacity: f32,
@@ -706,6 +706,236 @@ fn vs_main(input: VertexInput, @builtin(vertex_index) vertexIndex: u32) -> Verte
     output.gridIndex = gridIndex;
     return output;
 }
+
+// Solid UI rectangles use the same retained VectorVertex ABI and transform flags as
+// the general vector path. The specialized entry point intentionally does not read
+// brush storage or evaluate unrelated primitive branches. The compositor bakes the
+// solid brush and effective opacity into input.color before selecting this pipeline.
+@vertex
+fn vs_solid_rect(input: VertexInput) -> VertexOutput {
+    var encodedShapeType = input.shapeType;
+    let aliasedEdge = encodedShapeType >= 1000.0;
+    if (aliasedEdge) {
+        encodedShapeType = encodedShapeType - 1000.0;
+    }
+
+    var position = input.position;
+    if (encodedShapeType >= 195.0) {
+        position = (uniforms.mvp * vec4<f32>(position, 0.0, 1.0)).xy;
+    } else if (encodedShapeType >= 95.0) {
+        position = (uniforms.view * vec4<f32>(position, 0.0, 1.0)).xy;
+    }
+
+    var output: VertexOutput;
+    output.position = uniforms.projection * vec4<f32>(position, 0.0, 1.0);
+    output.color = input.color;
+    output.texCoord = input.texCoord;
+    output.brushIndex = input.brushIndex;
+    output.shapeSize = input.shapeSize;
+    output.cornerRadius = 0.0;
+    output.strokeThickness = input.strokeThickness;
+    output.shapeType = select(0.0, 1000.0, aliasedEdge);
+    output.gridIndex = 0.0;
+    return output;
+}
+
+fn solid_rect_distance(coordinate: vec2<f32>, shapeSize: vec2<f32>) -> f32 {
+    let distanceVector = abs(coordinate) - shapeSize * 0.5;
+    return length(max(distanceVector, vec2<f32>(0.0))) +
+        min(max(distanceVector.x, distanceVector.y), 0.0);
+}
+
+fn solid_rect_fs_main(input: VertexOutput, maskAlpha: f32) -> vec4<f32> {
+    let aliasedEdge = input.shapeType >= 1000.0;
+    // Fragment derivatives must execute in uniform control flow. Compute both
+    // fill and stroke widths before selecting the interpolated primitive mode;
+    // the branch below then only combines already evaluated scalar coverage.
+    let edgeDistance = abs(input.texCoord) - input.shapeSize * 0.5;
+    let edgeWidth = max(
+        abs(dpdx(input.texCoord)) + abs(dpdy(input.texCoord)),
+        vec2<f32>(0.0001));
+    let distance = solid_rect_distance(input.texCoord, input.shapeSize);
+    let thinStrokeInset = select(
+        0.0,
+        0.0625,
+        !aliasedEdge && input.strokeThickness <= 1.0001);
+    let strokeDistance = abs(distance) -
+        max(input.strokeThickness * 0.5 - thinStrokeInset, 0.0);
+    // dFdx/dFdy evaluate the exact analytic rectangle distance in screen
+    // space, avoiding the general shader's four extra SDF evaluations.
+    let strokeFilterWidth = max(
+        abs(dpdx(strokeDistance)) + abs(dpdy(strokeDistance)),
+        0.0001);
+
+    var shapeAlpha = 1.0;
+    if (input.strokeThickness <= 0.0) {
+        // Match the general fill-rectangle path exactly: separable derivative AA
+        // keeps axis-aligned one-pixel edges crisp and remains affine-safe.
+        let antialiasedCoverage = vec2<f32>(1.0) - smoothstep(
+            -0.5 * edgeWidth,
+            0.5 * edgeWidth,
+            edgeDistance);
+        let aliasedCoverage = select(
+            vec2<f32>(0.0),
+            vec2<f32>(1.0),
+            edgeDistance <= vec2<f32>(0.0));
+        let coverage = select(antialiasedCoverage, aliasedCoverage, aliasedEdge);
+        shapeAlpha = coverage.x * coverage.y;
+    } else {
+        let antialiasedAlpha = 1.0 - smoothstep(
+            -0.5 * strokeFilterWidth,
+            0.5 * strokeFilterWidth,
+            strokeDistance);
+        let aliasedAlpha = select(0.0, 1.0, strokeDistance <= 0.0);
+        shapeAlpha = select(antialiasedAlpha, aliasedAlpha, aliasedEdge);
+    }
+
+    if (shapeAlpha <= 0.0 || maskAlpha <= 0.0) {
+        discard;
+    }
+    return vec4<f32>(input.color.rgb, input.color.a * shapeAlpha * maskAlpha);
+}
+
+@fragment
+fn fs_solid_rect_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    let screenUv = input.position.xy / uniforms.canvasSize;
+    return solid_rect_fs_main(input, textureSample(maskTexture, maskSampler, screenUv).r);
+}
+
+@fragment
+fn fs_solid_rect_main_unmasked(input: VertexOutput) -> @location(0) vec4<f32> {
+    return solid_rect_fs_main(input, 1.0);
+}
+
+@fragment
+fn fs_solid_rect_premultiplied(input: VertexOutput) -> @location(0) vec4<f32> {
+    let screenUv = input.position.xy / uniforms.canvasSize;
+    let color = solid_rect_fs_main(input, textureSample(maskTexture, maskSampler, screenUv).r);
+    return vec4<f32>(color.rgb * color.a, color.a);
+}
+
+@fragment
+fn fs_solid_rect_premultiplied_unmasked(input: VertexOutput) -> @location(0) vec4<f32> {
+    let color = solid_rect_fs_main(input, 1.0);
+    return vec4<f32>(color.rgb * color.a, color.a);
+}
+
+@fragment
+fn fs_solid_rect_mask(input: VertexOutput) -> @location(0) vec4<f32> {
+    let screenUv = input.position.xy / uniforms.canvasSize;
+    let color = solid_rect_fs_main(input, textureSample(maskTexture, maskSampler, screenUv).r);
+    return vec4<f32>(color.a, 0.0, 0.0, 1.0);
+}
+
+@fragment
+fn fs_solid_rect_mask_unmasked(input: VertexOutput) -> @location(0) vec4<f32> {
+    let color = solid_rect_fs_main(input, 1.0);
+    return vec4<f32>(color.a, 0.0, 0.0, 1.0);
+}
+
+// Circular rounded rectangles use a separate bounded specialization only when
+// the compositor has observed enough of them to amortize a pipeline boundary.
+// The retained vertex ABI, transforms, coverage, opacity, and blend behavior
+// remain identical to the general vector path.
+@vertex
+fn vs_solid_rounded(input: VertexInput) -> VertexOutput {
+    var encodedShapeType = input.shapeType;
+    let aliasedEdge = encodedShapeType >= 1000.0;
+    if (aliasedEdge) {
+        encodedShapeType = encodedShapeType - 1000.0;
+    }
+
+    var position = input.position;
+    if (encodedShapeType >= 195.0) {
+        position = (uniforms.mvp * vec4<f32>(position, 0.0, 1.0)).xy;
+    } else if (encodedShapeType >= 95.0) {
+        position = (uniforms.view * vec4<f32>(position, 0.0, 1.0)).xy;
+    }
+
+    var output: VertexOutput;
+    output.position = uniforms.projection * vec4<f32>(position, 0.0, 1.0);
+    output.color = input.color;
+    output.texCoord = input.texCoord;
+    output.brushIndex = input.brushIndex;
+    output.shapeSize = input.shapeSize;
+    output.cornerRadius = input.cornerRadius;
+    output.strokeThickness = input.strokeThickness;
+    output.shapeType = select(2.0, 1002.0, aliasedEdge);
+    output.gridIndex = 0.0;
+    return output;
+}
+
+fn solid_rounded_fs_main(input: VertexOutput, maskAlpha: f32) -> vec4<f32> {
+    let atlasCoordDx = dpdx(input.texCoord);
+    let atlasCoordDy = dpdy(input.texCoord);
+    let aliasedEdge = input.shapeType >= 1000.0;
+    let distanceGradient = box_distance_gradient(
+        input.texCoord,
+        input.shapeSize * 0.5,
+        input.cornerRadius);
+    let distance = distanceGradient.x;
+    let gradient = distanceGradient.yz;
+    let thinStrokeInset = select(
+        0.0,
+        0.0625,
+        !aliasedEdge && input.strokeThickness <= 1.0001);
+    let strokeDistance = abs(distance) -
+        max(input.strokeThickness * 0.5 - thinStrokeInset, 0.0);
+    let shapeDistance = select(
+        distance,
+        strokeDistance,
+        input.strokeThickness > 0.0);
+    let filterWidth = max(
+        abs(dot(gradient, atlasCoordDx)) + abs(dot(gradient, atlasCoordDy)),
+        0.0001);
+    let antialiasedAlpha = 1.0 - smoothstep(
+        -0.5 * filterWidth,
+        0.5 * filterWidth,
+        shapeDistance);
+    let aliasedAlpha = select(0.0, 1.0, shapeDistance <= 0.0);
+    let shapeAlpha = select(antialiasedAlpha, aliasedAlpha, aliasedEdge);
+    if (shapeAlpha <= 0.0 || maskAlpha <= 0.0) {
+        discard;
+    }
+    return vec4<f32>(input.color.rgb, input.color.a * shapeAlpha * maskAlpha);
+}
+
+@fragment
+fn fs_solid_rounded_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    let screenUv = input.position.xy / uniforms.canvasSize;
+    return solid_rounded_fs_main(input, textureSample(maskTexture, maskSampler, screenUv).r);
+}
+
+@fragment
+fn fs_solid_rounded_main_unmasked(input: VertexOutput) -> @location(0) vec4<f32> {
+    return solid_rounded_fs_main(input, 1.0);
+}
+
+@fragment
+fn fs_solid_rounded_premultiplied(input: VertexOutput) -> @location(0) vec4<f32> {
+    let screenUv = input.position.xy / uniforms.canvasSize;
+    let color = solid_rounded_fs_main(input, textureSample(maskTexture, maskSampler, screenUv).r);
+    return vec4<f32>(color.rgb * color.a, color.a);
+}
+
+@fragment
+fn fs_solid_rounded_premultiplied_unmasked(input: VertexOutput) -> @location(0) vec4<f32> {
+    let color = solid_rounded_fs_main(input, 1.0);
+    return vec4<f32>(color.rgb * color.a, color.a);
+}
+
+@fragment
+fn fs_solid_rounded_mask(input: VertexOutput) -> @location(0) vec4<f32> {
+    let screenUv = input.position.xy / uniforms.canvasSize;
+    let color = solid_rounded_fs_main(input, textureSample(maskTexture, maskSampler, screenUv).r);
+    return vec4<f32>(color.a, 0.0, 0.0, 1.0);
+}
+
+@fragment
+fn fs_solid_rounded_mask_unmasked(input: VertexOutput) -> @location(0) vec4<f32> {
+    let color = solid_rounded_fs_main(input, 1.0);
+    return vec4<f32>(color.a, 0.0, 0.0, 1.0);
+}
 fn mesh_unpremultiply(color: vec4<f32>) -> vec4<f32> {
     if (color.a <= 0.0) {
         return vec4<f32>(0.0);
@@ -919,7 +1149,36 @@ fn analytic_shape_distance(
     return -1.0;
 }
 
-fn vector_fs_main(input: VertexOutput) -> vec4<f32> {
+// Returns the exact signed distance and its local-space gradient for an
+// axis-aligned box with an optional circular corner radius. The gradient is
+// analytic everywhere except the SDF's intentional medial-axis ties, where a
+// stable single-axis subgradient is selected. This replaces four extra SDF
+// evaluations for rectangle strokes and circular rounded rectangles.
+fn box_distance_gradient(
+    coordinate: vec2<f32>,
+    halfSize: vec2<f32>,
+    cornerRadius: f32) -> vec3<f32> {
+    let q = abs(coordinate) - (halfSize - vec2<f32>(cornerRadius));
+    let outside = max(q, vec2<f32>(0.0));
+    let outsideLength = length(outside);
+    let distance = outsideLength + min(max(q.x, q.y), 0.0) - cornerRadius;
+    let coordinateSign = select(
+        vec2<f32>(-1.0),
+        vec2<f32>(1.0),
+        coordinate >= vec2<f32>(0.0));
+    var gradient: vec2<f32>;
+    if (outsideLength > 0.000001) {
+        gradient = (outside / outsideLength) * coordinateSign;
+    } else {
+        gradient = select(
+            vec2<f32>(0.0, coordinateSign.y),
+            vec2<f32>(coordinateSign.x, 0.0),
+            q.x >= q.y);
+    }
+    return vec3<f32>(distance, gradient);
+}
+
+fn vector_fs_main(input: VertexOutput, maskAlpha: f32) -> vec4<f32> {
     let atlasCoordDx = dpdx(input.texCoord);
     let atlasCoordDy = dpdy(input.texCoord);
     var encodedShapeType = input.shapeType;
@@ -929,7 +1188,6 @@ fn vector_fs_main(input: VertexOutput) -> vec4<f32> {
     }
 
     let sType = u32(round(encodedShapeType));
-    let d = analytic_shape_distance(sType, input.texCoord, input.shapeSize, input.cornerRadius);
 
     var evalCoord = input.texCoord;
     if (sType < 3u) {
@@ -955,6 +1213,48 @@ fn vector_fs_main(input: VertexOutput) -> vec4<f32> {
         let coverage = select(antialiasedCoverage, aliasedCoverage, aliasedEdge);
         shapeAlpha = coverage.x * coverage.y;
     } else if (sType < 3u) {
+        var d: f32;
+        var gradient: vec2<f32>;
+        if (sType == 0u || sType == 2u) {
+            let radius = select(0.0, input.cornerRadius, sType == 2u);
+            let distanceGradient = box_distance_gradient(
+                input.texCoord,
+                input.shapeSize * 0.5,
+                radius);
+            d = distanceGradient.x;
+            gradient = distanceGradient.yz;
+        } else {
+            d = analytic_shape_distance(
+                sType,
+                input.texCoord,
+                input.shapeSize,
+                input.cornerRadius);
+            // Elliptical distance uses the established finite-difference
+            // gradient because its first-order distance approximation is not
+            // the exact ellipse SDF.
+            let gradientStep = 0.01;
+            gradient = vec2<f32>(
+                analytic_shape_distance(
+                    sType,
+                    input.texCoord + vec2<f32>(gradientStep, 0.0),
+                    input.shapeSize,
+                    input.cornerRadius) -
+                    analytic_shape_distance(
+                        sType,
+                        input.texCoord - vec2<f32>(gradientStep, 0.0),
+                        input.shapeSize,
+                        input.cornerRadius),
+                analytic_shape_distance(
+                    sType,
+                    input.texCoord + vec2<f32>(0.0, gradientStep),
+                    input.shapeSize,
+                    input.cornerRadius) -
+                    analytic_shape_distance(
+                        sType,
+                        input.texCoord - vec2<f32>(0.0, gradientStep),
+                        input.shapeSize,
+                        input.cornerRadius)) / (2.0 * gradientStep);
+        }
         var d_shape: f32 = 0.0;
         if (input.strokeThickness > 0.0) {
             var strokeDistance = d;
@@ -970,30 +1270,8 @@ fn vector_fs_main(input: VertexOutput) -> vec4<f32> {
         } else {
             d_shape = d;
         }
-        // Estimate the local SDF gradient with fixed central differences, then
-        // transform it with derivatives obtained before non-uniform branching.
-        let gradientStep = 0.01;
-        let gradient = vec2<f32>(
-            analytic_shape_distance(
-                sType,
-                input.texCoord + vec2<f32>(gradientStep, 0.0),
-                input.shapeSize,
-                input.cornerRadius) -
-                analytic_shape_distance(
-                    sType,
-                    input.texCoord - vec2<f32>(gradientStep, 0.0),
-                    input.shapeSize,
-                    input.cornerRadius),
-            analytic_shape_distance(
-                sType,
-                input.texCoord + vec2<f32>(0.0, gradientStep),
-                input.shapeSize,
-                input.cornerRadius) -
-                analytic_shape_distance(
-                    sType,
-                    input.texCoord - vec2<f32>(0.0, gradientStep),
-                    input.shapeSize,
-                    input.cornerRadius)) / (2.0 * gradientStep);
+        // Transform the local SDF gradient with derivatives obtained before
+        // non-uniform branching.
         let fw = max(
             abs(dot(gradient, atlasCoordDx)) + abs(dot(gradient, atlasCoordDy)),
             0.0001);
@@ -1276,27 +1554,55 @@ fn vector_fs_main(input: VertexOutput) -> vec4<f32> {
         finalColor = blend_mesh_colors(finalColor, input.color, u32(round(input.cornerRadius)));
     }
 
-    let screen_uv = input.position.xy / uniforms.canvasSize;
-    let maskAlpha = textureSample(maskTexture, maskSampler, screen_uv).r;
-    if (maskAlpha <= 0.0) {
-        discard;
-    }
     return vec4<f32>(finalColor.rgb, finalColor.a * shapeAlpha * maskAlpha);
 }
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    return vector_fs_main(input);
+    let screen_uv = input.position.xy / uniforms.canvasSize;
+    let maskAlpha = textureSample(maskTexture, maskSampler, screen_uv).r;
+    let color = vector_fs_main(input, maskAlpha);
+    if (maskAlpha <= 0.0) {
+        discard;
+    }
+    return color;
+}
+
+@fragment
+fn fs_main_unmasked(input: VertexOutput) -> @location(0) vec4<f32> {
+    return vector_fs_main(input, 1.0);
 }
 
 @fragment
 fn fs_main_premultiplied(input: VertexOutput) -> @location(0) vec4<f32> {
-    let color = vector_fs_main(input);
+    let screen_uv = input.position.xy / uniforms.canvasSize;
+    let maskAlpha = textureSample(maskTexture, maskSampler, screen_uv).r;
+    let color = vector_fs_main(input, maskAlpha);
+    if (maskAlpha <= 0.0) {
+        discard;
+    }
+    return vec4<f32>(color.rgb * color.a, color.a);
+}
+
+@fragment
+fn fs_main_premultiplied_unmasked(input: VertexOutput) -> @location(0) vec4<f32> {
+    let color = vector_fs_main(input, 1.0);
     return vec4<f32>(color.rgb * color.a, color.a);
 }
 
 @fragment
 fn fs_mask(input: VertexOutput) -> @location(0) vec4<f32> {
-    let color = vector_fs_main(input);
+    let screen_uv = input.position.xy / uniforms.canvasSize;
+    let maskAlpha = textureSample(maskTexture, maskSampler, screen_uv).r;
+    let color = vector_fs_main(input, maskAlpha);
+    if (maskAlpha <= 0.0) {
+        discard;
+    }
+    return vec4<f32>(color.a, 0.0, 0.0, 1.0);
+}
+
+@fragment
+fn fs_mask_unmasked(input: VertexOutput) -> @location(0) vec4<f32> {
+    let color = vector_fs_main(input, 1.0);
     return vec4<f32>(color.a, 0.0, 0.0, 1.0);
 }

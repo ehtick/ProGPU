@@ -884,8 +884,10 @@ public class NavigationViewItem : Control
 
                 if (!drewCustomIcon)
                 {
-                    // Fallback to text icon if not matched
-                    context.DrawText(Icon, font, 16f, textPrimary, new Vector2(startX, startY));
+                    // Font-independent fallback for application-defined icons.
+                    context.DrawRoundedRectangle(translucentBrush, primaryPen, new Rect(startX + 1f, startY + 1f, 14f, 14f), 2f);
+                    context.DrawLine(translucentPen, new Vector2(startX + 4f, startY + 6f), new Vector2(startX + 12f, startY + 6f));
+                    context.DrawLine(translucentPen, new Vector2(startX + 4f, startY + 10f), new Vector2(startX + 10f, startY + 10f));
                 }
 
                 startX += 28f;
@@ -901,14 +903,18 @@ public class NavigationViewItem : Control
             // 5. Draw nested expandable arrow indicator
             if (isPaneOpen && Items.Count > 0)
             {
-                string arrow = IsExpanded ? "▼" : "▶";
-                if (activeFamily == VisualThemeFamily.macOS)
+                float arrowX = activeFamily == VisualThemeFamily.macOS ? baseIndent + 2f : Size.X - 18f;
+                float arrowY = Size.Y * 0.5f;
+                var arrowPen = new Pen(translucentHeavyBrush, 1.5f);
+                if (IsExpanded)
                 {
-                    context.DrawText(arrow, font, 10f, translucentHeavyBrush, new Vector2(baseIndent - 2f, (Size.Y - 10f) / 2f));
+                    context.DrawLine(arrowPen, new Vector2(arrowX - 3f, arrowY - 1.5f), new Vector2(arrowX, arrowY + 1.5f));
+                    context.DrawLine(arrowPen, new Vector2(arrowX, arrowY + 1.5f), new Vector2(arrowX + 3f, arrowY - 1.5f));
                 }
                 else
                 {
-                    context.DrawText(arrow, font, 10f, translucentHeavyBrush, new Vector2(Size.X - 24f, (Size.Y - 10f) / 2f));
+                    context.DrawLine(arrowPen, new Vector2(arrowX - 1.5f, arrowY - 3f), new Vector2(arrowX + 1.5f, arrowY));
+                    context.DrawLine(arrowPen, new Vector2(arrowX + 1.5f, arrowY), new Vector2(arrowX - 1.5f, arrowY + 3f));
                 }
             }
         }

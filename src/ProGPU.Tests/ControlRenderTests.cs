@@ -66,6 +66,19 @@ public class ControlRenderTests
         Assert.Same(firstPage, nav.Content);
     }
 
+    [Fact]
+    public void NavigationViewPaneToggleInvalidatesRetainedItemChrome()
+    {
+        var nav = new NavigationView();
+        var item = new NavigationViewItem("Page", "icon", new Border());
+        nav.MenuItems.Add(item);
+        long compactVersion = item.ChangeVersion;
+
+        nav.IsPaneOpen = true;
+
+        Assert.True(item.ChangeVersion > compactVersion);
+    }
+
     private void VerifyControlStates<T>(T control, string namePrefix) where T : Control
     {
         PopupService.Clear();
@@ -191,6 +204,33 @@ public class ControlRenderTests
         Assert.DoesNotContain("SetValue(this", applyStyleSource, StringComparison.Ordinal);
         Assert.DoesNotContain("System.Reflection", applyStyleSource, StringComparison.Ordinal);
         Assert.Contains("DependencyProperty.Lookup", applyStyleSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CoreControlChromeDoesNotDependOnUnicodeFontGlyphs()
+    {
+        var controls = new[]
+        {
+            "ComboBox.cs",
+            "TabViewItem.cs",
+            "CalendarView.cs",
+            "DatePicker.cs",
+            "TreeView.cs",
+            "DataGrid.cs"
+        };
+
+        foreach (string control in controls)
+        {
+            string source = File.ReadAllText(FindRepoFile("src", "ProGPU.WinUI", "Controls", control));
+            Assert.DoesNotContain("DrawText(\"▼\"", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("DrawText(\"▶\"", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("DrawText(\"◀\"", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("DrawText(\"×\"", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("DrawText(\"📅\"", source, StringComparison.Ordinal);
+        }
+
+        string navigationSource = File.ReadAllText(FindRepoFile("src", "ProGPU.WinUI", "Controls", "NavigationViewItem.cs"));
+        Assert.DoesNotContain("context.DrawText(Icon", navigationSource, StringComparison.Ordinal);
     }
 
     [Fact]

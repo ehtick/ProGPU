@@ -2,6 +2,8 @@ using System.Collections;
 using System.Numerics;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using ProGPU.Fonts.Inter;
+using ProGPU.Fonts.Noto;
 using ProGPU.Scene;
 using ProGPU.Text;
 using ProGPU.Tests.Headless;
@@ -76,6 +78,93 @@ public sealed class SamplePerformanceRegressionTests
     }
 
     [Fact]
+    public void TextVisualReusesMeasuredShapingAcrossEquivalentArrange()
+    {
+        var text = new TextVisual
+        {
+            Text = "Retained shaping",
+            Font = LoadTestFont(),
+            FontSize = 18f,
+            WidthConstraint = 240f
+        };
+        text.Measure(new Vector2(240f, 80f));
+        text.Arrange(new Rect(0f, 0f, 240f, 80f));
+        using var atlas = new GlyphAtlas(HeadlessWindow.Shared.Context, atlasSize: 256);
+        TextLayout? first = text.GetOrUpdateLayout(atlas);
+
+        text.Measure(new Vector2(240f, 80f));
+        text.Arrange(new Rect(0f, 0f, 240f, 80f));
+        TextLayout? second = text.GetOrUpdateLayout(atlas);
+
+        Assert.NotNull(first);
+        Assert.Same(first, second);
+    }
+
+    [Fact]
+    public void TextVisualRelayoutsInfiniteMeasurementWhenArrangeRequiresWrapping()
+    {
+        var text = new TextVisual
+        {
+            Text = "A retained text run that must wrap after arrange",
+            Font = LoadTestFont(),
+            FontSize = 18f
+        };
+        text.Measure(new Vector2(float.PositiveInfinity, 120f));
+        text.Arrange(new Rect(0f, 0f, text.DesiredSize.X, 120f));
+        using var atlas = new GlyphAtlas(HeadlessWindow.Shared.Context, atlasSize: 256);
+        TextLayout? measured = text.GetOrUpdateLayout(atlas);
+
+        text.Arrange(new Rect(0f, 0f, 80f, 120f));
+        TextLayout? arranged = text.GetOrUpdateLayout(atlas);
+
+        Assert.NotNull(measured);
+        Assert.NotNull(arranged);
+        Assert.NotSame(measured, arranged);
+        Assert.Equal(80f, arranged.MaxWidth);
+        Assert.True(arranged.ContentSize.Y > measured.ContentSize.Y);
+    }
+
+    [Fact]
+    public void DeferredTextVisualWarmsAfterLayoutWithoutChangingArrangedBounds()
+    {
+        var text = new TextVisual
+        {
+            Text = "Deferred retained shaping",
+            Font = LoadTestFont(),
+            FontSize = 18f,
+            WidthConstraint = 240f,
+            HeightConstraint = 48f,
+            DeferLayoutUntilRender = true
+        };
+
+        text.Measure(new Vector2(240f, 48f));
+        Assert.False(text.WarmDeferredLayout());
+        text.Arrange(new Rect(0f, 0f, 240f, 48f));
+        Assert.True(text.WarmDeferredLayout());
+
+        using var atlas = new GlyphAtlas(HeadlessWindow.Shared.Context, atlasSize: 256);
+        TextLayout? layout = text.GetOrUpdateLayout(atlas);
+
+        Assert.NotNull(layout);
+        Assert.Equal(240f, layout.MaxWidth);
+        Assert.Equal(new Vector2(240f, 48f), text.Size);
+    }
+
+    [Fact]
+    public void ClippedBoundsSkipOnlyLocalCommandsAndStillTraverseOverflowDescendants()
+    {
+        var visibleGrandchild = new RenderCounterVisual();
+        var clippedParent = new RenderCounterContainer(visibleGrandchild);
+        using var window = new HeadlessWindow(100, 100);
+        window.Content = new ClipCullHost(clippedParent);
+
+        window.Render();
+
+        Assert.Equal(0, clippedParent.RenderCount);
+        Assert.Equal(1, visibleGrandchild.RenderCount);
+    }
+
+    [Fact]
     public void FontIconUsesBoundedGlyphAtlasByDefault()
     {
         var font = LoadTestFont();
@@ -112,6 +201,41 @@ public sealed class SamplePerformanceRegressionTests
         Assert.Equal(0u, first.Width);
         Assert.Equal(first.Width, second.Width);
         Assert.Equal(first.Advance, second.Advance);
+    }
+
+    [Fact]
+    public void GlyphAtlasCompilesOnlyRequestedGpuOutlines()
+    {
+        var font = LoadTestFont();
+        using var atlas = new GlyphAtlas(HeadlessWindow.Shared.Context, atlasSize: 512);
+        ushort firstGlyph = font.GetGlyphIndex('A');
+        ushort secondGlyph = font.GetGlyphIndex('B');
+
+        atlas.BeginBatch();
+        try
+        {
+            Assert.True(atlas.GetOrCreateGlyphByIndex(font, firstGlyph, 32f).Width > 0);
+        }
+        finally
+        {
+            atlas.EndBatch();
+        }
+
+        Assert.Equal(1, atlas.CompiledGpuGlyphCount);
+        Assert.True(atlas.CompiledGpuGlyphCount < font.NumGlyphs);
+        Assert.True(atlas.AllocatedGpuGlyphRecordCapacity < font.NumGlyphs);
+
+        atlas.BeginBatch();
+        try
+        {
+            Assert.True(atlas.GetOrCreateGlyphByIndex(font, secondGlyph, 32f).Width > 0);
+        }
+        finally
+        {
+            atlas.EndBatch();
+        }
+
+        Assert.Equal(2, atlas.CompiledGpuGlyphCount);
     }
 
     [Fact]
@@ -610,6 +734,48 @@ public sealed class SamplePerformanceRegressionTests
     }
 
     [Fact]
+    public void RichEditCaretHitTestingUsesResolvedFallbackAdvance()
+    {
+        NotoFontFamily.RegisterFallbacks();
+        TtfFont baseFont = InterFontFamily.Regular;
+        var editor = new RichEditBox
+        {
+            Font = baseFont,
+            FontSize = 32f,
+            Text = "\u4E00"
+        };
+        editor.Measure(new Vector2(200f, 80f));
+        editor.Arrange(new Rect(0f, 0f, 200f, 80f));
+        var scrollViewer = Assert.IsType<ScrollViewer>(Assert.Single(editor.Children));
+        var text = Assert.IsType<RichTextBlock>(scrollViewer.Content);
+        PositionedRichChar character = Assert.Single(text.PositionedChars);
+        TtfFont fallbackFont = Assert.IsType<TtfFont>(character.Info.Font);
+        Assert.NotSame(baseFont, fallbackFont);
+
+        float fallbackAdvance = fallbackFont.GetAdvanceWidth(
+            fallbackFont.GetGlyphIndex(character.Info.Character),
+            character.Info.FontSize);
+        float baseAdvance = baseFont.GetAdvanceWidth(
+            baseFont.GetGlyphIndex(character.Info.Character),
+            character.Info.FontSize);
+        Assert.True(Math.Abs(fallbackAdvance - baseAdvance) > 0.01f);
+        float withinCharacter = (fallbackAdvance + baseAdvance) * 0.25f;
+        int expectedCaret = withinCharacter > fallbackAdvance * 0.5f ? 1 : 0;
+        int baseFontCaret = withinCharacter > baseAdvance * 0.5f ? 1 : 0;
+        Assert.NotEqual(baseFontCaret, expectedCaret);
+
+        editor.OnPointerPressed(new PointerRoutedEventArgs
+        {
+            Position = new Vector2(
+                editor.Padding.Left + character.Position.X + withinCharacter,
+                editor.Padding.Top + character.Position.Y + character.Info.FontSize * 0.5f)
+        });
+        editor.OnPointerReleased(new PointerRoutedEventArgs());
+
+        Assert.Equal(expectedCaret, editor.CaretIndex);
+    }
+
+    [Fact]
     public void VirtualizedVisibleRebindPreservesRealizedVisuals()
     {
         var bindCount = 0;
@@ -760,6 +926,72 @@ public sealed class SamplePerformanceRegressionTests
         protected override void ArrangeOverride(Rect arrangeRect)
         {
             ArrangeCount++;
+        }
+    }
+
+    private sealed class ClipCullHost : FrameworkElement
+    {
+        private readonly RenderCounterContainer _child;
+
+        public ClipCullHost(RenderCounterContainer child)
+        {
+            _child = child;
+            AddChild(child);
+        }
+
+        protected override Vector2 MeasureOverride(Vector2 availableSize)
+        {
+            _child.Measure(new Vector2(20f, 20f));
+            return availableSize;
+        }
+
+        protected override void ArrangeOverride(Rect arrangeRect)
+        {
+            ClipBounds = new Rect(0f, 0f, arrangeRect.Width, arrangeRect.Height);
+            _child.Arrange(new Rect(0f, 200f, 20f, 20f));
+        }
+    }
+
+    private sealed class RenderCounterContainer : FrameworkElement
+    {
+        private readonly RenderCounterVisual _child;
+
+        public RenderCounterContainer(RenderCounterVisual child)
+        {
+            _child = child;
+            AddChild(child);
+        }
+
+        public int RenderCount { get; private set; }
+        public override Rect? LocalRenderBounds => new(Vector2.Zero, Size);
+
+        protected override Vector2 MeasureOverride(Vector2 availableSize)
+        {
+            _child.Measure(new Vector2(20f, 20f));
+            return new Vector2(20f, 20f);
+        }
+
+        protected override void ArrangeOverride(Rect arrangeRect)
+        {
+            _child.Arrange(new Rect(0f, -200f, 20f, 20f));
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            RenderCount++;
+        }
+    }
+
+    private sealed class RenderCounterVisual : FrameworkElement
+    {
+        public int RenderCount { get; private set; }
+        public override Rect? LocalRenderBounds => new(Vector2.Zero, Size);
+
+        protected override Vector2 MeasureOverride(Vector2 availableSize) => new(20f, 20f);
+
+        public override void OnRender(DrawingContext context)
+        {
+            RenderCount++;
         }
     }
 }

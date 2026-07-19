@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/harfbuzz/harfbuzz.git",
+  "commit": "9de7e9d56396654b07649005cd2f4f494b2cdc4b",
+  "version": "14.2.1",
+  "shapeTestRoot": "test/shape/data/in-house",
+  "shaper": "ot",
+  "activeTestFilesAtPin": 85,
+  "activeCasesAtPin": 5147,
+  "fontFilesAtPin": 205
+}

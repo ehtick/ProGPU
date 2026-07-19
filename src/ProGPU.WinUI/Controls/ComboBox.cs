@@ -379,14 +379,21 @@ public class ComboBox : Control
                     arrowBrush = ThemeManager.GetBrush("TextSecondary", activeTheme, activeFamily);
                 }
 
-                context.DrawText("▼", activeFont, FontSize - 4f, arrowBrush, new Vector2(Size.X - capW / 2f - 6f, textY + 1.5f));
+                DrawDropDownChevron(context, arrowBrush, Size.X - capW / 2f - 1f, headerH * 0.5f);
             }
             else
             {
-                context.DrawText("▼", activeFont, FontSize - 2f, ThemeManager.GetBrush("TextSecondary"), new Vector2(Size.X - 22f, textY + 1f));
+                DrawDropDownChevron(context, ThemeManager.GetBrush("TextSecondary"), Size.X - 16f, headerH * 0.5f);
             }
         }
 
         base.OnRender(context);
+    }
+
+    private static void DrawDropDownChevron(DrawingContext context, Brush brush, float centerX, float centerY)
+    {
+        var pen = new Pen(brush, 1.5f);
+        context.DrawLine(pen, new Vector2(centerX - 3.5f, centerY - 1.5f), new Vector2(centerX, centerY + 2f));
+        context.DrawLine(pen, new Vector2(centerX, centerY + 2f), new Vector2(centerX + 3.5f, centerY - 1.5f));
     }
 }

@@ -18,8 +18,10 @@ const state = {
   uploads: null,
   inputEvents: [],
   inputInstalled: false,
+  dispatchImmediatePointer: null,
   textSink: null,
   clipboardText: '',
+  pickedStorageBytes: null,
   worker: null,
   workerRequests: new Map(),
   nextWorkerRequest: 1,
@@ -38,6 +40,62 @@ const VERSION = 1;
 const HEADER_SIZE = 16;
 const COMMAND_HEADER_SIZE = 8;
 const DIAGNOSTICS_VISIBILITY_KEY = 'progpu.browser.diagnostics.visible';
+const BENCHMARK_QUERY_VARIABLES = Object.freeze({
+  benchmarkPage: 'PROGPU_SAMPLE_BENCHMARK_PAGE',
+  benchmarkWarmupFrames: 'PROGPU_SAMPLE_BENCHMARK_WARMUP_FRAMES',
+  benchmarkMeasureFrames: 'PROGPU_SAMPLE_BENCHMARK_MEASURE_FRAMES',
+  benchmarkVsync: 'PROGPU_SAMPLE_BENCHMARK_VSYNC',
+  benchmarkScroll: 'PROGPU_SAMPLE_BENCHMARK_SCROLL',
+  benchmarkScrollStep: 'PROGPU_SAMPLE_BENCHMARK_SCROLL_STEP'
+});
+const uncappedFrameResolvers = [];
+const uncappedGpuFenceResolvers = new Map();
+const uncappedGpuCompletions = [];
+// Keep two rolling three-frame completion groups. Each fence snapshots only the
+// work submitted before it, so waiting for the oldest group preserves bounded
+// latency while the newer group remains queued. Capturing once per group also
+// avoids paying WebGPU promise/task-source overhead on every frame. The former
+// single-group scheme drained the entire queue at each checkpoint and serialized
+// WASM scene preparation, browser IPC, and GPU execution.
+const UNCAPPED_FRAMES_PER_COMPLETION = 3;
+const MAX_UNCAPPED_COMPLETION_GROUPS = 2;
+let uncappedFramesStarted = 0;
+let uncappedFramesSinceCompletion = 0;
+let nextUncappedGpuFenceId = 1;
+const uncappedFrameChannel = new MessageChannel();
+uncappedFrameChannel.port1.onmessage = async () => {
+  const resolve = uncappedFrameResolvers.shift();
+  if (!resolve) return;
+
+  if (uncappedFramesStarted > 0) {
+    uncappedFramesSinceCompletion++;
+    if (uncappedFramesSinceCompletion >= UNCAPPED_FRAMES_PER_COMPLETION) {
+      uncappedFramesSinceCompletion = 0;
+      uncappedGpuCompletions.push(captureUncappedGpuCompletion());
+      if (uncappedGpuCompletions.length >= MAX_UNCAPPED_COMPLETION_GROUPS) {
+        await uncappedGpuCompletions.shift();
+      }
+    }
+  }
+
+  uncappedFramesStarted++;
+  resolve(performance.now());
+};
+
+function captureUncappedGpuCompletion() {
+  if (state.worker) {
+    flushWorkerPackets();
+    const id = nextUncappedGpuFenceId++;
+    return new Promise(resolve => {
+      uncappedGpuFenceResolvers.set(id, resolve);
+      state.worker.postMessage({ type: 'uncapped-frame-fence', id });
+    });
+  }
+
+  return state.device
+    ? state.device.queue.onSubmittedWorkDone()
+    : Promise.resolve();
+}
 
 const textureFormats = [
   undefined,
@@ -324,6 +382,17 @@ function eventModifiers(event) {
     (event.altKey ? 4 : 0) | (event.metaKey ? 8 : 0);
 }
 
+function dispatchPointerEvent(kind, event, point) {
+  if (state.dispatchImmediatePointer) {
+    try {
+      if (state.dispatchImmediatePointer(kind, point.x, point.y, event.button)) return;
+    } catch (error) {
+      globalThis.console.error('[ProGPU] Immediate pointer dispatch failed.', error);
+    }
+  }
+  queueInputEvent(kind, point.x, point.y, 0, 0, event.button, eventModifiers(event), event.buttons);
+}
+
 function installBrowserInput() {
   if (state.inputInstalled) return;
   state.inputInstalled = true;
@@ -345,14 +414,14 @@ function installBrowserInput() {
   });
   state.canvas.addEventListener('pointerdown', event => {
     const point = pointerPosition(event);
-    queueInputEvent(2, point.x, point.y, 0, 0, event.button, eventModifiers(event), event.buttons);
+    dispatchPointerEvent(2, event, point);
     try { state.canvas.setPointerCapture(event.pointerId); } catch { }
     textSink.focus({ preventScroll: true });
     event.preventDefault();
   });
   state.canvas.addEventListener('pointerup', event => {
     const point = pointerPosition(event);
-    queueInputEvent(3, point.x, point.y, 0, 0, event.button, eventModifiers(event), event.buttons);
+    dispatchPointerEvent(3, event, point);
     try { state.canvas.releasePointerCapture(event.pointerId); } catch { }
     event.preventDefault();
   });
@@ -426,38 +495,61 @@ function getClipboardText() {
   return state.clipboardText;
 }
 
-function bytesToBase64(bytes) {
-  let binary = '';
-  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
-    binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + 0x8000, bytes.length)));
-  }
-  return btoa(binary);
+async function stagePickedFile(file) {
+  state.pickedStorageBytes = new Uint8Array(await file.arrayBuffer());
+  return encodeURIComponent(file.name);
 }
 
-function pickStorage(mode, filters, defaultName) {
-  if (mode === 1) return Promise.resolve(defaultName || 'untitled.txt');
-  if (mode !== 0) return Promise.resolve('');
+function pickStorageWithInput(filters) {
   return new Promise(resolve => {
     const input = document.createElement('input');
+    let settled = false;
     input.type = 'file';
     input.accept = filters || '';
     input.style.display = 'none';
     document.body.appendChild(input);
-    input.addEventListener('change', async () => {
-      try {
-        const file = input.files?.[0];
-        if (!file) { resolve(''); return; }
-        const bytes = new Uint8Array(await file.arrayBuffer());
-        resolve(`${encodeURIComponent(file.name)}\n${bytesToBase64(bytes)}`);
-      } catch {
-        resolve('');
-      } finally {
-        input.remove();
-      }
-    }, { once: true });
-    input.addEventListener('cancel', () => { input.remove(); resolve(''); }, { once: true });
-    input.click();
+
+    const cleanup = () => {
+      input.remove();
+    };
+    const finish = async file => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (!file) { resolve(''); return; }
+      try { resolve(await stagePickedFile(file)); }
+      catch { state.pickedStorageBytes = null; resolve(''); }
+    };
+    input.addEventListener('change', () => finish(input.files?.[0] || null), { once: true });
+    input.addEventListener('cancel', () => finish(null), { once: true });
+    try { input.click(); }
+    catch { finish(null); }
   });
+}
+
+async function pickStorage(mode, filters, defaultName) {
+  if (mode === 1) return Promise.resolve(defaultName || 'untitled.txt');
+  if (mode !== 0) return Promise.resolve('');
+  state.pickedStorageBytes = null;
+
+  return await pickStorageWithInput(filters);
+}
+
+function getPickedStorageLength() {
+  return state.pickedStorageBytes?.byteLength ?? -1;
+}
+
+function copyPickedStorage(destination, length) {
+  const bytes = state.pickedStorageBytes;
+  if (!bytes || length !== bytes.byteLength) return -1;
+  const heap = runtime.localHeapViewU8();
+  if (destination < 0 || destination + length > heap.byteLength) throw new RangeError('File destination is outside WASM memory.');
+  heap.set(bytes, destination);
+  return length;
+}
+
+function clearPickedStorage() {
+  state.pickedStorageBytes = null;
 }
 
 function downloadText(name, text) {
@@ -543,6 +635,10 @@ function handleWorkerMessage(event) {
     setStatus(message.title, message.detail, message.isError);
   } else if (message.type === 'device-lost') {
     globalThis.setTimeout(() => globalThis.location.reload(), 250);
+  } else if (message.type === 'uncapped-frame-ready') {
+    const resolve = uncappedGpuFenceResolvers.get(message.id);
+    uncappedGpuFenceResolvers.delete(message.id);
+    resolve?.();
   } else if (message.type === 'response') {
     const pending = state.workerRequests.get(message.id);
     if (!pending) return;
@@ -1149,8 +1245,17 @@ function releaseMappedBuffer(handle) {
   state.workerMappedBuffers.delete(handle);
 }
 
-function nextAnimationFrame() {
-  return new Promise(resolve => requestAnimationFrame(resolve));
+function nextAnimationFrame(vsync) {
+  if (vsync) return new Promise(resolve => requestAnimationFrame(resolve));
+
+  // A MessageChannel task yields to the browser event loop without coupling the
+  // renderer to the display refresh rate. Unlike a microtask loop it leaves input,
+  // canvas presentation, and other browser task sources eligible between frames;
+  // unlike nested zero-delay timers it is not forced onto the HTML 4 ms timer floor.
+  return new Promise(resolve => {
+    uncappedFrameResolvers.push(resolve);
+    uncappedFrameChannel.port2.postMessage(0);
+  });
 }
 
 function writeCanvasMetrics(destination) {
@@ -1206,6 +1311,16 @@ function updateCounters(frames, dispatches, commandBytes) {
   document.querySelector('#counter-bytes').textContent = Number(commandBytes).toLocaleString();
 }
 
+function readBenchmarkEnvironment() {
+  const query = new URLSearchParams(globalThis.location.search);
+  const environment = {};
+  for (const [queryName, variableName] of Object.entries(BENCHMARK_QUERY_VARIABLES)) {
+    const value = query.get(queryName)?.trim();
+    if (value) environment[variableName] = value;
+  }
+  return environment;
+}
+
 async function handleDispatcherWorkerMessage(event) {
   const message = event.data;
   try {
@@ -1236,6 +1351,10 @@ async function handleDispatcherWorkerMessage(event) {
         }
         break;
       }
+      case 'uncapped-frame-fence':
+        await state.device.queue.onSubmittedWorkDone();
+        globalThis.postMessage({ type: 'uncapped-frame-ready', id: message.id });
+        break;
       case 'upload':
         state.uploads = new Uint8Array(message.upload);
         break;
@@ -1267,7 +1386,9 @@ if (isDispatcherWorker) {
   });
 } else {
   initializeDiagnosticsVisibility();
-  runtime = await dotnet.create();
-  runtime.setModuleImports('progpu-browser', { initialize, dispatch, dispatchUpload, mapBuffer, copyMappedBuffer, writeMappedBuffer, releaseMappedBuffer, nextAnimationFrame, writeCanvasMetrics, drainInputEvents, setCanvasCursor, setClipboardText, getClipboardText, pickStorage, downloadText, getDiagnosticsVisible, setDiagnosticsVisible, setStatus, updateCounters });
+  runtime = await dotnet.withEnvironmentVariables(readBenchmarkEnvironment()).create();
+  runtime.setModuleImports('progpu-browser', { initialize, dispatch, dispatchUpload, mapBuffer, copyMappedBuffer, writeMappedBuffer, releaseMappedBuffer, nextAnimationFrame, writeCanvasMetrics, drainInputEvents, setCanvasCursor, setClipboardText, getClipboardText, pickStorage, getPickedStorageLength, copyPickedStorage, clearPickedStorage, downloadText, getDiagnosticsVisible, setDiagnosticsVisible, setStatus, updateCounters });
+  const browserExports = await runtime.getAssemblyExports('ProGPU.Browser.dll');
+  state.dispatchImmediatePointer = browserExports.ProGPU.Browser.BrowserInputDispatcher.DispatchImmediatePointer;
   await runtime.runMain();
 }

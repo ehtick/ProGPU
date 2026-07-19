@@ -289,6 +289,7 @@ public static unsafe class MainWindowController
         var stylesShowcaseItem = PageItem("Styles Showcase", "💅", SamplePagePresenter.CreateStylesShowcaseView);
         var motionMarkItem = PageItem("MotionMark Showcase", "🏁", SamplePagePresenter.CreateMotionMarkShowcaseView);
         var scriptsItem = PageItem("Typography & Scripts", "🔤", SamplePagePresenter.CreateTypographyScriptsView);
+        var interShowcaseItem = PageItem("Inter Typeface", "Aa", InterShowcasePage.Create);
         var textInputItem = PageItem("Interactive Input", "⌨️", SamplePagePresenter.CreateInteractiveInputView);
         var lolsItem = PageItem("LOL/s Benchmark", "💥", LolsPage.Create);
         var radioButtonItem = PageItem("Radio Button", "🔘", RadioButtonPage.Create);
@@ -342,6 +343,7 @@ public static unsafe class MainWindowController
         AppState._navigationView.MenuItems.Add(stylesShowcaseItem);
         AppState._navigationView.MenuItems.Add(motionMarkItem);
         AppState._navigationView.MenuItems.Add(scriptsItem);
+        AppState._navigationView.MenuItems.Add(interShowcaseItem);
         AppState._navigationView.MenuItems.Add(textInputItem);
         AppState._navigationView.MenuItems.Add(lolsItem);
         AppState._navigationView.MenuItems.Add(radioButtonItem);
@@ -686,13 +688,31 @@ public static unsafe class MainWindowController
 
                 AppState._offscreenCompositor!.RenderScene(AppState._gearCanvasVisual, canvasW, canvasH, AppState._canvasSourceTexture.ViewPtr);
 
-                if (AppState._shadowRadius > 0)
+                if (AppState._shadowRadius > 0 && AppState._blurRadius > 0)
                 {
                     var shadowColor = new Vector4(0f, 0f, 0f, 0.65f);
-                    AppState._compute!.ApplyDropShadow(AppState._canvasSourceTexture, AppState._canvasTempTexture, AppState._canvasShadowTexture, AppState._shadowOffset, shadowColor, AppState._shadowRadius);
+                    AppState._compute!.ApplyDropShadowAndGaussianBlur(
+                        AppState._canvasSourceTexture,
+                        AppState._canvasTempTexture,
+                        AppState._canvasShadowTexture,
+                        AppState._canvasBlurTexture,
+                        AppState._shadowOffset,
+                        shadowColor,
+                        AppState._shadowRadius,
+                        AppState._blurRadius);
                 }
-
-                if (AppState._blurRadius > 0)
+                else if (AppState._shadowRadius > 0)
+                {
+                    var shadowColor = new Vector4(0f, 0f, 0f, 0.65f);
+                    AppState._compute!.ApplyDropShadow(
+                        AppState._canvasSourceTexture,
+                        AppState._canvasTempTexture,
+                        AppState._canvasShadowTexture,
+                        AppState._shadowOffset,
+                        shadowColor,
+                        AppState._shadowRadius);
+                }
+                else if (AppState._blurRadius > 0)
                 {
                     AppState._compute!.ApplyGaussianBlur(AppState._canvasSourceTexture, AppState._canvasTempTexture, AppState._canvasBlurTexture, AppState._blurRadius);
                 }

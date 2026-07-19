@@ -106,6 +106,33 @@ public sealed class StaticDxfRenderTests
     }
 
     [Fact]
+    public void DrawStaticDxfHonorsNestedVisualPlacement()
+    {
+        var window = HeadlessWindow.Shared;
+        window.Resize(96, 64);
+
+        using var buffer = CreateStaticRect(window.Compositor, new Rect(0, 0, 24, 24));
+        window.Content = new OffsetStaticDxfHost(new SingleStaticDxfVisual(buffer));
+
+        try
+        {
+            window.Render();
+
+            var pixels = window.ReadPixels();
+            var outside = ReadPixel(pixels, window.Width, x: 12, y: 12);
+            var placed = ReadPixel(pixels, window.Width, x: 56, y: 28);
+
+            Assert.True(outside.R <= 35, $"Expected the unplaced origin to remain background, found {outside}.");
+            Assert.True(placed.R >= 220, $"Expected the nested static DXF draw at its visual offset, found {placed}.");
+            Assert.True(placed.G <= 35 && placed.B <= 35, $"Expected the placed static DXF draw to remain red, found {placed}.");
+        }
+        finally
+        {
+            window.Content = null;
+        }
+    }
+
+    [Fact]
     public void DrawStaticDxfSplineHonorsActiveBlendMode()
     {
         var window = HeadlessWindow.Shared;
@@ -439,6 +466,31 @@ public sealed class StaticDxfRenderTests
         public override void OnRender(DrawingContext context)
         {
             context.DrawStaticDxf(_buffer);
+        }
+    }
+
+    private sealed class OffsetStaticDxfHost : FrameworkElement
+    {
+        private readonly FrameworkElement _child;
+
+        public OffsetStaticDxfHost(FrameworkElement child)
+        {
+            _child = child;
+            Width = 96f;
+            Height = 64f;
+            AddChild(child);
+        }
+
+        protected override Vector2 MeasureOverride(Vector2 availableSize)
+        {
+            _child.Measure(new Vector2(24f, 24f));
+            return new Vector2(96f, 64f);
+        }
+
+        protected override void ArrangeOverride(Rect arrangeRect)
+        {
+            Size = new Vector2(arrangeRect.Width, arrangeRect.Height);
+            _child.Arrange(new Rect(48f, 20f, 24f, 24f));
         }
     }
 

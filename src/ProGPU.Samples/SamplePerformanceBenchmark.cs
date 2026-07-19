@@ -120,6 +120,14 @@ internal static class SamplePerformanceBenchmark
                     RecordMarkdownState();
                 }
             }
+            else if (string.Equals(RequestedPage, "Inter Typeface", StringComparison.OrdinalIgnoreCase))
+            {
+                InterShowcasePage.AdvanceBenchmarkScroll(s_scrollStep);
+            }
+            else if (string.Equals(RequestedPage, "Data Virtualization", StringComparison.OrdinalIgnoreCase))
+            {
+                DataVirtualizationPage.AdvanceBenchmarkScroll(s_scrollStep);
+            }
         }
 
         s_frame++;
@@ -228,6 +236,16 @@ internal static class SamplePerformanceBenchmark
                 $" markdownStateSamples={s_markdownStateSamples}" +
                 $" positionedCharacters={s_lastMarkdownCharacters}" +
                 $" maximumScrollOffset={s_maximumMarkdownOffset:F0}";
+        }
+        else if (string.Equals(RequestedPage, "Data Virtualization", StringComparison.OrdinalIgnoreCase) &&
+                 AppState._screenCompositor is { } dataCompositor)
+        {
+            workloadDetails =
+                $" cachedTextLayouts={dataCompositor.CachedTextLayoutCount}" +
+                $" cachedTextLayoutGlyphs={dataCompositor.CachedTextLayoutGlyphCount}" +
+                $" glyphAtlasGenerationChanges={dataCompositor.Atlas.Generation - s_glyphAtlasGenerationAtStart}" +
+                $" glyphAtlasEvictions={dataCompositor.Atlas.EvictionCount - s_glyphAtlasEvictionsAtStart}" +
+                $" glyphAtlasClears={dataCompositor.Atlas.ClearCount - s_glyphAtlasClearsAtStart}";
         }
 
         Console.WriteLine(

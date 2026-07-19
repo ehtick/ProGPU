@@ -643,7 +643,7 @@ public static class Mesh3DViewerPage
             Margin = new Thickness(4f),
             Background = new ThemeResourceBrush("ControlBackgroundHover")
         };
-        var customBtnRun = new Run("🎨 Custom") { FontSize = 11f, Foreground = new ThemeResourceBrush("TextPrimary") };
+        var customBtnRun = new Run("Custom") { FontSize = 11f, Foreground = new ThemeResourceBrush("TextPrimary") };
         customBtn.Content = new RichTextBlock { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { new Bold(customBtnRun) } };
 
         customBtn.Click += (s, e) => { ShowColorPickerPopup(customBtn); };
@@ -778,8 +778,7 @@ public static class Mesh3DViewerPage
             VerticalAlignment = VerticalAlignment.Center,
             Background = new ThemeResourceBrush("ControlBackgroundHover")
         };
-        var maxIcon1 = new Run("↗") { FontSize = 12f, Foreground = new ThemeResourceBrush("TextPrimary") };
-        _maxBtn1.Content = new RichTextBlock { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { new Bold(maxIcon1) } };
+        _maxBtn1.Content = new ViewportLayoutIcon();
         _maxBtn1.Click += (s, e) =>
         {
             SetLayoutMode(_currentLayoutMode == LayoutMode3D.Top ? LayoutMode3D.Quad : LayoutMode3D.Top);
@@ -838,8 +837,7 @@ public static class Mesh3DViewerPage
             VerticalAlignment = VerticalAlignment.Center,
             Background = new ThemeResourceBrush("ControlBackgroundHover")
         };
-        var maxIcon2 = new Run("↗") { FontSize = 12f, Foreground = new ThemeResourceBrush("TextPrimary") };
-        _maxBtn2.Content = new RichTextBlock { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { new Bold(maxIcon2) } };
+        _maxBtn2.Content = new ViewportLayoutIcon();
         _maxBtn2.Click += (s, e) =>
         {
             SetLayoutMode(_currentLayoutMode == LayoutMode3D.Front ? LayoutMode3D.Quad : LayoutMode3D.Front);
@@ -898,8 +896,7 @@ public static class Mesh3DViewerPage
             VerticalAlignment = VerticalAlignment.Center,
             Background = new ThemeResourceBrush("ControlBackgroundHover")
         };
-        var maxIcon3 = new Run("↗") { FontSize = 12f, Foreground = new ThemeResourceBrush("TextPrimary") };
-        _maxBtn3.Content = new RichTextBlock { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { new Bold(maxIcon3) } };
+        _maxBtn3.Content = new ViewportLayoutIcon();
         _maxBtn3.Click += (s, e) =>
         {
             SetLayoutMode(_currentLayoutMode == LayoutMode3D.Right ? LayoutMode3D.Quad : LayoutMode3D.Right);
@@ -957,8 +954,7 @@ public static class Mesh3DViewerPage
             VerticalAlignment = VerticalAlignment.Center,
             Background = new ThemeResourceBrush("ControlBackgroundHover")
         };
-        var maxIcon4 = new Run("↗") { FontSize = 12f, Foreground = new ThemeResourceBrush("TextPrimary") };
-        _maxBtn4.Content = new RichTextBlock { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { new Bold(maxIcon4) } };
+        _maxBtn4.Content = new ViewportLayoutIcon();
         _maxBtn4.Click += (s, e) =>
         {
             SetLayoutMode(_currentLayoutMode == LayoutMode3D.Perspective ? LayoutMode3D.Quad : LayoutMode3D.Perspective);
@@ -1420,11 +1416,11 @@ public static class Mesh3DViewerPage
         if (_layoutBtnRight != null) _layoutBtnRight.Background = new ThemeResourceBrush(mode == LayoutMode3D.Right ? "ControlBackgroundPressed" : "ControlBackgroundHover");
         if (_layoutBtnPersp != null) _layoutBtnPersp.Background = new ThemeResourceBrush(mode == LayoutMode3D.Perspective ? "ControlBackgroundPressed" : "ControlBackgroundHover");
 
-        // Update card maximize button texts
-        if (_maxBtn1 != null) _maxBtn1.Content = new RichTextBlock { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { new Bold(new Run(mode == LayoutMode3D.Top ? "↙" : "↗")) } };
-        if (_maxBtn2 != null) _maxBtn2.Content = new RichTextBlock { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { new Bold(new Run(mode == LayoutMode3D.Front ? "↙" : "↗")) } };
-        if (_maxBtn3 != null) _maxBtn3.Content = new RichTextBlock { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { new Bold(new Run(mode == LayoutMode3D.Right ? "↙" : "↗")) } };
-        if (_maxBtn4 != null) _maxBtn4.Content = new RichTextBlock { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { new Bold(new Run(mode == LayoutMode3D.Perspective ? "↙" : "↗")) } };
+        // Update the retained vector maximize/restore glyphs in place.
+        SetViewportIconState(_maxBtn1, mode == LayoutMode3D.Top);
+        SetViewportIconState(_maxBtn2, mode == LayoutMode3D.Front);
+        SetViewportIconState(_maxBtn3, mode == LayoutMode3D.Right);
+        SetViewportIconState(_maxBtn4, mode == LayoutMode3D.Perspective);
 
         if (_card1 == null || _card2 == null || _card3 == null || _card4 == null || 
             _colSplitter == null || _rowSplitterLeft == null || _rowSplitterRight == null ||
@@ -1557,6 +1553,57 @@ public static class Mesh3DViewerPage
         _viewport2?.Invalidate();
         _viewport3?.Invalidate();
         _viewport4?.Invalidate();
+    }
+
+    private static void SetViewportIconState(Button? button, bool isRestore)
+    {
+        if (button?.Content is ViewportLayoutIcon icon)
+        {
+            icon.IsRestore = isRestore;
+        }
+    }
+
+    private sealed class ViewportLayoutIcon : FrameworkElement
+    {
+        private bool _isRestore;
+
+        public bool IsRestore
+        {
+            get => _isRestore;
+            set
+            {
+                if (_isRestore == value) return;
+                _isRestore = value;
+                Invalidate();
+            }
+        }
+
+        public ViewportLayoutIcon()
+        {
+            WidthConstraint = 14f;
+            HeightConstraint = 14f;
+            HorizontalAlignment = HorizontalAlignment.Center;
+            VerticalAlignment = VerticalAlignment.Center;
+        }
+
+        protected override Vector2 MeasureOverride(Vector2 availableSize) => new(14f, 14f);
+
+        public override void OnRender(DrawingContext context)
+        {
+            var pen = ThemeManager.GetPen("TextPrimary", 1.25f);
+            if (_isRestore)
+            {
+                context.DrawLine(pen, new Vector2(9.5f, 4.5f), new Vector2(4.5f, 9.5f));
+                context.DrawLine(pen, new Vector2(4.5f, 9.5f), new Vector2(4.5f, 6f));
+                context.DrawLine(pen, new Vector2(4.5f, 9.5f), new Vector2(8f, 9.5f));
+            }
+            else
+            {
+                context.DrawLine(pen, new Vector2(4.5f, 9.5f), new Vector2(9.5f, 4.5f));
+                context.DrawLine(pen, new Vector2(9.5f, 4.5f), new Vector2(6f, 4.5f));
+                context.DrawLine(pen, new Vector2(9.5f, 4.5f), new Vector2(9.5f, 8f));
+            }
+        }
     }
 
     private static Button CreateLayoutButton(string label, LayoutMode3D mode)

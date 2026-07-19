@@ -166,8 +166,19 @@ public class TreeViewItem : Control
             // Draw expansion triangle arrow
             if (Items.Count > 0)
             {
-                string arrow = IsExpanded ? "▼" : "▶";
-                context.DrawText(arrow, font, 8f, ThemeManager.GetBrush("TextSecondary"), new Vector2(indentX - 12f, centerY + 2f));
+                float arrowX = indentX - 8f;
+                float arrowY = Size.Y * 0.5f;
+                var arrowPen = new Pen(ThemeManager.GetBrush("TextSecondary"), 1.25f);
+                if (IsExpanded)
+                {
+                    context.DrawLine(arrowPen, new Vector2(arrowX - 3f, arrowY - 1.5f), new Vector2(arrowX, arrowY + 1.5f));
+                    context.DrawLine(arrowPen, new Vector2(arrowX, arrowY + 1.5f), new Vector2(arrowX + 3f, arrowY - 1.5f));
+                }
+                else
+                {
+                    context.DrawLine(arrowPen, new Vector2(arrowX - 1.5f, arrowY - 3f), new Vector2(arrowX + 1.5f, arrowY));
+                    context.DrawLine(arrowPen, new Vector2(arrowX + 1.5f, arrowY), new Vector2(arrowX - 1.5f, arrowY + 3f));
+                }
             }
 
             // Draw Header Text

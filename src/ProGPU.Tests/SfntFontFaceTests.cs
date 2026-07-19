@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Numerics;
 using System.Text;
+using System.Threading.Tasks;
 using ProGPU.Tests.Headless;
 using ProGPU.Text;
 using ProGPU.Vector;
@@ -428,6 +429,52 @@ public class SfntFontFaceTests
     }
 
     [Fact]
+    public void TtfFontPublishesOneImmutableOutlineAcrossConcurrentCacheHits()
+    {
+        (byte[] loca, byte[] glyf) = BuildCompositeGlyphTables();
+        byte[] fontData = BuildSfntWithTables(
+            ("head", BuildHeadTable()),
+            ("hhea", BuildHheaTable()),
+            ("maxp", BuildMaxpTable(3)),
+            ("hmtx", BuildHmtxTable()),
+            ("cmap", BuildCmapFormat4Table()),
+            ("loca", loca),
+            ("glyf", glyf));
+        var font = new TtfFont(fontData);
+        var outlines = new PathGeometry?[256];
+
+        Parallel.For(0, outlines.Length, index => outlines[index] = font.GetGlyphOutline(2));
+
+        PathGeometry first = Assert.IsType<PathGeometry>(outlines[0]);
+        Assert.All(outlines, outline => Assert.Same(first, outline));
+    }
+
+    [Fact]
+    public void TtfFontPublishesAsciiCmapHitsAndMissesAcrossConcurrentLookups()
+    {
+        byte[] fontData = BuildSfntWithTables(
+            ("head", BuildHeadTable()),
+            ("hhea", BuildHheaTable()),
+            ("maxp", BuildMaxpTable(3)),
+            ("hmtx", BuildHmtxTable()),
+            ("cmap", BuildCmapFormat4Table()),
+            ("loca", BuildLocaTable(3)),
+            ("glyf", BuildGlyfTable()));
+        var font = new TtfFont(fontData);
+        var mappings = new ushort[512];
+
+        Parallel.For(
+            0,
+            mappings.Length,
+            index => mappings[index] = font.GetGlyphIndex(index % 2 == 0 ? 'A' : 'Z'));
+
+        for (var index = 0; index < mappings.Length; index++)
+        {
+            Assert.Equal(index % 2 == 0 ? (ushort)1 : (ushort)0, mappings[index]);
+        }
+    }
+
+    [Fact]
     public void TtfFontLoadsCffOutlinesFromWoffContainer()
     {
         byte[] fontData = Convert.FromBase64String(CffWoffFontBase64);
@@ -529,6 +576,127 @@ public class SfntFontFaceTests
 
         Assert.True(face.TryGetGlyphIndex('A', out ushort glyphIndex));
         Assert.Equal(1, glyphIndex);
+    }
+
+    [Fact]
+    public void ReadsManyToOneFormat13CharacterMap()
+    {
+        byte[] fontData = BuildSfntWithTables(
+            ("head", BuildHeadTable()),
+            ("hhea", BuildHheaTable()),
+            ("maxp", BuildMaxpTable()),
+            ("hmtx", BuildHmtxTable()),
+            ("cmap", BuildCmapFormat13Table()),
+            ("loca", BuildLocaTable()),
+            ("glyf", BuildGlyfTable()),
+            ("OS/2", BuildOs2Table()));
+
+        SfntFontFace face = SfntFontFace.Load(fontData);
+
+        Assert.True(face.TryGetGlyphIndex(0x263a, out ushort first));
+        Assert.True(face.TryGetGlyphIndex(0x1f636, out ushort second));
+        Assert.True(face.TryGetGlyphIndex(0x10ffff, out ushort missing));
+        Assert.Equal(1, first);
+        Assert.Equal(1, second);
+        Assert.Equal(0, missing);
+    }
+
+    [Theory]
+    [InlineData(0xB200, 0xF14A)]
+    [InlineData(0xB300, 0xF24C)]
+    public void MapsLegacyArabicSymbolCmapsFromOs2FontPage(ushort fontPage, ushort privateCodePoint)
+    {
+        byte[] fontData = BuildSfntWithTables(
+            ("head", BuildHeadTable()),
+            ("hhea", BuildHheaTable()),
+            ("maxp", BuildMaxpTable()),
+            ("hmtx", BuildHmtxTable()),
+            ("cmap", BuildCmapSymbolFormat4Table(privateCodePoint)),
+            ("loca", BuildLocaTable()),
+            ("glyf", BuildGlyfTable()),
+            ("OS/2", BuildOs2Table(fontPage)));
+
+        SfntFontFace face = SfntFontFace.Load(fontData);
+
+        Assert.True(face.UsesSymbolCharacterMap);
+        Assert.True(face.TryGetGlyphIndex(0x0628, out ushort glyphIndex));
+        Assert.Equal(1, glyphIndex);
+    }
+
+    [Fact]
+    public void MapsOrdinarySymbolCmapLowBytesIntoF000PrivateUseArea()
+    {
+        byte[] fontData = BuildSfntWithTables(
+            ("head", BuildHeadTable()),
+            ("hhea", BuildHheaTable()),
+            ("maxp", BuildMaxpTable()),
+            ("hmtx", BuildHmtxTable()),
+            ("cmap", BuildCmapSymbolFormat4Table(0xF041)),
+            ("loca", BuildLocaTable()),
+            ("glyf", BuildGlyfTable()),
+            ("OS/2", BuildOs2Table()));
+
+        SfntFontFace face = SfntFontFace.Load(fontData);
+
+        Assert.True(face.TryGetGlyphIndex(0x41, out ushort glyphIndex));
+        Assert.Equal(1, glyphIndex);
+    }
+
+    [Fact]
+    public void ReadsNonDefaultFormat14VariationGlyph()
+    {
+        byte[] fontData = BuildSfntWithTables(
+            ("head", BuildHeadTable()),
+            ("hhea", BuildHheaTable()),
+            ("maxp", BuildMaxpTable()),
+            ("hmtx", BuildHmtxTable()),
+            ("cmap", BuildCmapFormat4And14Table()),
+            ("loca", BuildLocaTable()),
+            ("glyf", BuildGlyfTable()),
+            ("OS/2", BuildOs2Table()));
+
+        var font = new TtfFont(fontData);
+
+        Assert.True(font.TryGetVariationGlyph('A', 0xFE0F, out ushort glyph));
+        Assert.Equal(1, glyph);
+        Assert.False(font.TryGetVariationGlyph('B', 0xFE0F, out _));
+    }
+
+    [Fact]
+    public void TextLayoutKeepsVariationSelectorInPrecedingFallbackRun()
+    {
+        const ushort baseCodePoint = 0xE123;
+        byte[] primaryData = BuildSfntWithTables(
+            ("head", BuildHeadTable()),
+            ("hhea", BuildHheaTable()),
+            ("maxp", BuildMaxpTable()),
+            ("hmtx", BuildHmtxTable()),
+            ("cmap", BuildCmapFormat4Table()),
+            ("loca", BuildLocaTable()),
+            ("glyf", BuildGlyfTable()),
+            ("OS/2", BuildOs2Table()));
+        byte[] fallbackData = BuildSfntWithTables(
+            ("head", BuildHeadTable()),
+            ("hhea", BuildHheaTable()),
+            ("maxp", BuildMaxpTable(3)),
+            ("hmtx", BuildHmtxTable()),
+            ("cmap", BuildCmapFormat4And14Table(baseCodePoint, variationGlyph: 2)),
+            ("loca", BuildLocaTable(3)),
+            ("glyf", BuildGlyfTable()),
+            ("OS/2", BuildOs2Table()));
+        var primary = new TtfFont(primaryData);
+        var fallback = new TtfFont(fallbackData);
+        FontManager.Default.RegisterFont(
+            "ProGPU Test Variation Fallback",
+            new Lazy<TtfFont>(() => fallback),
+            FontStyleRequest.Normal,
+            isFallback: true);
+
+        var layout = new TextLayout("\uE123\uFE0F", primary, 16f);
+
+        TextRunGlyph glyph = Assert.Single(layout.Glyphs);
+        Assert.Same(fallback, glyph.Font);
+        Assert.Equal((ushort)2, glyph.GlyphIndex);
     }
 
     private static byte[] BuildSfnt(string familyName, string fullName)
@@ -1130,6 +1298,21 @@ public class SfntFontFaceTests
         return stream.ToArray();
     }
 
+    private static byte[] BuildCmapSymbolFormat4Table(ushort codePoint)
+    {
+        byte[] format4 = BuildFormat4Subtable(codePoint);
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+
+        WriteUShort(writer, 0);
+        WriteUShort(writer, 1);
+        WriteUShort(writer, 3);
+        WriteUShort(writer, 0);
+        WriteUInt(writer, 12);
+        writer.Write(format4);
+        return stream.ToArray();
+    }
+
     private static byte[] BuildCmapFormat4And12Table()
     {
         byte[] format4 = BuildFormat4Subtable();
@@ -1153,7 +1336,57 @@ public class SfntFontFaceTests
         return stream.ToArray();
     }
 
-    private static byte[] BuildFormat4Subtable()
+    private static byte[] BuildCmapFormat13Table()
+    {
+        byte[] format13 = BuildFormat13Subtable();
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+
+        WriteUShort(writer, 0);
+        WriteUShort(writer, 1);
+        WriteUShort(writer, 3);
+        WriteUShort(writer, 10);
+        WriteUInt(writer, 12);
+        writer.Write(format13);
+        return stream.ToArray();
+    }
+
+    private static byte[] BuildCmapFormat4And14Table(ushort codePoint = 0x0041, ushort variationGlyph = 1)
+    {
+        byte[] format4 = BuildFormat4Subtable(codePoint);
+        using var format14Stream = new MemoryStream();
+        using (var format14Writer = new BinaryWriter(format14Stream, System.Text.Encoding.UTF8, leaveOpen: true))
+        {
+            WriteUShort(format14Writer, 14);
+            WriteUInt(format14Writer, 30);
+            WriteUInt(format14Writer, 1);
+            format14Writer.Write(new byte[] { 0x00, 0xFE, 0x0F });
+            WriteUInt(format14Writer, 0);
+            WriteUInt(format14Writer, 21);
+            WriteUInt(format14Writer, 1);
+            format14Writer.Write(new byte[] { 0x00, (byte)(codePoint >> 8), (byte)codePoint });
+            WriteUShort(format14Writer, variationGlyph);
+        }
+        byte[] format14 = format14Stream.ToArray();
+        uint format4Offset = 20;
+        uint format14Offset = format4Offset + (uint)format4.Length;
+
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+        WriteUShort(writer, 0);
+        WriteUShort(writer, 2);
+        WriteUShort(writer, 3);
+        WriteUShort(writer, 1);
+        WriteUInt(writer, format4Offset);
+        WriteUShort(writer, 0);
+        WriteUShort(writer, 5);
+        WriteUInt(writer, format14Offset);
+        writer.Write(format4);
+        writer.Write(format14);
+        return stream.ToArray();
+    }
+
+    private static byte[] BuildFormat4Subtable(ushort codePoint = 0x0041)
     {
         using var stream = new MemoryStream();
         using var writer = new BinaryWriter(stream);
@@ -1165,12 +1398,12 @@ public class SfntFontFaceTests
         WriteUShort(writer, 0);
         WriteUShort(writer, 0);
         WriteUShort(writer, 0);
-        WriteUShort(writer, 0x0041);
+        WriteUShort(writer, codePoint);
         WriteUShort(writer, 0xFFFF);
         WriteUShort(writer, 0);
-        WriteUShort(writer, 0x0041);
+        WriteUShort(writer, codePoint);
         WriteUShort(writer, 0xFFFF);
-        WriteShort(writer, -64);
+        WriteShort(writer, unchecked((short)(1 - codePoint)));
         WriteShort(writer, 1);
         WriteUShort(writer, 0);
         WriteUShort(writer, 0);
@@ -1193,14 +1426,36 @@ public class SfntFontFaceTests
         return stream.ToArray();
     }
 
-    private static byte[] BuildLocaTable()
+    private static byte[] BuildFormat13Subtable()
+    {
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+
+        WriteUShort(writer, 13);
+        WriteUShort(writer, 0);
+        WriteUInt(writer, 40);
+        WriteUInt(writer, 0);
+        WriteUInt(writer, 2);
+        WriteUInt(writer, 0x263a);
+        WriteUInt(writer, 0x263a);
+        WriteUInt(writer, 1);
+        WriteUInt(writer, 0x1f000);
+        WriteUInt(writer, 0x1ffff);
+        WriteUInt(writer, 1);
+        return stream.ToArray();
+    }
+
+    private static byte[] BuildLocaTable(ushort glyphCount = 2)
     {
         using var stream = new MemoryStream();
         using var writer = new BinaryWriter(stream);
 
         WriteUShort(writer, 0);
         WriteUShort(writer, 0);
-        WriteUShort(writer, 5);
+        for (var glyph = 2; glyph <= glyphCount; glyph++)
+        {
+            WriteUShort(writer, 5);
+        }
         return stream.ToArray();
     }
 
@@ -1217,7 +1472,7 @@ public class SfntFontFaceTests
         return stream.ToArray();
     }
 
-    private static byte[] BuildOs2Table()
+    private static byte[] BuildOs2Table(ushort fontPage = 0)
     {
         byte[] table = new byte[64];
         using var stream = new MemoryStream(table);
@@ -1227,6 +1482,8 @@ public class SfntFontFaceTests
         WriteUShort(writer, 400);
         WriteUShort(writer, 5);
         WriteUShort(writer, 0x0008);
+        stream.Position = 62;
+        WriteUShort(writer, fontPage);
         return table;
     }
 

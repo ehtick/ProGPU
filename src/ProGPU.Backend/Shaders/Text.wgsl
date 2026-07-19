@@ -1,6 +1,6 @@
 // Algorithm: Transform glyph quads and modulate premultiplied text color by glyph-atlas coverage.
 // Time complexity: O(1) per vertex and fragment.
-// Space complexity: O(1) local storage with one atlas sample per fragment.
+// Space complexity: O(1) local storage with one atlas sample per fragment; masked variants add one mask sample and ClearType adds two atlas samples.
 struct VertexInput {
     @builtin(vertex_index) vertexIndex: u32,
     @location(0) snappedLogicalPos: vec2<f32>,
@@ -121,6 +121,40 @@ fn text_coverage_to_alpha(alpha: f32, contrast: f32, gamma: f32, aliasedText: bo
     return select(pow(dilated, gamma), select(0.0, 1.0, alpha >= 0.5), aliasedText);
 }
 
+fn text_fs_main_with_mask_alpha(input: VertexOutput, maskAlpha: f32) -> vec4<f32> {
+    let atlasCoordDx = dpdx(input.texCoord);
+    let atlasCoordDy = dpdy(input.texCoord);
+    let atlasColor = textureSample(atlasTexture, atlasSampler, input.texCoord);
+    let alpha = atlasColor.r;
+    let aliasedText = input.cornerRadius < 0.0;
+    if (input.textMode > 2.5) {
+        return vec4<f32>(atlasColor.rgb, atlasColor.a * input.color.a * maskAlpha);
+    }
+    let gamma = abs(input.cornerRadius);
+    let grayscaleAlpha = text_coverage_to_alpha(alpha, input.strokeThickness, gamma, aliasedText);
+
+    if (input.textMode > 1.5) {
+        let atlasDims = textureDimensions(atlasTexture);
+        let atlasSize = vec2<f32>(f32(atlasDims.x), f32(atlasDims.y));
+        let subpixelOffset = vec2<f32>(1.0 / max(atlasSize.x * 3.0, 1.0), 0.0);
+        let redCoverage = textureSampleGrad(atlasTexture, atlasSampler, input.texCoord - subpixelOffset, atlasCoordDx, atlasCoordDy).r;
+        let greenCoverage = alpha;
+        let blueCoverage = textureSampleGrad(atlasTexture, atlasSampler, input.texCoord + subpixelOffset, atlasCoordDx, atlasCoordDy).r;
+        let rgbCoverage = vec3<f32>(
+            text_coverage_to_alpha(redCoverage, input.strokeThickness, gamma, false),
+            text_coverage_to_alpha(greenCoverage, input.strokeThickness, gamma, false),
+            text_coverage_to_alpha(blueCoverage, input.strokeThickness, gamma, false)) * input.color.a * maskAlpha;
+        let finalAlpha = max(max(rgbCoverage.r, rgbCoverage.g), rgbCoverage.b);
+        if (finalAlpha <= 0.0001) {
+            return vec4<f32>(0.0);
+        }
+
+        return vec4<f32>(input.color.rgb * (rgbCoverage / finalAlpha), finalAlpha);
+    }
+
+    return vec4<f32>(input.color.rgb, input.color.a * grayscaleAlpha * maskAlpha);
+}
+
 fn text_fs_main(input: VertexOutput) -> vec4<f32> {
     let atlasCoordDx = dpdx(input.texCoord);
     let atlasCoordDy = dpdy(input.texCoord);
@@ -166,13 +200,30 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 
 @fragment
+fn fs_main_unmasked(input: VertexOutput) -> @location(0) vec4<f32> {
+    return text_fs_main_with_mask_alpha(input, 1.0);
+}
+
+@fragment
 fn fs_main_premultiplied(input: VertexOutput) -> @location(0) vec4<f32> {
     let color = text_fs_main(input);
     return vec4<f32>(color.rgb * color.a, color.a);
 }
 
 @fragment
+fn fs_main_premultiplied_unmasked(input: VertexOutput) -> @location(0) vec4<f32> {
+    let color = text_fs_main_with_mask_alpha(input, 1.0);
+    return vec4<f32>(color.rgb * color.a, color.a);
+}
+
+@fragment
 fn fs_mask(input: VertexOutput) -> @location(0) vec4<f32> {
     let color = text_fs_main(input);
+    return vec4<f32>(color.a, 0.0, 0.0, 1.0);
+}
+
+@fragment
+fn fs_mask_unmasked(input: VertexOutput) -> @location(0) vec4<f32> {
+    let color = text_fs_main_with_mask_alpha(input, 1.0);
     return vec4<f32>(color.a, 0.0, 0.0, 1.0);
 }

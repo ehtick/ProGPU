@@ -17,8 +17,19 @@ namespace ProGPU.Tests.Headless;
 
 public unsafe class HeadlessWindow : IDisposable
 {
+    private static readonly TimeSpan ReadbackMapTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan ReadbackAbortTimeout = TimeSpan.FromSeconds(5);
+
     private static HeadlessWindow? _shared;
     public static HeadlessWindow Shared => _shared ??= new HeadlessWindow(1280, 800);
+
+    public static void ClearSharedContent()
+    {
+        if (_shared != null)
+        {
+            _shared.Content = null;
+        }
+    }
 
     public static void DisposeShared()
     {
@@ -181,7 +192,7 @@ public unsafe class HeadlessWindow : IDisposable
         _compositor.RenderScene(_content, _width, _height, _offscreenTexture!.ViewPtr);
     }
 
-    public byte[] ReadPixels()
+    public byte[] ReadPixels(TimeSpan? mapTimeout = null)
     {
         if (_offscreenTexture == null || _readbackBuffer == null)
         {
@@ -249,14 +260,34 @@ public unsafe class HeadlessWindow : IDisposable
         wgpu.BufferMapAsync(_readbackBuffer, MapMode.Read, 0, (nuint)_bufferSize, onMapped, null);
 
         // Poll the device to process events and fire the callback synchronously
+        TimeSpan effectiveMapTimeout = mapTimeout ?? ReadbackMapTimeout;
         var swTimeout = System.Diagnostics.Stopwatch.StartNew();
         while (!mapSignal.IsSet)
         {
             wgpuDevicePoll(_context.Device, false, null);
             System.Threading.Thread.Sleep(1);
-            if (swTimeout.ElapsedMilliseconds > 5000)
+            if (swTimeout.Elapsed > effectiveMapTimeout)
             {
-                throw new TimeoutException("WebGPU BufferMapAsync timed out after 5 seconds during headless readback.");
+                // A timed-out map must be cancelled and observed before another test
+                // submits work with this shared buffer. Otherwise wgpu-native can see
+                // the late map complete and abort the process because the buffer is
+                // still mapped during the next QueueSubmit.
+                wgpu.BufferUnmap(_readbackBuffer);
+                var abortTimeout = System.Diagnostics.Stopwatch.StartNew();
+                while (!mapSignal.IsSet && abortTimeout.Elapsed <= ReadbackAbortTimeout)
+                {
+                    wgpuDevicePoll(_context.Device, false, null);
+                    System.Threading.Thread.Sleep(1);
+                }
+
+                if (!mapSignal.IsSet)
+                {
+                    throw new TimeoutException(
+                        $"WebGPU BufferMapAsync did not acknowledge cancellation within {ReadbackAbortTimeout.TotalSeconds:F0} seconds after a {effectiveMapTimeout.TotalSeconds:F0}-second headless readback timeout.");
+                }
+
+                throw new TimeoutException(
+                    $"WebGPU BufferMapAsync timed out after {effectiveMapTimeout.TotalSeconds:F0} seconds during headless readback.");
             }
         }
 

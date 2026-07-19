@@ -21,8 +21,44 @@ namespace ProGPU.Tests.Headless;
 [Collection("HeadlessTests")]
 public class SamplePagesTests : IDisposable
 {
+    private const int SharedWindowBatchSize = 12;
+    private static int s_testInstanceCount;
+
+    public SamplePagesTests()
+    {
+        int testInstance = System.Threading.Interlocked.Increment(ref s_testInstanceCount);
+        if ((testInstance - 1) % SharedWindowBatchSize == 0)
+        {
+            // Bound native atlas, pipeline, and texture residency across the long
+            // sample-page suite while preserving reuse within each test batch.
+            DisposeSampleGpuResources();
+            PopupService.Clear();
+            HeadlessWindow.DisposeShared();
+        }
+    }
+
     public void Dispose()
     {
+        HeadlessWindow.ClearSharedContent();
+        DisposeSampleGpuResources();
+        PopupService.Clear();
+    }
+
+    private static void DisposeSampleGpuResources()
+    {
+        AppState._offscreenCompositor?.Dispose();
+        AppState._offscreenCompositor = null;
+        AppState._compute?.Dispose();
+        AppState._compute = null;
+        AppState._canvasSourceTexture?.Dispose();
+        AppState._canvasSourceTexture = null;
+        AppState._canvasTempTexture?.Dispose();
+        AppState._canvasTempTexture = null;
+        AppState._canvasBlurTexture?.Dispose();
+        AppState._canvasBlurTexture = null;
+        AppState._canvasShadowTexture?.Dispose();
+        AppState._canvasShadowTexture = null;
+        AppState._wgpuContext = null;
     }
 
     private static string GetArtifactPath(string fileName)
@@ -43,7 +79,7 @@ public class SamplePagesTests : IDisposable
         AppState.GenerateLogItems();
     }
 
-    private void RunPageTest(FrameworkElement page, string pageName)
+    private void RunPageTest(FrameworkElement page, string pageName, TimeSpan? readbackTimeout = null)
     {
         EnsureFontsAndStateLoaded();
 
@@ -55,7 +91,7 @@ public class SamplePagesTests : IDisposable
         window.Render();
         window.Render();
 
-        byte[] pixels = window.ReadPixels();
+        byte[] pixels = window.ReadPixels(readbackTimeout);
         Assert.NotNull(pixels);
         Assert.Equal(1280 * 800 * 4, pixels.Length);
 
@@ -78,7 +114,7 @@ public class SamplePagesTests : IDisposable
         Assert.True(nonBgCount > 100, $"Page '{pageName}' rendered blank or empty. Only {nonBgCount} non-background pixels found.");
 
         string screenshotPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, $"page_{pageName.Replace(" ", "_").ToLower()}.png");
-        window.SaveScreenshot(screenshotPath);
+        PngEncoder.SavePng(screenshotPath, pixels, window.Width, window.Height);
         Assert.True(File.Exists(screenshotPath));
 
         // Cleanup
@@ -351,6 +387,18 @@ public class SamplePagesTests : IDisposable
         primaryWarmup.Inlines.Add(new Run("ProGPU Markdown navigation ★ ✔ ♠"));
         window.Content = primaryWarmup;
         window.Render();
+
+        // Inline styles now resolve to their real Inter faces instead of synthetic
+        // regular-face transforms. Prime those reusable layout and atlas entries so
+        // this repeated-activation test measures page work, not one-time face setup.
+        const string styleWarmupText = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,;:!?-_`/()[]{}<>★✔♠";
+        var styleWarmup = new RichTextBlock { Font = AppState._font, FontSize = 14f };
+        styleWarmup.Inlines.Add(new Run(styleWarmupText));
+        styleWarmup.Inlines.Add(new Bold(new Run(styleWarmupText)));
+        styleWarmup.Inlines.Add(new Italic(new Run(styleWarmupText)));
+        styleWarmup.Inlines.Add(new Bold(new Italic(new Run(styleWarmupText))));
+        window.Content = styleWarmup;
+        window.Render();
         var codeWarmup = new RichTextBlock { Font = AppState._fontCourier ?? AppState._font, FontSize = 13f };
         codeWarmup.Inlines.Add(new Run("public void RenderFrame(DrawingContext context)"));
         window.Content = codeWarmup;
@@ -415,7 +463,10 @@ public class SamplePagesTests : IDisposable
     [Fact]
     public void Test_TypographyScriptsPage_Renders()
     {
-        RunPageTest(SamplePagePresenter.CreateTypographyScriptsView(), "Typography & Scripts");
+        RunPageTest(
+            SamplePagePresenter.CreateTypographyScriptsView(),
+            "Typography & Scripts",
+            TimeSpan.FromSeconds(90));
     }
 
     [Fact]
@@ -515,13 +566,31 @@ public class SamplePagesTests : IDisposable
 
             AppState._offscreenCompositor.RenderScene(AppState._gearCanvasVisual, canvasW, canvasH, AppState._canvasSourceTexture.ViewPtr);
 
-            if (AppState._shadowRadius > 0)
+            if (AppState._shadowRadius > 0 && AppState._blurRadius > 0)
             {
                 var shadowColor = new Vector4(0f, 0f, 0f, 0.65f);
-                AppState._compute.ApplyDropShadow(AppState._canvasSourceTexture, AppState._canvasTempTexture, AppState._canvasShadowTexture, AppState._shadowOffset, shadowColor, AppState._shadowRadius);
+                AppState._compute.ApplyDropShadowAndGaussianBlur(
+                    AppState._canvasSourceTexture,
+                    AppState._canvasTempTexture,
+                    AppState._canvasShadowTexture,
+                    AppState._canvasBlurTexture,
+                    AppState._shadowOffset,
+                    shadowColor,
+                    AppState._shadowRadius,
+                    AppState._blurRadius);
             }
-
-            if (AppState._blurRadius > 0)
+            else if (AppState._shadowRadius > 0)
+            {
+                var shadowColor = new Vector4(0f, 0f, 0f, 0.65f);
+                AppState._compute.ApplyDropShadow(
+                    AppState._canvasSourceTexture,
+                    AppState._canvasTempTexture,
+                    AppState._canvasShadowTexture,
+                    AppState._shadowOffset,
+                    shadowColor,
+                    AppState._shadowRadius);
+            }
+            else if (AppState._blurRadius > 0)
             {
                 AppState._compute.ApplyGaussianBlur(AppState._canvasSourceTexture, AppState._canvasTempTexture, AppState._canvasBlurTexture, AppState._blurRadius);
             }
@@ -562,36 +631,7 @@ public class SamplePagesTests : IDisposable
 
         // Cleanup
         window.Content = null;
-        if (AppState._offscreenCompositor != null)
-        {
-            AppState._offscreenCompositor.Dispose();
-            AppState._offscreenCompositor = null;
-        }
-        if (AppState._compute != null)
-        {
-            AppState._compute.Dispose();
-            AppState._compute = null;
-        }
-        if (AppState._canvasSourceTexture != null)
-        {
-            AppState._canvasSourceTexture.Dispose();
-            AppState._canvasSourceTexture = null;
-        }
-        if (AppState._canvasTempTexture != null)
-        {
-            AppState._canvasTempTexture.Dispose();
-            AppState._canvasTempTexture = null;
-        }
-        if (AppState._canvasBlurTexture != null)
-        {
-            AppState._canvasBlurTexture.Dispose();
-            AppState._canvasBlurTexture = null;
-        }
-        if (AppState._canvasShadowTexture != null)
-        {
-            AppState._canvasShadowTexture.Dispose();
-            AppState._canvasShadowTexture = null;
-        }
+        DisposeSampleGpuResources();
     }
 
     [Fact]

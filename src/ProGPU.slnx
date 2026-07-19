@@ -5,7 +5,10 @@
   <Project Path="ProGPU.Browser/ProGPU.Browser.csproj" />
   <Project Path="ProGPU.DirectX/ProGPU.DirectX.csproj" />
   <Project Path="ProGPU.Vector/ProGPU.Vector.csproj" />
+  <Project Path="ProGPU.Text.Shaping/ProGPU.Text.Shaping.csproj" />
   <Project Path="ProGPU.Text/ProGPU.Text.csproj" />
+  <Project Path="ProGPU.Fonts.Inter/ProGPU.Fonts.Inter.csproj" />
+  <Project Path="ProGPU.Fonts.Noto/ProGPU.Fonts.Noto.csproj" />
   <Project Path="ProGPU.Compute/ProGPU.Compute.csproj" />
   <Project Path="ProGPU.Scene/ProGPU.Scene.csproj" />
   <Project Path="ProGPU.Wpf.Interop/ProGPU.Wpf.Interop.csproj" />
@@ -28,4 +31,5 @@
   <Project Path="ProGPU.Tests/ProGPU.Tests.csproj" />
   <Project Path="../tools/TtfDiag/TtfDiag.csproj" />
   <Project Path="../tools/DxfDiag/DxfDiag.csproj" />
+  <Project Path="../tools/HarfBuzzParity/HarfBuzzParity.csproj" />
 </Solution>
