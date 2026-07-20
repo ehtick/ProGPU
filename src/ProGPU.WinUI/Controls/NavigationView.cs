@@ -229,6 +229,11 @@ public class NavigationView : FrameworkElement
                         Content = page;
                     }
                 }
+
+                if (DisplayMode != NavigationViewDisplayMode.Expanded)
+                {
+                    IsPaneOpen = false;
+                }
                 
                 SelectionChanged?.Invoke(this, EventArgs.Empty);
                 UpdateTabStops();

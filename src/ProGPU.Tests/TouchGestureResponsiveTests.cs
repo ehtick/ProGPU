@@ -429,7 +429,8 @@ public sealed class TouchGestureResponsiveTests
     public void StandaloneMinimalNavigationViewKeepsTouchPaneOpener()
     {
         var navigation = new NavigationView();
-        navigation.MenuItems.Add(new NavigationViewItem("Item", string.Empty));
+        var item = new NavigationViewItem("Item", string.Empty);
+        navigation.MenuItems.Add(item);
         ArrangeRoot(navigation, new Vector2(500, 300));
         UseInputRoot(navigation);
         Assert.Equal(NavigationViewDisplayMode.Minimal, navigation.DisplayMode);
@@ -439,6 +440,9 @@ public sealed class TouchGestureResponsiveTests
         InputSystem.InjectPointer(Touch(PointerInputKind.Released, 60, 24, 24, 30_000, false));
 
         Assert.True(navigation.IsPaneOpen);
+
+        navigation.SelectedItem = item;
+        Assert.False(navigation.IsPaneOpen);
     }
 
     [Fact]
