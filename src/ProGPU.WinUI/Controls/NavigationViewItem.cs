@@ -11,6 +11,7 @@ using ProGPU.Layout;
 using ProGPU.Scene;
 using ProGPU.Vector;
 using ProGPU.Text;
+using Windows.Devices.Input;
 using static System.FormattableString;
 
 namespace Microsoft.UI.Xaml.Controls;
@@ -24,6 +25,7 @@ public class NavigationViewItem : Control
     private int _level;
     private FrameworkElement? _page;
     private Func<FrameworkElement?>? _pageFactory;
+    private uint _pendingTouchPointerId;
 
     private float _cachedIconStartX = -9999f;
     private float _cachedIconStartY = -9999f;
@@ -189,39 +191,69 @@ public class NavigationViewItem : Control
 
     public override void OnPointerPressed(PointerRoutedEventArgs e)
     {
-        if (IsEnabled)
-        {
-            base.OnPointerPressed(e);
-            
-            var nav = FindParentNavigationView();
-            if (nav != null)
-            {
-                var activeFamily = nav.ActualThemeFamily;
-                bool isChevronClick = false;
-                if (Items.Count > 0 && nav.IsPaneOpen)
-                {
-                    if (activeFamily == VisualThemeFamily.macOS)
-                    {
-                        float baseIndent = 16f + (Level * 16f);
-                        isChevronClick = e.Position.X >= baseIndent - 8f && e.Position.X <= baseIndent + 20f;
-                    }
-                    else
-                    {
-                        isChevronClick = e.Position.X >= Size.X - 40f;
-                    }
-                }
+        if (!IsEnabled) return;
 
-                if (isChevronClick)
-                {
-                    IsExpanded = !IsExpanded;
-                    nav.OnItemExpandedChanged(this);
-                }
-                else
-                {
-                    nav.SelectedItem = this;
-                }
+        if (e.Pointer.PointerDeviceType is PointerDeviceType.Touch or PointerDeviceType.Pen)
+        {
+            _pendingTouchPointerId = e.Pointer.PointerId;
+            e.Handled = true;
+            base.OnPointerPressed(e);
+            return;
+        }
+
+        base.OnPointerPressed(e);
+        Activate(e.GetCurrentPoint(this).Position);
+        e.Handled = true;
+    }
+
+    public override void OnPointerReleased(PointerRoutedEventArgs e)
+    {
+        if (_pendingTouchPointerId == e.Pointer.PointerId)
+        {
+            if (IsEnabled && IsPointerPressed && IsPointerOver)
+            {
+                Activate(e.GetCurrentPoint(this).Position);
                 e.Handled = true;
             }
+            _pendingTouchPointerId = 0;
+        }
+        base.OnPointerReleased(e);
+    }
+
+    public override void OnPointerCanceled(PointerRoutedEventArgs e)
+    {
+        if (_pendingTouchPointerId == e.Pointer.PointerId) _pendingTouchPointerId = 0;
+        base.OnPointerCanceled(e);
+    }
+
+    private void Activate(Vector2 position)
+    {
+        var nav = FindParentNavigationView();
+        if (nav == null) return;
+
+        var activeFamily = nav.ActualThemeFamily;
+        var isChevronClick = false;
+        if (Items.Count > 0 && nav.IsPaneOpen)
+        {
+            if (activeFamily == VisualThemeFamily.macOS)
+            {
+                var baseIndent = 16f + (Level * 16f);
+                isChevronClick = position.X >= baseIndent - 8f && position.X <= baseIndent + 20f;
+            }
+            else
+            {
+                isChevronClick = position.X >= Size.X - 40f;
+            }
+        }
+
+        if (isChevronClick)
+        {
+            IsExpanded = !IsExpanded;
+            nav.OnItemExpandedChanged(this);
+        }
+        else
+        {
+            nav.SelectedItem = this;
         }
     }
 

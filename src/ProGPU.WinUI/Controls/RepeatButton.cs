@@ -80,6 +80,18 @@ public class RepeatButton : Button
         base.OnPointerExited(e);
     }
 
+    public override void OnPointerCanceled(PointerRoutedEventArgs e)
+    {
+        CancelRepeat();
+        base.OnPointerCanceled(e);
+    }
+
+    public override void OnPointerCaptureLost(PointerRoutedEventArgs e)
+    {
+        CancelRepeat();
+        base.OnPointerCaptureLost(e);
+    }
+
     private void CancelRepeat()
     {
         _cts?.Cancel();

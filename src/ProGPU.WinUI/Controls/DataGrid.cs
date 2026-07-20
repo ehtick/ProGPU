@@ -16,6 +16,7 @@ using ProGPU.Scene;
 using ProGPU.Text;
 using System.Collections.Concurrent;
 using System.Globalization;
+using Windows.Devices.Input;
 
 namespace Microsoft.UI.Xaml.Controls;
 
@@ -53,6 +54,7 @@ public class DataGrid : Control
     private int _selectedIndex = -1;
     private float _scrollOffset;
     private bool _isDraggingScroll;
+    private uint _scrollbarPointerId;
     private float _dragStartOffset;
     private float _dragStartMouseY;
     private int _hoveredRowIndex = -1;
@@ -71,6 +73,11 @@ public class DataGrid : Control
     private DateTime _lastClickTime = DateTime.MinValue;
     private int _lastClickRow = -1;
     private int _lastClickCol = -1;
+    private uint _pendingTouchPointerId;
+    private int _pendingTouchRow = -1;
+    private int _pendingTouchColumn = -1;
+    private int _pendingTouchSortColumn = -1;
+    private float _touchInertiaVelocity;
 
     public List<DataGridColumn> Columns { get; } = new();
 
@@ -149,6 +156,9 @@ public class DataGrid : Control
     public DataGrid()
     {
         Padding = new Thickness(0);
+        ManipulationMode = ManipulationModes.TranslateY |
+            ManipulationModes.TranslateRailsY |
+            ManipulationModes.TranslateInertia;
 
         var defaultStyle = ThemeManager.GetDefaultStyle(GetType());
         if (defaultStyle != null)
@@ -514,6 +524,34 @@ public class DataGrid : Control
 
     public override void OnPointerPressed(PointerRoutedEventArgs e)
     {
+        var position = e.GetCurrentPoint(this).Position;
+        if (IsEnabled && TryStartScrollbarInteraction(e, position))
+        {
+            return;
+        }
+
+        if (IsEnabled && e.Pointer.PointerDeviceType is PointerDeviceType.Touch or PointerDeviceType.Pen)
+        {
+            ClearPendingTouchAction();
+            _pendingTouchPointerId = e.Pointer.PointerId;
+            if (position.Y <= _headerHeight)
+            {
+                _pendingTouchSortColumn = GetColumnIndexAt(position.X);
+            }
+            else if (position.X < Size.X - 12f)
+            {
+                _pendingTouchRow = GetRowIndexAt(position.Y);
+                _pendingTouchColumn = GetColumnIndexAt(position.X);
+            }
+
+            if (_pendingTouchSortColumn >= 0 || _pendingTouchRow >= 0)
+            {
+                e.Handled = true;
+            }
+            base.OnPointerPressed(e);
+            return;
+        }
+
         if (IsEnabled)
         {
             // Click inside Header: Column Sorting / Resizing
@@ -555,23 +593,6 @@ public class DataGrid : Control
                         return;
                     }
                     runningX += col.ActualWidth;
-                }
-            }
-            // Click in Scrollbar area
-            else if (TotalBodyHeight > ViewportHeight && e.Position.X >= Size.X - 10f)
-            {
-                float viewportH = ViewportHeight;
-                float thumbHeight = Math.Max(24f, (viewportH / TotalBodyHeight) * viewportH);
-                float scrollableHeight = TotalBodyHeight - viewportH;
-                float thumbY = _headerHeight + (ScrollOffset / scrollableHeight) * (viewportH - thumbHeight);
-
-                if (e.Position.Y >= thumbY && e.Position.Y <= thumbY + thumbHeight)
-                {
-                    _isDraggingScroll = true;
-                    _dragStartOffset = ScrollOffset;
-                    _dragStartMouseY = e.Position.Y;
-                    e.Handled = true;
-                    return;
                 }
             }
             // Click in Body rows
@@ -619,13 +640,137 @@ public class DataGrid : Control
 
     public override void OnPointerReleased(PointerRoutedEventArgs e)
     {
-        _isDraggingScroll = false;
+        if (_scrollbarPointerId == e.Pointer.PointerId)
+        {
+            _scrollbarPointerId = 0;
+            _isDraggingScroll = false;
+            ScrollBarInteraction.ReleasePointer(this, e);
+            e.Handled = true;
+            Invalidate();
+        }
+
+        if (_pendingTouchPointerId == e.Pointer.PointerId)
+        {
+            var position = e.GetCurrentPoint(this).Position;
+            if (IsEnabled && IsPointerPressed && IsPointerOver)
+            {
+                if (_pendingTouchSortColumn >= 0 && position.Y <= _headerHeight &&
+                    GetColumnIndexAt(position.X) == _pendingTouchSortColumn)
+                {
+                    SortColumn(_pendingTouchSortColumn);
+                    e.Handled = true;
+                }
+                else if (_pendingTouchRow >= 0 && GetRowIndexAt(position.Y) == _pendingTouchRow &&
+                    GetColumnIndexAt(position.X) == _pendingTouchColumn)
+                {
+                    SelectRow(_pendingTouchRow, _pendingTouchColumn);
+                    e.Handled = true;
+                }
+            }
+            ClearPendingTouchAction();
+        }
         if (_resizingColumnIndex != -1)
         {
             _resizingColumnIndex = -1;
             InputSystem.ReleasePointerCapture();
         }
         base.OnPointerReleased(e);
+    }
+
+    public override void OnPointerCanceled(PointerRoutedEventArgs e)
+    {
+        ClearPendingTouchAction();
+        if (_scrollbarPointerId == e.Pointer.PointerId)
+        {
+            _scrollbarPointerId = 0;
+            _isDraggingScroll = false;
+            Invalidate();
+        }
+        _resizingColumnIndex = -1;
+        base.OnPointerCanceled(e);
+    }
+
+    public override void OnPointerCaptureLost(PointerRoutedEventArgs e)
+    {
+        if (_scrollbarPointerId == e.Pointer.PointerId)
+        {
+            _scrollbarPointerId = 0;
+            _isDraggingScroll = false;
+            Invalidate();
+        }
+        base.OnPointerCaptureLost(e);
+    }
+
+    private bool TryStartScrollbarInteraction(PointerRoutedEventArgs e, Vector2 position)
+    {
+        if (!ScrollBarInteraction.TryCreateMetrics(
+                _headerHeight, ViewportHeight, TotalBodyHeight, ScrollOffset, out var metrics) ||
+            !ScrollBarInteraction.IsVerticalTrackHit(position.X, Size.X, e.Pointer.PointerDeviceType) ||
+            position.Y < metrics.TrackStart || position.Y > metrics.TrackStart + metrics.TrackLength ||
+            !ScrollBarInteraction.CapturePointer(this, e))
+        {
+            return false;
+        }
+
+        _scrollbarPointerId = e.Pointer.PointerId;
+        _touchInertiaVelocity = 0f;
+        if (ScrollBarInteraction.IsThumbHit(position.Y, metrics, e.Pointer.PointerDeviceType))
+        {
+            _isDraggingScroll = true;
+            _dragStartOffset = ScrollOffset;
+            _dragStartMouseY = position.Y;
+        }
+        else
+        {
+            _isDraggingScroll = false;
+            ScrollOffset = ScrollBarInteraction.ValueFromTrackPress(
+                ScrollOffset, position.Y, metrics, ViewportHeight);
+        }
+
+        ClearPendingTouchAction();
+        _isPointerOverScrollbar = true;
+        e.Handled = true;
+        Invalidate();
+        return true;
+    }
+
+    public override void OnManipulationStarted(ManipulationStartedRoutedEventArgs e)
+    {
+        _touchInertiaVelocity = 0f;
+        base.OnManipulationStarted(e);
+    }
+
+    public override void OnManipulationDelta(ManipulationDeltaRoutedEventArgs e)
+    {
+        var oldOffset = ScrollOffset;
+        ScrollOffset -= e.Delta.Translation.Y;
+        if (oldOffset != ScrollOffset) e.Handled = true;
+        base.OnManipulationDelta(e);
+    }
+
+    public override void OnManipulationCompleted(ManipulationCompletedRoutedEventArgs e)
+    {
+        _touchInertiaVelocity = e.IsInertial ? -e.Velocities.Linear.Y : 0f;
+        base.OnManipulationCompleted(e);
+    }
+
+    protected override void OnUpdateAnimations(float elapsedSeconds)
+    {
+        base.OnUpdateAnimations(elapsedSeconds);
+        if (elapsedSeconds <= 0f || MathF.Abs(_touchInertiaVelocity) < 2f)
+        {
+            _touchInertiaVelocity = 0f;
+            return;
+        }
+
+        var oldOffset = ScrollOffset;
+        ScrollOffset += _touchInertiaVelocity * elapsedSeconds;
+        if (oldOffset == ScrollOffset)
+        {
+            _touchInertiaVelocity = 0f;
+            return;
+        }
+        _touchInertiaVelocity *= MathF.Pow(0.88f, elapsedSeconds * 60f);
     }
 
     public override void OnPointerExited(PointerRoutedEventArgs e)
@@ -638,13 +783,17 @@ public class DataGrid : Control
 
     public override void OnPointerMoved(PointerRoutedEventArgs e)
     {
+        var position = e.ScreenPosition == Vector2.Zero && e.Position != Vector2.Zero
+            ? e.Position
+            : e.GetCurrentPoint(this).Position;
         if (IsEnabled)
         {
-            _isPointerOverScrollbar = e.Position.X >= Size.X - 12f;
+            _isPointerOverScrollbar = TotalBodyHeight > ViewportHeight &&
+                ScrollBarInteraction.IsVerticalTrackHit(position.X, Size.X, e.Pointer.PointerDeviceType);
 
             if (_resizingColumnIndex != -1)
             {
-                float deltaX = e.Position.X - _resizeStartMouseX;
+                float deltaX = position.X - _resizeStartMouseX;
                 float newWidth = Math.Max(20f, _resizeStartWidth + deltaX);
                 Columns[_resizingColumnIndex].Width = newWidth;
 
@@ -661,13 +810,13 @@ public class DataGrid : Control
 
             // Detect mouse movement in column headers for resize zones
             int hoveredSep = -1;
-            if (e.Position.Y <= _headerHeight)
+            if (position.Y <= _headerHeight)
             {
                 float runningX = Padding.Left;
                 for (int i = 0; i < Columns.Count; i++)
                 {
                     float separatorX = runningX + Columns[i].ActualWidth;
-                    if (Math.Abs(e.Position.X - separatorX) <= 4f)
+                    if (Math.Abs(position.X - separatorX) <= 4f)
                     {
                         hoveredSep = i;
                         break;
@@ -682,9 +831,10 @@ public class DataGrid : Control
                 Invalidate();
             }
 
-            if (e.Position.Y > _headerHeight && e.Position.X < Size.X - 12f)
+            if (position.Y > _headerHeight &&
+                !ScrollBarInteraction.IsVerticalTrackHit(position.X, Size.X, e.Pointer.PointerDeviceType))
             {
-                int r = (int)((e.Position.Y - _headerHeight + ScrollOffset) / _rowHeight);
+                int r = (int)((position.Y - _headerHeight + ScrollOffset) / _rowHeight);
                 if (r >= 0 && r < _itemsSource.Count)
                 {
                     if (_hoveredRowIndex != r)
@@ -712,22 +862,72 @@ public class DataGrid : Control
             }
         }
 
-        if (_isDraggingScroll && IsEnabled)
+        if (_isDraggingScroll && _scrollbarPointerId == e.Pointer.PointerId && IsEnabled)
         {
-            float viewportH = ViewportHeight;
-            float thumbHeight = Math.Max(24f, (viewportH / TotalBodyHeight) * viewportH);
-            float scrollableHeight = TotalBodyHeight - viewportH;
-            float trackLength = viewportH - thumbHeight;
-
-            if (trackLength > 0f)
+            if (ScrollBarInteraction.TryCreateMetrics(
+                    _headerHeight, ViewportHeight, TotalBodyHeight, _dragStartOffset, out var metrics))
             {
-                float deltaY = e.Position.Y - _dragStartMouseY;
-                ScrollOffset = _dragStartOffset + (deltaY / trackLength) * scrollableHeight;
+                ScrollOffset = ScrollBarInteraction.ValueFromDrag(
+                    _dragStartOffset, position.Y - _dragStartMouseY, metrics);
             }
             e.Handled = true;
             return;
         }
         base.OnPointerMoved(e);
+    }
+
+    private int GetRowIndexAt(float y)
+    {
+        if (y <= _headerHeight) return -1;
+        var row = (int)((y - _headerHeight + ScrollOffset) / _rowHeight);
+        return row >= 0 && row < _itemsSource.Count ? row : -1;
+    }
+
+    private int GetColumnIndexAt(float x)
+    {
+        var runningX = Padding.Left;
+        for (var index = 0; index < Columns.Count; index++)
+        {
+            if (x >= runningX && x <= runningX + Columns[index].ActualWidth) return index;
+            runningX += Columns[index].ActualWidth;
+        }
+        return -1;
+    }
+
+    private void SortColumn(int columnIndex)
+    {
+        if (columnIndex < 0 || columnIndex >= Columns.Count) return;
+        var column = Columns[columnIndex];
+        if (SortingColumn == column) column.IsAscending = !column.IsAscending;
+        else column.IsAscending = true;
+        SortItems(column);
+    }
+
+    private void SelectRow(int row, int columnIndex)
+    {
+        if (row < 0 || row >= _itemsSource.Count) return;
+        SelectedIndex = row;
+        if (columnIndex < 0) return;
+
+        var now = DateTime.UtcNow;
+        if ((now - _lastClickTime).TotalMilliseconds < 300 && row == _lastClickRow && columnIndex == _lastClickCol)
+        {
+            BeginEdit(row, columnIndex);
+        }
+        else
+        {
+            _lastClickTime = now;
+            _lastClickRow = row;
+            _lastClickCol = columnIndex;
+        }
+    }
+
+    private void ClearPendingTouchAction()
+    {
+        _pendingTouchPointerId = 0;
+        _pendingTouchRow = -1;
+        _pendingTouchColumn = -1;
+        _pendingTouchSortColumn = -1;
     }
 
     private float MeasureTextWidth(string text, TtfFont font, float fontSize)
@@ -842,7 +1042,7 @@ public class DataGrid : Control
         if (activeFont == null) return;
 
         // 1. Draw DataGrid outer card background & border
-        Pen outerPen = IsFocused 
+        Pen outerPen = IsKeyboardFocusVisualVisible
             ? new Pen(BorderBrush ?? ThemeManager.GetBrush("SystemAccentColor"), 2f) // Glowing Segoe Blue active focus ring
             : new Pen(BorderBrush ?? ThemeManager.GetBrush("ControlBorder"), 1f); // Thin outline
 

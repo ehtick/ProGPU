@@ -237,7 +237,7 @@ setNotes(17, 'This coarse seam is intentionally separate from the packet protoco
 
 // 18 — input
 setJourney(18, 'DOM input is batched into the neutral WinUI input seam', [
-  '1  Queue DOM records\nListeners append fixed 32-byte events. Pointer moves replace the previous move; adjacent wheel deltas accumulate; queue caps at 4096.',
+  '1  Queue DOM records\nListeners append fixed 64-byte events. Pointer moves coalesce per pointer while identity, device, pressure, contact, and time metadata remain intact; queue caps at 4096.',
   '2  Drain per frame\nBrowserInputDispatcher stackallocs 256 records and drains at most four batches before injecting InputSystem events.',
   '3  Install platform services\nBrowserWindowHost wires cursor, focus/text, clipboard, storage/file pickers, canvas metrics, and the bundled Inter UI fallback.',
 ], ['DOM', 'FRAME BATCH', 'HOST SERVICES']);

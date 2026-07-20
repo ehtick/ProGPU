@@ -150,6 +150,11 @@ public class Control : FrameworkElement, ITemplatedControl
         internal set => SetValue(IsFocusedProperty, value);
     }
 
+    internal bool IsFocusedVisualStateActive => IsFocused &&
+        (InputSystem.IsKeyboardFocusActive || this is ITextInputClient);
+
+    internal bool IsKeyboardFocusVisualVisible => IsFocused && InputSystem.IsKeyboardFocusActive;
+
     private bool _isTabStop = true;
     public bool IsTabStop
     {
@@ -354,7 +359,7 @@ public class Control : FrameworkElement, ITemplatedControl
         if (!IsEnabled) return (ThemeManager.GetResource($"{prefix}BackgroundDisabled", theme) as Brush) ?? Background;
         if (IsPointerPressed) return (ThemeManager.GetResource($"{prefix}BackgroundPressed", theme) as Brush) ?? Background;
         if (IsPointerOver) return (ThemeManager.GetResource($"{prefix}BackgroundPointerOver", theme) as Brush) ?? Background;
-        if (IsFocused) return (ThemeManager.GetResource($"{prefix}BackgroundFocused", theme) as Brush) ?? (ThemeManager.GetResource($"{prefix}BackgroundPressed", theme) as Brush) ?? Background;
+        if (IsFocusedVisualStateActive) return (ThemeManager.GetResource($"{prefix}BackgroundFocused", theme) as Brush) ?? (ThemeManager.GetResource($"{prefix}BackgroundPressed", theme) as Brush) ?? Background;
         return Background;
     }
 
@@ -367,7 +372,7 @@ public class Control : FrameworkElement, ITemplatedControl
         if (!IsEnabled) return (ThemeManager.GetResource($"{prefix}ForegroundDisabled", theme) as Brush) ?? Foreground;
         if (IsPointerPressed) return (ThemeManager.GetResource($"{prefix}ForegroundPressed", theme) as Brush) ?? Foreground;
         if (IsPointerOver) return (ThemeManager.GetResource($"{prefix}ForegroundPointerOver", theme) as Brush) ?? Foreground;
-        if (IsFocused) return (ThemeManager.GetResource($"{prefix}ForegroundFocused", theme) as Brush) ?? Foreground;
+        if (IsFocusedVisualStateActive) return (ThemeManager.GetResource($"{prefix}ForegroundFocused", theme) as Brush) ?? Foreground;
         return Foreground;
     }
 
@@ -380,7 +385,7 @@ public class Control : FrameworkElement, ITemplatedControl
         if (!IsEnabled) return (ThemeManager.GetResource($"{prefix}BorderBrushDisabled", theme) as Brush) ?? BorderBrush;
         if (IsPointerPressed) return (ThemeManager.GetResource($"{prefix}BorderBrushPressed", theme) as Brush) ?? BorderBrush;
         if (IsPointerOver) return (ThemeManager.GetResource($"{prefix}BorderBrushPointerOver", theme) as Brush) ?? BorderBrush;
-        if (IsFocused) return (ThemeManager.GetResource($"{prefix}BorderBrushFocused", theme) as Brush) ?? (ThemeManager.GetResource($"{prefix}BorderBrushPressed", theme) as Brush) ?? BorderBrush;
+        if (IsFocusedVisualStateActive) return (ThemeManager.GetResource($"{prefix}BorderBrushFocused", theme) as Brush) ?? (ThemeManager.GetResource($"{prefix}BorderBrushPressed", theme) as Brush) ?? BorderBrush;
         return BorderBrush;
     }
 
@@ -410,7 +415,7 @@ public class Control : FrameworkElement, ITemplatedControl
         base.OnRender(context);
 
         // Draw dynamic high-contrast keyboard focus visual borders 2px outside the control
-        if (IsFocused && InputSystem.IsKeyboardFocusActive)
+        if (IsKeyboardFocusVisualVisible)
         {
             var accentColor = ThemeManager.GetBrush("SystemAccentColor");
             context.DrawRectangle(null, new Pen(accentColor, 1.5f), new Rect(-2f, -2f, Size.X + 4f, Size.Y + 4f));

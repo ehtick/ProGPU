@@ -234,6 +234,7 @@ public class VirtualizingPanel : Panel, IScrollViewportAware
         private readonly VirtualizingPanel _panel;
         private bool _isDragging = false;
         private bool _isHovered = false;
+        private uint _scrollbarPointerId;
         private float _dragStartOffset = 0f;
         private float _dragStartMouse = 0f;
 
@@ -246,49 +247,34 @@ public class VirtualizingPanel : Panel, IScrollViewportAware
         {
             if (IsEnabled)
             {
-                var localPos = InputSystem.GetLocalPosition(this, e.ScreenPosition);
-                float scrollbarThickness = 8f;
+                var localPos = e.GetCurrentPoint(this).Position;
                 float contentSize = _panel.IsHorizontal ? _panel.TotalVirtualWidth : _panel.TotalVirtualHeight;
                 float viewportSize = _panel.IsHorizontal ? Size.X : Size.Y;
 
-                if (contentSize > viewportSize)
+                if (ScrollBarInteraction.TryCreateMetrics(0f, viewportSize, contentSize, _panel.ScrollOffset, out var metrics))
                 {
-                    float thumbSize = Math.Max(24f, (viewportSize / contentSize) * viewportSize);
-                    float scrollableSize = contentSize - viewportSize;
-
-                    if (_panel.IsHorizontal)
+                    var inTrack = _panel.IsHorizontal
+                        ? ScrollBarInteraction.IsHorizontalTrackHit(localPos.Y, Size.Y, e.Pointer.PointerDeviceType)
+                        : ScrollBarInteraction.IsVerticalTrackHit(localPos.X, Size.X, e.Pointer.PointerDeviceType);
+                    if (inTrack && ScrollBarInteraction.CapturePointer(this, e))
                     {
-                        if (localPos.Y >= Size.Y - scrollbarThickness - 4f)
+                        _scrollbarPointerId = e.Pointer.PointerId;
+                        var pointerPosition = _panel.IsHorizontal ? localPos.X : localPos.Y;
+                        if (ScrollBarInteraction.IsThumbHit(pointerPosition, metrics, e.Pointer.PointerDeviceType))
                         {
-                            float thumbX = (_panel.ScrollOffset / scrollableSize) * (viewportSize - thumbSize);
-                            if (localPos.X >= thumbX && localPos.X <= thumbX + thumbSize)
-                            {
-                                _isDragging = true;
-                                _dragStartOffset = _panel.ScrollOffset;
-                                _dragStartMouse = localPos.X;
-                                InputSystem.CapturePointer(this);
-                                e.Handled = true;
-                                Invalidate();
-                                return;
-                            }
+                            _isDragging = true;
+                            _dragStartOffset = _panel.ScrollOffset;
+                            _dragStartMouse = pointerPosition;
                         }
-                    }
-                    else
-                    {
-                        if (localPos.X >= Size.X - scrollbarThickness - 4f)
+                        else
                         {
-                            float thumbY = (_panel.ScrollOffset / scrollableSize) * (viewportSize - thumbSize);
-                            if (localPos.Y >= thumbY && localPos.Y <= thumbY + thumbSize)
-                            {
-                                _isDragging = true;
-                                _dragStartOffset = _panel.ScrollOffset;
-                                _dragStartMouse = localPos.Y;
-                                InputSystem.CapturePointer(this);
-                                e.Handled = true;
-                                Invalidate();
-                                return;
-                            }
+                            _isDragging = false;
+                            _panel.ScrollOffset = ScrollBarInteraction.ValueFromTrackPress(
+                                _panel.ScrollOffset, pointerPosition, metrics, viewportSize);
                         }
+                        e.Handled = true;
+                        Invalidate();
+                        return;
                     }
                 }
             }
@@ -297,13 +283,37 @@ public class VirtualizingPanel : Panel, IScrollViewportAware
 
         public override void OnPointerReleased(PointerRoutedEventArgs e)
         {
-            if (_isDragging)
+            if (_scrollbarPointerId == e.Pointer.PointerId)
             {
+                _scrollbarPointerId = 0;
                 _isDragging = false;
-                InputSystem.ReleasePointerCapture();
+                ScrollBarInteraction.ReleasePointer(this, e);
+                e.Handled = true;
                 Invalidate();
             }
             base.OnPointerReleased(e);
+        }
+
+        public override void OnPointerCanceled(PointerRoutedEventArgs e)
+        {
+            if (_scrollbarPointerId == e.Pointer.PointerId)
+            {
+                _scrollbarPointerId = 0;
+                _isDragging = false;
+                Invalidate();
+            }
+            base.OnPointerCanceled(e);
+        }
+
+        public override void OnPointerCaptureLost(PointerRoutedEventArgs e)
+        {
+            if (_scrollbarPointerId == e.Pointer.PointerId)
+            {
+                _scrollbarPointerId = 0;
+                _isDragging = false;
+                Invalidate();
+            }
+            base.OnPointerCaptureLost(e);
         }
 
         public override void OnPointerEntered(PointerRoutedEventArgs e)
@@ -329,8 +339,8 @@ public class VirtualizingPanel : Panel, IScrollViewportAware
             {
                 var localPos = InputSystem.GetLocalPosition(this, e.ScreenPosition);
                 bool over = _panel.IsHorizontal 
-                    ? localPos.Y >= Size.Y - 12f
-                    : localPos.X >= Size.X - 12f;
+                    ? ScrollBarInteraction.IsHorizontalTrackHit(localPos.Y, Size.Y, e.Pointer.PointerDeviceType)
+                    : ScrollBarInteraction.IsVerticalTrackHit(localPos.X, Size.X, e.Pointer.PointerDeviceType);
                 if (_isHovered != over)
                 {
                     _isHovered = over;
@@ -338,20 +348,16 @@ public class VirtualizingPanel : Panel, IScrollViewportAware
                 }
             }
 
-            if (_isDragging && IsEnabled)
+            if (_isDragging && _scrollbarPointerId == e.Pointer.PointerId && IsEnabled)
             {
                 var localPos = InputSystem.GetLocalPosition(this, e.ScreenPosition);
                 float contentSize = _panel.IsHorizontal ? _panel.TotalVirtualWidth : _panel.TotalVirtualHeight;
                 float viewportSize = _panel.IsHorizontal ? Size.X : Size.Y;
-                float thumbSize = Math.Max(24f, (viewportSize / contentSize) * viewportSize);
-                float scrollableSize = contentSize - viewportSize;
-                float trackLength = viewportSize - thumbSize;
-
-                if (trackLength > 0f)
+                if (ScrollBarInteraction.TryCreateMetrics(0f, viewportSize, contentSize, _dragStartOffset, out var metrics))
                 {
                     float mousePos = _panel.IsHorizontal ? localPos.X : localPos.Y;
-                    float delta = mousePos - _dragStartMouse;
-                    _panel.ScrollOffset = _dragStartOffset + (delta / trackLength) * scrollableSize;
+                    _panel.ScrollOffset = ScrollBarInteraction.ValueFromDrag(
+                        _dragStartOffset, mousePos - _dragStartMouse, metrics);
                 }
                 e.Handled = true;
                 return;
@@ -364,35 +370,35 @@ public class VirtualizingPanel : Panel, IScrollViewportAware
             float contentSize = _panel.IsHorizontal ? _panel.TotalVirtualWidth : _panel.TotalVirtualHeight;
             float viewportSize = _panel.IsHorizontal ? Size.X : Size.Y;
 
-            if (contentSize > viewportSize)
+            if (ScrollBarInteraction.TryCreateMetrics(0f, viewportSize, contentSize, _panel.ScrollOffset, out var metrics))
             {
-                float scrollbarThickness = (_isHovered || _isDragging) ? 8f : 3f;
-                float padding = (_isHovered || _isDragging) ? 2f : 4f;
-
-                float thumbSize = Math.Max(24f, (viewportSize / contentSize) * viewportSize);
-                float scrollableSize = contentSize - viewportSize;
-                float thumbPos = (_panel.ScrollOffset / scrollableSize) * (viewportSize - thumbSize);
+                float scrollbarThickness = (_isHovered || _scrollbarPointerId != 0)
+                    ? ScrollBarInteraction.ExpandedThickness
+                    : ScrollBarInteraction.CollapsedThickness;
+                float padding = (_isHovered || _scrollbarPointerId != 0)
+                    ? ScrollBarInteraction.ExpandedPadding
+                    : ScrollBarInteraction.CollapsedPadding;
 
                 Rect trackRect, thumbRect;
                 if (_panel.IsHorizontal)
                 {
                     trackRect = new Rect(0f, Size.Y - scrollbarThickness - padding, viewportSize, scrollbarThickness);
-                    thumbRect = new Rect(thumbPos, Size.Y - scrollbarThickness - padding, thumbSize, scrollbarThickness);
+                    thumbRect = new Rect(metrics.ThumbStart, Size.Y - scrollbarThickness - padding, metrics.ThumbLength, scrollbarThickness);
                 }
                 else
                 {
                     trackRect = new Rect(Size.X - scrollbarThickness - padding, 0f, scrollbarThickness, viewportSize);
-                    thumbRect = new Rect(Size.X - scrollbarThickness - padding, thumbPos, scrollbarThickness, thumbSize);
+                    thumbRect = new Rect(Size.X - scrollbarThickness - padding, metrics.ThumbStart, scrollbarThickness, metrics.ThumbLength);
                 }
 
                 // Draw track (subtle translucent backdrop line)
-                Brush trackBg = (_isHovered || _isDragging) 
+                Brush trackBg = (_isHovered || _scrollbarPointerId != 0)
                     ? ThemeManager.GetBrush("ControlBackgroundHover") 
                     : ThemeManager.GetBrush("ControlBackground");
                 context.DrawRectangle(trackBg, null, trackRect);
 
                 // Draw thumb (glassmorphic capsule)
-                Brush thumbBg = (_isHovered || _isDragging)
+                Brush thumbBg = (_isHovered || _scrollbarPointerId != 0)
                     ? ThemeManager.GetBrush("ScrollbarThumbHover")
                     : ThemeManager.GetBrush("ScrollbarThumb");
                 context.DrawRoundedRectangle(thumbBg, null, thumbRect, scrollbarThickness / 2f);

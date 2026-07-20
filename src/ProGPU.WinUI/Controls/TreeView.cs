@@ -11,6 +11,7 @@ using ProGPU.Layout;
 using ProGPU.Scene;
 using ProGPU.Vector;
 using ProGPU.Text;
+using Windows.Devices.Input;
 using static System.FormattableString;
 
 namespace Microsoft.UI.Xaml.Controls;
@@ -22,6 +23,7 @@ public class TreeViewItem : Control
     private bool _isSelected;
     private int _level;
     private TreeView? _parentTreeView;
+    private uint _pendingTouchPointerId;
 
     public object? Header
     {
@@ -111,23 +113,51 @@ public class TreeViewItem : Control
 
     public override void OnPointerPressed(PointerRoutedEventArgs e)
     {
-        if (IsEnabled)
+        if (!IsEnabled) return;
+        if (e.Pointer.PointerDeviceType is PointerDeviceType.Touch or PointerDeviceType.Pen)
         {
+            _pendingTouchPointerId = e.Pointer.PointerId;
+            e.Handled = true;
             base.OnPointerPressed(e);
-            if (_parentTreeView != null)
+            return;
+        }
+
+        base.OnPointerPressed(e);
+        Activate(e.GetCurrentPoint(this).Position);
+        e.Handled = true;
+    }
+
+    public override void OnPointerReleased(PointerRoutedEventArgs e)
+    {
+        if (_pendingTouchPointerId == e.Pointer.PointerId)
+        {
+            if (IsEnabled && IsPointerPressed && IsPointerOver)
             {
-                float indent = 12f + (Level * 16f);
-                // Toggle expand/collapse arrow click if inside arrow bounds
-                if (Items.Count > 0 && e.Position.X >= indent - 14f && e.Position.X <= indent + 6f)
-                {
-                    IsExpanded = !IsExpanded;
-                }
-                else
-                {
-                    _parentTreeView.SelectedItem = this;
-                }
+                Activate(e.GetCurrentPoint(this).Position);
                 e.Handled = true;
             }
+            _pendingTouchPointerId = 0;
+        }
+        base.OnPointerReleased(e);
+    }
+
+    public override void OnPointerCanceled(PointerRoutedEventArgs e)
+    {
+        if (_pendingTouchPointerId == e.Pointer.PointerId) _pendingTouchPointerId = 0;
+        base.OnPointerCanceled(e);
+    }
+
+    private void Activate(Vector2 position)
+    {
+        if (_parentTreeView == null) return;
+        var indent = 12f + (Level * 16f);
+        if (Items.Count > 0 && position.X >= indent - 14f && position.X <= indent + 6f)
+        {
+            IsExpanded = !IsExpanded;
+        }
+        else
+        {
+            _parentTreeView.SelectedItem = this;
         }
     }
 

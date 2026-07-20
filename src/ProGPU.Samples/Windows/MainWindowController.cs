@@ -129,9 +129,9 @@ public static unsafe class MainWindowController
         var headerGrid = new Microsoft.UI.Xaml.Controls.Grid();
         headerGrid.ColumnDefinitions.Add(new GridLength(45f, GridUnitType.Absolute));  // Column 0: Hamburger Button
         headerGrid.ColumnDefinitions.Add(new GridLength(1f, GridUnitType.Star));       // Column 1: Title Logo
-        headerGrid.ColumnDefinitions.Add(new GridLength(120f, GridUnitType.Absolute)); // Column 2: Theme Family Selector
-        headerGrid.ColumnDefinitions.Add(new GridLength(120f, GridUnitType.Absolute)); // Column 3: Theme Selector
-        headerGrid.ColumnDefinitions.Add(new GridLength(300f, GridUnitType.Absolute)); // Column 4: Subtitle text
+        headerGrid.ColumnDefinitions.Add(GridLength.Auto); // Column 2: Theme Family Selector
+        headerGrid.ColumnDefinitions.Add(GridLength.Auto); // Column 3: Theme Selector
+        headerGrid.ColumnDefinitions.Add(GridLength.Auto); // Column 4: Subtitle text
 
         var hamburgerBtn = new Button
         {
@@ -153,7 +153,7 @@ public static unsafe class MainWindowController
         headerGrid.AddChild(hamburgerBtn);
         Microsoft.UI.Xaml.Controls.Grid.SetColumn(hamburgerBtn, 0);
 
-        var titleText = new RichTextBlock { Font = AppState._font, FontSize = 20f, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0) };
+        var titleText = new RichTextBlock { Name = "GalleryTitle", Font = AppState._font, FontSize = 20f, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0) };
         var logoRun = new Run("Pro") { Foreground = new ProGPU.Vector.ThemeResourceBrush("SystemAccentColor") };
         titleText.Inlines.Add(new Bold(logoRun));
         titleText.Inlines.Add(new Bold(new Run("GPU WinUI Gallery")));
@@ -163,6 +163,7 @@ public static unsafe class MainWindowController
         // Theme Family selector button [ WinUI / macOS ]
         var familyBtn = new Button
         {
+            Name = "FamilySelector",
             Width = 100f,
             Height = 32f,
             CornerRadius = 6f,
@@ -198,6 +199,7 @@ public static unsafe class MainWindowController
         // Sun/Moon dynamic theme selector toggle button
         var themeBtn = new Button
         {
+            Name = "ThemeSelector",
             Width = 100f,
             Height = 32f,
             CornerRadius = 6f,
@@ -238,6 +240,7 @@ public static unsafe class MainWindowController
 
         var subtitleText = new RichTextBlock 
         { 
+            Name = "GallerySubtitle",
             Font = AppState._font, 
             FontSize = 11f, 
             VerticalAlignment = VerticalAlignment.Center,
@@ -247,6 +250,27 @@ public static unsafe class MainWindowController
         headerGrid.AddChild(subtitleText);
         Microsoft.UI.Xaml.Controls.Grid.SetColumn(subtitleText, 4);
 
+        var headerStates = new VisualStateGroup { Name = "WindowWidthStates" };
+        var narrowHeader = new VisualState { Name = "Narrow" };
+        narrowHeader.StateTriggers.Add(new AdaptiveTrigger { MinWindowWidth = 0 });
+        narrowHeader.Setters.Add(new Setter("FamilySelector.Visibility", Visibility.Collapsed));
+        narrowHeader.Setters.Add(new Setter("ThemeSelector.Visibility", Visibility.Collapsed));
+        narrowHeader.Setters.Add(new Setter("GallerySubtitle.Visibility", Visibility.Collapsed));
+        var mediumHeader = new VisualState { Name = "Medium" };
+        mediumHeader.StateTriggers.Add(new AdaptiveTrigger { MinWindowWidth = 560 });
+        mediumHeader.Setters.Add(new Setter("FamilySelector.Visibility", Visibility.Collapsed));
+        mediumHeader.Setters.Add(new Setter("ThemeSelector.Visibility", Visibility.Visible));
+        mediumHeader.Setters.Add(new Setter("GallerySubtitle.Visibility", Visibility.Collapsed));
+        var wideHeader = new VisualState { Name = "Wide" };
+        wideHeader.StateTriggers.Add(new AdaptiveTrigger { MinWindowWidth = 900 });
+        wideHeader.Setters.Add(new Setter("FamilySelector.Visibility", Visibility.Visible));
+        wideHeader.Setters.Add(new Setter("ThemeSelector.Visibility", Visibility.Visible));
+        wideHeader.Setters.Add(new Setter("GallerySubtitle.Visibility", Visibility.Visible));
+        headerStates.States.Add(narrowHeader);
+        headerStates.States.Add(mediumHeader);
+        headerStates.States.Add(wideHeader);
+        VisualStateManager.GetVisualStateGroups(headerGrid).Add(headerStates);
+
         headerBar.Child = headerGrid;
         AppState._rootGrid.AddChild(headerBar);
         Microsoft.UI.Xaml.Controls.Grid.SetRow(headerBar, 0);
@@ -255,6 +279,7 @@ public static unsafe class MainWindowController
         AppState._navigationView = new NavigationView
         {
             Font = AppState._font,
+            IsPaneToggleButtonVisible = false,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch
         };
@@ -280,6 +305,7 @@ public static unsafe class MainWindowController
         var motionAnimationsItem = PageItem("Motion & Animations", "🎬", MotionAnimationsPage.Create);
         var advancedItem = PageItem("Advanced Controls", "🛠", AdvancedControlsPage.Create);
         var keyboardParityItem = PageItem("Keyboard & Focus", "⌨️", KeyboardParityPage.Create);
+        var touchGesturesItem = PageItem("Touch & Gestures", "☝", TouchGesturesPage.Create);
         var themeShowcaseItem = PageItem("Theme Showcase", "🎨", ThemeShowcasePage.Create);
         var compositorItem = PageItem("Compositor API", "🎨", CompositorShowcasePage.Create);
         var splitViewItem = PageItem("SplitView Layout", "🪟", SplitViewShowcasePage.Create);
@@ -334,6 +360,7 @@ public static unsafe class MainWindowController
         AppState._navigationView.MenuItems.Add(motionAnimationsItem);
         AppState._navigationView.MenuItems.Add(advancedItem);
         AppState._navigationView.MenuItems.Add(keyboardParityItem);
+        AppState._navigationView.MenuItems.Add(touchGesturesItem);
         AppState._navigationView.MenuItems.Add(themeShowcaseItem);
         AppState._navigationView.MenuItems.Add(compositorItem);
         AppState._navigationView.MenuItems.Add(splitViewItem);

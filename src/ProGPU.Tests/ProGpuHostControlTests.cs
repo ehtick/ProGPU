@@ -115,6 +115,17 @@ public class ProGpuHostControlTests
     }
 
     [Fact]
+    public void AvaloniaHostUpdatesAdaptiveStatesBeforeFrameLayout()
+    {
+        string source = File.ReadAllText(FindProGpuHostControlSource()).Replace("\r\n", "\n");
+
+        Assert.Contains(
+            "VisualStateManager.UpdateAdaptiveStates(WinuiRoot, hostFrame.LogicalSize);\n        WinuiRoot.Measure(hostFrame.LogicalSize);",
+            source,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AvaloniaHostExposesTypedCompositorFrameDiagnostics()
     {
         string source = File.ReadAllText(FindProGpuHostControlSource()).Replace("\r\n", "\n");

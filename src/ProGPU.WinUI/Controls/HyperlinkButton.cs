@@ -59,7 +59,7 @@ public class HyperlinkButton : Button
         }
 
         // Active focus indicator
-        if (IsEnabled && IsFocused)
+        if (IsEnabled && IsKeyboardFocusVisualVisible)
         {
             var focusPen = ThemeManager.GetPen("SystemAccentColor", 1f);
             context.DrawRectangle(null, focusPen, new Rect(0f, 0f, Size.X, Size.Y));

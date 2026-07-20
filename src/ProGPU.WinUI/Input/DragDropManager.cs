@@ -14,6 +14,7 @@ public static class DragDropManager
     public static DragDropEffects AllowedOperations { get; set; }
     public static FrameworkElement? CurrentTarget { get; set; }
     public static FrameworkElement? DragVisual { get; set; }
+    public static uint ActivePointerId { get; private set; }
 
     public static void StartDrag(FrameworkElement source, DataPackage data, DragDropEffects allowedOperations, FrameworkElement? dragVisual = null)
     {
@@ -23,6 +24,7 @@ public static class DragDropManager
         AllowedOperations = allowedOperations;
         DragVisual = dragVisual;
         CurrentTarget = null;
+        ActivePointerId = InputSystem.Current.CurrentDispatchPointerId;
 
         // Force a layout pass and invalidation to arrange the initial state
         InputSystem.Root?.Invalidate();
@@ -55,9 +57,13 @@ public static class DragDropManager
         AllowedOperations = DragDropEffects.None;
         DragVisual = null;
         CurrentTarget = null;
+        ActivePointerId = 0;
 
         InputSystem.Root?.Invalidate();
     }
+
+    internal static bool IsPointerOwner(uint pointerId) =>
+        ActivePointerId == 0 ? pointerId == 1 : ActivePointerId == pointerId;
 
     public static void UpdateDrag(Vector2 screenPos)
     {

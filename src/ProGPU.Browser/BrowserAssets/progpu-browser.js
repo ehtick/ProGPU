@@ -19,7 +19,10 @@ const state = {
   inputEvents: [],
   inputInstalled: false,
   dispatchImmediatePointer: null,
+  dispatchTextInput: null,
   textSink: null,
+  textInputBounds: null,
+  isComposing: false,
   clipboardText: '',
   pickedStorageBytes: null,
   worker: null,
@@ -342,6 +345,21 @@ function resizeCanvas() {
   }
 }
 
+function updateVisualViewport() {
+  if (!state.canvas) return;
+  const viewport = globalThis.visualViewport;
+  const keyboardRect = navigator.virtualKeyboard?.boundingRect;
+  const keyboardInset = keyboardRect && keyboardRect.height > 0 ? keyboardRect.height : 0;
+  const rootStyle = document.documentElement.style;
+  rootStyle.setProperty('--progpu-viewport-left', `${viewport?.offsetLeft || 0}px`);
+  rootStyle.setProperty('--progpu-viewport-top', `${viewport?.offsetTop || 0}px`);
+  rootStyle.setProperty('--progpu-viewport-width', `${viewport?.width || globalThis.innerWidth}px`);
+  rootStyle.setProperty('--progpu-viewport-height', `${viewport?.height || globalThis.innerHeight}px`);
+  rootStyle.setProperty('--progpu-keyboard-inset', `${keyboardInset}px`);
+  resizeCanvas();
+  positionTextInput();
+}
+
 const browserKeyCodes = (() => {
   const result = new Map();
   for (let index = 0; index < 26; index++) result.set(`Key${String.fromCharCode(65 + index)}`, 1 + index);
@@ -357,10 +375,11 @@ const browserKeyCodes = (() => {
   return result;
 })();
 
-function queueInputEvent(kind, x = 0, y = 0, a = 0, b = 0, data = 0, modifiers = 0, flags = 0) {
-  const event = { kind, x, y, a, b, data, modifiers, flags };
+function queueInputEvent(kind, x = 0, y = 0, a = 0, b = 0, data = 0, modifiers = 0, flags = 0,
+  timestamp = performance.now(), pressure = 0, width = 0, height = 0, pointerType = 0, button = -1) {
+  const event = { kind, x, y, a, b, data, modifiers, flags, timestamp, pressure, width, height, pointerType, button };
   const last = state.inputEvents[state.inputEvents.length - 1];
-  if (kind === 1 && last?.kind === 1) {
+  if (kind === 1 && last?.kind === 1 && last.data === data) {
     state.inputEvents[state.inputEvents.length - 1] = event;
     return;
   }
@@ -382,15 +401,63 @@ function eventModifiers(event) {
     (event.altKey ? 4 : 0) | (event.metaKey ? 8 : 0);
 }
 
+function pointerTypeValue(type) {
+  return type === 'touch' ? 1 : type === 'pen' ? 2 : 0;
+}
+
+function queuePointerEvent(kind, event, point) {
+  const flags = event.buttons | (event.isPrimary ? 0x10000 : 0);
+  queueInputEvent(kind, point.x, point.y, 0, 0, event.pointerId, eventModifiers(event), flags,
+    event.timeStamp, event.pressure || 0, event.width || 0, event.height || 0,
+    pointerTypeValue(event.pointerType), event.button);
+}
+
 function dispatchPointerEvent(kind, event, point) {
   if (state.dispatchImmediatePointer) {
     try {
-      if (state.dispatchImmediatePointer(kind, point.x, point.y, event.button)) return;
+      if (state.dispatchImmediatePointer(kind, point.x, point.y, event.button, event.buttons,
+        event.pointerId, pointerTypeValue(event.pointerType), event.pressure || 0,
+        event.width || 0, event.height || 0, event.isPrimary, event.timeStamp,
+        eventModifiers(event))) return;
     } catch (error) {
       globalThis.console.error('[ProGPU] Immediate pointer dispatch failed.', error);
     }
   }
-  queueInputEvent(kind, point.x, point.y, 0, 0, event.button, eventModifiers(event), event.buttons);
+  queuePointerEvent(kind, event, point);
+}
+
+function flushQueuedPointerMoves(pointerId) {
+  let flushed = true;
+  const retained = [];
+  for (let index = 0; index < state.inputEvents.length; index++) {
+    const queued = state.inputEvents[index];
+    if (queued.kind !== 1 || queued.data !== pointerId) {
+      retained.push(queued);
+      continue;
+    }
+
+    try {
+      if (state.dispatchImmediatePointer(queued.kind, queued.x, queued.y, queued.button,
+        queued.flags & 0xffff, queued.data, queued.pointerType, queued.pressure,
+        queued.width, queued.height, (queued.flags & 0x10000) !== 0,
+        queued.timestamp, queued.modifiers)) continue;
+    } catch (error) {
+      globalThis.console.error('[ProGPU] Immediate queued pointer move dispatch failed.', error);
+    }
+
+    retained.push(queued);
+    flushed = false;
+  }
+  state.inputEvents = retained;
+  return flushed;
+}
+
+function dispatchTerminalPointerEvent(kind, event, point) {
+  if (state.dispatchImmediatePointer && !flushQueuedPointerMoves(event.pointerId)) {
+    queuePointerEvent(kind, event, point);
+    return;
+  }
+  dispatchPointerEvent(kind, event, point);
 }
 
 function installBrowserInput() {
@@ -410,35 +477,45 @@ function installBrowserInput() {
 
   state.canvas.addEventListener('pointermove', event => {
     const point = pointerPosition(event);
-    queueInputEvent(1, point.x, point.y, 0, 0, 0, eventModifiers(event), event.buttons);
+    const coalesced = typeof event.getCoalescedEvents === 'function' ? event.getCoalescedEvents() : [];
+    if (coalesced.length > 1) {
+      for (const sample of coalesced) queuePointerEvent(1, sample, pointerPosition(sample));
+    } else {
+      queuePointerEvent(1, event, point);
+    }
   });
   state.canvas.addEventListener('pointerdown', event => {
     const point = pointerPosition(event);
     dispatchPointerEvent(2, event, point);
     try { state.canvas.setPointerCapture(event.pointerId); } catch { }
-    textSink.focus({ preventScroll: true });
     event.preventDefault();
   });
   state.canvas.addEventListener('pointerup', event => {
     const point = pointerPosition(event);
-    dispatchPointerEvent(3, event, point);
+    dispatchTerminalPointerEvent(3, event, point);
     try { state.canvas.releasePointerCapture(event.pointerId); } catch { }
     event.preventDefault();
   });
   state.canvas.addEventListener('pointercancel', event => {
     const point = pointerPosition(event);
-    queueInputEvent(3, point.x, point.y, 0, 0, event.button, eventModifiers(event), event.buttons);
+    dispatchTerminalPointerEvent(9, event, point);
+    try { state.canvas.releasePointerCapture(event.pointerId); } catch { }
+    event.preventDefault();
   });
   state.canvas.addEventListener('contextmenu', event => event.preventDefault());
   state.canvas.addEventListener('wheel', event => {
     const point = pointerPosition(event);
     const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 :
       event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? state.canvas.clientHeight : 1;
-    queueInputEvent(4, point.x, point.y, -event.deltaX * unit / 100, -event.deltaY * unit / 100, 0, eventModifiers(event));
+    queueInputEvent(4, point.x, point.y, -event.deltaX * unit / 100, -event.deltaY * unit / 100,
+      1, eventModifiers(event), 0, event.timeStamp, 0, 0, 0, 0, -1);
     event.preventDefault();
   }, { passive: false });
 
   globalThis.addEventListener('keydown', event => {
+    const textSinkOwnsPaste = document.activeElement === textSink && event.code === 'KeyV' && (event.ctrlKey || event.metaKey);
+    if (document.activeElement === textSink &&
+      (event.key === 'Backspace' || event.key === 'Delete' || event.key === 'Enter' || textSinkOwnsPaste)) return;
     const key = browserKeyCodes.get(event.code) || 0;
     if (key !== 0) queueInputEvent(5, 0, 0, 0, 0, key, eventModifiers(event), event.repeat ? 1 : 0);
     if (['Tab', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', 'Space'].includes(event.code)) {
@@ -446,15 +523,47 @@ function installBrowserInput() {
     }
   }, true);
   globalThis.addEventListener('keyup', event => {
+    const textSinkOwnsPaste = document.activeElement === textSink && event.code === 'KeyV' && (event.ctrlKey || event.metaKey);
+    if (document.activeElement === textSink &&
+      (event.key === 'Backspace' || event.key === 'Delete' || event.key === 'Enter' || textSinkOwnsPaste)) return;
     const key = browserKeyCodes.get(event.code) || 0;
     if (key !== 0) queueInputEvent(6, 0, 0, 0, 0, key, eventModifiers(event));
   }, true);
-  textSink.addEventListener('input', () => {
-    for (const character of textSink.value) queueInputEvent(7, 0, 0, 0, 0, character.codePointAt(0));
+  textSink.addEventListener('beforeinput', event => {
+    if (!state.dispatchTextInput || event.isComposing) return;
+    const kind = event.inputType === 'deleteContentBackward' ? 1 :
+      event.inputType === 'deleteContentForward' ? 2 :
+      event.inputType === 'insertLineBreak' || event.inputType === 'insertParagraph' ? 3 : -1;
+    if (kind >= 0) {
+      state.dispatchTextInput(kind, '', false);
+      event.preventDefault();
+    }
+  });
+  textSink.addEventListener('input', event => {
+    if (state.isComposing || event.isComposing) return;
+    if (event.inputType === 'insertCompositionText' || event.inputType === 'insertFromComposition') {
+      textSink.value = '';
+      return;
+    }
+    const text = event.data ?? textSink.value;
+    if (text && state.dispatchTextInput) state.dispatchTextInput(0, text, false);
+    textSink.value = '';
+  });
+  textSink.addEventListener('compositionstart', () => {
+    state.isComposing = true;
+    if (state.dispatchTextInput) state.dispatchTextInput(4, '', true);
+  });
+  textSink.addEventListener('compositionupdate', event => {
+    if (state.dispatchTextInput) state.dispatchTextInput(5, event.data || '', true);
+  });
+  textSink.addEventListener('compositionend', event => {
+    if (state.dispatchTextInput) state.dispatchTextInput(6, event.data || '', false);
+    state.isComposing = false;
     textSink.value = '';
   });
   textSink.addEventListener('paste', event => {
     state.clipboardText = event.clipboardData?.getData('text/plain') || '';
+    if (state.clipboardText && state.dispatchTextInput) state.dispatchTextInput(0, state.clipboardText, false);
     event.preventDefault();
   });
   globalThis.addEventListener('blur', () => queueInputEvent(8));
@@ -462,13 +571,13 @@ function installBrowserInput() {
 
 function drainInputEvents(destination, capacity) {
   const count = Math.min(Math.max(0, capacity | 0), state.inputEvents.length);
-  const byteLength = count * 32;
+  const byteLength = count * 64;
   const heap = runtime.localHeapViewU8();
   if (destination < 0 || destination + byteLength > heap.byteLength) throw new RangeError('Input destination is outside WASM memory.');
   const view = new DataView(heap.buffer, heap.byteOffset + destination, byteLength);
   for (let index = 0; index < count; index++) {
     const event = state.inputEvents[index];
-    const offset = index * 32;
+    const offset = index * 64;
     view.setUint32(offset, event.kind, true);
     view.setFloat32(offset + 4, event.x, true);
     view.setFloat32(offset + 8, event.y, true);
@@ -477,6 +586,13 @@ function drainInputEvents(destination, capacity) {
     view.setUint32(offset + 20, event.data, true);
     view.setUint32(offset + 24, event.modifiers, true);
     view.setUint32(offset + 28, event.flags, true);
+    view.setFloat64(offset + 32, event.timestamp, true);
+    view.setFloat32(offset + 40, event.pressure, true);
+    view.setFloat32(offset + 44, event.width, true);
+    view.setFloat32(offset + 48, event.height, true);
+    view.setUint32(offset + 52, event.pointerType, true);
+    view.setInt32(offset + 56, event.button, true);
+    view.setUint32(offset + 60, 0, true);
   }
   if (count !== 0) state.inputEvents.splice(0, count);
   return count;
@@ -484,6 +600,56 @@ function drainInputEvents(destination, capacity) {
 
 function setCanvasCursor(cursor) {
   if (state.canvas) state.canvas.style.cursor = cursor;
+}
+
+function positionTextInput() {
+  const textSink = state.textSink;
+  const bounds = state.textInputBounds;
+  if (!textSink || !bounds) return;
+  const viewport = globalThis.visualViewport;
+  const viewportLeft = viewport?.offsetLeft || 0;
+  const viewportTop = viewport?.offsetTop || 0;
+  const viewportWidth = viewport?.width || globalThis.innerWidth;
+  const viewportHeight = viewport?.height || globalThis.innerHeight;
+  const canvasBounds = state.canvas?.getBoundingClientRect();
+  const sinkX = (canvasBounds?.left || 0) + bounds.x;
+  const sinkY = (canvasBounds?.top || 0) + bounds.y + bounds.height;
+  textSink.style.left = `${Math.max(viewportLeft, Math.min(viewportLeft + viewportWidth - 2, sinkX))}px`;
+  textSink.style.top = `${Math.max(viewportTop, Math.min(viewportTop + viewportHeight - 2, sinkY))}px`;
+  textSink.style.width = `${Math.max(2, Math.min(bounds.width || 2, viewportWidth))}px`;
+  textSink.style.height = '2px';
+}
+
+function configureTextInput(inputMode, enterKeyHint, autoCapitalize, spellCheck, isPassword, acceptsReturn, x, y, width, height) {
+  const textSink = state.textSink;
+  if (!textSink) return;
+  textSink.inputMode = inputMode || 'text';
+  textSink.enterKeyHint = enterKeyHint || (acceptsReturn ? 'enter' : 'done');
+  textSink.autocapitalize = autoCapitalize || 'off';
+  textSink.spellcheck = Boolean(spellCheck);
+  textSink.autocomplete = isPassword ? 'current-password' : 'off';
+  textSink.setAttribute('aria-label', isPassword ? 'ProGPU password input' : 'ProGPU text input');
+  state.textInputBounds = { x, y, width, height };
+  positionTextInput();
+  textSink.value = '';
+  textSink.focus({ preventScroll: true });
+  if (navigator.virtualKeyboard) {
+    try { navigator.virtualKeyboard.overlaysContent = true; } catch { }
+    try { navigator.virtualKeyboard.show(); } catch { }
+  }
+}
+
+function hideTextInput() {
+  const sink = state.textSink;
+  if (!sink) return;
+  if (state.isComposing && state.dispatchTextInput) state.dispatchTextInput(7, '', false);
+  state.isComposing = false;
+  state.textInputBounds = null;
+  sink.value = '';
+  sink.blur();
+  if (navigator.virtualKeyboard) {
+    try { navigator.virtualKeyboard.hide(); } catch { }
+  }
 }
 
 function setClipboardText(text) {
@@ -674,6 +840,11 @@ async function initialize(requestJson) {
   const executionMode = chooseExecutionMode(request, diagnostics);
   state.canvas = document.querySelector(request.canvasSelector);
   if (!(state.canvas instanceof HTMLCanvasElement)) throw new Error(`Canvas not found: ${request.canvasSelector}`);
+  updateVisualViewport();
+  globalThis.visualViewport?.addEventListener('resize', updateVisualViewport);
+  globalThis.visualViewport?.addEventListener('scroll', updateVisualViewport);
+  globalThis.addEventListener('orientationchange', updateVisualViewport);
+  navigator.virtualKeyboard?.addEventListener('geometrychange', updateVisualViewport);
   installBrowserInput();
   resizeCanvas();
   new ResizeObserver(resizeCanvas).observe(state.canvas);
@@ -1387,8 +1558,9 @@ if (isDispatcherWorker) {
 } else {
   initializeDiagnosticsVisibility();
   runtime = await dotnet.withEnvironmentVariables(readBenchmarkEnvironment()).create();
-  runtime.setModuleImports('progpu-browser', { initialize, dispatch, dispatchUpload, mapBuffer, copyMappedBuffer, writeMappedBuffer, releaseMappedBuffer, nextAnimationFrame, writeCanvasMetrics, drainInputEvents, setCanvasCursor, setClipboardText, getClipboardText, pickStorage, getPickedStorageLength, copyPickedStorage, clearPickedStorage, downloadText, getDiagnosticsVisible, setDiagnosticsVisible, setStatus, updateCounters });
+  runtime.setModuleImports('progpu-browser', { initialize, dispatch, dispatchUpload, mapBuffer, copyMappedBuffer, writeMappedBuffer, releaseMappedBuffer, nextAnimationFrame, writeCanvasMetrics, drainInputEvents, setCanvasCursor, configureTextInput, hideTextInput, setClipboardText, getClipboardText, pickStorage, getPickedStorageLength, copyPickedStorage, clearPickedStorage, downloadText, getDiagnosticsVisible, setDiagnosticsVisible, setStatus, updateCounters });
   const browserExports = await runtime.getAssemblyExports('ProGPU.Browser.dll');
   state.dispatchImmediatePointer = browserExports.ProGPU.Browser.BrowserInputDispatcher.DispatchImmediatePointer;
+  state.dispatchTextInput = browserExports.ProGPU.Browser.BrowserInputDispatcher.DispatchTextInput;
   await runtime.runMain();
 }

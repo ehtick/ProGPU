@@ -10,6 +10,34 @@ DOM pointer, wheel, keyboard, text/IME, focus, cursor, clipboard, resize, and fi
 
 `MainThread`, `Worker`, and `IsolatedWorker` execution modes are implemented. `Auto` selects an isolated worker when cross-origin isolation and shared memory are available, an ordinary OffscreenCanvas worker otherwise, and the main thread when canvas transfer is unavailable. All GPU packets produced during one managed frame are coalesced into one worker task so the current surface texture remains valid across multiple internal queue submissions. Device loss reports diagnostics and reloads the retained application to reconstruct device-owned resources.
 
+## Touch, gestures, and mobile text
+
+The browser lane uses Pointer Events as its native input source. Every record preserves
+the browser pointer ID, mouse/touch/pen device kind, primary/contact state, buttons,
+pressure, contact rectangle, modifiers, and monotonic timestamp. Pointer down, up, and
+cancel enter managed code synchronously; coalesced moves are drained in bounded batches.
+The WinUI layer then owns hit testing, per-pointer capture, routed pointer events,
+tap/double-tap/right-tap/hold recognition, and multi-contact manipulations.
+
+Set `ManipulationMode` on a `FrameworkElement` to opt into direct manipulation. The
+standard `ScrollViewer` opts in automatically for touch panning and inertia; enable
+`ZoomMode` when pinch zoom is desired. `PointerCanceled` and `PointerCaptureLost` must
+be handled wherever a control keeps contact-specific state.
+
+`TextBox` and `PasswordBox` expose `InputScope`, `EnterKeyHint`, capitalization, and
+spell-check options. When one of these controls receives focus, the browser host focuses
+its DOM text-input seam during the initiating pointer event and maps these properties to
+`inputmode`, `enterkeyhint`, `autocapitalize`, and `spellcheck`. Text insertion,
+surrogate pairs, deletion, paste, line breaks, and IME composition use DOM input and
+composition events; they do not depend on a mobile browser synthesizing physical key
+events. The sink is blurred when focus leaves an editable control.
+
+The canvas follows `VisualViewport` while an on-screen keyboard is visible and combines
+that with CSS safe-area insets. Application layout still uses logical/effective pixels.
+Use `VisualStateManager` and `AdaptiveTrigger` for responsive changes, and use
+`NavigationViewPaneDisplayMode.Auto` for the standard WinUI minimal/compact/expanded
+breakpoints at 640 and 1008 effective pixels.
+
 ## Samples
 
 - `ProGPU.Samples` is the shared gallery library and has no executable entry point.

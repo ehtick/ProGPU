@@ -14,10 +14,28 @@ using ProGPU.Vector;
 
 namespace Microsoft.UI.Xaml.Controls;
 
+public enum NavigationViewPaneDisplayMode
+{
+    Auto,
+    Left,
+    Top,
+    LeftCompact,
+    LeftMinimal
+}
+
+public enum NavigationViewDisplayMode
+{
+    Minimal,
+    Compact,
+    Expanded
+}
+
 public class NavigationView : FrameworkElement
 {
     private class HamburgerButton : Button
     {
+        private readonly Brush _glyphBrush = new ThemeResourceBrush("TextPrimary");
+
         public HamburgerButton()
         {
             CornerRadius = 4f;
@@ -32,17 +50,18 @@ public class NavigationView : FrameworkElement
             base.OnRender(context);
             
             // Draw custom three-bar Fluent hamburger lines in theme-aware TextPrimary
-            var brush = ThemeManager.GetBrush("TextPrimary", this.ActualTheme);
             // Centered nicely inside 40x40 area
-            context.DrawRectangle(brush, null, new Rect(11f, 14f, 18f, 2f));
-            context.DrawRectangle(brush, null, new Rect(11f, 19f, 18f, 2f));
-            context.DrawRectangle(brush, null, new Rect(11f, 24f, 18f, 2f));
+            context.DrawRectangle(_glyphBrush, null, new Rect(11f, 14f, 18f, 2f));
+            context.DrawRectangle(_glyphBrush, null, new Rect(11f, 19f, 18f, 2f));
+            context.DrawRectangle(_glyphBrush, null, new Rect(11f, 24f, 18f, 2f));
         }
     }
 
     private class NavigationViewPane : Panel
     {
         private readonly NavigationView _navigationView;
+        private readonly Brush _background = new ThemeResourceBrush("HeaderBackground");
+        private readonly Brush _separator = new ThemeResourceBrush("ControlBorder");
 
         public NavigationViewPane(NavigationView navigationView)
         {
@@ -52,7 +71,7 @@ public class NavigationView : FrameworkElement
         protected override Vector2 MeasureOverride(Vector2 availableSize)
         {
             float w = availableSize.X;
-            float h = 10f; // top margin
+            float h = _navigationView.IsPaneToggleButtonVisible ? 58f : 10f;
             
             foreach (var item in _navigationView._flatVisibleItems)
             {
@@ -71,7 +90,7 @@ public class NavigationView : FrameworkElement
 
         protected override void ArrangeOverride(Rect arrangeRect)
         {
-            float cursorY = arrangeRect.Y + 10f;
+            float cursorY = arrangeRect.Y + (_navigationView.IsPaneToggleButtonVisible ? 58f : 10f);
             foreach (var item in _navigationView._flatVisibleItems)
             {
                 item.Arrange(new Rect(arrangeRect.X, cursorY, arrangeRect.Width, 40f));
@@ -87,23 +106,8 @@ public class NavigationView : FrameworkElement
 
         public override void OnRender(DrawingContext context)
         {
-            var activeTheme = _navigationView.ActualTheme;
-            var activeFamily = _navigationView.ActualThemeFamily;
-            Brush paneBg;
-            if (activeFamily == VisualThemeFamily.macOS)
-            {
-                paneBg = new SolidColorBrush(activeTheme == ElementTheme.Light
-                    ? new Vector4(0.953f, 0.953f, 0.953f, 1f) // #F3F3F3
-                    : new Vector4(0.118f, 0.118f, 0.118f, 1f)); // #1E1E1E
-            }
-            else
-            {
-                paneBg = ThemeManager.GetBrush("HeaderBackground", activeTheme);
-            }
-            context.DrawRectangle(paneBg, null, new Rect(0f, 0f, Size.X, Size.Y));
-            
-            var sepBrush = ThemeManager.GetBrush("ControlBorder", activeTheme, activeFamily);
-            context.DrawRectangle(sepBrush, null, new Rect(Size.X - 1f, 0f, 1f, Size.Y));
+            context.DrawRectangle(_background, null, new Rect(0f, 0f, Size.X, Size.Y));
+            context.DrawRectangle(_separator, null, new Rect(Size.X - 1f, 0f, 1f, Size.Y));
 
             base.OnRender(context);
         }
@@ -118,8 +122,64 @@ public class NavigationView : FrameworkElement
     private FrameworkElement? _content;
     private readonly SplitView _splitView;
     private readonly NavigationViewPane _panePanel;
+    private NavigationViewPaneDisplayMode _paneDisplayMode = NavigationViewPaneDisplayMode.Auto;
+    private NavigationViewDisplayMode _displayMode = NavigationViewDisplayMode.Minimal;
+    private bool _hasResolvedDisplayMode;
+    private double _openPaneLength = 240d;
+    private double _compactPaneLength = 60d;
+    private bool _isPaneToggleButtonVisible = true;
 
     public ObservableCollection<NavigationViewItem> MenuItems { get; }
+
+    public NavigationViewPaneDisplayMode PaneDisplayMode
+    {
+        get => _paneDisplayMode;
+        set
+        {
+            if (_paneDisplayMode == value) return;
+            _paneDisplayMode = value;
+            _hasResolvedDisplayMode = false;
+            InvalidateMeasure();
+            InvalidateArrange();
+        }
+    }
+
+    public NavigationViewDisplayMode DisplayMode => _displayMode;
+    public bool IsPaneToggleButtonVisible
+    {
+        get => _isPaneToggleButtonVisible;
+        set
+        {
+            if (_isPaneToggleButtonVisible == value) return;
+            _isPaneToggleButtonVisible = value;
+            _hamburgerButton.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
+            _panePanel.InvalidateMeasure();
+            InvalidateMeasure();
+            InvalidateArrange();
+        }
+    }
+    public double CompactModeThresholdWidth { get; set; } = 641d;
+    public double ExpandedModeThresholdWidth { get; set; } = 1008d;
+
+    public double OpenPaneLength
+    {
+        get => _openPaneLength;
+        set
+        {
+            _openPaneLength = Math.Max(0d, value);
+            _splitView.PaneWidth = (float)_openPaneLength;
+        }
+    }
+
+    public double CompactPaneLength
+    {
+        get => _compactPaneLength;
+        set
+        {
+            _compactPaneLength = Math.Max(0d, value);
+            if (_displayMode != NavigationViewDisplayMode.Minimal) _splitView.CompactPaneLength = (float)_compactPaneLength;
+        }
+    }
 
     public bool IsPaneOpen
     {
@@ -169,6 +229,11 @@ public class NavigationView : FrameworkElement
                         Content = page;
                     }
                 }
+
+                if (DisplayMode != NavigationViewDisplayMode.Expanded)
+                {
+                    IsPaneOpen = false;
+                }
                 
                 SelectionChanged?.Invoke(this, EventArgs.Empty);
                 UpdateTabStops();
@@ -213,6 +278,7 @@ public class NavigationView : FrameworkElement
     }
 
     public event EventHandler? SelectionChanged;
+    public event EventHandler? DisplayModeChanged;
 
     public NavigationView()
     {
@@ -243,6 +309,7 @@ public class NavigationView : FrameworkElement
             VerticalAlignment = VerticalAlignment.Stretch
         };
         AddChild(_splitView);
+        AddChild(_hamburgerButton);
 
         RebuildPaneChildren();
     }
@@ -338,12 +405,59 @@ public class NavigationView : FrameworkElement
 
     protected override Vector2 MeasureOverride(Vector2 availableSize)
     {
+        UpdateDisplayMode(availableSize.X);
         _splitView.Measure(availableSize);
+        if (IsPaneToggleButtonVisible) _hamburgerButton.Measure(new Vector2(40f, 40f));
         return availableSize;
     }
 
     protected override void ArrangeOverride(Rect arrangeRect)
     {
+        UpdateDisplayMode(arrangeRect.Width);
         _splitView.Arrange(arrangeRect);
+        if (IsPaneToggleButtonVisible)
+        {
+            _hamburgerButton.Arrange(new Rect(arrangeRect.X + 8f, arrangeRect.Y + 8f, 40f, 40f));
+        }
+        else
+        {
+            _hamburgerButton.Arrange(new Rect(arrangeRect.X + 8f, arrangeRect.Y + 8f, 0f, 0f));
+        }
+    }
+
+    private void UpdateDisplayMode(float width)
+    {
+        var next = PaneDisplayMode switch
+        {
+            NavigationViewPaneDisplayMode.Left => NavigationViewDisplayMode.Expanded,
+            NavigationViewPaneDisplayMode.LeftCompact => NavigationViewDisplayMode.Compact,
+            NavigationViewPaneDisplayMode.LeftMinimal or NavigationViewPaneDisplayMode.Top => NavigationViewDisplayMode.Minimal,
+            _ when width >= ExpandedModeThresholdWidth => NavigationViewDisplayMode.Expanded,
+            _ when width >= CompactModeThresholdWidth => NavigationViewDisplayMode.Compact,
+            _ => NavigationViewDisplayMode.Minimal
+        };
+        if (_hasResolvedDisplayMode && next == _displayMode) return;
+        var firstResolution = !_hasResolvedDisplayMode;
+        _hasResolvedDisplayMode = true;
+        _displayMode = next;
+        switch (next)
+        {
+            case NavigationViewDisplayMode.Expanded:
+                _splitView.DisplayMode = SplitViewDisplayMode.CompactInline;
+                _splitView.CompactPaneLength = (float)_compactPaneLength;
+                if (firstResolution || PaneDisplayMode == NavigationViewPaneDisplayMode.Auto) IsPaneOpen = true;
+                break;
+            case NavigationViewDisplayMode.Compact:
+                _splitView.DisplayMode = SplitViewDisplayMode.CompactInline;
+                _splitView.CompactPaneLength = (float)_compactPaneLength;
+                IsPaneOpen = false;
+                break;
+            default:
+                _splitView.DisplayMode = SplitViewDisplayMode.Overlay;
+                _splitView.CompactPaneLength = 0f;
+                IsPaneOpen = false;
+                break;
+        }
+        DisplayModeChanged?.Invoke(this, EventArgs.Empty);
     }
 }

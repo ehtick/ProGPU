@@ -112,53 +112,74 @@ public class RatingControl : Control
         }
     }
 
+    private double GetRatingAtPosition(Vector2 position)
+    {
+        var localX = position.X - BorderThickness.Left - Padding.Left;
+        var pitch = StarSize + StarSpacing;
+        var rating = MathF.Floor(Math.Max(0f, localX) / pitch) + 1f;
+        return Math.Clamp(rating, 1f, MaxRating);
+    }
+
+    public override void OnPointerPressed(PointerRoutedEventArgs e)
+    {
+        if (IsEnabled && !IsReadOnly)
+        {
+            _hoverValue = GetRatingAtPosition(e.GetCurrentPoint(this).Position);
+            Invalidate();
+        }
+        base.OnPointerPressed(e);
+    }
+
     public override void OnPointerMoved(PointerRoutedEventArgs e)
     {
         if (IsEnabled && !IsReadOnly)
         {
-            base.OnPointerMoved(e);
-            float localX = e.Position.X - BorderThickness.Left - Padding.Left;
-            
-            // Determine which star is hovered
-            double rawVal = (localX / (StarSize + StarSpacing)) + 1.0;
-            double clamped = Math.Clamp(Math.Ceiling(rawVal), 1.0, MaxRating);
+            var rating = GetRatingAtPosition(e.GetCurrentPoint(this).Position);
 
-            if (_hoverValue != clamped)
+            if (_hoverValue != rating)
             {
-                _hoverValue = clamped;
+                _hoverValue = rating;
                 Invalidate();
             }
         }
+        base.OnPointerMoved(e);
     }
 
     public override void OnPointerExited(PointerRoutedEventArgs e)
     {
         if (IsEnabled && !IsReadOnly)
         {
-            base.OnPointerExited(e);
             if (_hoverValue >= 0.0)
             {
                 _hoverValue = -1.0;
                 Invalidate();
             }
         }
+        base.OnPointerExited(e);
     }
 
     public override void OnPointerReleased(PointerRoutedEventArgs e)
     {
-        if (IsEnabled && !IsReadOnly && IsPointerPressed && IsPointerOver)
+        var shouldCommit = IsEnabled && !IsReadOnly && IsPointerPressed && IsPointerOver;
+        var rating = shouldCommit ? GetRatingAtPosition(e.GetCurrentPoint(this).Position) : -1.0;
+        base.OnPointerReleased(e);
+        if (shouldCommit)
         {
-            base.OnPointerReleased(e);
-            if (_hoverValue >= 1.0 && _hoverValue <= MaxRating)
+            var oldVal = Value;
+            Value = rating;
+            if (oldVal != Value)
             {
-                var oldVal = Value;
-                Value = _hoverValue;
-                if (oldVal != Value)
-                {
-                    ValueChanged?.Invoke(this, Value);
-                }
+                ValueChanged?.Invoke(this, Value);
             }
+            e.Handled = true;
         }
+    }
+
+    public override void OnPointerCanceled(PointerRoutedEventArgs e)
+    {
+        _hoverValue = -1.0;
+        Invalidate();
+        base.OnPointerCanceled(e);
     }
 
     public override void OnKeyDown(KeyRoutedEventArgs e)

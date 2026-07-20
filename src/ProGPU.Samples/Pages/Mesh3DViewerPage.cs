@@ -217,12 +217,20 @@ public enum LayoutMode3D
     Perspective
 }
 
-public class Mesh3DViewerPageGrid : Grid, IAnimatedElement
+public class Mesh3DViewerPageGrid : ResponsiveSplitView, IAnimatedElement
 {
+    public Mesh3DViewerPageGrid()
+    {
+        OpenPaneLength = 300f;
+        CompactModeThreshold = 720f;
+        IsPaneScrollEnabled = false;
+    }
+
     public void Update(float delta)
     {
         Mesh3DViewerPage.UpdateAnimations((float)delta);
     }
+
 }
 
 public static class Mesh3DViewerPage
@@ -294,8 +302,6 @@ public static class Mesh3DViewerPage
     public static FrameworkElement Create()
     {
         var mainGrid = new Mesh3DViewerPageGrid();
-        mainGrid.ColumnDefinitions.Add(new GridLength(300f, GridUnitType.Absolute)); // Sidebar parameters
-        mainGrid.ColumnDefinitions.Add(new GridLength(1f, GridUnitType.Star));       // Main dual viewports
 
         // Load default shape
         RegenerateMeshGeometry();
@@ -506,7 +512,7 @@ public static class Mesh3DViewerPage
             Background = new ThemeResourceBrush("ControlBackgroundHover")
         };
         var browseBtnRun = new Run("Browse") { FontSize = 12f, Foreground = new ThemeResourceBrush("TextPrimary") };
-        browseBtn.Content = new RichTextBlock { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { new Bold(browseBtnRun) } };
+        browseBtn.Content = new RichTextBlock { TextWrapping = TextWrapping.NoWrap, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { new Bold(browseBtnRun) } };
         pathGrid.AddChild(browseBtn);
         Grid.SetColumn(browseBtn, 2);
         
@@ -583,23 +589,23 @@ public static class Mesh3DViewerPage
         statsStack.AddChild(statsTitle);
 
         _statsNameRun = new Run("-");
-        _statsNameBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, Foreground = new ThemeResourceBrush("TextPrimary"), HorizontalAlignment = HorizontalAlignment.Right };
+        _statsNameBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, TextWrapping = TextWrapping.NoWrap, Foreground = new ThemeResourceBrush("TextPrimary") };
         _statsNameBlock.Inlines.Add(new Bold(_statsNameRun));
 
         _statsVerticesRun = new Run("0");
-        _statsVerticesBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, Foreground = new ThemeResourceBrush("TextPrimary"), HorizontalAlignment = HorizontalAlignment.Right };
+        _statsVerticesBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, TextWrapping = TextWrapping.NoWrap, Foreground = new ThemeResourceBrush("TextPrimary") };
         _statsVerticesBlock.Inlines.Add(new Bold(_statsVerticesRun));
 
         _statsTrianglesRun = new Run("0");
-        _statsTrianglesBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, Foreground = new ThemeResourceBrush("TextPrimary"), HorizontalAlignment = HorizontalAlignment.Right };
+        _statsTrianglesBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, TextWrapping = TextWrapping.NoWrap, Foreground = new ThemeResourceBrush("TextPrimary") };
         _statsTrianglesBlock.Inlines.Add(new Bold(_statsTrianglesRun));
 
         _statsBoundsRun = new Run("0.0 x 0.0 x 0.0");
-        _statsBoundsBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, Foreground = new ThemeResourceBrush("TextPrimary"), HorizontalAlignment = HorizontalAlignment.Right };
+        _statsBoundsBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, TextWrapping = TextWrapping.NoWrap, Foreground = new ThemeResourceBrush("TextPrimary") };
         _statsBoundsBlock.Inlines.Add(new Bold(_statsBoundsRun));
 
         _statsMemoryRun = new Run("0 KB");
-        _statsMemoryBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, Foreground = new ThemeResourceBrush("TextPrimary"), HorizontalAlignment = HorizontalAlignment.Right };
+        _statsMemoryBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, TextWrapping = TextWrapping.NoWrap, Foreground = new ThemeResourceBrush("TextPrimary") };
         _statsMemoryBlock.Inlines.Add(new Bold(_statsMemoryRun));
 
         statsStack.AddChild(CreateStatRow("Name:", _statsNameBlock));
@@ -644,7 +650,7 @@ public static class Mesh3DViewerPage
             Background = new ThemeResourceBrush("ControlBackgroundHover")
         };
         var customBtnRun = new Run("Custom") { FontSize = 11f, Foreground = new ThemeResourceBrush("TextPrimary") };
-        customBtn.Content = new RichTextBlock { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { new Bold(customBtnRun) } };
+        customBtn.Content = new RichTextBlock { TextWrapping = TextWrapping.NoWrap, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { new Bold(customBtnRun) } };
 
         customBtn.Click += (s, e) => { ShowColorPickerPopup(customBtn); };
         colorGrid.AddChild(customBtn);
@@ -703,8 +709,7 @@ public static class Mesh3DViewerPage
         animStack.AddChild(animChk);
         sidebarStack.AddChild(animStack);
 
-        mainGrid.AddChild(sidebar);
-        Grid.SetColumn(sidebar, 0);
+        mainGrid.PaneContent = sidebar;
 
         // 2. MAIN 4-WAY SPLIT VIEW WORKSPACE (3x3 CAD NESTED GRIDS FOR SPLITTING)
         _viewportsGrid = new Grid { Margin = new Thickness(16f) };
@@ -1000,8 +1005,7 @@ public static class Mesh3DViewerPage
         Grid.SetRow(_rowSplitterRight, 1);
         Grid.SetColumn(_rowSplitterRight, 0);
 
-        mainGrid.AddChild(_viewportsGrid);
-        Grid.SetColumn(_viewportsGrid, 1);
+        mainGrid.MainContent = _viewportsGrid;
 
         // Populate initial 3D geometries and register layout animation callbacks
         UpdateViewportModels();
@@ -1064,8 +1068,8 @@ public static class Mesh3DViewerPage
     private static Grid CreateStatRow(string label, RichTextBlock valBlock)
     {
         var rowGrid = new Grid { Margin = new Thickness(0, 2f, 0, 2f) };
-        rowGrid.ColumnDefinitions.Add(new GridLength(100f, GridUnitType.Absolute));
         rowGrid.ColumnDefinitions.Add(new GridLength(1f, GridUnitType.Star));
+        rowGrid.ColumnDefinitions.Add(new GridLength(0f, GridUnitType.Auto));
 
         var labelBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, Foreground = new ThemeResourceBrush("TextSecondary") };
         labelBlock.Inlines.Add(new Run(label));
@@ -1617,7 +1621,7 @@ public static class Mesh3DViewerPage
             Background = new ThemeResourceBrush(mode == LayoutMode3D.Quad ? "ControlBackgroundPressed" : "ControlBackgroundHover")
         };
         var textRun = new Run(label) { FontSize = 10f, Foreground = new ThemeResourceBrush("TextPrimary") };
-        btn.Content = new RichTextBlock { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { new Bold(textRun) } };
+        btn.Content = new RichTextBlock { TextWrapping = TextWrapping.NoWrap, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { new Bold(textRun) } };
         btn.Click += (s, e) => { SetLayoutMode(mode); };
         return btn;
     }

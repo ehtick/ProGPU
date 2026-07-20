@@ -697,6 +697,111 @@ public sealed class SamplePerformanceRegressionTests
     }
 
     [Fact]
+    public void NoWrapRichTextKeepsControlContentOnOneLine()
+    {
+        var text = new RichTextBlock
+        {
+            Font = LoadTestFont(),
+            FontSize = 14f,
+            TextWrapping = TextWrapping.NoWrap
+        };
+        text.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run("Browse"));
+
+        text.Measure(new Vector2(12f, 80f));
+        text.Arrange(new Rect(0f, 0f, 12f, 80f));
+
+        Assert.True(text.DesiredSize.X > 12f);
+        Assert.Single(text.PositionedChars.Select(static character => character.Position.Y).Distinct());
+    }
+
+    [Fact]
+    public void WrapWholeWordsDoesNotSplitAnUnspacedToken()
+    {
+        var wholeWord = new RichTextBlock
+        {
+            Font = LoadTestFont(),
+            FontSize = 14f,
+            TextWrapping = TextWrapping.WrapWholeWords
+        };
+        wholeWord.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run("LongFilenameWithoutBreaks.txt"));
+
+        var characterWrap = new RichTextBlock
+        {
+            Font = wholeWord.Font,
+            FontSize = wholeWord.FontSize,
+            TextWrapping = TextWrapping.Wrap
+        };
+        characterWrap.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run("LongFilenameWithoutBreaks.txt"));
+
+        wholeWord.Measure(new Vector2(48f, 200f));
+        wholeWord.Arrange(new Rect(0f, 0f, 48f, 200f));
+        characterWrap.Measure(new Vector2(48f, 200f));
+        characterWrap.Arrange(new Rect(0f, 0f, 48f, 200f));
+
+        Assert.Single(wholeWord.PositionedChars.Select(static character => character.Position.Y).Distinct());
+        Assert.True(characterWrap.PositionedChars.Select(static character => character.Position.Y).Distinct().Count() > 1);
+    }
+
+    [Fact]
+    public void NoWrapRichTextStaysInsideAnAutoSizedTrailingGridColumnAfterMutableRunUpdate()
+    {
+        var run = new Microsoft.UI.Xaml.Documents.Run("0");
+        var text = new RichTextBlock
+        {
+            Font = LoadTestFont(),
+            FontSize = 11f,
+            TextWrapping = TextWrapping.NoWrap
+        };
+        text.Inlines.Add(new Microsoft.UI.Xaml.Documents.Bold(run));
+
+        var row = new Grid();
+        row.ColumnDefinitions.Add(new GridLength(1f, GridUnitType.Star));
+        row.ColumnDefinitions.Add(new GridLength(0f, GridUnitType.Auto));
+        row.AddChild(text);
+        Grid.SetColumn(text, 1);
+
+        row.Measure(new Vector2(337f, 100f));
+        row.Arrange(new Rect(0f, 0f, 337f, 100f));
+        run.Text = "5.80 x 1.40 x 5.80";
+        row.Measure(new Vector2(337f, 100f));
+        row.Arrange(new Rect(0f, 0f, 337f, 100f));
+
+        Assert.True(text.Offset.X > 100f);
+        Assert.InRange(text.Offset.X + text.Size.X, 336.99f, 337.01f);
+        Assert.Single(text.PositionedChars.Select(static character => character.Position.Y).Distinct());
+        Assert.All(text.PositionedChars, character => Assert.InRange(character.Position.X, 0f, text.Size.X));
+    }
+
+    [Fact]
+    public void WrappedRichTextRetainsItsFiniteMeasureWidth()
+    {
+        var text = new RichTextBlock
+        {
+            Font = LoadTestFont(),
+            FontSize = 14f,
+            HorizontalAlignment = HorizontalAlignment.Right
+        };
+        text.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run("Responsive controls remain readable"));
+
+        text.Measure(new Vector2(64f, 200f));
+        text.Arrange(new Rect(0f, 0f, 160f, 200f));
+
+        Assert.InRange(text.DesiredSize.X, 63.99f, 64.01f);
+        Assert.InRange(text.Size.X, 63.99f, 64.01f);
+        Assert.True(text.PositionedChars.Select(static character => character.Position.Y).Distinct().Count() > 1);
+    }
+
+    [Fact]
+    public void ContentPresenterUsesWinUiNoWrapDefaultForTextContent()
+    {
+        var presenter = new ContentPresenter { Content = "Button label" };
+
+        var generatedText = Assert.IsType<RichTextBlock>(Assert.Single(presenter.Children));
+        Assert.Equal(TextWrapping.NoWrap, presenter.TextWrapping);
+        Assert.Equal(TextWrapping.NoWrap, generatedText.TextWrapping);
+    }
+
+    [Fact]
     public void MutableRunInvalidatesAndRelayoutsItsOwningTextBlock()
     {
         var font = LoadTestFont();

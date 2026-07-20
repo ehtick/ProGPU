@@ -103,6 +103,27 @@ public class Thumb : Control
         base.OnPointerReleased(e);
      }
 
+    public override void OnPointerCanceled(PointerRoutedEventArgs e)
+    {
+        if (_isDragging)
+        {
+            _isDragging = false;
+            InputSystem.ReleasePointerCapture();
+            DragCompleted?.Invoke(this, new DragCompletedEventArgs(e.ScreenPosition.X, e.ScreenPosition.Y, canceled: true));
+        }
+        base.OnPointerCanceled(e);
+    }
+
+    public override void OnPointerCaptureLost(PointerRoutedEventArgs e)
+    {
+        if (_isDragging)
+        {
+            _isDragging = false;
+            DragCompleted?.Invoke(this, new DragCompletedEventArgs(e.ScreenPosition.X, e.ScreenPosition.Y, canceled: true));
+        }
+        base.OnPointerCaptureLost(e);
+    }
+
     public override void OnRender(DrawingContext context)
     {
         var bg = GetCurrentBackground();
@@ -118,4 +139,3 @@ public class Thumb : Control
         base.OnRender(context);
     }
 }
-
