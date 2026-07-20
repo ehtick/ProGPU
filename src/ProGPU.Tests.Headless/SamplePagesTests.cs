@@ -1569,11 +1569,11 @@ public class SamplePagesTests : IDisposable
         window.Render();
 
         // Initially pointer is not over scrollbar, vertical offset is 0
-        var isPointerOverField = typeof(ScrollViewer).GetField("_isPointerOverScrollbar", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-        var isDraggingField = typeof(ScrollViewer).GetField("_isDraggingVert", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var isPointerOverField = typeof(ScrollViewer).GetField("_isPointerOverVerticalScrollbar", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var isDraggingField = typeof(ScrollViewer).GetField("_draggingScrollBar", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
 
         Assert.False((bool?)isPointerOverField?.GetValue(scrollViewer) ?? true);
-        Assert.False((bool?)isDraggingField?.GetValue(scrollViewer) ?? true);
+        Assert.Null(isDraggingField?.GetValue(scrollViewer));
         Assert.Equal(0f, scrollViewer.VerticalOffset);
 
         // Simulate pointer entering the scrollbar area (right edge, e.g. x = 195, y = 10)
@@ -1592,9 +1592,9 @@ public class SamplePagesTests : IDisposable
 
         // Simulate pointer pressing the scrollbar thumb
         // When contentHeight = 1000, viewportHeight = 100.
-        // thumbHeight = Max(20, (100 / 1000) * 100) = Max(20, 10) = 20.
-        // thumbY = (0 / 900) * (100 - 20) = 0.
-        // So thumb is at Y in [0, 20]. A press at (195, 10) should hit the thumb.
+        // thumbHeight = Max(24, (100 / 1000) * 100) = Max(24, 10) = 24.
+        // thumbY = (0 / 900) * (100 - 24) = 0.
+        // So thumb is at Y in [0, 24]. A press at (195, 10) should hit the thumb.
         var pointerPressedArgs = new PointerRoutedEventArgs
         {
             ScreenPosition = new Vector2(195f, 10f),
@@ -1603,12 +1603,12 @@ public class SamplePagesTests : IDisposable
         scrollViewer.OnPointerPressed(pointerPressedArgs);
 
         // Verify it started dragging!
-        Assert.True((bool?)isDraggingField?.GetValue(scrollViewer) ?? false);
+        Assert.Equal(Orientation.Vertical, isDraggingField?.GetValue(scrollViewer));
 
         // Simulate dragging the scrollbar thumb down by 20px (from y = 10 to y = 30)
-        // trackLength = viewportHeight - thumbHeight = 100 - 20 = 80.
+        // trackLength = viewportHeight - thumbHeight = 100 - 24 = 76.
         // deltaY = 30 - 10 = 20.
-        // Expected scroll = 0 + (20 / 80) * scrollableHeight = 0.25 * (1000 - 100) = 0.25 * 900 = 225.
+        // Expected scroll = 0 + (20 / 76) * scrollableHeight = 236.8421.
         var dragMovedArgs = new PointerRoutedEventArgs
         {
             ScreenPosition = new Vector2(195f, 30f),
@@ -1616,7 +1616,7 @@ public class SamplePagesTests : IDisposable
         };
         scrollViewer.OnPointerMoved(dragMovedArgs);
 
-        Assert.Equal(225f, scrollViewer.VerticalOffset);
+        Assert.Equal(236.8421f, scrollViewer.VerticalOffset, 3);
 
         // Release the drag
         var pointerReleasedArgs = new PointerRoutedEventArgs
@@ -1625,7 +1625,7 @@ public class SamplePagesTests : IDisposable
             Position = new Vector2(195f, 30f)
         };
         scrollViewer.OnPointerReleased(pointerReleasedArgs);
-        Assert.False((bool?)isDraggingField?.GetValue(scrollViewer) ?? true);
+        Assert.Null(isDraggingField?.GetValue(scrollViewer));
 
         // Exit pointer
         var pointerExitedArgs = new PointerRoutedEventArgs();
