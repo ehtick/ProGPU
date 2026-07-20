@@ -715,21 +715,20 @@ public sealed class SamplePerformanceRegressionTests
     }
 
     [Fact]
-    public void NoWrapTextAlignedRichTextStaysInsideItsGridCellAfterMutableRunUpdate()
+    public void NoWrapRichTextStaysInsideAnAutoSizedTrailingGridColumnAfterMutableRunUpdate()
     {
         var run = new Microsoft.UI.Xaml.Documents.Run("0");
         var text = new RichTextBlock
         {
             Font = LoadTestFont(),
             FontSize = 11f,
-            TextWrapping = TextWrapping.NoWrap,
-            TextAlignment = TextAlignment.Right
+            TextWrapping = TextWrapping.NoWrap
         };
         text.Inlines.Add(new Microsoft.UI.Xaml.Documents.Bold(run));
 
         var row = new Grid();
-        row.ColumnDefinitions.Add(new GridLength(100f, GridUnitType.Absolute));
         row.ColumnDefinitions.Add(new GridLength(1f, GridUnitType.Star));
+        row.ColumnDefinitions.Add(new GridLength(0f, GridUnitType.Auto));
         row.AddChild(text);
         Grid.SetColumn(text, 1);
 
@@ -739,7 +738,8 @@ public sealed class SamplePerformanceRegressionTests
         row.Measure(new Vector2(337f, 100f));
         row.Arrange(new Rect(0f, 0f, 337f, 100f));
 
-        Assert.InRange(text.Size.X, 236.99f, 237.01f);
+        Assert.True(text.Offset.X > 100f);
+        Assert.InRange(text.Offset.X + text.Size.X, 336.99f, 337.01f);
         Assert.Single(text.PositionedChars.Select(static character => character.Position.Y).Distinct());
         Assert.All(text.PositionedChars, character => Assert.InRange(character.Position.X, 0f, text.Size.X));
     }
