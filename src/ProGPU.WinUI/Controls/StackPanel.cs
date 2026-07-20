@@ -91,7 +91,14 @@ public class StackPanel : Panel
         var hasPreviousVisibleChild = false;
         foreach (var child in Children)
         {
-            if (child is FrameworkElement { Visibility: Visibility.Collapsed }) continue;
+            if (child is FrameworkElement { Visibility: Visibility.Collapsed })
+            {
+                if (child is LayoutNode collapsedNode)
+                {
+                    collapsedNode.Arrange(new Rect(arrangeRect.X, arrangeRect.Y, 0f, 0f));
+                }
+                continue;
+            }
             if (child is LayoutNode node)
             {
                 if (hasPreviousVisibleChild) offset += Spacing;

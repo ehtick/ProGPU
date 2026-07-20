@@ -105,13 +105,22 @@ public class Thumb : Control
 
     public override void OnPointerCanceled(PointerRoutedEventArgs e)
     {
-        _isDragging = false;
+        if (_isDragging)
+        {
+            _isDragging = false;
+            InputSystem.ReleasePointerCapture();
+            DragCompleted?.Invoke(this, new DragCompletedEventArgs(e.ScreenPosition.X, e.ScreenPosition.Y, canceled: true));
+        }
         base.OnPointerCanceled(e);
     }
 
     public override void OnPointerCaptureLost(PointerRoutedEventArgs e)
     {
-        _isDragging = false;
+        if (_isDragging)
+        {
+            _isDragging = false;
+            DragCompleted?.Invoke(this, new DragCompletedEventArgs(e.ScreenPosition.X, e.ScreenPosition.Y, canceled: true));
+        }
         base.OnPointerCaptureLost(e);
     }
 

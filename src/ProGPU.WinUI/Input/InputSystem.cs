@@ -80,6 +80,8 @@ internal sealed class ManipulationSession
 
 public static class InputSystem
 {
+    private static readonly long s_timestampOrigin = Stopwatch.GetTimestamp();
+
     [ThreadStatic]
     private static WindowInputState? _currentState;
 
@@ -382,7 +384,14 @@ public static class InputSystem
         return state.PointerPositionTransform?.Invoke(pointerPosition) ?? pointerPosition;
     }
 
-    private static ulong GetTimestamp() => (ulong)(Stopwatch.GetTimestamp() * 1_000_000L / Stopwatch.Frequency);
+    private static ulong GetTimestamp()
+    {
+        long elapsedTicks = Stopwatch.GetTimestamp() - s_timestampOrigin;
+        long wholeSeconds = elapsedTicks / Stopwatch.Frequency;
+        long remainingTicks = elapsedTicks % Stopwatch.Frequency;
+        var fractionalMicros = (ulong)((UInt128)(ulong)remainingTicks * 1_000_000UL / (ulong)Stopwatch.Frequency);
+        return (ulong)wholeSeconds * 1_000_000UL + fractionalMicros;
+    }
 
     private static PointerInputEvent CreateMouseEvent(PointerInputKind kind, Vector2 position) => new(
         kind,
@@ -861,7 +870,19 @@ public static class InputSystem
             Current.Manipulations[target] = session;
         }
         session.PointerIds.Add(contact.Pointer.PointerId);
+        if (session.Started)
+        {
+            CancelContactForManipulation(contact);
+        }
         ResetManipulationBaseline(session);
+    }
+
+    private static void CancelContactForManipulation(PointerContactState contact)
+    {
+        if (contact.CanceledByManipulation) return;
+        contact.ExceededTapThreshold = true;
+        contact.CanceledByManipulation = true;
+        contact.Target?.OnPointerCanceled(CreatePointerArgs(contact.Target, contact.LastEvent, contact.Pointer, canceled: true));
     }
 
     private static void ResetManipulationBaseline(ManipulationSession session)
@@ -923,9 +944,7 @@ public static class InputSystem
             foreach (var id in session.PointerIds)
             {
                 if (!Current.PointerContacts.TryGetValue(id, out var state)) continue;
-                state.ExceededTapThreshold = true;
-                state.CanceledByManipulation = true;
-                state.Target?.OnPointerCanceled(CreatePointerArgs(state.Target, state.LastEvent, state.Pointer, canceled: true));
+                CancelContactForManipulation(state);
             }
             session.Target.OnManipulationStarted(new ManipulationStartedRoutedEventArgs
             {
