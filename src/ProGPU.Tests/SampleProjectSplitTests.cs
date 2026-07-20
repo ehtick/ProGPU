@@ -96,12 +96,17 @@ public sealed class SampleProjectSplitTests
     }
 
     [Fact]
-    public void BrowserTerminalPointersDiscardQueuedMovesBeforeImmediateDispatch()
+    public void BrowserTerminalPointersFlushQueuedMovesBeforeImmediateDispatch()
     {
         var browserAsset = Read("src", "ProGPU.Browser", "BrowserAssets", "progpu-browser.js");
+        var dispatcher = Read("src", "ProGPU.Browser", "BrowserInputDispatcher.cs");
 
-        Assert.Contains("function discardQueuedPointerMoves(pointerId)", browserAsset, StringComparison.Ordinal);
-        Assert.Equal(2, browserAsset.Split("if (state.dispatchImmediatePointer) discardQueuedPointerMoves(event.pointerId);", StringSplitOptions.None).Length - 1);
+        Assert.Contains("function flushQueuedPointerMoves(pointerId)", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("state.dispatchImmediatePointer(queued.kind, queued.x, queued.y, queued.button", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("function dispatchTerminalPointerEvent(kind, event, point)", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("dispatchTerminalPointerEvent(3, event, point);", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("dispatchTerminalPointerEvent(9, event, point);", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("kind != (int)BrowserInputKind.PointerMove", dispatcher, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -110,8 +115,20 @@ public sealed class SampleProjectSplitTests
         var browserAsset = Read("src", "ProGPU.Browser", "BrowserAssets", "progpu-browser.js");
 
         Assert.Contains("const canvasBounds = state.canvas?.getBoundingClientRect();", browserAsset, StringComparison.Ordinal);
-        Assert.Contains("const sinkX = (canvasBounds?.left || 0) + x;", browserAsset, StringComparison.Ordinal);
-        Assert.Contains("const sinkY = (canvasBounds?.top || 0) + y + height;", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("const sinkX = (canvasBounds?.left || 0) + bounds.x;", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("const sinkY = (canvasBounds?.top || 0) + bounds.y + bounds.height;", browserAsset, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BrowserTextSinkRepositionsWithVisualViewport()
+    {
+        var browserAsset = Read("src", "ProGPU.Browser", "BrowserAssets", "progpu-browser.js");
+
+        Assert.Contains("textInputBounds: null", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("function positionTextInput()", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("resizeCanvas();\n  positionTextInput();", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("state.textInputBounds = { x, y, width, height };", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("state.textInputBounds = null;", browserAsset, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -177,7 +194,7 @@ public sealed class SampleProjectSplitTests
         Assert.Contains("input.addEventListener('cancel'", browserAsset, StringComparison.Ordinal);
         Assert.DoesNotContain("globalThis.addEventListener('focus'", browserAsset, StringComparison.Ordinal);
         Assert.Contains("runtime.getAssemblyExports('ProGPU.Browser.dll')", browserAsset, StringComparison.Ordinal);
-        Assert.Contains("dispatchPointerEvent(3, event, point)", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("dispatchTerminalPointerEvent(3, event, point)", browserAsset, StringComparison.Ordinal);
         Assert.Contains("DispatchImmediatePointer", browserInput, StringComparison.Ordinal);
         Assert.Contains("heap.set(bytes, destination);", browserAsset, StringComparison.Ordinal);
         Assert.DoesNotContain("bytesToBase64", browserAsset, StringComparison.Ordinal);

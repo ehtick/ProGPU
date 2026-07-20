@@ -21,6 +21,7 @@ const state = {
   dispatchImmediatePointer: null,
   dispatchTextInput: null,
   textSink: null,
+  textInputBounds: null,
   isComposing: false,
   clipboardText: '',
   pickedStorageBytes: null,
@@ -356,6 +357,7 @@ function updateVisualViewport() {
   rootStyle.setProperty('--progpu-viewport-height', `${viewport?.height || globalThis.innerHeight}px`);
   rootStyle.setProperty('--progpu-keyboard-inset', `${keyboardInset}px`);
   resizeCanvas();
+  positionTextInput();
 }
 
 const browserKeyCodes = (() => {
@@ -424,11 +426,38 @@ function dispatchPointerEvent(kind, event, point) {
   queuePointerEvent(kind, event, point);
 }
 
-function discardQueuedPointerMoves(pointerId) {
-  for (let index = state.inputEvents.length - 1; index >= 0; index--) {
+function flushQueuedPointerMoves(pointerId) {
+  let flushed = true;
+  const retained = [];
+  for (let index = 0; index < state.inputEvents.length; index++) {
     const queued = state.inputEvents[index];
-    if (queued.kind === 1 && queued.data === pointerId) state.inputEvents.splice(index, 1);
+    if (queued.kind !== 1 || queued.data !== pointerId) {
+      retained.push(queued);
+      continue;
+    }
+
+    try {
+      if (state.dispatchImmediatePointer(queued.kind, queued.x, queued.y, queued.button,
+        queued.flags & 0xffff, queued.data, queued.pointerType, queued.pressure,
+        queued.width, queued.height, (queued.flags & 0x10000) !== 0,
+        queued.timestamp, queued.modifiers)) continue;
+    } catch (error) {
+      globalThis.console.error('[ProGPU] Immediate queued pointer move dispatch failed.', error);
+    }
+
+    retained.push(queued);
+    flushed = false;
   }
+  state.inputEvents = retained;
+  return flushed;
+}
+
+function dispatchTerminalPointerEvent(kind, event, point) {
+  if (state.dispatchImmediatePointer && !flushQueuedPointerMoves(event.pointerId)) {
+    queuePointerEvent(kind, event, point);
+    return;
+  }
+  dispatchPointerEvent(kind, event, point);
 }
 
 function installBrowserInput() {
@@ -463,15 +492,13 @@ function installBrowserInput() {
   });
   state.canvas.addEventListener('pointerup', event => {
     const point = pointerPosition(event);
-    if (state.dispatchImmediatePointer) discardQueuedPointerMoves(event.pointerId);
-    dispatchPointerEvent(3, event, point);
+    dispatchTerminalPointerEvent(3, event, point);
     try { state.canvas.releasePointerCapture(event.pointerId); } catch { }
     event.preventDefault();
   });
   state.canvas.addEventListener('pointercancel', event => {
     const point = pointerPosition(event);
-    if (state.dispatchImmediatePointer) discardQueuedPointerMoves(event.pointerId);
-    dispatchPointerEvent(9, event, point);
+    dispatchTerminalPointerEvent(9, event, point);
     try { state.canvas.releasePointerCapture(event.pointerId); } catch { }
     event.preventDefault();
   });
@@ -575,6 +602,24 @@ function setCanvasCursor(cursor) {
   if (state.canvas) state.canvas.style.cursor = cursor;
 }
 
+function positionTextInput() {
+  const textSink = state.textSink;
+  const bounds = state.textInputBounds;
+  if (!textSink || !bounds) return;
+  const viewport = globalThis.visualViewport;
+  const viewportLeft = viewport?.offsetLeft || 0;
+  const viewportTop = viewport?.offsetTop || 0;
+  const viewportWidth = viewport?.width || globalThis.innerWidth;
+  const viewportHeight = viewport?.height || globalThis.innerHeight;
+  const canvasBounds = state.canvas?.getBoundingClientRect();
+  const sinkX = (canvasBounds?.left || 0) + bounds.x;
+  const sinkY = (canvasBounds?.top || 0) + bounds.y + bounds.height;
+  textSink.style.left = `${Math.max(viewportLeft, Math.min(viewportLeft + viewportWidth - 2, sinkX))}px`;
+  textSink.style.top = `${Math.max(viewportTop, Math.min(viewportTop + viewportHeight - 2, sinkY))}px`;
+  textSink.style.width = `${Math.max(2, Math.min(bounds.width || 2, viewportWidth))}px`;
+  textSink.style.height = '2px';
+}
+
 function configureTextInput(inputMode, enterKeyHint, autoCapitalize, spellCheck, isPassword, acceptsReturn, x, y, width, height) {
   const textSink = state.textSink;
   if (!textSink) return;
@@ -584,18 +629,8 @@ function configureTextInput(inputMode, enterKeyHint, autoCapitalize, spellCheck,
   textSink.spellcheck = Boolean(spellCheck);
   textSink.autocomplete = isPassword ? 'current-password' : 'off';
   textSink.setAttribute('aria-label', isPassword ? 'ProGPU password input' : 'ProGPU text input');
-  const viewport = globalThis.visualViewport;
-  const viewportLeft = viewport?.offsetLeft || 0;
-  const viewportTop = viewport?.offsetTop || 0;
-  const viewportWidth = viewport?.width || globalThis.innerWidth;
-  const viewportHeight = viewport?.height || globalThis.innerHeight;
-  const canvasBounds = state.canvas?.getBoundingClientRect();
-  const sinkX = (canvasBounds?.left || 0) + x;
-  const sinkY = (canvasBounds?.top || 0) + y + height;
-  textSink.style.left = `${Math.max(viewportLeft, Math.min(viewportLeft + viewportWidth - 2, sinkX))}px`;
-  textSink.style.top = `${Math.max(viewportTop, Math.min(viewportTop + viewportHeight - 2, sinkY))}px`;
-  textSink.style.width = `${Math.max(2, Math.min(width || 2, viewportWidth))}px`;
-  textSink.style.height = '2px';
+  state.textInputBounds = { x, y, width, height };
+  positionTextInput();
   textSink.value = '';
   textSink.focus({ preventScroll: true });
   if (navigator.virtualKeyboard) {
@@ -609,6 +644,7 @@ function hideTextInput() {
   if (!sink) return;
   if (state.isComposing && state.dispatchTextInput) state.dispatchTextInput(7, '', false);
   state.isComposing = false;
+  state.textInputBounds = null;
   sink.value = '';
   sink.blur();
   if (navigator.virtualKeyboard) {

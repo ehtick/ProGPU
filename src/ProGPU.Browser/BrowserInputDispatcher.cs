@@ -67,7 +67,7 @@ public static partial class BrowserInputDispatcher
         int modifiers)
     {
         var state = s_attachedState;
-        if (state == null || (kind != (int)BrowserInputKind.PointerDown && kind != (int)BrowserInputKind.PointerUp && kind != (int)BrowserInputKind.PointerCancel))
+        if (state == null || (kind != (int)BrowserInputKind.PointerMove && kind != (int)BrowserInputKind.PointerDown && kind != (int)BrowserInputKind.PointerUp && kind != (int)BrowserInputKind.PointerCancel))
             return false;
 
         InputSystem.Current = state;
