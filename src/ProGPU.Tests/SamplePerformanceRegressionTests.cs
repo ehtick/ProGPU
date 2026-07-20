@@ -715,7 +715,7 @@ public sealed class SamplePerformanceRegressionTests
     }
 
     [Fact]
-    public void NoWrapRightAlignedRichTextExpandsAfterMutableRunUpdate()
+    public void NoWrapTextAlignedRichTextStaysInsideItsGridCellAfterMutableRunUpdate()
     {
         var run = new Microsoft.UI.Xaml.Documents.Run("0");
         var text = new RichTextBlock
@@ -723,7 +723,7 @@ public sealed class SamplePerformanceRegressionTests
             Font = LoadTestFont(),
             FontSize = 11f,
             TextWrapping = TextWrapping.NoWrap,
-            HorizontalAlignment = HorizontalAlignment.Right
+            TextAlignment = TextAlignment.Right
         };
         text.Inlines.Add(new Microsoft.UI.Xaml.Documents.Bold(run));
 
@@ -735,14 +735,13 @@ public sealed class SamplePerformanceRegressionTests
 
         row.Measure(new Vector2(337f, 100f));
         row.Arrange(new Rect(0f, 0f, 337f, 100f));
-        var initialWidth = text.Size.X;
-
         run.Text = "5.80 x 1.40 x 5.80";
         row.Measure(new Vector2(337f, 100f));
         row.Arrange(new Rect(0f, 0f, 337f, 100f));
 
-        Assert.True(text.Size.X > initialWidth);
+        Assert.InRange(text.Size.X, 236.99f, 237.01f);
         Assert.Single(text.PositionedChars.Select(static character => character.Position.Y).Distinct());
+        Assert.All(text.PositionedChars, character => Assert.InRange(character.Position.X, 0f, text.Size.X));
     }
 
     [Fact]

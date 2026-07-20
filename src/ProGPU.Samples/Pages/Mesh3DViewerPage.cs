@@ -10,6 +10,7 @@ using ProGPU.Vector;
 using ProGPU.Layout;
 using ProGPU.Scene;
 using ProGPU.Scene.Extensions;
+using ProGPU.Text;
 using System.IO;
 
 namespace ProGPU.Samples;
@@ -589,23 +590,23 @@ public static class Mesh3DViewerPage
         statsStack.AddChild(statsTitle);
 
         _statsNameRun = new Run("-");
-        _statsNameBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, TextWrapping = TextWrapping.NoWrap, Foreground = new ThemeResourceBrush("TextPrimary"), HorizontalAlignment = HorizontalAlignment.Right };
+        _statsNameBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, TextWrapping = TextWrapping.NoWrap, TextAlignment = TextAlignment.Right, Foreground = new ThemeResourceBrush("TextPrimary") };
         _statsNameBlock.Inlines.Add(new Bold(_statsNameRun));
 
         _statsVerticesRun = new Run("0");
-        _statsVerticesBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, TextWrapping = TextWrapping.NoWrap, Foreground = new ThemeResourceBrush("TextPrimary"), HorizontalAlignment = HorizontalAlignment.Right };
+        _statsVerticesBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, TextWrapping = TextWrapping.NoWrap, TextAlignment = TextAlignment.Right, Foreground = new ThemeResourceBrush("TextPrimary") };
         _statsVerticesBlock.Inlines.Add(new Bold(_statsVerticesRun));
 
         _statsTrianglesRun = new Run("0");
-        _statsTrianglesBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, TextWrapping = TextWrapping.NoWrap, Foreground = new ThemeResourceBrush("TextPrimary"), HorizontalAlignment = HorizontalAlignment.Right };
+        _statsTrianglesBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, TextWrapping = TextWrapping.NoWrap, TextAlignment = TextAlignment.Right, Foreground = new ThemeResourceBrush("TextPrimary") };
         _statsTrianglesBlock.Inlines.Add(new Bold(_statsTrianglesRun));
 
         _statsBoundsRun = new Run("0.0 x 0.0 x 0.0");
-        _statsBoundsBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, TextWrapping = TextWrapping.NoWrap, Foreground = new ThemeResourceBrush("TextPrimary"), HorizontalAlignment = HorizontalAlignment.Right };
+        _statsBoundsBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, TextWrapping = TextWrapping.NoWrap, TextAlignment = TextAlignment.Right, Foreground = new ThemeResourceBrush("TextPrimary") };
         _statsBoundsBlock.Inlines.Add(new Bold(_statsBoundsRun));
 
         _statsMemoryRun = new Run("0 KB");
-        _statsMemoryBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, TextWrapping = TextWrapping.NoWrap, Foreground = new ThemeResourceBrush("TextPrimary"), HorizontalAlignment = HorizontalAlignment.Right };
+        _statsMemoryBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, TextWrapping = TextWrapping.NoWrap, TextAlignment = TextAlignment.Right, Foreground = new ThemeResourceBrush("TextPrimary") };
         _statsMemoryBlock.Inlines.Add(new Bold(_statsMemoryRun));
 
         statsStack.AddChild(CreateStatRow("Name:", _statsNameBlock));
