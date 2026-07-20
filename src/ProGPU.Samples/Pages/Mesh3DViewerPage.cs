@@ -511,7 +511,8 @@ public static class Mesh3DViewerPage
             CornerRadius = 4f,
             Background = new ThemeResourceBrush("ControlBackgroundHover")
         };
-        browseBtn.Content = "Browse";
+        var browseBtnRun = new Run("Browse") { FontSize = 12f, Foreground = new ThemeResourceBrush("TextPrimary") };
+        browseBtn.Content = new RichTextBlock { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { new Bold(browseBtnRun) } };
         pathGrid.AddChild(browseBtn);
         Grid.SetColumn(browseBtn, 2);
         
@@ -588,23 +589,23 @@ public static class Mesh3DViewerPage
         statsStack.AddChild(statsTitle);
 
         _statsNameRun = new Run("-");
-        _statsNameBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, Foreground = new ThemeResourceBrush("TextPrimary"), HorizontalAlignment = HorizontalAlignment.Stretch };
+        _statsNameBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, Foreground = new ThemeResourceBrush("TextPrimary"), HorizontalAlignment = HorizontalAlignment.Right };
         _statsNameBlock.Inlines.Add(new Bold(_statsNameRun));
 
         _statsVerticesRun = new Run("0");
-        _statsVerticesBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, Foreground = new ThemeResourceBrush("TextPrimary"), HorizontalAlignment = HorizontalAlignment.Stretch };
+        _statsVerticesBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, Foreground = new ThemeResourceBrush("TextPrimary"), HorizontalAlignment = HorizontalAlignment.Right };
         _statsVerticesBlock.Inlines.Add(new Bold(_statsVerticesRun));
 
         _statsTrianglesRun = new Run("0");
-        _statsTrianglesBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, Foreground = new ThemeResourceBrush("TextPrimary"), HorizontalAlignment = HorizontalAlignment.Stretch };
+        _statsTrianglesBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, Foreground = new ThemeResourceBrush("TextPrimary"), HorizontalAlignment = HorizontalAlignment.Right };
         _statsTrianglesBlock.Inlines.Add(new Bold(_statsTrianglesRun));
 
         _statsBoundsRun = new Run("0.0 x 0.0 x 0.0");
-        _statsBoundsBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, Foreground = new ThemeResourceBrush("TextPrimary"), HorizontalAlignment = HorizontalAlignment.Stretch };
+        _statsBoundsBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, Foreground = new ThemeResourceBrush("TextPrimary"), HorizontalAlignment = HorizontalAlignment.Right };
         _statsBoundsBlock.Inlines.Add(new Bold(_statsBoundsRun));
 
         _statsMemoryRun = new Run("0 KB");
-        _statsMemoryBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, Foreground = new ThemeResourceBrush("TextPrimary"), HorizontalAlignment = HorizontalAlignment.Stretch };
+        _statsMemoryBlock = new RichTextBlock { Font = AppState.GetFont(), FontSize = 11f, Foreground = new ThemeResourceBrush("TextPrimary"), HorizontalAlignment = HorizontalAlignment.Right };
         _statsMemoryBlock.Inlines.Add(new Bold(_statsMemoryRun));
 
         statsStack.AddChild(CreateStatRow("Name:", _statsNameBlock));
@@ -648,7 +649,8 @@ public static class Mesh3DViewerPage
             Margin = new Thickness(4f),
             Background = new ThemeResourceBrush("ControlBackgroundHover")
         };
-        customBtn.Content = "Custom";
+        var customBtnRun = new Run("Custom") { FontSize = 11f, Foreground = new ThemeResourceBrush("TextPrimary") };
+        customBtn.Content = new RichTextBlock { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { new Bold(customBtnRun) } };
 
         customBtn.Click += (s, e) => { ShowColorPickerPopup(customBtn); };
         colorGrid.AddChild(customBtn);
@@ -1618,7 +1620,8 @@ public static class Mesh3DViewerPage
             Padding = new Thickness(0),
             Background = new ThemeResourceBrush(mode == LayoutMode3D.Quad ? "ControlBackgroundPressed" : "ControlBackgroundHover")
         };
-        btn.Content = label;
+        var textRun = new Run(label) { FontSize = 10f, Foreground = new ThemeResourceBrush("TextPrimary") };
+        btn.Content = new RichTextBlock { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Inlines = { new Bold(textRun) } };
         btn.Click += (s, e) => { SetLayoutMode(mode); };
         return btn;
     }
