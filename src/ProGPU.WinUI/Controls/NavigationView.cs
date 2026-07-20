@@ -419,6 +419,10 @@ public class NavigationView : FrameworkElement
         {
             _hamburgerButton.Arrange(new Rect(arrangeRect.X + 8f, arrangeRect.Y + 8f, 40f, 40f));
         }
+        else
+        {
+            _hamburgerButton.Arrange(new Rect(arrangeRect.X + 8f, arrangeRect.Y + 8f, 0f, 0f));
+        }
     }
 
     private void UpdateDisplayMode(float width)

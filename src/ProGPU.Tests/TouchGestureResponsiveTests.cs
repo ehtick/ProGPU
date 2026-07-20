@@ -486,6 +486,23 @@ public sealed class TouchGestureResponsiveTests
     }
 
     [Fact]
+    public void HiddenNavigationPaneToggleClearsItsHitTestBounds()
+    {
+        var navigation = new NavigationView();
+        ArrangeRoot(navigation, new Vector2(500, 300));
+        Assert.False(navigation.IsPaneOpen);
+
+        navigation.IsPaneToggleButtonVisible = false;
+        ArrangeRoot(navigation, new Vector2(500, 300));
+        UseInputRoot(navigation);
+
+        InputSystem.InjectPointer(Touch(PointerInputKind.Pressed, 61, 24, 24, 1_000, true));
+        InputSystem.InjectPointer(Touch(PointerInputKind.Released, 61, 24, 24, 30_000, false));
+
+        Assert.False(navigation.IsPaneOpen);
+    }
+
+    [Fact]
     public void ContactJoiningActiveManipulationIsCanceledImmediately()
     {
         var target = new TrackingControl
