@@ -638,7 +638,7 @@ namespace Microsoft.UI.Xaml.Controls
                         lastWordStartCursorX = padding.Left + rc.LeftIndent;
                         continue;
                     }
-                    else
+                    else if (textWrapping == TextWrapping.Wrap)
                     {
                         CommitLine(currentLine, false);
                         currentLine = new List<PositionedRichChar>();

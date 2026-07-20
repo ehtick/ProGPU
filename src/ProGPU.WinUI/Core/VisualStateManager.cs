@@ -101,7 +101,7 @@ public static class VisualStateManager
                         fallback ??= state;
                         continue;
                     }
-                    if (state.StateTriggers.All(trigger => trigger.IsActive(width, height))) active = state;
+                    if (state.StateTriggers.Any(trigger => trigger.IsActive(width, height))) active = state;
                 }
                 ApplyState(element, group, active ?? fallback);
             }

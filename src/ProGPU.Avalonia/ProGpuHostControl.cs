@@ -991,6 +991,7 @@ public class ProGpuHostControl : Control
 
         // 1. Force layout and animations updates recursively on WinUI Controls
         WinuiRoot.UpdateAnimations(0.016f); // Pass baseline delta time
+        VisualStateManager.UpdateAdaptiveStates(WinuiRoot, hostFrame.LogicalSize);
         WinuiRoot.Measure(hostFrame.LogicalSize);
         WinuiRoot.Arrange(new WinuiRect(0, 0, hostFrame.LogicalWidth, hostFrame.LogicalHeight));
 

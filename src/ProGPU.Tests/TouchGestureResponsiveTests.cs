@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Reflection;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
@@ -57,6 +58,19 @@ public sealed class TouchGestureResponsiveTests
         InputSystem.InjectPointer(Touch(PointerInputKind.Released, 3, 60, 80, 1_050_000, false));
         InputSystem.InjectPointer(Touch(PointerInputKind.Released, 4, 180, 80, 1_060_000, false));
         Assert.Equal(1, target.ManipulationCompletedCount);
+    }
+
+    [Fact]
+    public void TouchReleaseBeyondTapThresholdWithoutMoveDoesNotTap()
+    {
+        var target = new TrackingControl { Width = 220, Height = 220 };
+        ArrangeRoot(target, new Vector2(220, 220));
+        UseInputRoot(target);
+
+        InputSystem.InjectPointer(Touch(PointerInputKind.Pressed, 5, 20, 20, 1_000, true));
+        InputSystem.InjectPointer(Touch(PointerInputKind.Released, 5, 180, 180, 30_000, false));
+
+        Assert.Equal(0, target.TappedCount);
     }
 
     [Fact]
@@ -423,6 +437,32 @@ public sealed class TouchGestureResponsiveTests
         Assert.Equal(NavigationViewDisplayMode.Compact, navigation.DisplayMode);
         navigation.Measure(new Vector2(1200, 500));
         Assert.Equal(NavigationViewDisplayMode.Expanded, navigation.DisplayMode);
+    }
+
+    [Fact]
+    public void VisualStateUsesOrSemanticsAcrossMultipleTriggers()
+    {
+        var control = new Button();
+        var group = new VisualStateGroup { Name = "ResponsiveStates" };
+        var fallback = new VisualState { Name = "Fallback" };
+        var responsive = new VisualState { Name = "WideOrTall" };
+        responsive.StateTriggers.Add(new AdaptiveTrigger { MinWindowWidth = 1_000 });
+        responsive.StateTriggers.Add(new AdaptiveTrigger { MinWindowHeight = 700 });
+        group.States.Add(fallback);
+        group.States.Add(responsive);
+        VisualStateManager.GetVisualStateGroups(control).Add(group);
+
+        var update = typeof(VisualStateManager).GetMethod(
+            "UpdateAdaptiveStates",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(update);
+
+        update.Invoke(null, [control, new Vector2(1_100, 500)]);
+        Assert.Same(responsive, group.CurrentState);
+        update.Invoke(null, [control, new Vector2(500, 800)]);
+        Assert.Same(responsive, group.CurrentState);
+        update.Invoke(null, [control, new Vector2(500, 500)]);
+        Assert.Same(fallback, group.CurrentState);
     }
 
     [Fact]

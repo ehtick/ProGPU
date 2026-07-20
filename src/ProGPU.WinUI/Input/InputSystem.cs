@@ -581,7 +581,7 @@ public static class InputSystem
             : 1UL;
         contact.Velocity = (input.Position - contact.LastEvent.Position) * (1_000_000f / elapsedMicros);
         contact.LastEvent = input;
-        var threshold = input.DeviceType == PointerDeviceType.Touch ? 12f : 4f;
+        var threshold = GetTapThreshold(input.DeviceType);
         if (Vector2.DistanceSquared(contact.DownPosition, input.Position) > threshold * threshold)
         {
             contact.ExceededTapThreshold = true;
@@ -783,7 +783,10 @@ public static class InputSystem
         var contactDuration = input.Timestamp >= contact.DownTimestamp
             ? input.Timestamp - contact.DownTimestamp
             : ulong.MaxValue;
-        if (contact.ExceededTapThreshold || contactDuration > 800_000UL) return;
+        var tapThreshold = GetTapThreshold(input.DeviceType);
+        var releaseExceededTapThreshold =
+            Vector2.DistanceSquared(contact.DownPosition, input.Position) > tapThreshold * tapThreshold;
+        if (contact.ExceededTapThreshold || releaseExceededTapThreshold || contactDuration > 800_000UL) return;
         if (input.DeviceType == PointerDeviceType.Mouse && contact.StartedWithRightButton)
         {
             if (contact.Target.IsRightTapEnabled)
@@ -830,6 +833,9 @@ public static class InputSystem
             Current.LastTapTimestamp = input.Timestamp;
         }
     }
+
+    private static float GetTapThreshold(PointerDeviceType deviceType) =>
+        deviceType == PointerDeviceType.Touch ? 12f : 4f;
 
     private static FrameworkElement? FindManipulationTarget(FrameworkElement? element)
     {

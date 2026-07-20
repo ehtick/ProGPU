@@ -715,6 +715,34 @@ public sealed class SamplePerformanceRegressionTests
     }
 
     [Fact]
+    public void WrapWholeWordsDoesNotSplitAnUnspacedToken()
+    {
+        var wholeWord = new RichTextBlock
+        {
+            Font = LoadTestFont(),
+            FontSize = 14f,
+            TextWrapping = TextWrapping.WrapWholeWords
+        };
+        wholeWord.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run("LongFilenameWithoutBreaks.txt"));
+
+        var characterWrap = new RichTextBlock
+        {
+            Font = wholeWord.Font,
+            FontSize = wholeWord.FontSize,
+            TextWrapping = TextWrapping.Wrap
+        };
+        characterWrap.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run("LongFilenameWithoutBreaks.txt"));
+
+        wholeWord.Measure(new Vector2(48f, 200f));
+        wholeWord.Arrange(new Rect(0f, 0f, 48f, 200f));
+        characterWrap.Measure(new Vector2(48f, 200f));
+        characterWrap.Arrange(new Rect(0f, 0f, 48f, 200f));
+
+        Assert.Single(wholeWord.PositionedChars.Select(static character => character.Position.Y).Distinct());
+        Assert.True(characterWrap.PositionedChars.Select(static character => character.Position.Y).Distinct().Count() > 1);
+    }
+
+    [Fact]
     public void NoWrapRichTextStaysInsideAnAutoSizedTrailingGridColumnAfterMutableRunUpdate()
     {
         var run = new Microsoft.UI.Xaml.Documents.Run("0");
