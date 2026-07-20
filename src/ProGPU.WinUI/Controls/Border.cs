@@ -306,7 +306,7 @@ public class Border : FrameworkElement
         }
 
         // Draw context-aware cascading focus rings
-        if (Parent is Control pControl && pControl.IsFocused && pControl.IsEnabled)
+        if (Parent is Control pControl && pControl.IsKeyboardFocusVisualVisible && pControl.IsEnabled)
         {
             var accentColor = ThemeManager.GetBrush("SystemAccentColor", activeTheme, activeFamily);
             if (activeFamily == VisualThemeFamily.macOS)

@@ -886,6 +886,7 @@ public static class ThemeManager
             new Setter(nameof(Control.BorderThickness), new Thickness(1f)),
             new Setter(nameof(Control.CornerRadius), 9f),
             new Setter(nameof(Control.Padding), new Thickness(8f, 4f)),
+            new Setter(nameof(Control.HorizontalContentAlignment), HorizontalAlignment.Left),
             new Setter(nameof(Control.Template), new ControlTemplate(typeof(RadioButton), (parent) =>
             {
                 var grid = new Grid();
@@ -1245,7 +1246,7 @@ public class CheckboxChrome : FrameworkElement
             context.DrawPath(null, checkPen, checkGeometry);
         }
 
-        if (IsEnabled && IsFocused)
+        if (IsEnabled && IsFocused && InputSystem.IsKeyboardFocusActive)
         {
             var accentColor = ThemeManager.GetBrush("SystemAccentColor", activeTheme, activeFamily);
             if (activeFamily == VisualThemeFamily.macOS)
@@ -1390,7 +1391,7 @@ public class RadioButtonChrome : FrameworkElement
             context.DrawRoundedRectangle(dotBrush, null, dotRect, 3f);
         }
 
-        if (IsEnabled && IsFocused)
+        if (IsEnabled && IsFocused && InputSystem.IsKeyboardFocusActive)
         {
             var accentColor = ThemeManager.GetBrush("SystemAccentColor", activeTheme, activeFamily);
             if (activeFamily == VisualThemeFamily.macOS)
@@ -1540,7 +1541,7 @@ public class ToggleSwitchChrome : FrameworkElement
 
         context.DrawRoundedRectangle(thumbBg, thumbBorder, thumbRect, thumbRadius);
 
-        if (IsEnabled && IsFocused)
+        if (IsEnabled && IsFocused && InputSystem.IsKeyboardFocusActive)
         {
             var accentColor = ThemeManager.GetBrush("SystemAccentColor", activeTheme, activeFamily);
             if (activeFamily == VisualThemeFamily.macOS)
@@ -1837,7 +1838,7 @@ public class SliderChrome : FrameworkElement
             context.DrawRoundedRectangle(thumbBg, thumbBorder, thumbRect, drawThumbRadius);
 
             // 4. Focus visual if focused
-            if (IsEnabled && IsFocused)
+            if (IsEnabled && IsFocused && InputSystem.IsKeyboardFocusActive)
             {
                 var accentColor = ThemeManager.GetBrush("SystemAccentColor", activeTheme, activeFamily);
                 var focusPen = new Pen(accentColor, 1.5f);
@@ -1887,7 +1888,7 @@ public class SliderChrome : FrameworkElement
 
             context.DrawRoundedRectangle(thumbBg, thumbBorder, thumbRect, drawThumbRadius);
 
-            if (IsEnabled && IsFocused)
+            if (IsEnabled && IsFocused && InputSystem.IsKeyboardFocusActive)
             {
                 var accentColor = ThemeManager.GetBrush("SystemAccentColor", activeTheme, activeFamily);
                 var focusPen = new Pen(accentColor, 1.5f);
