@@ -26,6 +26,7 @@ public class ResponsiveSplitView : SplitView
     private bool? _isCompact;
     private bool _widePaneOpen = true;
     private bool _isPaneScrollEnabled = true;
+    private float _wideOpenPaneLength = 300f;
 
     public ResponsiveSplitView()
     {
@@ -78,6 +79,10 @@ public class ResponsiveSplitView : SplitView
 
     public float CompactModeThreshold { get; set; } = 760f;
 
+    public float MinimumCompactOpenPaneLength { get; set; } = 340f;
+
+    public float CompactContentRevealLength { get; set; } = 48f;
+
     public bool IsPaneScrollEnabled
     {
         get => _isPaneScrollEnabled;
@@ -104,18 +109,33 @@ public class ResponsiveSplitView : SplitView
     private void ApplyAdaptiveState(float width)
     {
         var compact = !float.IsPositiveInfinity(width) && width < CompactModeThreshold;
-        if (_isCompact == compact) return;
-
         if (compact)
         {
-            if (_isCompact == false) _widePaneOpen = IsPaneOpen;
-            DisplayMode = SplitViewDisplayMode.Overlay;
-            IsPaneOpen = false;
+            if (_isCompact != true)
+            {
+                _wideOpenPaneLength = OpenPaneLength;
+                if (_isCompact == false) _widePaneOpen = IsPaneOpen;
+                DisplayMode = SplitViewDisplayMode.Overlay;
+                IsPaneOpen = false;
+            }
+
+            var availablePaneWidth = Math.Max(0f, width - CompactContentRevealLength);
+            OpenPaneLength = Math.Min(
+                Math.Max(_wideOpenPaneLength, MinimumCompactOpenPaneLength),
+                availablePaneWidth);
         }
         else
         {
-            DisplayMode = SplitViewDisplayMode.Inline;
-            IsPaneOpen = _widePaneOpen;
+            if (_isCompact == true)
+            {
+                OpenPaneLength = _wideOpenPaneLength;
+                DisplayMode = SplitViewDisplayMode.Inline;
+                IsPaneOpen = _widePaneOpen;
+            }
+            else
+            {
+                _wideOpenPaneLength = OpenPaneLength;
+            }
         }
 
         _isCompact = compact;
