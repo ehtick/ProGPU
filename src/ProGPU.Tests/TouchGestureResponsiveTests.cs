@@ -441,6 +441,144 @@ public sealed class TouchGestureResponsiveTests
         Assert.True(navigation.IsPaneOpen);
     }
 
+    [Fact]
+    public void ContactJoiningActiveManipulationIsCanceledImmediately()
+    {
+        var target = new TrackingControl
+        {
+            Width = 220,
+            Height = 220,
+            ManipulationMode = ManipulationModes.TranslateY | ManipulationModes.Scale
+        };
+        ArrangeRoot(target, new Vector2(220, 220));
+        UseInputRoot(target);
+
+        InputSystem.InjectPointer(Touch(PointerInputKind.Pressed, 90, 100, 150, 1_000, true));
+        InputSystem.InjectPointer(Touch(PointerInputKind.Moved, 90, 100, 80, 30_000, true));
+        Assert.Equal(1, target.CanceledCount);
+
+        InputSystem.InjectPointer(Touch(PointerInputKind.Pressed, 91, 120, 80, 40_000, true));
+        Assert.Equal(2, target.CanceledCount);
+        InputSystem.InjectPointer(Touch(PointerInputKind.Released, 91, 120, 80, 50_000, false));
+        InputSystem.InjectPointer(Touch(PointerInputKind.Released, 90, 100, 80, 60_000, false));
+        Assert.Equal(0, target.TappedCount);
+    }
+
+    [Fact]
+    public void CollapsedStackPanelChildClearsBoundsAndStopsHitTesting()
+    {
+        var first = new Border { Width = 100f, Height = 40f };
+        var second = new Border { Width = 100f, Height = 40f };
+        var panel = new StackPanel { Width = 100f, Height = 80f };
+        panel.Children.Add(first);
+        panel.Children.Add(second);
+        ArrangeRoot(panel, new Vector2(100, 80));
+        Assert.Equal(new Vector2(100, 40), first.Size);
+
+        first.Visibility = Visibility.Collapsed;
+        ArrangeRoot(panel, new Vector2(100, 80));
+        UseInputRoot(panel);
+
+        Assert.Equal(Vector2.Zero, first.Size);
+        Assert.NotSame(first, InputSystem.HitTest(new Vector2(10, 10)));
+    }
+
+    [Fact]
+    public void CanceledThumbDragRaisesCanceledCompletionOnce()
+    {
+        var thumb = new Thumb { Width = 44f, Height = 44f };
+        ArrangeRoot(thumb, new Vector2(44, 44));
+        UseInputRoot(thumb);
+        DragCompletedEventArgs? completed = null;
+        var completedCount = 0;
+        thumb.DragCompleted += (_, args) =>
+        {
+            completed = args;
+            completedCount++;
+        };
+
+        InputSystem.InjectPointer(Touch(PointerInputKind.Pressed, 92, 20, 20, 1_000, true));
+        InputSystem.InjectPointer(Touch(PointerInputKind.Canceled, 92, 24, 26, 20_000, false));
+
+        Assert.Equal(1, completedCount);
+        Assert.NotNull(completed);
+        Assert.True(completed.Canceled);
+    }
+
+    [Fact]
+    public void SplitViewUsesWinUiOpenPaneLengthAndCancelableLifecycleEvents()
+    {
+        var opening = 0;
+        var opened = 0;
+        var closing = 0;
+        var closed = 0;
+        var cancelClose = true;
+        var splitView = new SplitView
+        {
+            Pane = new Border(),
+            Content = new Border(),
+            OpenPaneLength = 320f
+        };
+        splitView.PaneOpening += (_, _) => opening++;
+        splitView.PaneOpened += (_, _) => opened++;
+        splitView.PaneClosing += (_, args) =>
+        {
+            closing++;
+            args.Cancel = cancelClose;
+        };
+        splitView.PaneClosed += (_, _) => closed++;
+
+        splitView.IsPaneOpen = true;
+        Assert.Equal(1, opening);
+        Assert.Equal(1, opened);
+        Assert.Equal(320f, splitView.PaneWidth);
+
+        splitView.IsPaneOpen = false;
+        Assert.True(splitView.IsPaneOpen);
+        Assert.Equal(1, closing);
+        Assert.Equal(0, closed);
+
+        cancelClose = false;
+        splitView.IsPaneOpen = false;
+        Assert.False(splitView.IsPaneOpen);
+        Assert.Equal(2, closing);
+        Assert.Equal(1, closed);
+    }
+
+    [Fact]
+    public void ResponsiveSplitViewAdaptsToOverlayAndTouchTogglesItsPane()
+    {
+        var splitView = new ResponsiveSplitView
+        {
+            OpenPaneLength = 460f,
+            CompactModeThreshold = 700f,
+            PaneContent = new Border(),
+            MainContent = new Border()
+        };
+
+        ArrangeRoot(splitView, new Vector2(900, 400));
+        Assert.Equal(SplitViewDisplayMode.Inline, splitView.DisplayMode);
+        Assert.True(splitView.IsPaneOpen);
+        Assert.Equal(460f, splitView.Pane?.Size.X);
+
+        ArrangeRoot(splitView, new Vector2(360, 400));
+        Assert.Equal(SplitViewDisplayMode.Overlay, splitView.DisplayMode);
+        Assert.False(splitView.IsPaneOpen);
+        Assert.Equal(Visibility.Visible, splitView.OpenPaneButton.Visibility);
+        Assert.Equal(360f, splitView.MainContent?.Size.X);
+
+        UseInputRoot(splitView);
+        InputSystem.InjectPointer(Touch(PointerInputKind.Pressed, 81, 20, 20, 1_000, true));
+        InputSystem.InjectPointer(Touch(PointerInputKind.Released, 81, 20, 20, 20_000, false));
+        Assert.True(splitView.IsPaneOpen);
+
+        ArrangeRoot(splitView, new Vector2(360, 400));
+        Assert.Equal(360f, splitView.Pane?.Size.X);
+        InputSystem.InjectPointer(Touch(PointerInputKind.Pressed, 82, 340, 20, 30_000, true));
+        InputSystem.InjectPointer(Touch(PointerInputKind.Released, 82, 340, 20, 50_000, false));
+        Assert.False(splitView.IsPaneOpen);
+    }
+
     private static PointerInputEvent Touch(PointerInputKind kind, uint id, float x, float y, ulong timestamp, bool contact) => new(
         kind,
         id,

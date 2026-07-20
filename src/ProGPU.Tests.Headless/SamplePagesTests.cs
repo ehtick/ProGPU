@@ -1926,17 +1926,13 @@ public class SamplePagesTests : IDisposable
                     return;
                 }
             }
-            if (visual is Panel panel)
+            if (visual is ContainerVisual container)
             {
-                foreach (var child in panel.Children)
+                foreach (var child in container.Children)
                 {
                     FindTranspileBtn(child);
                     if (transpileBtn != null) return;
                 }
-            }
-            else if (visual is Border border && border.Child != null)
-            {
-                FindTranspileBtn(border.Child);
             }
         }
 
