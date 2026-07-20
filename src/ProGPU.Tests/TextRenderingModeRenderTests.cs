@@ -33,9 +33,37 @@ public sealed class TextRenderingModeRenderTests
             }));
 
         Assert.Equal(1f, result.Item1);
-        Assert.Equal(21.5f, result.Item2);
-        Assert.Equal(30f / 21.5f, result.Item3, 5);
+        Assert.Equal(30f * (5f / 7f), result.Item2, 5);
+        Assert.Equal(7f / 5f, result.Item3, 5);
         Assert.Equal(30f, result.Item2 * result.Item3, 5);
+    }
+
+    [Theory]
+    [InlineData(11f, 3f, 33f)]
+    [InlineData(11.5f, 3f, 34.5f)]
+    [InlineData(14f, 2.625f, 36.75f)]
+    public void UiTextRasterizationPreservesItsPhysicalFontSize(
+        float fontSize,
+        float dpiScale,
+        float expectedRasterSize)
+    {
+        var method = typeof(Compositor).GetMethod(
+            "ResolveTextRasterization",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var result = Assert.IsType<ValueTuple<float, float, float>>(method.Invoke(
+            null,
+            new object[]
+            {
+                fontSize,
+                Matrix4x4.Identity,
+                dpiScale,
+                1f
+            }));
+
+        Assert.Equal(expectedRasterSize, result.Item2, 5);
+        Assert.Equal(1f, result.Item3, 5);
     }
 
     [Fact]

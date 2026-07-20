@@ -376,24 +376,19 @@ public unsafe class Compositor : IDisposable
         var transformScale = TransformMetrics.GetStrokeScale(transform);
         var untransformedPhysicalFontSize = fontSize * dpiScale;
         var targetRasterFontSize = untransformedPhysicalFontSize * transformScale * staticZoom;
-        var rasterFontSize = QuantizeGlyphRasterSize(targetRasterFontSize);
+        var rasterFontSize = ResolveGlyphRasterSize(targetRasterFontSize);
         var atlasToLogicalScale = untransformedPhysicalFontSize / MathF.Max(rasterFontSize, 0.0001f);
         return (dpiScale * staticZoom, rasterFontSize, atlasToLogicalScale);
     }
 
-    private static float QuantizeGlyphRasterSize(float targetRasterFontSize)
+    private static float ResolveGlyphRasterSize(float targetRasterFontSize)
     {
-        var rasterFontSize = Math.Clamp(targetRasterFontSize, 4f, 64f);
-        if (rasterFontSize <= 24f)
-        {
-            rasterFontSize = MathF.Round(rasterFontSize * 2f) / 2f;
-        }
-        else
-        {
-            rasterFontSize = MathF.Round(rasterFontSize / 2f) * 2f;
-        }
-
-        return rasterFontSize;
+        // Rasterize ordinary atlas text at its actual physical size. Coarsely
+        // quantizing high-DPI UI text (for example 11 DIP * 3 = 33 px) and then
+        // scaling the bitmap back to the requested size softens every edge. The
+        // atlas remains bounded by its existing capacity/LRU policy, while text
+        // above the 64 px bitmap ceiling continues through the vector fallback.
+        return Math.Clamp(targetRasterFontSize, 4f, 64f);
     }
 
     private readonly List<StaticTextRecord> _compiledTextRecords = new();
@@ -9403,7 +9398,7 @@ SceneStateUploadComplete:
         {
             var logicalTargetSize = cmd.FontSize *
                 TransformMetrics.GetStrokeScale(activeTransform) * staticZoom;
-            rasterFontSize = QuantizeGlyphRasterSize(logicalTargetSize);
+            rasterFontSize = ResolveGlyphRasterSize(logicalTargetSize);
             atlasToLogicalScale = cmd.FontSize / MathF.Max(rasterFontSize, 0.0001f);
         }
         var fontScaleX = cmd.HasFontTransform && float.IsFinite(cmd.FontTransform.X)
@@ -9644,7 +9639,7 @@ SceneStateUploadComplete:
         {
             var logicalTargetSize = cmd.FontSize *
                 TransformMetrics.GetStrokeScale(activeTransform) * staticZoom;
-            rasterFontSize = QuantizeGlyphRasterSize(logicalTargetSize);
+            rasterFontSize = ResolveGlyphRasterSize(logicalTargetSize);
             atlasToLogicalScale = cmd.FontSize / MathF.Max(rasterFontSize, 0.0001f);
         }
         var fontScaleX = cmd.HasFontTransform && float.IsFinite(cmd.FontTransform.X)
