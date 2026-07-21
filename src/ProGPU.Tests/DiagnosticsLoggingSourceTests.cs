@@ -146,7 +146,7 @@ public class DiagnosticsLoggingSourceTests
         Assert.Contains("if ($IsWindows)", workflow, StringComparison.Ordinal);
         Assert.Contains("\"FullyQualifiedName~DiagnosticsLoggingSourceTests|FullyQualifiedName~StrongNameSigningTests|FullyQualifiedName~WindowsDpiAwarenessTests\"", workflow, StringComparison.Ordinal);
         Assert.Contains("$shapingArgs = $testArgs + @(", workflow, StringComparison.Ordinal);
-        Assert.Contains("FullyQualifiedName~ShapingContractsTests", workflow, StringComparison.Ordinal);
+        Assert.Contains("FullyQualifiedName=ProGPU.Tests.ShapingContractsTests.GpuDefaultFeatureKeepsExplicitFlagScopedToRequestedRange", workflow, StringComparison.Ordinal);
         Assert.Contains("dotnet @shapingArgs", workflow, StringComparison.Ordinal);
         Assert.Contains("dotnet @testArgs", workflow, StringComparison.Ordinal);
         Assert.Contains("FullyQualifiedName!~ShapingContractsTests", workflow, StringComparison.Ordinal);
