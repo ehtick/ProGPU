@@ -1370,6 +1370,18 @@ public class BidiAndFlowDirectionTests
     }
 
     [Fact]
+    public void PortableRichDocumentRegistryOmitsOpenXmlButKeepsEditableFormats()
+    {
+        RichDocumentFormatRegistry registry = RichDocumentFormatRegistry.CreatePortableDefault();
+
+        Assert.False(registry.TryGetFileExtension(".docx", out _));
+        Assert.True(registry.TryGetFileExtension(".txt", out _));
+        Assert.True(registry.TryGetFileExtension(".md", out _));
+        Assert.True(registry.TryGetFileExtension(".rtf", out _));
+        Assert.True(registry.TryGetFileExtension(".html", out _));
+    }
+
+    [Fact]
     public void HtmlDocumentCodecPreservesSemanticBlocksDirectionAndCssFormatting()
     {
         const string html = """

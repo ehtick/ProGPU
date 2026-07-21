@@ -17,6 +17,7 @@ using ProGPU.Text;
 using System.Collections.Concurrent;
 using System.Globalization;
 using Windows.Devices.Input;
+using ProGPU.Virtualization;
 
 namespace Microsoft.UI.Xaml.Controls;
 
@@ -27,6 +28,7 @@ public class DataGridColumn
     public float ActualWidth { get; internal set; }
     public string PropertyName { get; set; } = string.Empty;
     public bool IsAscending { get; set; } = true;
+    public TextWrapping? TextWrapping { get; set; }
 
     public DataGridColumn(string header, DataGridLength width, string propName)
     {
@@ -78,6 +80,13 @@ public class DataGrid : Control
     private int _pendingTouchColumn = -1;
     private int _pendingTouchSortColumn = -1;
     private float _touchInertiaVelocity;
+    private readonly VariableSizeIndex _rowSizes = new();
+    private int _indexedRowCount = -1;
+    private int _rowLayoutSignature;
+    private int _indexedRowLayoutSignature = -1;
+    private float _minRowHeight = 28f;
+    private float _estimatedRowHeight = 40f;
+    private TextWrapping _cellTextWrapping = TextWrapping.NoWrap;
 
     public List<DataGridColumn> Columns { get; } = new();
 
@@ -88,6 +97,7 @@ public class DataGrid : Control
         base.OnPropertyChanged(dp, oldValue, newValue);
         if (dp == FontProperty)
         {
+            InvalidateRowMeasurements();
             Invalidate();
         }
     }
@@ -95,13 +105,58 @@ public class DataGrid : Control
     public float FontSize
     {
         get => _fontSize;
-        set { _fontSize = value; Invalidate(); }
+        set { _fontSize = value; InvalidateRowMeasurements(); Invalidate(); }
     }
 
     public float RowHeight
     {
         get => _rowHeight;
-        set { _rowHeight = value; Invalidate(); }
+        set
+        {
+            if (!float.IsNaN(value) && (!float.IsFinite(value) || value <= 0f))
+                throw new ArgumentOutOfRangeException(nameof(value));
+            _rowHeight = value;
+            InvalidateRowMeasurements();
+            Invalidate();
+        }
+    }
+
+    public float MinRowHeight
+    {
+        get => _minRowHeight;
+        set
+        {
+            if (!float.IsFinite(value) || value <= 0f) throw new ArgumentOutOfRangeException(nameof(value));
+            _minRowHeight = value;
+            InvalidateRowMeasurements();
+            Invalidate();
+        }
+    }
+
+    /// <summary>Estimated auto-row height used until a row enters the realization window.</summary>
+    public float EstimatedRowHeight
+    {
+        get => _estimatedRowHeight;
+        set
+        {
+            if (!float.IsFinite(value) || value <= 0f) throw new ArgumentOutOfRangeException(nameof(value));
+            if (_estimatedRowHeight == value) return;
+            _estimatedRowHeight = value;
+            InvalidateRowMeasurements();
+            Invalidate();
+        }
+    }
+
+    public TextWrapping CellTextWrapping
+    {
+        get => _cellTextWrapping;
+        set
+        {
+            if (_cellTextWrapping == value) return;
+            _cellTextWrapping = value;
+            InvalidateRowMeasurements();
+            Invalidate();
+        }
     }
 
     public int SelectedIndex
@@ -144,7 +199,9 @@ public class DataGrid : Control
         }
     }
 
-    public float TotalBodyHeight => _itemsSource.Count * _rowHeight;
+    public float TotalBodyHeight => IsVariableRowHeight
+        ? EnsureRowSizeIndex().TotalSize
+        : _itemsSource.Count * _rowHeight;
     public float ViewportHeight => Size.Y - _headerHeight;
     public int EditingRow => _editingRow;
     public int EditingCol => _editingCol;
@@ -240,6 +297,7 @@ public class DataGrid : Control
     public void AddItem(object item)
     {
         _itemsSource.Add(item);
+        InvalidateRowMeasurements();
         Invalidate();
     }
 
@@ -249,6 +307,7 @@ public class DataGrid : Control
         _itemsSource.Clear();
         _selectedIndex = -1;
         _scrollOffset = 0f;
+        InvalidateRowMeasurements();
         Invalidate();
     }
 
@@ -499,6 +558,7 @@ public class DataGrid : Control
         });
 
         SortingColumn = column;
+        InvalidateRowMeasurements();
         Invalidate();
     }
 
@@ -509,7 +569,8 @@ public class DataGrid : Control
             float maxScroll = Math.Max(0f, TotalBodyHeight - ViewportHeight);
             if (maxScroll > 0f)
             {
-                float delta = -e.WheelDelta * _rowHeight;
+                float line = IsVariableRowHeight ? MinRowHeight : _rowHeight;
+                float delta = e.IsPreciseScrolling ? -e.WheelDelta : -e.WheelDelta * line;
                 float targetOffset = Math.Clamp(_scrollOffset + delta, 0f, maxScroll);
                 if (targetOffset != _scrollOffset)
                 {
@@ -598,7 +659,7 @@ public class DataGrid : Control
             // Click in Body rows
             else
             {
-                int r = (int)((e.Position.Y - _headerHeight + ScrollOffset) / _rowHeight);
+                int r = GetRowIndexAt(e.Position.Y);
                 if (r >= 0 && r < _itemsSource.Count)
                 {
                     SelectedIndex = r;
@@ -834,7 +895,7 @@ public class DataGrid : Control
             if (position.Y > _headerHeight &&
                 !ScrollBarInteraction.IsVerticalTrackHit(position.X, Size.X, e.Pointer.PointerDeviceType))
             {
-                int r = (int)((position.Y - _headerHeight + ScrollOffset) / _rowHeight);
+                int r = GetRowIndexAt(position.Y);
                 if (r >= 0 && r < _itemsSource.Count)
                 {
                     if (_hoveredRowIndex != r)
@@ -879,7 +940,10 @@ public class DataGrid : Control
     private int GetRowIndexAt(float y)
     {
         if (y <= _headerHeight) return -1;
-        var row = (int)((y - _headerHeight + ScrollOffset) / _rowHeight);
+        float offset = y - _headerHeight + ScrollOffset;
+        int row = IsVariableRowHeight
+            ? EnsureRowSizeIndex().GetIndexAtOffset(offset)
+            : (int)(offset / _rowHeight);
         return row >= 0 && row < _itemsSource.Count ? row : -1;
     }
 
@@ -1047,6 +1111,7 @@ public class DataGrid : Control
     {
         Size = new Vector2(arrangeRect.Width, arrangeRect.Height);
         ResolveColumnWidths(arrangeRect.Width);
+        UpdateRowLayoutSignature();
         UpdateCellEditorLayout();
     }
 
@@ -1125,8 +1190,11 @@ public class DataGrid : Control
         // 3. Draw Body Row Cells (Virtualized recycling viewport loop)
         if (_itemsSource.Count > 0)
         {
-            int startRow = (int)Math.Floor(ScrollOffset / _rowHeight);
-            int endRow = (int)Math.Ceiling((ScrollOffset + ViewportHeight) / _rowHeight);
+            VariableSizeIndex? rowSizes = IsVariableRowHeight ? EnsureRowSizeIndex() : null;
+            int startRow = rowSizes?.GetIndexAtOffset(ScrollOffset) ??
+                (int)Math.Floor(ScrollOffset / _rowHeight);
+            int endRow = rowSizes?.GetIndexAtOffset(ScrollOffset + ViewportHeight) ??
+                (int)Math.Ceiling((ScrollOffset + ViewportHeight) / _rowHeight);
 
             startRow = Math.Clamp(startRow, 0, _itemsSource.Count - 1);
             endRow = Math.Clamp(endRow, 0, _itemsSource.Count - 1);
@@ -1135,7 +1203,8 @@ public class DataGrid : Control
 
             for (int r = startRow; r <= endRow; r++)
             {
-                float rowY = _headerHeight + r * _rowHeight - ScrollOffset;
+                float currentRowHeight = ResolveRowHeight(r, activeFont);
+                float rowY = _headerHeight + (rowSizes?.GetOffset(r) ?? r * _rowHeight) - ScrollOffset;
                 var item = _itemsSource[r];
 
                 // Alternate, Hover & Selection backgrounds
@@ -1153,7 +1222,7 @@ public class DataGrid : Control
                     rowBg = ThemeManager.GetBrush("ControlBackground"); // Subtle alternate rows
                 }
 
-                Rect rowRect = new Rect(0, rowY, Size.X, _rowHeight);
+                Rect rowRect = new Rect(0, rowY, Size.X, currentRowHeight);
                 if (rowBg != null)
                 {
                     context.DrawRectangle(rowBg, null, rowRect);
@@ -1162,7 +1231,7 @@ public class DataGrid : Control
                 // Draw active selection vertical indicator stripe on far-left
                 if (r == SelectedIndex)
                 {
-                    Rect selectionStripe = LogicalToPhysical(new Rect(0f, rowY + 2f, 3f, _rowHeight - 4f));
+                    Rect selectionStripe = LogicalToPhysical(new Rect(0f, rowY + 2f, 3f, currentRowHeight - 4f));
                     context.DrawRectangle(ThemeManager.GetBrush("SystemAccentColor"), null, selectionStripe);
                 }
 
@@ -1180,12 +1249,16 @@ public class DataGrid : Control
                     else
                     {
                         string val = GetCellValue(item, col.PropertyName);
-                        float cellTextY = rowY + (_rowHeight - FontSize) / 2f;
+                        TextWrapping wrapping = col.TextWrapping ?? CellTextWrapping;
+                        float cellTextY = wrapping == TextWrapping.NoWrap
+                            ? rowY + Math.Max(4f, (currentRowHeight - FontSize) * 0.5f)
+                            : rowY + 4f;
                         Rect cellTextBounds = LogicalToPhysical(new Rect(
                             colX + 8f,
                             cellTextY,
-                            Math.Max(0f, colWidth - 16f),
-                            FontSize));
+                            wrapping == TextWrapping.NoWrap ? 10000f : Math.Max(0f, colWidth - 16f),
+                            Math.Max(FontSize, currentRowHeight - 8f)));
+                        context.PushClip(LogicalToPhysical(new Rect(colX, rowY, colWidth, currentRowHeight)));
                         context.DrawText(
                             val,
                             activeFont,
@@ -1195,15 +1268,22 @@ public class DataGrid : Control
                             Matrix4x4.Identity,
                             cellTextBounds,
                             textShapingOptions: GetTextShapingOptions(),
-                            textAlignment: FlowDirection == FlowDirection.RightToLeft
+                            textAlignment: wrapping != TextWrapping.NoWrap && FlowDirection == FlowDirection.RightToLeft
                                 ? ProGPU.Text.TextAlignment.Right
                                 : ProGPU.Text.TextAlignment.Left);
+                        context.PopClip();
                     }
                     colX += colWidth;
                 }
 
                 // Draw thin grid lines
-                context.DrawRectangle(null, new Pen(ThemeManager.GetBrush("ControlBorder"), 0.5f), new Rect(0, rowY, Size.X, _rowHeight));
+                context.DrawRectangle(null, new Pen(ThemeManager.GetBrush("ControlBorder"), 0.5f), new Rect(0, rowY, Size.X, currentRowHeight));
+
+                if (rowSizes != null && r == endRow && r + 1 < _itemsSource.Count &&
+                    rowY + currentRowHeight < _headerHeight + ViewportHeight)
+                {
+                    endRow++;
+                }
             }
 
             context.PopClip();
@@ -1433,6 +1513,13 @@ public class DataGrid : Control
                 Console.WriteLine($"Error committing edit: {ex.Message}");
             }
 
+            if (IsVariableRowHeight &&
+                _indexedRowCount == _itemsSource.Count &&
+                _indexedRowLayoutSignature == _rowLayoutSignature)
+            {
+                _rowSizes.InvalidateMeasurement(row);
+            }
+
             Invalidate();
         }
     }
@@ -1468,7 +1555,12 @@ public class DataGrid : Control
 
         if (_editingRow != -1)
         {
-            float rowY = _headerHeight + _editingRow * _rowHeight - _scrollOffset;
+            float editorRowHeight = IsVariableRowHeight
+                ? ResolveRowHeight(_editingRow, GetActiveFont()!)
+                : _rowHeight;
+            float rowY = _headerHeight +
+                (IsVariableRowHeight ? EnsureRowSizeIndex().GetOffset(_editingRow) : _editingRow * _rowHeight) -
+                _scrollOffset;
             float colX = Padding.Left;
             for (int i = 0; i < _editingCol; i++)
             {
@@ -1476,7 +1568,7 @@ public class DataGrid : Control
             }
             float colWidth = Columns[_editingCol].ActualWidth;
 
-            if (rowY + _rowHeight <= _headerHeight || rowY >= Size.Y)
+            if (rowY + editorRowHeight <= _headerHeight || rowY >= Size.Y)
             {
                 _cellEditor.WidthConstraint = 0f;
                 _cellEditor.HeightConstraint = 0f;
@@ -1487,16 +1579,16 @@ public class DataGrid : Control
             else
             {
                 _cellEditor.WidthConstraint = colWidth;
-                _cellEditor.HeightConstraint = _rowHeight;
-                _cellEditor.Measure(new Vector2(colWidth, _rowHeight));
-                _cellEditor.Arrange(new Rect(colX, rowY, colWidth, _rowHeight));
+                _cellEditor.HeightConstraint = editorRowHeight;
+                _cellEditor.Measure(new Vector2(colWidth, editorRowHeight));
+                _cellEditor.Arrange(new Rect(colX, rowY, colWidth, editorRowHeight));
 
                 if (rowY < _headerHeight)
                 {
                     float clipY = _headerHeight - rowY;
-                    _cellEditor.ClipBounds = new Rect(0f, clipY, colWidth, _rowHeight - clipY);
+                    _cellEditor.ClipBounds = new Rect(0f, clipY, colWidth, editorRowHeight - clipY);
                 }
-                else if (rowY + _rowHeight > Size.Y)
+                else if (rowY + editorRowHeight > Size.Y)
                 {
                     float clipH = Size.Y - rowY;
                     _cellEditor.ClipBounds = new Rect(0f, 0f, colWidth, clipH);
@@ -1515,6 +1607,78 @@ public class DataGrid : Control
             _cellEditor.Arrange(new Rect(0, 0, 0, 0));
             _cellEditor.ClipBounds = null;
         }
+    }
+
+    private bool IsVariableRowHeight => float.IsNaN(_rowHeight);
+
+    private void UpdateRowLayoutSignature()
+    {
+        var hash = new HashCode();
+        hash.Add(FontSize);
+        hash.Add(MinRowHeight);
+        hash.Add(CellTextWrapping);
+        hash.Add(GetActiveFont());
+        hash.Add(Columns.Count);
+        foreach (DataGridColumn column in Columns)
+        {
+            hash.Add(column.ActualWidth);
+            hash.Add(column.TextWrapping);
+        }
+
+        int signature = hash.ToHashCode();
+        if (_rowLayoutSignature == signature) return;
+        _rowLayoutSignature = signature;
+        InvalidateRowMeasurements();
+    }
+
+    private void InvalidateRowMeasurements()
+    {
+        _indexedRowCount = -1;
+        _indexedRowLayoutSignature = -1;
+    }
+
+    private VariableSizeIndex EnsureRowSizeIndex()
+    {
+        if (_indexedRowCount != _itemsSource.Count ||
+            _indexedRowLayoutSignature != _rowLayoutSignature)
+        {
+            _rowSizes.Reset(_itemsSource.Count, Math.Max(MinRowHeight, EstimatedRowHeight));
+            _indexedRowCount = _itemsSource.Count;
+            _indexedRowLayoutSignature = _rowLayoutSignature;
+        }
+        return _rowSizes;
+    }
+
+    private float ResolveRowHeight(int row, TtfFont activeFont)
+    {
+        if (!IsVariableRowHeight) return _rowHeight;
+        VariableSizeIndex sizes = EnsureRowSizeIndex();
+        if (sizes.IsMeasured(row)) return sizes.GetSize(row);
+
+        float height = MinRowHeight;
+        object item = _itemsSource[row];
+        foreach (DataGridColumn column in Columns)
+        {
+            string value = GetCellValue(item, column.PropertyName);
+            if (string.IsNullOrEmpty(value)) continue;
+            TextWrapping wrapping = column.TextWrapping ?? CellTextWrapping;
+            float layoutWidth = wrapping == TextWrapping.NoWrap
+                ? float.PositiveInfinity
+                : Math.Max(1f, column.ActualWidth - 16f);
+            var layout = new TextLayout(
+                value,
+                activeFont,
+                FontSize,
+                layoutWidth,
+                FlowDirection == FlowDirection.RightToLeft
+                    ? ProGPU.Text.TextAlignment.Right
+                    : ProGPU.Text.TextAlignment.Left,
+                shapingOptions: GetTextShapingOptions());
+            height = Math.Max(height, layout.ContentSize.Y + 8f);
+        }
+
+        sizes.SetMeasuredSize(row, height);
+        return height;
     }
 
     private class CellEditorTextBox : TextBox

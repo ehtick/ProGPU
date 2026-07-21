@@ -81,7 +81,10 @@ public static class DataVirtualizationPage
             var dataGrid = new Microsoft.UI.Xaml.Controls.DataGrid
             {
                 Font = AppState._font,
-                RowHeight = 28f,
+            RowHeight = float.NaN,
+            MinRowHeight = 28f,
+            EstimatedRowHeight = 48f,
+            CellTextWrapping = TextWrapping.WrapWholeWords,
                 HorizontalAlignment = HorizontalAlignment.Stretch,
                 VerticalAlignment = VerticalAlignment.Stretch,
                 Margin = new Thickness(4)

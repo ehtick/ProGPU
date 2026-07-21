@@ -98,6 +98,13 @@ public sealed class TouchGestureResponsiveTests
         InputSystem.InjectTextInput(TextInputEventKind.CompositionUpdated, "に", true);
         InputSystem.InjectTextInput(TextInputEventKind.CompositionCanceled);
         Assert.Equal("A日本", textBox.Text);
+
+        textBox.SelectionStart = 1;
+        textBox.SelectionLength = 2;
+        InputSystem.InjectTextInput(TextInputEventKind.CompositionStarted, isComposing: true);
+        InputSystem.InjectTextInput(TextInputEventKind.CompositionUpdated, "語", true);
+        InputSystem.SetFocus(new Button());
+        Assert.Equal("A日本", textBox.Text);
     }
 
     [Fact]
@@ -151,6 +158,73 @@ public sealed class TouchGestureResponsiveTests
 
         Assert.True(viewer.ChangeView(null, 200, null));
         Assert.Equal(200f, viewer.VerticalOffset);
+    }
+
+    [Fact]
+    public void PreciseTrackpadWheelPreservesPixelDeltasOnBothAxes()
+    {
+        var content = new Border { Width = 900, Height = 900 };
+        var viewer = new ScrollViewer { Content = content, Width = 220, Height = 180 };
+        ArrangeRoot(viewer, new Vector2(220, 180));
+
+        var wheel = new PointerRoutedEventArgs
+        {
+            WheelDelta = -17f,
+            WheelDeltaX = -13f,
+            IsPreciseScrolling = true
+        };
+        viewer.OnPointerWheelChanged(wheel);
+
+        Assert.True(wheel.Handled);
+        Assert.Equal(17f, viewer.VerticalOffset);
+        Assert.Equal(13f, viewer.HorizontalOffset);
+    }
+
+    [Fact]
+    public void PreciseTrackpadWheelScrollsVirtualizedDataByLogicalPixels()
+    {
+        var dataGrid = new DataGrid { Width = 320, Height = 180 };
+        dataGrid.Columns.Add(new DataGridColumn("Value", 280f, "Value"));
+        for (int index = 0; index < 100; index++) dataGrid.ItemsSource.Add($"Row {index}");
+        ArrangeRoot(dataGrid, new Vector2(320, 180));
+
+        var wheel = new PointerRoutedEventArgs
+        {
+            WheelDelta = -11.5f,
+            IsPreciseScrolling = true
+        };
+        dataGrid.OnPointerWheelChanged(wheel);
+
+        Assert.True(wheel.Handled);
+        Assert.Equal(11.5f, dataGrid.ScrollOffset);
+    }
+
+    [Fact]
+    public void VariablePanelFillsViewportAndPreservesTailMeasurements()
+    {
+        var panel = new VirtualizingStackPanel
+        {
+            Width = 200,
+            Height = 100,
+            ItemsCount = 100,
+            ItemHeight = float.NaN,
+            EstimatedItemHeight = 100f,
+            CacheLength = 0f,
+            CreateVisualFactory = static () => new Border { Height = 10f },
+            BindVisualCallback = static (_, _) => { }
+        };
+        ArrangeRoot(panel, new Vector2(200, 100));
+
+        var activeField = typeof(VirtualizingStackPanel).GetField(
+            "_activeVisuals",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(activeField);
+        var active = Assert.IsAssignableFrom<System.Collections.IDictionary>(activeField.GetValue(panel));
+        Assert.True(active.Count >= 10);
+
+        float measuredExtent = panel.TotalVirtualHeight;
+        panel.ItemsCount = 101;
+        Assert.Equal(measuredExtent + 100f, panel.TotalVirtualHeight);
     }
 
     [Fact]
@@ -537,6 +611,67 @@ public sealed class TouchGestureResponsiveTests
         Assert.Equal(1, drops);
         Assert.False(DragDropManager.IsDragging);
         Assert.Equal(0u, DragDropManager.ActivePointerId);
+    }
+
+    [Fact]
+    public void IndirectMouseDragDropTracksAndCompletesItsStablePointer()
+    {
+        const uint indirectPointerId = uint.MaxValue;
+        var source = new TouchDragSource
+        {
+            Width = 100,
+            Height = 80,
+            Background = new ProGPU.Vector.ThemeResourceBrush("ControlBackground")
+        };
+        var target = new Border
+        {
+            Width = 100,
+            Height = 80,
+            AllowDrop = true,
+            Background = new ProGPU.Vector.ThemeResourceBrush("ControlBackground")
+        };
+        var root = new StackPanel { Orientation = Orientation.Horizontal };
+        root.Children.Add(source);
+        root.Children.Add(target);
+        ArrangeRoot(root, new Vector2(200, 80));
+        UseInputRoot(root);
+        var drops = 0;
+        target.Drop += (_, _) => drops++;
+
+        InputSystem.InjectPointer(new PointerInputEvent(
+            PointerInputKind.Moved,
+            indirectPointerId,
+            PointerDeviceType.Mouse,
+            new Vector2(20, 30),
+            500));
+        InputSystem.InjectPointer(new PointerInputEvent(
+            PointerInputKind.Pressed,
+            indirectPointerId,
+            PointerDeviceType.Mouse,
+            new Vector2(20, 30),
+            1_000,
+            IsInContact: true,
+            IsLeftButtonPressed: true));
+        Assert.True(DragDropManager.IsDragging);
+        Assert.Equal(indirectPointerId, DragDropManager.ActivePointerId);
+
+        InputSystem.InjectPointer(new PointerInputEvent(
+            PointerInputKind.Moved,
+            indirectPointerId,
+            PointerDeviceType.Mouse,
+            new Vector2(150, 30),
+            20_000,
+            IsInContact: true,
+            IsLeftButtonPressed: true));
+        InputSystem.InjectPointer(new PointerInputEvent(
+            PointerInputKind.Released,
+            indirectPointerId,
+            PointerDeviceType.Mouse,
+            new Vector2(150, 30),
+            30_000));
+
+        Assert.Equal(1, drops);
+        Assert.False(DragDropManager.IsDragging);
     }
 
     [Fact]

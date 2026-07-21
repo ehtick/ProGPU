@@ -216,7 +216,10 @@ public class VirtualizingPanel : Panel, IScrollViewportAware
             float maxScroll = Math.Max(0f, contentSize - viewportSize);
             if (maxScroll > 0f)
             {
-                float delta = -e.WheelDelta * 40f; // Scroll by 40px per wheel tick
+                float wheelDelta = IsHorizontal && e.WheelDeltaX != 0f
+                    ? e.WheelDeltaX
+                    : e.WheelDelta;
+                float delta = e.IsPreciseScrolling ? -wheelDelta : -wheelDelta * 40f;
                 float targetOffset = Math.Clamp(ScrollOffset + delta, 0f, maxScroll);
                 if (targetOffset != ScrollOffset)
                 {
