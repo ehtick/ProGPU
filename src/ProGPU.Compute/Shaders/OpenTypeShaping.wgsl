@@ -1,7 +1,7 @@
 // Algorithm: initialize through a compressed nominal cmap, preprocess Unicode and deterministic complex-script syllables, execute stage-aware OpenType substitutions with Indic/USE/Myanmar/Khmer reordering plus bounded Arabic presentation fallback/stretch, propagate HarfBuzz-compatible break/concat/tatweel safety across shaping dependencies, load metrics, execute GPOS or extent-based fallback mark positioning, then finalize output order.
 // Time complexity: O(N*(log R + log V + log U + log D + log Q + log K) + S*N + L*N*log C) for typical bounded combining, context, and attachment runs, and O(N^2 + S*N + L*N*(N + log C)) worst-case when a run or every matched lookup dependency spans all N glyphs; R is cmap ranges, V variation-selector ranges, U Unicode-property ranges, D directional mappings, Q normalization records, K invalid-vowel constraints, S selected deterministic syllable-machine passes (at most one), L ordered ranged lookups, and C coverage size. Safety propagation scans only each dependency's matched span. Initialization, metrics, and output conversion are parallel while order-changing preprocessing and lookup mutation are serial.
 // Space complexity: O(N + R + V + U + D + Q + K + M + G + L) storage for glyphs plus stable internal identities, cmap/variation/packed Unicode normalization and vowel-constraint data, M generated Indic/USE/Myanmar/Khmer transition words, G metrics and optional extents, and lookup commands; each invocation uses O(1) private storage (a fixed 64-task stack) and no textures.
-// Workgroups contain 64 independent glyph invocations; Unicode preprocessing and the ordered lookup/position VMs use one invocation because they mutate shared order. Substitution stage transitions, consecutive same-type command groups, and single/multiple/alternate/ligature/contextual GSUB execution use separate compute passes so Metal/WebGPU compilers do not have to inline unrelated lookup graphs. Context formats 1 and 2 share one class-parameterized matcher. Contextual substitution remains exact, while its dependency-flag propagation is intentionally deferred until it can run in a separate bounded pass without making the nested-lookup entry point unbuildable on Metal; the CPU executor remains the authoritative flag path. Command grouping preserves lookup order while bounding dispatches by O(min(L, type runs)). The Arabic joining machine has 42 fixed transitions (168 bytes of private state), and each stch run is capped at 256 generated components inside the preallocated run capacity; the generated complex-script machines use uploaded state/category matrices with 256 fixed category entries per state. Runtime loops are bounded by uploaded counts/capacity and OpenType table counts. Lookup flags use GDEF glyph/mark classes and mark-set coverage without auxiliary allocations. All arithmetic is exact 32-bit integer design-unit arithmetic.
+// Workgroups contain 64 independent glyph invocations; Unicode preprocessing and the ordered lookup/position VMs use one invocation because they mutate shared order. Substitution stage transitions, consecutive same-type command groups, and single/multiple/alternate/ligature/contextual GSUB execution use separate compute passes so Metal/WebGPU compilers do not have to inline unrelated lookup graphs. Contextual substitution retains its last known Metal-compatible format-specific matchers; its dependency-flag propagation is intentionally deferred until it can run in a separate bounded pass without making the nested-lookup entry point unbuildable on Metal. The CPU executor remains the authoritative flag path. Command grouping preserves lookup order while bounding dispatches by O(min(L, type runs)). The Arabic joining machine has 42 fixed transitions (168 bytes of private state), and each stch run is capped at 256 generated components inside the preallocated run capacity; the generated complex-script machines use uploaded state/category matrices with 256 fixed category entries per state. Runtime loops are bounded by uploaded counts/capacity and OpenType table counts. Lookup flags use GDEF glyph/mark classes and mark-set coverage without auxiliary allocations. All arithmetic is exact 32-bit integer design-unit arithmetic.
 
 struct Params {
     input_count: u32,
@@ -2942,30 +2942,14 @@ fn schedule_records(record_offset: u32, record_count: u32, position: u32,
     return true;
 }
 
-fn context_match_value(class_def: u32, glyph_id: u32) -> u32 {
-    if (class_def == 0u) { return glyph_id; }
-    return class_value(class_def, glyph_id);
-}
-
 fn apply_context_subtable(subtable: u32, position: u32, lookup_offset: u32, lookup_flags: u32,
     depth: u32, feature_value: u32, feature_tag: u32) -> bool {
     let format = table_u16(subtable);
-    if (format == 1u || format == 2u) {
+    if (format == 1u) {
         let covered = coverage_index(subtable + table_u16(subtable + 2u), glyphs[position].glyph_id);
-        if (covered < 0) { return false; }
-        var class_def = 0u;
-        var set_index = u32(covered);
-        var set_count_offset = 4u;
-        var set_offsets_offset = 6u;
-        if (format == 2u) {
-            class_def = subtable + table_u16(subtable + 4u);
-            set_index = class_value(class_def, glyphs[position].glyph_id);
-            set_count_offset = 6u;
-            set_offsets_offset = 8u;
-        }
-        let set_count = table_u16(subtable + set_count_offset);
-        if (set_index >= set_count) { return false; }
-        let set_relative = table_u16(subtable + set_offsets_offset + set_index * 2u);
+        let set_count = table_u16(subtable + 4u);
+        if (covered < 0 || u32(covered) >= set_count) { return false; }
+        let set_relative = table_u16(subtable + 6u + u32(covered) * 2u);
         if (set_relative == 0u) { return false; }
         let rule_set = subtable + set_relative;
         let rule_count = table_u16(rule_set);
@@ -2977,7 +2961,36 @@ fn apply_context_subtable(subtable: u32, position: u32, lookup_offset: u32, look
             var last = i32(position);
             for (var input_index = 1u; input_index < glyph_count; input_index++) {
                 last = next_eligible(u32(last) + 1u, lookup_offset, lookup_flags);
-                if (last < 0 || context_match_value(class_def, glyphs[u32(last)].glyph_id) !=
+                if (last < 0 || glyphs[u32(last)].glyph_id != table_u16(rule + 2u + input_index * 2u)) {
+                    matched = false;
+                    break;
+                }
+            }
+            if (!matched) { continue; }
+            run_state.skip_count = max(run_state.skip_count, u32(last) - position);
+            return schedule_records(rule + 2u + glyph_count * 2u, record_count, position,
+                lookup_offset, lookup_flags, depth, feature_value, feature_tag);
+        }
+    } else if (format == 2u) {
+        let covered = coverage_index(subtable + table_u16(subtable + 2u), glyphs[position].glyph_id);
+        if (covered < 0) { return false; }
+        let class_def = subtable + table_u16(subtable + 4u);
+        let first_class = class_value(class_def, glyphs[position].glyph_id);
+        let set_count = table_u16(subtable + 6u);
+        if (first_class >= set_count) { return false; }
+        let set_relative = table_u16(subtable + 8u + first_class * 2u);
+        if (set_relative == 0u) { return false; }
+        let class_set = subtable + set_relative;
+        let rule_count = table_u16(class_set);
+        for (var rule_index = 0u; rule_index < rule_count; rule_index++) {
+            let rule = class_set + table_u16(class_set + 2u + rule_index * 2u);
+            let glyph_count = table_u16(rule);
+            let record_count = table_u16(rule + 2u);
+            var matched = glyph_count != 0u;
+            var last = i32(position);
+            for (var input_index = 1u; input_index < glyph_count; input_index++) {
+                last = next_eligible(u32(last) + 1u, lookup_offset, lookup_flags);
+                if (last < 0 || class_value(class_def, glyphs[u32(last)].glyph_id) !=
                         table_u16(rule + 2u + input_index * 2u)) {
                     matched = false;
                     break;
@@ -3011,46 +3024,29 @@ fn apply_context_subtable(subtable: u32, position: u32, lookup_offset: u32, look
     return false;
 }
 
-fn match_backtrack_start(offset: u32, count: u32, position: u32,
-    lookup_offset: u32, lookup_flags: u32, class_def: u32) -> i32 {
+fn match_backtrack_glyphs(offset: u32, count: u32, position: u32,
+    lookup_offset: u32, lookup_flags: u32, class_def: u32) -> bool {
     var cursor = i32(position) - 1;
-    var start = i32(position);
     for (var index = 0u; index < count; index++) {
         cursor = previous_context_eligible(cursor, lookup_offset, lookup_flags);
-        if (cursor < 0) { return -1; }
+        if (cursor < 0) { return false; }
         let expected = table_u16(offset + index * 2u);
         if (class_def != 0u) {
-            if (class_value(class_def, glyphs[u32(cursor)].glyph_id) != expected) { return -1; }
-        } else if (glyphs[u32(cursor)].glyph_id != expected) { return -1; }
-        start = cursor;
+            if (class_value(class_def, glyphs[u32(cursor)].glyph_id) != expected) { return false; }
+        } else if (glyphs[u32(cursor)].glyph_id != expected) { return false; }
         cursor -= 1;
     }
-    return start;
+    return true;
 }
 
 fn apply_chain_context_subtable(subtable: u32, position: u32, lookup_offset: u32, lookup_flags: u32,
     depth: u32, feature_value: u32, feature_tag: u32) -> bool {
     let format = table_u16(subtable);
-    if (format == 1u || format == 2u) {
+    if (format == 1u) {
         let covered = coverage_index(subtable + table_u16(subtable + 2u), glyphs[position].glyph_id);
-        if (covered < 0) { return false; }
-        var backtrack_class = 0u;
-        var input_class = 0u;
-        var lookahead_class = 0u;
-        var set_index = u32(covered);
-        var set_count_offset = 4u;
-        var set_offsets_offset = 6u;
-        if (format == 2u) {
-            backtrack_class = subtable + table_u16(subtable + 4u);
-            input_class = subtable + table_u16(subtable + 6u);
-            lookahead_class = subtable + table_u16(subtable + 8u);
-            set_index = class_value(input_class, glyphs[position].glyph_id);
-            set_count_offset = 10u;
-            set_offsets_offset = 12u;
-        }
-        let set_count = table_u16(subtable + set_count_offset);
-        if (set_index >= set_count) { return false; }
-        let set_relative = table_u16(subtable + set_offsets_offset + set_index * 2u);
+        let set_count = table_u16(subtable + 4u);
+        if (covered < 0 || u32(covered) >= set_count) { return false; }
+        let set_relative = table_u16(subtable + 6u + u32(covered) * 2u);
         if (set_relative == 0u) { return false; }
         let rule_set = subtable + set_relative;
         let rule_count = table_u16(rule_set);
@@ -3058,8 +3054,7 @@ fn apply_chain_context_subtable(subtable: u32, position: u32, lookup_offset: u32
             let rule = rule_set + table_u16(rule_set + 2u + rule_index * 2u);
             let backtrack_count = table_u16(rule);
             var cursor = rule + 2u;
-            if (match_backtrack_start(cursor, backtrack_count, position,
-                    lookup_offset, lookup_flags, backtrack_class) < 0) { continue; }
+            if (!match_backtrack_glyphs(cursor, backtrack_count, position, lookup_offset, lookup_flags, 0u)) { continue; }
             cursor += backtrack_count * 2u;
             let input_count = table_u16(cursor);
             cursor += 2u;
@@ -3067,7 +3062,57 @@ fn apply_chain_context_subtable(subtable: u32, position: u32, lookup_offset: u32
             var matched = input_count != 0u;
             for (var input_index = 1u; input_index < input_count; input_index++) {
                 last = next_eligible(u32(last) + 1u, lookup_offset, lookup_flags);
-                if (last < 0 || context_match_value(input_class, glyphs[u32(last)].glyph_id) !=
+                if (last < 0 || glyphs[u32(last)].glyph_id != table_u16(cursor + (input_index - 1u) * 2u)) {
+                    matched = false;
+                    break;
+                }
+            }
+            if (!matched) { continue; }
+            cursor += (input_count - 1u) * 2u;
+            let lookahead_count = table_u16(cursor);
+            cursor += 2u;
+            var lookahead = last;
+            for (var lookahead_index = 0u; lookahead_index < lookahead_count; lookahead_index++) {
+                lookahead = next_context_eligible(u32(lookahead) + 1u, lookup_offset, lookup_flags);
+                if (lookahead < 0 || glyphs[u32(lookahead)].glyph_id != table_u16(cursor + lookahead_index * 2u)) {
+                    matched = false;
+                    break;
+                }
+            }
+            if (!matched) { continue; }
+            cursor += lookahead_count * 2u;
+            let record_count = table_u16(cursor);
+            run_state.skip_count = max(run_state.skip_count, u32(last) - position);
+            return schedule_records(cursor + 2u, record_count, position, lookup_offset, lookup_flags,
+                depth, feature_value, feature_tag);
+        }
+    } else if (format == 2u) {
+        let covered = coverage_index(subtable + table_u16(subtable + 2u), glyphs[position].glyph_id);
+        if (covered < 0) { return false; }
+        let backtrack_class = subtable + table_u16(subtable + 4u);
+        let input_class = subtable + table_u16(subtable + 6u);
+        let lookahead_class = subtable + table_u16(subtable + 8u);
+        let first_class = class_value(input_class, glyphs[position].glyph_id);
+        let set_count = table_u16(subtable + 10u);
+        if (first_class >= set_count) { return false; }
+        let set_relative = table_u16(subtable + 12u + first_class * 2u);
+        if (set_relative == 0u) { return false; }
+        let rule_set = subtable + set_relative;
+        let rule_count = table_u16(rule_set);
+        for (var rule_index = 0u; rule_index < rule_count; rule_index++) {
+            let rule = rule_set + table_u16(rule_set + 2u + rule_index * 2u);
+            let backtrack_count = table_u16(rule);
+            var cursor = rule + 2u;
+            if (!match_backtrack_glyphs(cursor, backtrack_count, position, lookup_offset, lookup_flags,
+                    backtrack_class)) { continue; }
+            cursor += backtrack_count * 2u;
+            let input_count = table_u16(cursor);
+            cursor += 2u;
+            var last = i32(position);
+            var matched = input_count != 0u;
+            for (var input_index = 1u; input_index < input_count; input_index++) {
+                last = next_eligible(u32(last) + 1u, lookup_offset, lookup_flags);
+                if (last < 0 || class_value(input_class, glyphs[u32(last)].glyph_id) !=
                         table_u16(cursor + (input_index - 1u) * 2u)) {
                     matched = false;
                     break;
@@ -3080,8 +3125,8 @@ fn apply_chain_context_subtable(subtable: u32, position: u32, lookup_offset: u32
             var lookahead = last;
             for (var lookahead_index = 0u; lookahead_index < lookahead_count; lookahead_index++) {
                 lookahead = next_context_eligible(u32(lookahead) + 1u, lookup_offset, lookup_flags);
-                if (lookahead < 0 || context_match_value(lookahead_class,
-                        glyphs[u32(lookahead)].glyph_id) != table_u16(cursor + lookahead_index * 2u)) {
+                if (lookahead < 0 || class_value(lookahead_class, glyphs[u32(lookahead)].glyph_id) !=
+                        table_u16(cursor + lookahead_index * 2u)) {
                     matched = false;
                     break;
                 }

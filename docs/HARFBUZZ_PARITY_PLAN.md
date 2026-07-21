@@ -109,10 +109,10 @@ one clean macOS 26 pull-request run but failed on the next clean `main` runner,
 showing that process isolation and call-site movement alone did not put the
 pipeline below the compiler edge. A second exact one-scan specialization for
 monotone clusters was also rejected by a clean macOS 26 runner. The release
-compatibility change therefore deduplicates equivalent OpenType format matchers
-and withdraws only the unreleased GPU contextual dependency-flag propagation;
-contextual substitution output and the authoritative CPU flag path are
-unchanged.
+compatibility change therefore restores the last known Metal-compatible,
+format-specific contextual control flow and withdraws only the unreleased GPU
+contextual dependency-flag propagation; contextual substitution output and the
+authoritative CPU flag path are unchanged.
 
 Primary sources consulted for this review:
 
@@ -145,10 +145,9 @@ Primary sources consulted for this review:
 
 Adopted: preserve HarfBuzz's matched-span flag semantics in the authoritative
 CPU executor and preserve the GPU executor's existing single-invocation,
-deterministic contextual substitution order. OpenType contextual and chained
-contextual formats 1 and 2 now share class-parameterized matching control flow
-while retaining their distinct table offsets and glyph-versus-class
-comparisons. Adapted: GPU contextual dependency flags return to the explicit
+deterministic contextual substitution order, including the distinct OpenType
+format 1 glyph matcher and format 2 class matcher. Adapted: GPU contextual
+dependency flags return to the explicit
 parity backlog until they can be emitted by a separate bounded pass that does
 not make Metal compile the complete scan inside the nested-lookup graph. Other
 GPU safety paths—fractions, Arabic joining/tatweel, pair and legacy kerning,

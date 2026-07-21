@@ -72,13 +72,13 @@ public class ShaderResourceTests
     }
 
     [Fact]
-    public void OpenTypeShapingKeepsContextTasksInPrivateStorageAndSharesFormatMatchers()
+    public void OpenTypeShapingKeepsContextTasksInPrivateStorageWithoutSafetyScan()
     {
         string source = ShaderResource.Load(typeof(ComputeShaders), "OpenTypeShaping.wgsl");
 
         Assert.Contains("var<private> lookup_tasks: array<LookupTask, 64>;", source, StringComparison.Ordinal);
         Assert.Contains("var<private> lookup_task_count: u32;", source, StringComparison.Ordinal);
-        Assert.Contains("fn context_match_value(class_def: u32, glyph_id: u32)", source, StringComparison.Ordinal);
+        Assert.Contains("fn match_backtrack_glyphs", source, StringComparison.Ordinal);
         Assert.DoesNotContain("pending_unsafe_to_break", source, StringComparison.Ordinal);
         Assert.DoesNotContain("ptr<function, array<LookupTask", source, StringComparison.Ordinal);
     }
