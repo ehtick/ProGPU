@@ -784,6 +784,7 @@ public class Window : DependencyObject
 
         // Core animation updates
         phaseStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        InputSystem.UpdateManipulationInertia((float)delta);
         content.UpdateAnimations((float)delta);
         double animationTimeMs = System.Diagnostics.Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
 

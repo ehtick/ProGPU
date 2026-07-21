@@ -29,14 +29,30 @@ using Windows.Devices.Input;
 
 public sealed class PointerPointProperties
 {
+    internal PointerPointProperties()
+    {
+    }
+
+    public Windows.Foundation.Rect ContactRect { get; internal set; }
+    public bool IsBarrelButtonPressed { get; internal set; }
+    public bool IsHorizontalMouseWheel { get; internal set; }
+    public bool IsInRange { get; internal set; } = true;
+    public bool IsInverted { get; internal set; }
     public bool IsLeftButtonPressed { get; internal set; }
     public bool IsMiddleButtonPressed { get; internal set; }
     public bool IsRightButtonPressed { get; internal set; }
+    public bool IsXButton1Pressed { get; internal set; }
+    public bool IsXButton2Pressed { get; internal set; }
     public bool IsPrimary { get; internal set; }
     public bool IsCanceled { get; internal set; }
     public bool IsEraser { get; internal set; }
+    public float Orientation { get; internal set; }
+    public PointerUpdateKind PointerUpdateKind { get; internal set; }
     public float Pressure { get; internal set; }
-    public Rect ContactRect { get; internal set; }
+    public bool TouchConfidence { get; internal set; } = true;
+    public float Twist { get; internal set; }
+    public float XTilt { get; internal set; }
+    public float YTilt { get; internal set; }
     public int MouseWheelDelta { get; internal set; }
 }
 
@@ -47,45 +63,140 @@ public sealed class PointerPoint
         ulong timestamp,
         Vector2 position,
         Vector2 rawPosition,
-        PointerDeviceType deviceType,
+        Windows.Devices.Input.PointerDeviceType deviceType,
+        bool isInContact,
+        PointerPointProperties properties)
+        : this(pointerId, timestamp, position, rawPosition, deviceType, deviceType switch
+        {
+            Windows.Devices.Input.PointerDeviceType.Touch => Microsoft.UI.Input.PointerDeviceType.Touch,
+            Windows.Devices.Input.PointerDeviceType.Pen => Microsoft.UI.Input.PointerDeviceType.Pen,
+            _ => Microsoft.UI.Input.PointerDeviceType.Mouse
+        }, isInContact, properties)
+    {
+    }
+
+    private PointerPoint(
+        uint pointerId,
+        ulong timestamp,
+        Vector2 position,
+        Vector2 rawPosition,
+        Windows.Devices.Input.PointerDeviceType legacyDeviceType,
+        Microsoft.UI.Input.PointerDeviceType deviceType,
         bool isInContact,
         PointerPointProperties properties)
     {
         PointerId = pointerId;
         Timestamp = timestamp;
-        Position = position;
+        FrameId = unchecked((uint)timestamp);
+        Position = new Windows.Foundation.Point(position.X, position.Y);
         RawPosition = rawPosition;
-        PointerDevice = PointerDevice.GetPointerDevice(deviceType);
+        PointerDevice = Windows.Devices.Input.PointerDevice.GetPointerDevice(legacyDeviceType);
+        PointerDeviceType = deviceType;
         IsInContact = isInContact;
         Properties = properties;
     }
 
+    public uint FrameId { get; }
     public uint PointerId { get; }
     public ulong Timestamp { get; }
-    public Vector2 Position { get; }
-    public Vector2 RawPosition { get; }
-    public PointerDevice PointerDevice { get; }
+    public Windows.Foundation.Point Position { get; }
+    internal Vector2 RawPosition { get; }
+    public Microsoft.UI.Input.PointerDeviceType PointerDeviceType { get; }
+    // Kept as a source-compatibility extension for existing ProGPU XAML code.
+    public Windows.Devices.Input.PointerDevice PointerDevice { get; }
     public bool IsInContact { get; }
     public PointerPointProperties Properties { get; }
+
+    public PointerPoint? GetTransformedPoint(IPointerPointTransform transform)
+    {
+        ArgumentNullException.ThrowIfNull(transform);
+        if (!transform.TryTransform(Position, out var transformedPosition) ||
+            !transform.TryTransformBounds(Properties.ContactRect, out var transformedContactRect)) return null;
+        var transformedProperties = new PointerPointProperties
+        {
+            ContactRect = transformedContactRect,
+            IsBarrelButtonPressed = Properties.IsBarrelButtonPressed,
+            IsHorizontalMouseWheel = Properties.IsHorizontalMouseWheel,
+            IsInRange = Properties.IsInRange,
+            IsInverted = Properties.IsInverted,
+            IsLeftButtonPressed = Properties.IsLeftButtonPressed,
+            IsMiddleButtonPressed = Properties.IsMiddleButtonPressed,
+            IsRightButtonPressed = Properties.IsRightButtonPressed,
+            IsXButton1Pressed = Properties.IsXButton1Pressed,
+            IsXButton2Pressed = Properties.IsXButton2Pressed,
+            IsPrimary = Properties.IsPrimary,
+            IsCanceled = Properties.IsCanceled,
+            IsEraser = Properties.IsEraser,
+            Orientation = Properties.Orientation,
+            PointerUpdateKind = Properties.PointerUpdateKind,
+            Pressure = Properties.Pressure,
+            TouchConfidence = Properties.TouchConfidence,
+            Twist = Properties.Twist,
+            XTilt = Properties.XTilt,
+            YTilt = Properties.YTilt,
+            MouseWheelDelta = Properties.MouseWheelDelta
+        };
+        var transformed = new Vector2((float)transformedPosition.X, (float)transformedPosition.Y);
+        return new PointerPoint(PointerId, Timestamp, transformed, transformed,
+            PointerDevice.PointerDeviceType, PointerDeviceType, IsInContact, transformedProperties);
+    }
+}
+
+public interface IPointerPointTransform
+{
+    IPointerPointTransform Inverse { get; }
+    bool TryTransform(Windows.Foundation.Point inPoint, out Windows.Foundation.Point outPoint);
+    bool TryTransformBounds(Windows.Foundation.Rect inRect, out Windows.Foundation.Rect outRect);
+}
+
+public enum PointerDeviceType
+{
+    Touch = 0,
+    Pen = 1,
+    Mouse = 2,
+    Touchpad = 3
+}
+
+public enum PointerUpdateKind
+{
+    Other = 0,
+    LeftButtonPressed = 1,
+    LeftButtonReleased = 2,
+    RightButtonPressed = 3,
+    RightButtonReleased = 4,
+    MiddleButtonPressed = 5,
+    MiddleButtonReleased = 6,
+    XButton1Pressed = 7,
+    XButton1Released = 8,
+    XButton2Pressed = 9,
+    XButton2Released = 10
 }
 }
 
 namespace Microsoft.UI.Xaml.Input
 {
-using Windows.Devices.Input;
+using InputPointerDeviceType = Microsoft.UI.Input.PointerDeviceType;
+using LegacyPointerDeviceType = Windows.Devices.Input.PointerDeviceType;
 
 public sealed class Pointer
 {
-    internal Pointer(uint pointerId, PointerDeviceType pointerDeviceType, bool isInContact, bool isInRange = true)
+    internal Pointer(uint pointerId, LegacyPointerDeviceType pointerDeviceType, bool isInContact, bool isInRange = true)
     {
         PointerId = pointerId;
-        PointerDeviceType = pointerDeviceType;
+        LegacyPointerDeviceType = pointerDeviceType;
+        PointerDeviceType = pointerDeviceType switch
+        {
+            LegacyPointerDeviceType.Touch => InputPointerDeviceType.Touch,
+            LegacyPointerDeviceType.Pen => InputPointerDeviceType.Pen,
+            _ => InputPointerDeviceType.Mouse
+        };
         IsInContact = isInContact;
         IsInRange = isInRange;
     }
 
     public uint PointerId { get; }
-    public PointerDeviceType PointerDeviceType { get; }
+    public InputPointerDeviceType PointerDeviceType { get; }
+    internal LegacyPointerDeviceType LegacyPointerDeviceType { get; }
     public bool IsInContact { get; internal set; }
     public bool IsInRange { get; internal set; }
 }
@@ -107,94 +218,170 @@ public enum ManipulationModes : uint
     System = 65536
 }
 
-public enum HoldingState
+internal static class GesturePosition
 {
-    Started = 0,
-    Completed = 1,
-    Canceled = 2
+    public static Windows.Foundation.Point Get(
+        Microsoft.UI.Xaml.UIElement? relativeTo,
+        Vector2 screenPosition) =>
+        InputSystem.GetLocalPosition(relativeTo as Microsoft.UI.Xaml.FrameworkElement, screenPosition);
 }
 
-public readonly record struct ManipulationDelta(
-    Vector2 Translation,
-    float Scale,
-    float Rotation,
-    float Expansion)
-{
-    public static ManipulationDelta Identity => new(Vector2.Zero, 1f, 0f, 0f);
-}
-
-public readonly record struct ManipulationVelocities(
-    Vector2 Linear,
-    float Angular,
-    float Expansion);
-
-public abstract class GestureRoutedEventArgs : Microsoft.UI.Xaml.RoutedEventArgs
+public sealed class TappedRoutedEventArgs : Microsoft.UI.Xaml.RoutedEventArgs
 {
     internal Vector2 ScreenPosition { get; init; }
-    public PointerDeviceType PointerDeviceType { get; internal init; }
-
-    public Vector2 GetPosition(Microsoft.UI.Xaml.FrameworkElement? relativeTo) =>
-        InputSystem.GetLocalPosition(relativeTo, ScreenPosition);
+    public InputPointerDeviceType PointerDeviceType { get; internal init; }
+    public Windows.Foundation.Point GetPosition(Microsoft.UI.Xaml.UIElement? relativeTo) =>
+        GesturePosition.Get(relativeTo, ScreenPosition);
 }
 
-public sealed class TappedRoutedEventArgs : GestureRoutedEventArgs
+public sealed class DoubleTappedRoutedEventArgs : Microsoft.UI.Xaml.RoutedEventArgs
 {
-    public uint PointerId { get; internal init; }
+    internal Vector2 ScreenPosition { get; init; }
+    public InputPointerDeviceType PointerDeviceType { get; internal init; }
+    public Windows.Foundation.Point GetPosition(Microsoft.UI.Xaml.UIElement? relativeTo) =>
+        GesturePosition.Get(relativeTo, ScreenPosition);
 }
 
-public sealed class DoubleTappedRoutedEventArgs : GestureRoutedEventArgs
+public sealed class RightTappedRoutedEventArgs : Microsoft.UI.Xaml.RoutedEventArgs
 {
-    public uint PointerId { get; internal init; }
+    internal Vector2 ScreenPosition { get; init; }
+    public InputPointerDeviceType PointerDeviceType { get; internal init; }
+    public Windows.Foundation.Point GetPosition(Microsoft.UI.Xaml.UIElement? relativeTo) =>
+        GesturePosition.Get(relativeTo, ScreenPosition);
 }
 
-public sealed class RightTappedRoutedEventArgs : GestureRoutedEventArgs
+public sealed class HoldingRoutedEventArgs : Microsoft.UI.Xaml.RoutedEventArgs
 {
-    public uint PointerId { get; internal init; }
+    internal Vector2 ScreenPosition { get; init; }
+    public Microsoft.UI.Input.HoldingState HoldingState { get; internal init; }
+    public InputPointerDeviceType PointerDeviceType { get; internal init; }
+    public Windows.Foundation.Point GetPosition(Microsoft.UI.Xaml.UIElement? relativeTo) =>
+        GesturePosition.Get(relativeTo, ScreenPosition);
 }
 
-public sealed class HoldingRoutedEventArgs : GestureRoutedEventArgs
+public sealed class ManipulationPivot
 {
-    public HoldingState HoldingState { get; internal init; }
+    public ManipulationPivot()
+    {
+    }
+
+    public ManipulationPivot(Windows.Foundation.Point center, double radius)
+    {
+        Center = center;
+        Radius = radius;
+    }
+
+    public Windows.Foundation.Point Center { get; set; }
+    public double Radius { get; set; }
+}
+
+public sealed class InertiaExpansionBehavior
+{
+    public double DesiredDeceleration { get; set; } = float.NaN;
+    public double DesiredExpansion { get; set; } = float.NaN;
+}
+
+public sealed class InertiaRotationBehavior
+{
+    public double DesiredDeceleration { get; set; } = float.NaN;
+    public double DesiredRotation { get; set; } = float.NaN;
+}
+
+public sealed class InertiaTranslationBehavior
+{
+    public double DesiredDeceleration { get; set; } = float.NaN;
+    public double DesiredDisplacement { get; set; } = float.NaN;
 }
 
 public sealed class ManipulationStartingRoutedEventArgs : Microsoft.UI.Xaml.RoutedEventArgs
 {
-    public ManipulationModes Mode { get; set; }
-    public Microsoft.UI.Xaml.FrameworkElement? Container { get; set; }
-    public Vector2 PivotCenter { get; set; }
-    public float PivotRadius { get; set; }
+    public ManipulationModes Mode { get; set; } = ManipulationModes.All;
+    public Microsoft.UI.Xaml.UIElement? Container { get; set; }
+    public ManipulationPivot? Pivot { get; set; }
+
+    // Source-compatible aliases retained for early ProGPU callers.
+    public Vector2 PivotCenter
+    {
+        get => Pivot?.Center ?? default;
+        set => (Pivot ??= new ManipulationPivot()).Center = value;
+    }
+    public float PivotRadius
+    {
+        get => (float)(Pivot?.Radius ?? 0d);
+        set => (Pivot ??= new ManipulationPivot()).Radius = value;
+    }
 }
 
-public sealed class ManipulationStartedRoutedEventArgs : Microsoft.UI.Xaml.RoutedEventArgs
+public class ManipulationStartedRoutedEventArgs : Microsoft.UI.Xaml.RoutedEventArgs
 {
-    public Vector2 Position { get; internal init; }
-    public ManipulationDelta Cumulative { get; internal init; } = ManipulationDelta.Identity;
+    public Microsoft.UI.Xaml.UIElement? Container { get; internal init; }
+    public Microsoft.UI.Input.ManipulationDelta Cumulative { get; internal init; } = Microsoft.UI.Input.ManipulationDelta.Identity;
+    public InputPointerDeviceType PointerDeviceType { get; internal init; }
+    public Windows.Foundation.Point Position { get; internal init; }
+    internal bool IsCompleteRequested { get; private set; }
+    public void Complete() => IsCompleteRequested = true;
 }
 
 public sealed class ManipulationDeltaRoutedEventArgs : Microsoft.UI.Xaml.RoutedEventArgs
 {
-    public ManipulationDelta Delta { get; internal init; } = ManipulationDelta.Identity;
-    public ManipulationDelta Cumulative { get; internal init; } = ManipulationDelta.Identity;
-    public ManipulationVelocities Velocities { get; internal init; }
+    public Microsoft.UI.Xaml.UIElement? Container { get; internal init; }
+    public Microsoft.UI.Input.ManipulationDelta Delta { get; internal init; } = Microsoft.UI.Input.ManipulationDelta.Identity;
+    public Microsoft.UI.Input.ManipulationDelta Cumulative { get; internal init; } = Microsoft.UI.Input.ManipulationDelta.Identity;
+    public Microsoft.UI.Input.ManipulationVelocities Velocities { get; internal init; }
     public bool IsInertial { get; internal init; }
-    public bool Complete { get; set; }
+    public InputPointerDeviceType PointerDeviceType { get; internal init; }
+    public Windows.Foundation.Point Position { get; internal init; }
+    internal bool IsCompleteRequested { get; private set; }
+    public void Complete() => IsCompleteRequested = true;
 }
 
 public sealed class ManipulationInertiaStartingRoutedEventArgs : Microsoft.UI.Xaml.RoutedEventArgs
 {
-    public ManipulationDelta Cumulative { get; internal init; } = ManipulationDelta.Identity;
-    public ManipulationVelocities Velocities { get; internal init; }
-    public float TranslationDeceleration { get; set; } = 0.001f;
-    public float RotationDeceleration { get; set; } = 0.0001f;
-    public float ExpansionDeceleration { get; set; } = 0.001f;
+    public Microsoft.UI.Xaml.UIElement? Container { get; internal init; }
+    public Microsoft.UI.Input.ManipulationDelta Cumulative { get; internal init; } = Microsoft.UI.Input.ManipulationDelta.Identity;
+    public Microsoft.UI.Input.ManipulationDelta Delta { get; internal init; } = Microsoft.UI.Input.ManipulationDelta.Identity;
+    public Microsoft.UI.Input.ManipulationVelocities Velocities { get; internal init; }
+    public InertiaExpansionBehavior ExpansionBehavior { get; set; } = new();
+    public InertiaRotationBehavior RotationBehavior { get; set; } = new();
+    public InertiaTranslationBehavior TranslationBehavior { get; set; } = new();
+    public InputPointerDeviceType PointerDeviceType { get; internal init; }
+
+    public float TranslationDeceleration
+    {
+        get => double.IsNaN(TranslationBehavior.DesiredDeceleration) ? 0f : (float)TranslationBehavior.DesiredDeceleration;
+        set => TranslationBehavior.DesiredDeceleration = value;
+    }
+    public float RotationDeceleration
+    {
+        get => double.IsNaN(RotationBehavior.DesiredDeceleration) ? 0f : (float)RotationBehavior.DesiredDeceleration;
+        set => RotationBehavior.DesiredDeceleration = value;
+    }
+    public float ExpansionDeceleration
+    {
+        get => double.IsNaN(ExpansionBehavior.DesiredDeceleration) ? 0f : (float)ExpansionBehavior.DesiredDeceleration;
+        set => ExpansionBehavior.DesiredDeceleration = value;
+    }
 }
 
 public sealed class ManipulationCompletedRoutedEventArgs : Microsoft.UI.Xaml.RoutedEventArgs
 {
-    public ManipulationDelta Cumulative { get; internal init; } = ManipulationDelta.Identity;
-    public ManipulationVelocities Velocities { get; internal init; }
+    public Microsoft.UI.Xaml.UIElement? Container { get; internal init; }
+    public Microsoft.UI.Input.ManipulationDelta Cumulative { get; internal init; } = Microsoft.UI.Input.ManipulationDelta.Identity;
+    public Microsoft.UI.Input.ManipulationVelocities Velocities { get; internal init; }
     public bool IsInertial { get; internal init; }
+    public InputPointerDeviceType PointerDeviceType { get; internal init; }
+    public Windows.Foundation.Point Position { get; internal init; }
 }
+
+public delegate void TappedEventHandler(object sender, TappedRoutedEventArgs e);
+public delegate void DoubleTappedEventHandler(object sender, DoubleTappedRoutedEventArgs e);
+public delegate void RightTappedEventHandler(object sender, RightTappedRoutedEventArgs e);
+public delegate void HoldingEventHandler(object sender, HoldingRoutedEventArgs e);
+public delegate void ManipulationStartingEventHandler(object sender, ManipulationStartingRoutedEventArgs e);
+public delegate void ManipulationStartedEventHandler(object sender, ManipulationStartedRoutedEventArgs e);
+public delegate void ManipulationDeltaEventHandler(object sender, ManipulationDeltaRoutedEventArgs e);
+public delegate void ManipulationInertiaStartingEventHandler(object sender, ManipulationInertiaStartingRoutedEventArgs e);
+public delegate void ManipulationCompletedEventHandler(object sender, ManipulationCompletedRoutedEventArgs e);
 
 public enum InputScopeNameValue
 {
@@ -276,7 +463,7 @@ public enum PointerInputKind
 public readonly record struct PointerInputEvent(
     PointerInputKind Kind,
     uint PointerId,
-    PointerDeviceType DeviceType,
+    LegacyPointerDeviceType DeviceType,
     Vector2 Position,
     ulong Timestamp,
     bool IsPrimary = true,

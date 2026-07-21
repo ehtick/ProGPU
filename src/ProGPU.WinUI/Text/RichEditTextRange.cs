@@ -409,7 +409,7 @@ public class RichEditTextRange : ITextRange
             VerticalCharacterAlignment.Baseline => bounds.Y + bounds.Height * 0.8f,
             _ => bounds.Y
         };
-        point = new Windows.Foundation.Point(x, y);
+        point = new Windows.Foundation.Point((float)x, (float)y);
     }
 
     public void GetRect(PointOptions options, out Windows.Foundation.Rect rect, out int hit)

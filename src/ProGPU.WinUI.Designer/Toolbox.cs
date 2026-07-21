@@ -7,7 +7,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Documents;
 using ProGPU.Vector;
-using Windows.Devices.Input;
+using Microsoft.UI.Input;
 
 public class ToolboxItem : Border
 {

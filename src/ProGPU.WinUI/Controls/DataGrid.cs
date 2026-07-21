@@ -16,7 +16,7 @@ using ProGPU.Scene;
 using ProGPU.Text;
 using System.Collections.Concurrent;
 using System.Globalization;
-using Windows.Devices.Input;
+using Microsoft.UI.Input;
 using ProGPU.Virtualization;
 
 namespace Microsoft.UI.Xaml.Controls;
@@ -585,7 +585,7 @@ public class DataGrid : Control
 
     public override void OnPointerPressed(PointerRoutedEventArgs e)
     {
-        var position = e.GetCurrentPoint(this).Position;
+        Vector2 position = e.GetCurrentPoint(this).Position;
         if (IsEnabled && TryStartScrollbarInteraction(e, position))
         {
             return;
@@ -712,7 +712,7 @@ public class DataGrid : Control
 
         if (_pendingTouchPointerId == e.Pointer.PointerId)
         {
-            var position = e.GetCurrentPoint(this).Position;
+            Vector2 position = e.GetCurrentPoint(this).Position;
             if (IsEnabled && IsPointerPressed && IsPointerOver)
             {
                 if (_pendingTouchSortColumn >= 0 && position.Y <= _headerHeight &&
@@ -804,14 +804,14 @@ public class DataGrid : Control
     public override void OnManipulationDelta(ManipulationDeltaRoutedEventArgs e)
     {
         var oldOffset = ScrollOffset;
-        ScrollOffset -= e.Delta.Translation.Y;
+        ScrollOffset -= (float)e.Delta.Translation.Y;
         if (oldOffset != ScrollOffset) e.Handled = true;
         base.OnManipulationDelta(e);
     }
 
     public override void OnManipulationCompleted(ManipulationCompletedRoutedEventArgs e)
     {
-        _touchInertiaVelocity = e.IsInertial ? -e.Velocities.Linear.Y : 0f;
+        _touchInertiaVelocity = e.IsInertial ? -(float)e.Velocities.Linear.Y : 0f;
         base.OnManipulationCompleted(e);
     }
 
@@ -844,7 +844,7 @@ public class DataGrid : Control
 
     public override void OnPointerMoved(PointerRoutedEventArgs e)
     {
-        var position = e.ScreenPosition == Vector2.Zero && e.Position != Vector2.Zero
+        Vector2 position = e.ScreenPosition == Vector2.Zero && e.Position != Vector2.Zero
             ? e.Position
             : e.GetCurrentPoint(this).Position;
         if (IsEnabled)

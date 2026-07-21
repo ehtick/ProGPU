@@ -250,7 +250,7 @@ public class VirtualizingPanel : Panel, IScrollViewportAware
         {
             if (IsEnabled)
             {
-                var localPos = e.GetCurrentPoint(this).Position;
+                Vector2 localPos = e.GetCurrentPoint(this).Position;
                 float contentSize = _panel.IsHorizontal ? _panel.TotalVirtualWidth : _panel.TotalVirtualHeight;
                 float viewportSize = _panel.IsHorizontal ? Size.X : Size.Y;
 

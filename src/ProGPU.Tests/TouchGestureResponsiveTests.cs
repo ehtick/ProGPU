@@ -20,7 +20,7 @@ public sealed class TouchGestureResponsiveTests
 
         InputSystem.InjectPointer(Touch(PointerInputKind.Pressed, 17, 20, 20, 1_000, true));
         Assert.Equal((uint)17, target.LastPointerId);
-        Assert.Equal(PointerDeviceType.Touch, target.LastDeviceType);
+        Assert.Equal(Microsoft.UI.Input.PointerDeviceType.Touch, target.LastDeviceType);
         Assert.True(target.CaptureSucceeded);
 
         InputSystem.InjectPointer(Touch(PointerInputKind.Moved, 17, 210, 210, 20_000, true));
@@ -58,6 +58,31 @@ public sealed class TouchGestureResponsiveTests
         InputSystem.InjectPointer(Touch(PointerInputKind.Released, 3, 60, 80, 1_050_000, false));
         InputSystem.InjectPointer(Touch(PointerInputKind.Released, 4, 180, 80, 1_060_000, false));
         Assert.Equal(1, target.ManipulationCompletedCount);
+    }
+
+    [Fact]
+    public void RoutedManipulationProducesInertialDeltasBeforeCompletion()
+    {
+        var target = new TrackingControl
+        {
+            Width = 220,
+            Height = 220,
+            ManipulationMode = ManipulationModes.TranslateY | ManipulationModes.TranslateInertia
+        };
+        ArrangeRoot(target, new Vector2(220, 220));
+        UseInputRoot(target);
+
+        InputSystem.InjectPointer(Touch(PointerInputKind.Pressed, 90, 100, 160, 1_000, true));
+        InputSystem.InjectPointer(Touch(PointerInputKind.Moved, 90, 100, 60, 31_000, true));
+        InputSystem.InjectPointer(Touch(PointerInputKind.Released, 90, 100, 60, 32_000, false));
+
+        Assert.Equal(1, target.ManipulationInertiaStartingCount);
+        Assert.Equal(0, target.ManipulationCompletedCount);
+        for (var index = 0; index < 100 && target.ManipulationCompletedCount == 0; index++)
+            InputSystem.UpdateManipulationInertia(0.016f);
+        Assert.True(target.InertialDeltaCount > 0);
+        Assert.Equal(1, target.ManipulationCompletedCount);
+        Assert.True(target.LastManipulationCompletedWasInertial);
     }
 
     [Fact]
@@ -957,7 +982,7 @@ public sealed class TouchGestureResponsiveTests
     private sealed class TrackingControl : Control
     {
         public uint LastPointerId { get; private set; }
-        public PointerDeviceType LastDeviceType { get; private set; }
+        public Microsoft.UI.Input.PointerDeviceType LastDeviceType { get; private set; }
         public Vector2 LastScreenPosition { get; private set; }
         public bool CaptureSucceeded { get; private set; }
         public bool CaptureOnPress { get; init; }
@@ -967,6 +992,9 @@ public sealed class TouchGestureResponsiveTests
         public int DoubleTappedCount { get; private set; }
         public int ManipulationStartedCount { get; private set; }
         public int ManipulationCompletedCount { get; private set; }
+        public int ManipulationInertiaStartingCount { get; private set; }
+        public int InertialDeltaCount { get; private set; }
+        public bool LastManipulationCompletedWasInertial { get; private set; }
         public float LastManipulationScale { get; private set; } = 1f;
 
         public override void OnPointerPressed(PointerRoutedEventArgs e)
@@ -1016,12 +1044,21 @@ public sealed class TouchGestureResponsiveTests
         public override void OnManipulationDelta(ManipulationDeltaRoutedEventArgs e)
         {
             LastManipulationScale = e.Delta.Scale;
+            if (e.IsInertial) InertialDeltaCount++;
             base.OnManipulationDelta(e);
+        }
+
+        public override void OnManipulationInertiaStarting(ManipulationInertiaStartingRoutedEventArgs e)
+        {
+            ManipulationInertiaStartingCount++;
+            e.TranslationBehavior.DesiredDeceleration = 0.01;
+            base.OnManipulationInertiaStarting(e);
         }
 
         public override void OnManipulationCompleted(ManipulationCompletedRoutedEventArgs e)
         {
             ManipulationCompletedCount++;
+            LastManipulationCompletedWasInertial = e.IsInertial;
             base.OnManipulationCompleted(e);
         }
     }

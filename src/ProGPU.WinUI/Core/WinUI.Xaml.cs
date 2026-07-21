@@ -117,7 +117,11 @@ namespace Windows.Foundation
         public System.Runtime.CompilerServices.TaskAwaiter<TResult> GetAwaiter() => _task.GetAwaiter();
     }
 
-    public readonly record struct Point(double X, double Y);
+    public readonly record struct Point(double X, double Y)
+    {
+        public static implicit operator System.Numerics.Vector2(Point value) => new((float)value.X, (float)value.Y);
+        public static implicit operator Point(System.Numerics.Vector2 value) => new(value.X, value.Y);
+    }
 
     public readonly record struct Size(double Width, double Height);
 
