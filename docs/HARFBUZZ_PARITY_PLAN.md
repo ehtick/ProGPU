@@ -98,6 +98,61 @@ native GPU regression comparisons cover those implemented paths. GPU item
 context, character-level grapheme-interior flagging, the remaining specialized
 script safety rules, and full-corpus GPU execution remain blocking parity gaps.
 
+## 2026-07-21 Metal contextual-pipeline compatibility review
+
+The macOS 15 and macOS 26 hosted Metal compilers intermittently rejected the
+contextual-substitution entry point after dependency flag propagation was added.
+The WGSL module and all other entry points validated, and successful Apple
+Silicon runs produced exact CPU/GPU output, so the compatibility change is an
+original control-flow refactor rather than an algorithm or output-policy change.
+
+Primary sources consulted for this review:
+
+- [HarfBuzz buffer API](https://harfbuzz.github.io/harfbuzz-hb-buffer.html)
+  defines unsafe-to-break, unsafe-to-concat, safe-to-insert-tatweel, and cluster
+  levels. These observable flags remain exact and are not dropped or made
+  conservative to accommodate a compiler.
+- [DirectWrite `GetGlyphPlacements`](https://learn.microsoft.com/en-us/windows/win32/api/dwrite/nf-dwrite-idwritetextanalyzer-getglyphplacements)
+  keeps cluster maps, glyph properties, advances, and offsets as reusable
+  shaping outputs; the ProGPU CPU reference and shared glyph contract remain
+  unchanged.
+- [Direct2D and DirectWrite text rendering](https://learn.microsoft.com/en-us/windows/win32/direct2d/direct2d-and-directwrite)
+  separates text services/layout from glyph rendering. ProGPU likewise keeps
+  this compiler workaround inside the optional GPU executor rather than in
+  layout or retained rendering.
+- [Skia shaped-text design](https://docs.skia.org/docs/dev/design/text_shaper/)
+  separates inspectable shaped results from rendering, and
+  [SkParagraph cache source](https://skia.googlesource.com/skia/+/7a1bf999357aa755768f7b72265b91eea5c2758c/modules/skparagraph/src/ParagraphCache.h)
+  demonstrates reusable paragraph inputs/results. No ProGPU shaping-plan or
+  layout-cache identity changes.
+- [WebRender rendering overview](https://searchfox.org/mozilla-central/source/gfx/docs/RenderingOverview.rst)
+  separates retained display lists, visibility culling, glyph-atlas preparation,
+  and GPU submission. The change does not move safety semantics into raster or
+  scene code.
+- [Parley API](https://docs.rs/parley/latest/parley/) shares font/layout contexts
+  and retains layouts for repeated line breaking, while
+  [Vello](https://github.com/linebender/vello) applies GPU compute to rendering
+  behind a retained scene. ProGPU retains the same CPU-reference/GPU-executor
+  boundary and does not introduce a renderer dependency into shaping.
+
+Adopted: preserve HarfBuzz's matched-span flag semantics and the existing
+single-invocation deterministic lookup order. Adapted: a contextual match stores
+one fixed-size pending span in invocation-private state, and the top-level serial
+executor flushes that span before running nested lookup tasks. This removes the
+span scan from the recursive lookup call graph presented to Metal while keeping
+the same mutation order, `O(N)` worst-case scan per matched dependency, fixed
+64-task recursion replacement, and `O(1)` additional private storage. Rejected:
+skipping the GPU tests, omitting dependency flags, over-marking whole runs,
+falling back after an invalid pipeline, or copying another engine's control flow.
+
+The broader cross-engine matrix in
+[`TEXT_SHAPING_SHOWCASE_RESEARCH.md`](TEXT_SHAPING_SHOWCASE_RESEARCH.md)
+remains unchanged: startup/lazy initialization, shaping and layout reuse,
+retained-scene culling, glyph/path/texture cache keys and eviction,
+demand-driven upload, worker preparation, DPI/subpixel/hinting, fallback fonts,
+variable-font state, and device-loss/atlas invalidation are unaffected. Only GPU
+batch compiler organization changes.
+
 The first baseline command is:
 
 ```sh
