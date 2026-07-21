@@ -10,6 +10,7 @@ ProGPU release packages are built from `eng/progpu-package-list.sh` by the `Rele
 | --- | --- | --- |
 | `ProGPU.Backend` | WebGPU device, swapchain, Silk.NET windowing, and platform backend services. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.Backend.svg)](https://www.nuget.org/packages/ProGPU.Backend/) |
 | `ProGPU.Browser` | Batched .NET WebAssembly dispatcher and `navigator.gpu` browser host services. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.Browser.svg)](https://www.nuget.org/packages/ProGPU.Browser/) |
+| `ProGPU.iOS` | Native UIKit/`CAMetalLayer` host using statically linked WebGPU over Metal. | Experimental source project |
 | `ProGPU.DirectX` | DirectX-compatible facade and shader-oriented API surface implemented on ProGPU/WebGPU. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.DirectX.svg)](https://www.nuget.org/packages/ProGPU.DirectX/) |
 | `ProGPU.Transpiler` | Shader/source transformation helpers used by generated GPU pipelines. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.Transpiler.svg)](https://www.nuget.org/packages/ProGPU.Transpiler/) |
 | `ProGPU.Compute` | Compute pipeline helpers for GPU-side effects, acceleration, and future hit-test indexes. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.Compute.svg)](https://www.nuget.org/packages/ProGPU.Compute/) |
@@ -34,9 +35,21 @@ Local package build:
 PROGPU_PACKAGE_VERSION=0.1.0-preview.21 ./eng/progpu-pack.sh
 ```
 
+## Native iPhone WebGPU sample
+
+`ProGPU.Samples.iOS` is a thin native host for the same `ProGPU.Samples` gallery used by desktop and browser. It renders directly into a physical-pixel `CAMetalLayer` through a Metal-only `wgpu-native` XCFramework and the existing Silk.NET WebGPU API. It has no MAUI, Uno, `WKWebView`, or JavaScript rendering dependency.
+
+```bash
+./eng/build-wgpu-native-ios.sh
+dotnet build src/ProGPU.Samples.iOS/ProGPU.Samples.iOS.csproj \
+  -c Debug -r iossimulator-arm64
+```
+
+The iOS-specific solution, native build details, ABI pin, architecture research, simulator commands, physical-device guidance, and current limitations are in [`docs/ios.md`](docs/ios.md).
+
 ## Browser WebGPU sample
 
-The gallery is split into a shared `ProGPU.Samples` library and thin `ProGPU.Samples.Desktop` and `ProGPU.Samples.Browser` hosts. The browser host publishes with the .NET WebAssembly SDK, negotiates WebGPU capabilities, sends aligned binary command packets directly from WASM memory, and passes embedded WGSL unchanged to `GPUDevice.createShaderModule`.
+The gallery is split into a shared `ProGPU.Samples` library and thin `ProGPU.Samples.Desktop`, `ProGPU.Samples.Browser`, and `ProGPU.Samples.iOS` hosts. The browser host publishes with the .NET WebAssembly SDK, negotiates WebGPU capabilities, sends aligned binary command packets directly from WASM memory, and passes embedded WGSL unchanged to `GPUDevice.createShaderModule`.
 
 ### Prerequisites
 
