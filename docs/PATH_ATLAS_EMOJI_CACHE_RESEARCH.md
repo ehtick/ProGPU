@@ -104,3 +104,33 @@ The focused headless measurement renders 48 instances of a two-layer COLR glyph:
 than one entry per use for that representative integer-position run. A separate
 stress case holds combined fill and hit-test compilation payload at or below a
 configured 1,024-byte budget throughout 24 distinct paths.
+
+## Measured comparison with `main`
+
+The complex color-emoji comparison used a clean worktree at `origin/main`
+(`fc4d27a`) and this branch, .NET SDK 10.0.201, and the same macOS arm64 host.
+Each isolated process rendered 256 instances of one synthetic two-layer COLR
+glyph whose layers each contain 128 outline points. A full collection immediately
+before and after the first render measured retained managed memory. Three runs
+produced the following medians:
+
+| Measurement | `main` | This branch | Change |
+| --- | ---: | ---: | ---: |
+| Retained path-atlas entries | 512 | 2 | -99.6% |
+| Retained managed bytes | 19,946,608 | 546,752 | -97.3% |
+| First-render time | 55.040 ms | 43.243 ms | -21.4% |
+
+The retained-byte result was stable within 0.05% on `main` and 1.5% on this
+branch. One `main` timing sample was an outlier, so the table reports medians and
+the regression asserts deterministic atlas residency rather than an absolute
+time or process-memory threshold.
+
+The broader `Font Glyph Browser` benchmark was also run for 180 warmup and 600
+measured scrolling frames with presentation throttling disabled. Warmed matched
+runs were effectively neutral (372.07 versus 372.02 wall FPS, 1.3912 versus
+1.3976 ms compositor time, and 192,353 versus 191,440 allocated bytes per frame
+for `main` and this branch respectively). Separate process runs showed substantial
+system-level timing variance, so these figures are treated as a regression
+screen rather than a precise speedup claim. The branch reported 172 resident
+path entries and 353,232 compiled-cache bytes in that workload, well below its
+8 MiB default budget, with no path-atlas reset.
