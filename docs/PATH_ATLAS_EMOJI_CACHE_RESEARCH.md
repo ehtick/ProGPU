@@ -134,3 +134,57 @@ system-level timing variance, so these figures are treated as a regression
 screen rather than a precise speedup claim. The branch reported 172 resident
 path entries and 353,232 compiled-cache bytes in that workload, well below its
 8 MiB default budget, with no path-atlas reset.
+
+## Text-page navigation and DXF architecture follow-up
+
+A navigation-sequence benchmark now opens and scrolls `Font Glyph Browser`,
+`Text & Documents`, `Markdown Playground`, and `Inter Typeface` before switching
+to `Data Virtualization`. The sequence exposed a separate amplification path:
+the earlier pages filled the glyph atlas, while ordinary `DrawText` commands did
+not opt into its existing LRU region reuse. Cached capacity misses therefore
+kept visible DataGrid glyphs on vector fallback indefinitely. That fallback
+expanded the final frame from about 70 to more than 600 draw calls and routed
+hundreds of glyphs through `PathAtlas`.
+
+The fix marks ordinary `DrawText` as a preferred glyph-atlas consumer. When a
+new visible glyph needs space, the atlas may reuse a compatible region that was
+not used in the current frame. `Generation` advances so retained UV consumers
+recompile, while current-frame regions remain protected. Explicit vector text,
+CFF outlines, transformed large text, and color-glyph paths keep their existing
+quality-specific branches.
+
+The same sequence was measured before and after the fix:
+
+| Measurement | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| Draw calls | 618 | 70 | -88.7% |
+| Path-atlas entries | 1,556 | 257 | -83.5% |
+| Visual-tree compile time | 0.8035 ms | 0.5383 ms | -33.0% |
+| Compositor frame time | 1.3424 ms | 0.7827 ms | -41.7% |
+| Allocated bytes per frame | 23,436 | 18,944 | -19.2% |
+
+The pre-fix result on current `main` was materially identical (615 draw calls,
+1,557 path entries, 0.8205 ms compile time, and 1.3851 ms compositor time), so
+the root saturation behavior predates this branch. This PR fixes it because the
+bounded path cache makes the fallback amplification and its memory cost directly
+observable.
+
+ProGPU's DXF lane was evaluated as a possible atlas replacement. It compiles an
+immutable document once into owned vector, text, retained-glyph record/segment,
+and instance buffers; camera changes update only a viewport uniform. Its retained
+glyph shader evaluates analytic winding directly and draws all instances in one
+call, so it correctly avoids per-position path-atlas residency for static CAD
+content.
+
+That lane is not a drop-in replacement for ordinary UI text. Direct per-fragment
+segment evaluation has a different cost and antialiasing model from the glyph
+atlas, and moving the explicit CFF/vector fallback to it would violate the
+existing 128 local phases, 16 device phases, and 8x8 coverage contract unless
+the shader and batching model were extended. The adopted hybrid is therefore:
+
+- use glyph-atlas LRU residency for ordinary small UI text;
+- keep the byte-bounded path atlas for general filled paths and quality-sensitive
+  vector/color glyph fallbacks;
+- keep DXF-style immutable GPU buffers for static documents and retained scenes;
+- consider a future dynamic retained-glyph batch only after it preserves command
+  order, clips, masks, blend modes, subpixel coverage, and device-loss behavior.
