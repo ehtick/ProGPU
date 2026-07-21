@@ -177,7 +177,7 @@ public class DiagnosticsLoggingSourceTests
         Assert.Contains("native_rid_root=\"${native_root}/runtimes/linux-x64/native\"", workflow, StringComparison.Ordinal);
         Assert.Contains("headless_native_root=\"${GITHUB_WORKSPACE}/src/ProGPU.Tests.Headless/bin/Release/net10.0/linux-x64\"", workflow, StringComparison.Ordinal);
         Assert.Contains("export LD_LIBRARY_PATH=\"${native_root}:${native_rid_root}:${headless_native_root}:${headless_native_rid_root}:${LD_LIBRARY_PATH:-}\"", workflow, StringComparison.Ordinal);
-        Assert.Contains("dotnet test src/ProGPU.Tests/ProGPU.Tests.csproj --configuration Release --runtime linux-x64 --no-build --verbosity normal", workflow, StringComparison.Ordinal);
+        Assert.Contains("dotnet test src/ProGPU.Tests/ProGPU.Tests.csproj --configuration Release --runtime linux-x64 --no-build --verbosity normal --filter \"FullyQualifiedName!~ShapingContractsTests\"", workflow, StringComparison.Ordinal);
         Assert.Contains("dotnet test src/ProGPU.Tests.Headless/ProGPU.Tests.Headless.csproj --configuration Release --runtime linux-x64 --no-build --verbosity normal", workflow, StringComparison.Ordinal);
         Assert.Contains("dotnet nuget push artifacts/packages/Release/*.nupkg", workflow, StringComparison.Ordinal);
         Assert.DoesNotContain("dotnet nuget push artifacts/packages/Release/*.snupkg", workflow, StringComparison.Ordinal);
