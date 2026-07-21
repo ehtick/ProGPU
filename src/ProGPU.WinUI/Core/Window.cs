@@ -27,7 +27,7 @@ public readonly record struct WindowFrameMetrics(
     double PresentTimeMs,
     double TotalTimeMs);
 
-public class Window
+public class Window : DependencyObject
 {
     private IWindow? _silkWindow;
     private WgpuContext? _wgpuContext;
@@ -49,12 +49,22 @@ public class Window
     private NativeWindowSize _maximumSize = NativeWindowSize.Unbounded;
     private SystemBackdrop? _systemBackdrop;
     private readonly Grid _renderRoot;
+    private readonly Grid _contentRoot;
     private readonly Border _backdropLayer;
     private bool _isEnabled = true;
     private bool _showInTaskbar = true;
     private Window? _owner;
     private bool _isRendering;
     private bool _isExternalHostActive;
+    private bool _isClosed;
+    private bool _visible;
+    private Windows.Foundation.Rect _bounds = new(0, 0, 1280, 800);
+    private UIElement? _titleBar;
+    private Thickness _safeAreaInsets;
+    private Windows.Foundation.Rect _inputPaneOccludedRect;
+    private WindowInsets _insets;
+    private bool _extendsContentIntoSystemInsets;
+    private bool _avoidInputPane = true;
 
     public IWindow? SilkWindow => _silkWindow;
     public WgpuContext? WgpuContext => _wgpuContext;
@@ -69,6 +79,37 @@ public class Window
         _windowController?.FrameInsets ?? NativeWindowFrameInsets.Empty;
     public bool IsUsingSystemBackdropFallback { get; private set; }
     public WindowFrameMetrics FrameMetrics { get; private set; }
+    public Windows.Foundation.Rect Bounds => _bounds;
+    public bool Visible => _visible;
+    public WindowInsets Insets => _insets;
+    public Windows.UI.ViewManagement.InputPane InputPane { get; }
+
+    /// <summary>
+    /// When false (the default), content is arranged inside platform safe areas.
+    /// Backdrops and compositor overlays continue to cover the complete surface.
+    /// </summary>
+    public bool ExtendsContentIntoSystemInsets
+    {
+        get => _extendsContentIntoSystemInsets;
+        set
+        {
+            if (_extendsContentIntoSystemInsets == value) return;
+            _extendsContentIntoSystemInsets = value;
+            ApplyContentInsets();
+        }
+    }
+
+    /// <summary>Automatically keeps ordinary window content above a docked input pane.</summary>
+    public bool AvoidInputPane
+    {
+        get => _avoidInputPane;
+        set
+        {
+            if (_avoidInputPane == value) return;
+            _avoidInputPane = value;
+            ApplyContentInsets();
+        }
+    }
 
     /// <summary>
     /// Configures the bounded glyph cache before activation. Font-inspection tools
@@ -211,12 +252,12 @@ public class Window
             }
             if (_content != null)
             {
-                _renderRoot.RemoveChild(_content);
+                _contentRoot.RemoveChild(_content);
             }
             _content = value;
             if (value != null)
             {
-                _renderRoot.AddChild(value);
+                _contentRoot.AddChild(value);
             }
             if (_inputState != null)
             {
@@ -241,6 +282,7 @@ public class Window
         set
         {
             _width = value;
+            _bounds = _bounds with { Width = value };
             if (_silkWindow != null) _silkWindow.Size = new Vector2D<int>(_width, _silkWindow.Size.Y);
         }
     }
@@ -251,12 +293,16 @@ public class Window
         set
         {
             _height = value;
+            _bounds = _bounds with { Height = value };
             if (_silkWindow != null) _silkWindow.Size = new Vector2D<int>(_silkWindow.Size.X, _height);
         }
     }
 
-    public event EventHandler? Closed;
-    public event EventHandler? Activated;
+    public event Windows.Foundation.TypedEventHandler<object, WindowActivatedEventArgs>? Activated;
+    public event Windows.Foundation.TypedEventHandler<object, WindowEventArgs>? Closed;
+    public event Windows.Foundation.TypedEventHandler<object, WindowSizeChangedEventArgs>? SizeChanged;
+    public event Windows.Foundation.TypedEventHandler<object, WindowVisibilityChangedEventArgs>? VisibilityChanged;
+    public event Windows.Foundation.TypedEventHandler<object, WindowInsetsChangedEventArgs>? InsetsChanged;
     public event EventHandler<double>? Rendering;
 
     public Window()
@@ -272,11 +318,18 @@ public class Window
             VerticalAlignment = VerticalAlignment.Stretch,
             IsHitTestVisible = false
         };
+        _contentRoot = new Grid
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch
+        };
+        InputPane = new Windows.UI.ViewManagement.InputPane(this);
         _renderRoot.AddChild(_backdropLayer);
-        ThemeManager.ThemeChanged += OnThemeChanged;
+        _renderRoot.AddChild(_contentRoot);
+        ThemeManager.ThemeChanged += HandleThemeChanged;
     }
 
-    private void OnThemeChanged()
+    private void HandleThemeChanged()
     {
         _windowController?.SetTheme(
             ThemeManager.CurrentTheme == ElementTheme.Dark
@@ -297,13 +350,15 @@ public class Window
 
     public void Activate()
     {
+        ObjectDisposedException.ThrowIf(_isClosed, this);
         if (WindowHostServices.Current is { } externalHost)
         {
             if (_isExternalHostActive) return;
             externalHost.Activate(this);
             _isExternalHostActive = true;
             WindowManager.Register(this);
-            Activated?.Invoke(this, EventArgs.Empty);
+            NotifyHostVisibilityChanged(true);
+            NotifyHostActivationChanged(WindowActivationState.CodeActivated);
             return;
         }
 
@@ -338,7 +393,9 @@ public class Window
 
         _silkWindow.Initialize();
         WindowManager.Register(this);
-        Activated?.Invoke(this, EventArgs.Empty);
+        UpdateBounds(_silkWindow.Size.X, _silkWindow.Size.Y);
+        NotifyHostVisibilityChanged(true);
+        NotifyHostActivationChanged(WindowActivationState.CodeActivated);
     }
 
     public Task ActivateAsync(CancellationToken cancellationToken = default)
@@ -370,7 +427,20 @@ public class Window
         {
             _silkWindow.IsVisible = false;
         }
+        NotifyHostVisibilityChanged(false);
+        NotifyHostActivationChanged(WindowActivationState.Deactivated);
     }
+
+    /// <summary>
+    /// Selects the element used as the app-defined title bar. This mirrors the WinUI API;
+    /// native hosts may use the value to initiate platform window dragging.
+    /// </summary>
+    public void SetTitleBar(UIElement? titleBar)
+    {
+        _titleBar = titleBar;
+    }
+
+    internal UIElement? AppTitleBar => _titleBar;
 
     private void OnLoad()
     {
@@ -452,6 +522,7 @@ public class Window
         var scale = float.IsFinite(dpiScale) && dpiScale > 0f ? dpiScale : 1f;
         var framebufferSize = new Vector2D<int>(checked((int)Math.Max(1u, framebufferWidth)), checked((int)Math.Max(1u, framebufferHeight)));
         var logicalSize = ResolveLogicalClientSize(framebufferSize, scale);
+        UpdateBounds(logicalSize.X, logicalSize.Y);
         _isRendering = true;
         try
         {
@@ -470,8 +541,173 @@ public class Window
         _wgpuContext = null;
         _inputState = null;
         _isExternalHostActive = false;
+        NotifyHostVisibilityChanged(false);
+        NotifyHostActivationChanged(WindowActivationState.Deactivated);
         WindowManager.Unregister(this);
-        Closed?.Invoke(this, EventArgs.Empty);
+        RaiseClosed();
+        DetachWindowServices();
+    }
+
+    /// <summary>
+    /// Updates activation state from an external platform host.
+    /// </summary>
+    public void NotifyHostActivationChanged(WindowActivationState state)
+    {
+        if (_isClosed) return;
+        Activated?.Invoke(this, new WindowActivatedEventArgs(state));
+    }
+
+    /// <summary>
+    /// Updates visibility from an external platform host.
+    /// </summary>
+    public void NotifyHostVisibilityChanged(bool visible)
+    {
+        if (_isClosed || _visible == visible) return;
+        _visible = visible;
+        VisibilityChanged?.Invoke(this, new WindowVisibilityChangedEventArgs(visible));
+    }
+
+    /// <summary>Updates safe-area and input-pane geometry from an external native host.</summary>
+    public void NotifyHostInsetsChanged(
+        Thickness safeArea,
+        Windows.Foundation.Rect inputPaneOccludedRect)
+    {
+        safeArea = NormalizeInsets(safeArea);
+        inputPaneOccludedRect = NormalizeOccludedRect(inputPaneOccludedRect);
+        if (_safeAreaInsets.Equals(safeArea) && _inputPaneOccludedRect.Equals(inputPaneOccludedRect)) return;
+
+        _safeAreaInsets = safeArea;
+        _inputPaneOccludedRect = inputPaneOccludedRect;
+        ApplyContentInsets();
+        bool ensuredFocusedElement = InputPaneVisible(inputPaneOccludedRect) && EnsureFocusedElementInView();
+        InputPane.UpdateOccludedRect(inputPaneOccludedRect, ensuredFocusedElement);
+    }
+
+    /// <summary>Installs best-effort platform software-keyboard show/hide callbacks.</summary>
+    public void ConfigureInputPane(Func<bool>? tryShow, Func<bool>? tryHide) =>
+        InputPane.SetPlatformCallbacks(tryShow, tryHide);
+
+    private void ApplyContentInsets()
+    {
+        double width = Math.Max(0d, _bounds.Width);
+        double height = Math.Max(0d, _bounds.Height);
+        Thickness safe = _extendsContentIntoSystemInsets ? default : _safeAreaInsets;
+        float keyboardBottom = 0f;
+
+        if (_avoidInputPane && IsDockedBottomOcclusion(_inputPaneOccludedRect, width, height))
+        {
+            keyboardBottom = (float)Math.Clamp(height - _inputPaneOccludedRect.Y, 0d, height);
+        }
+
+        var effective = new Thickness(
+            safe.Left,
+            safe.Top,
+            safe.Right,
+            Math.Max(safe.Bottom, keyboardBottom));
+        _contentRoot.Margin = effective;
+
+        double visibleX = Math.Clamp(effective.Left, 0f, (float)width);
+        double visibleY = Math.Clamp(effective.Top, 0f, (float)height);
+        double visibleWidth = Math.Max(0d, width - effective.Left - effective.Right);
+        double visibleHeight = Math.Max(0d, height - effective.Top - effective.Bottom);
+        var next = new WindowInsets(
+            _safeAreaInsets,
+            _inputPaneOccludedRect,
+            new Windows.Foundation.Rect(visibleX, visibleY, visibleWidth, visibleHeight));
+        if (_insets.Equals(next)) return;
+        _insets = next;
+        _contentRoot.InvalidateMeasure();
+        _contentRoot.Invalidate();
+        InsetsChanged?.Invoke(this, new WindowInsetsChangedEventArgs(next));
+    }
+
+    private static bool IsDockedBottomOcclusion(Windows.Foundation.Rect rect, double width, double height) =>
+        rect.Width > 0d && rect.Height > 0d &&
+        rect.Width >= width * 0.9d &&
+        rect.Y + rect.Height >= height - 1d;
+
+    private static bool InputPaneVisible(Windows.Foundation.Rect rect) =>
+        rect.Width > 0d && rect.Height > 0d;
+
+    private bool EnsureFocusedElementInView()
+    {
+        FrameworkElement? focused = InputSystem.FocusedElement;
+        if (focused == null || focused.Size.X <= 0f || focused.Size.Y <= 0f) return false;
+
+        bool belongsToWindow = false;
+        for (Visual? ancestor = focused; ancestor != null; ancestor = ancestor.Parent)
+        {
+            if (ReferenceEquals(ancestor, _renderRoot))
+            {
+                belongsToWindow = true;
+                break;
+            }
+        }
+        if (!belongsToWindow) return false;
+
+        Rect focusedBounds = focused.TransformToVisual(_renderRoot)
+            .TransformBounds(new Rect(0f, 0f, focused.Size.X, focused.Size.Y));
+        const float revealPadding = 12f;
+        float visibleLeft = (float)_insets.VisibleBounds.X + revealPadding;
+        float visibleTop = (float)_insets.VisibleBounds.Y + revealPadding;
+        float visibleRight = (float)(_insets.VisibleBounds.X + _insets.VisibleBounds.Width) - revealPadding;
+        float visibleBottom = (float)(_insets.VisibleBounds.Y + _insets.VisibleBounds.Height) - revealPadding;
+        float deltaX = focusedBounds.Right > visibleRight
+            ? focusedBounds.Right - visibleRight
+            : focusedBounds.X < visibleLeft ? focusedBounds.X - visibleLeft : 0f;
+        float deltaY = focusedBounds.Bottom > visibleBottom
+            ? focusedBounds.Bottom - visibleBottom
+            : focusedBounds.Y < visibleTop ? focusedBounds.Y - visibleTop : 0f;
+
+        // Floating/undocked keyboards create a hole rather than reducing the whole
+        // viewport. Prefer revealing the editor immediately above that occlusion.
+        var occluded = _inputPaneOccludedRect;
+        bool overlapsOcclusion = occluded.Width > 0d && occluded.Height > 0d &&
+            focusedBounds.Right > (float)occluded.X &&
+            focusedBounds.X < (float)(occluded.X + occluded.Width) &&
+            focusedBounds.Bottom > (float)occluded.Y &&
+            focusedBounds.Y < (float)(occluded.Y + occluded.Height);
+        if (overlapsOcclusion)
+        {
+            deltaY = focusedBounds.Bottom - ((float)occluded.Y - revealPadding);
+        }
+        if (deltaX == 0f && deltaY == 0f) return true;
+
+        for (Visual? ancestor = focused.Parent; ancestor != null; ancestor = ancestor.Parent)
+        {
+            if (ancestor is ScrollViewer viewer)
+            {
+                bool changed = viewer.ChangeView(
+                    deltaX == 0f ? null : viewer.HorizontalOffset + deltaX,
+                    deltaY == 0f ? null : viewer.VerticalOffset + deltaY,
+                    null);
+                if (changed) return true;
+            }
+            else if (ancestor is DataGrid dataGrid && deltaY != 0f)
+            {
+                float previous = dataGrid.ScrollOffset;
+                dataGrid.ScrollOffset += deltaY;
+                if (dataGrid.ScrollOffset != previous) return true;
+            }
+            if (ReferenceEquals(ancestor, _renderRoot)) break;
+        }
+
+        return false;
+    }
+
+    private static Thickness NormalizeInsets(Thickness value) => new(
+        float.IsFinite(value.Left) ? Math.Max(0f, value.Left) : 0f,
+        float.IsFinite(value.Top) ? Math.Max(0f, value.Top) : 0f,
+        float.IsFinite(value.Right) ? Math.Max(0f, value.Right) : 0f,
+        float.IsFinite(value.Bottom) ? Math.Max(0f, value.Bottom) : 0f);
+
+    private Windows.Foundation.Rect NormalizeOccludedRect(Windows.Foundation.Rect value)
+    {
+        double x = double.IsFinite(value.X) ? Math.Clamp(value.X, 0d, _bounds.Width) : 0d;
+        double y = double.IsFinite(value.Y) ? Math.Clamp(value.Y, 0d, _bounds.Height) : 0d;
+        double width = double.IsFinite(value.Width) ? Math.Clamp(value.Width, 0d, _bounds.Width - x) : 0d;
+        double height = double.IsFinite(value.Height) ? Math.Clamp(value.Height, 0d, _bounds.Height - y) : 0d;
+        return new Windows.Foundation.Rect(x, y, width, height);
     }
 
     private void OnRender(double delta)
@@ -568,6 +804,17 @@ public class Window
                 };
                 targetView = wgpuContext.Api.TextureCreateView(surfaceTexture.Texture, &viewDesc);
             }
+            else if (surfaceTexture.Status is SurfaceGetCurrentTextureStatus.Outdated or SurfaceGetCurrentTextureStatus.Lost)
+            {
+                // Resize, display migration, and foreground restoration can invalidate the
+                // platform surface without changing its dimensions. Reconfigure now and let
+                // the next display-link tick acquire the replacement drawable.
+                wgpuContext.TryConfigureSwapChain((uint)framebufferSize.X, (uint)framebufferSize.Y);
+            }
+            else if (surfaceTexture.Status is SurfaceGetCurrentTextureStatus.OutOfMemory or SurfaceGetCurrentTextureStatus.DeviceLost)
+            {
+                throw new InvalidOperationException($"WebGPU surface acquisition failed: {surfaceTexture.Status}.");
+            }
         }
         double surfaceAcquireTimeMs = System.Diagnostics.Stopwatch.GetElapsedTime(phaseStart).TotalMilliseconds;
         double compositorTimeMs = 0d;
@@ -617,8 +864,9 @@ public class Window
             System.Diagnostics.Stopwatch.GetElapsedTime(frameStart).TotalMilliseconds);
     }
 
-    private void OnResize(Vector2D<int> _)
+    private void OnResize(Vector2D<int> newSize)
     {
+        UpdateBounds(newSize.X, newSize.Y);
         _content?.Invalidate();
         _renderRoot.Invalidate();
     }
@@ -680,19 +928,48 @@ public class Window
 
     private void OnClosing()
     {
-        Closed?.Invoke(this, EventArgs.Empty);
+        NotifyHostVisibilityChanged(false);
+        NotifyHostActivationChanged(WindowActivationState.Deactivated);
+        RaiseClosed();
         WindowManager.Unregister(this);
 
         _compositor?.Dispose();
         _wgpuContext?.Dispose();
         _windowController?.Dispose();
         _windowController = null;
+        DetachWindowServices();
+        _silkWindow = null;
+    }
+
+    private void UpdateBounds(double width, double height)
+    {
+        double normalizedWidth = double.IsFinite(width) ? Math.Max(0d, width) : 0d;
+        double normalizedHeight = double.IsFinite(height) ? Math.Max(0d, height) : 0d;
+        if (_bounds.Width.Equals(normalizedWidth) && _bounds.Height.Equals(normalizedHeight)) return;
+
+        _bounds = new Windows.Foundation.Rect(_bounds.X, _bounds.Y, normalizedWidth, normalizedHeight);
+        _width = checked((int)Math.Round(normalizedWidth));
+        _height = checked((int)Math.Round(normalizedHeight));
+        ApplyContentInsets();
+        SizeChanged?.Invoke(
+            this,
+            new WindowSizeChangedEventArgs(new Windows.Foundation.Size(normalizedWidth, normalizedHeight)));
+    }
+
+    private void RaiseClosed()
+    {
+        if (_isClosed) return;
+        _isClosed = true;
+        Closed?.Invoke(this, new WindowEventArgs());
+    }
+
+    private void DetachWindowServices()
+    {
         if (_systemBackdrop != null)
         {
             _systemBackdrop.Changed -= OnSystemBackdropChanged;
         }
-        ThemeManager.ThemeChanged -= OnThemeChanged;
-        _silkWindow = null;
+        ThemeManager.ThemeChanged -= HandleThemeChanged;
     }
 
     public void SetSizeConstraints(NativeWindowSize minimum, NativeWindowSize maximum)
