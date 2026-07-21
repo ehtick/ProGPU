@@ -21,6 +21,7 @@
       <Kind>Framework</Kind>
       <ForceLoad>true</ForceLoad>
       <SmartLink>true</SmartLink>
+      <Frameworks>Metal</Frameworks>
     </NativeReference>
   </ItemGroup>
   <Target Name="ProGpuWarnMissingWgpuNative" BeforeTargets="Build"
