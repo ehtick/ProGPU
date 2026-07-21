@@ -11,15 +11,12 @@ public unsafe sealed class GpuTextureReadbackBuffer : IDisposable
     public const int DefaultMapTimeoutMilliseconds = 30000;
 
     private readonly WgpuContext _context;
-    private readonly PfnBufferMapCallback _mapCallback;
     private WgpuBuffer* _buffer;
-    private ManualResetEventSlim? _mapSignal;
     private bool _isMapActive;
 
     public GpuTextureReadbackBuffer(WgpuContext context)
     {
         _context = context ?? throw new ArgumentNullException(nameof(context));
-        _mapCallback = PfnBufferMapCallback.From(OnBufferMapped);
     }
 
     public uint Width { get; private set; }
@@ -227,7 +224,6 @@ public unsafe sealed class GpuTextureReadbackBuffer : IDisposable
     public void Dispose()
     {
         QueueBufferDisposal();
-        _mapSignal = null;
         GC.SuppressFinalize(this);
     }
 
@@ -304,33 +300,22 @@ public unsafe sealed class GpuTextureReadbackBuffer : IDisposable
         LastMapStatus = BufferMapAsyncStatus.ValidationError;
         LastMapTimedOut = false;
 
-        using var signal = new ManualResetEventSlim(false);
-        _mapSignal = signal;
-        _context.Api.BufferMapAsync(_buffer, MapMode.Read, 0, (nuint)BufferSize, _mapCallback, null);
+        var mapTask = _context.Api.BufferMapAsyncTask(_buffer, MapMode.Read, 0, (nuint)BufferSize);
 
         var stopwatch = Stopwatch.StartNew();
-        while (!signal.IsSet)
+        while (!mapTask.IsCompleted)
         {
             _context.PollDevice(wait: false);
             Thread.Sleep(1);
             if (stopwatch.ElapsedMilliseconds > timeoutMilliseconds)
             {
                 LastMapTimedOut = true;
-                if (ReferenceEquals(_mapSignal, signal))
-                {
-                    _mapSignal = null;
-                }
-
                 QueueBufferDisposal();
                 return false;
             }
         }
 
-        if (ReferenceEquals(_mapSignal, signal))
-        {
-            _mapSignal = null;
-        }
-
+        LastMapStatus = mapTask.GetAwaiter().GetResult();
         if (LastMapStatus != BufferMapAsyncStatus.Success)
         {
             QueueBufferDisposal();
@@ -367,12 +352,6 @@ public unsafe sealed class GpuTextureReadbackBuffer : IDisposable
         {
             UnmapActiveBuffer();
         }
-    }
-
-    private void OnBufferMapped(BufferMapAsyncStatus status, void* userData)
-    {
-        LastMapStatus = status;
-        _mapSignal?.Set();
     }
 
     private void QueueBufferDisposal()

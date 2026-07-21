@@ -11,4 +11,12 @@
     <PackageReference Include="Silk.NET.Windowing" />
     <PackageReference Include="Silk.NET.GLFW" />
   </ItemGroup>
+  <ItemGroup>
+    <None Update="buildTransitive/ProGPU.Backend.targets"
+          Pack="true"
+          PackagePath="buildTransitive/ProGPU.Backend.targets" />
+    <None Update="Native/progpu-static-resolver-stub.c"
+          Pack="true"
+          PackagePath="buildTransitive/native/progpu-static-resolver-stub.c" />
+  </ItemGroup>
 </Project>
