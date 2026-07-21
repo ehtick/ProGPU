@@ -11,6 +11,7 @@ ProGPU release packages are built from `eng/progpu-package-list.sh` by the `Rele
 | `ProGPU.Backend` | WebGPU device, swapchain, Silk.NET windowing, and platform backend services. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.Backend.svg)](https://www.nuget.org/packages/ProGPU.Backend/) |
 | `ProGPU.Browser` | Batched .NET WebAssembly dispatcher and `navigator.gpu` browser host services. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.Browser.svg)](https://www.nuget.org/packages/ProGPU.Browser/) |
 | `ProGPU.iOS` | Native UIKit/`CAMetalLayer` host using statically linked WebGPU over Metal. | Experimental source project |
+| `ProGPU.Android` | Native `SurfaceView` host using WebGPU and wgpu-native directly over Vulkan. | Experimental source project |
 | `ProGPU.DirectX` | DirectX-compatible facade and shader-oriented API surface implemented on ProGPU/WebGPU. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.DirectX.svg)](https://www.nuget.org/packages/ProGPU.DirectX/) |
 | `ProGPU.Transpiler` | Shader/source transformation helpers used by generated GPU pipelines. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.Transpiler.svg)](https://www.nuget.org/packages/ProGPU.Transpiler/) |
 | `ProGPU.Compute` | Compute pipeline helpers for GPU-side effects, acceleration, and future hit-test indexes. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.Compute.svg)](https://www.nuget.org/packages/ProGPU.Compute/) |
@@ -47,9 +48,26 @@ dotnet build src/ProGPU.Samples.iOS/ProGPU.Samples.iOS.csproj \
 
 The iOS-specific solution, native build details, ABI pin, architecture research, simulator commands, physical-device guidance, and current limitations are in [`docs/ios.md`](docs/ios.md).
 
+## Native Android WebGPU sample
+
+`ProGPU.Samples.Android` is the corresponding thin .NET Android host for the
+shared gallery. It renders directly to an `ANativeWindow`-backed WebGPU surface
+through Vulkan, with no browser, Android `Canvas`, MAUI, Uno, or readback path.
+
+```bash
+export ANDROID_NDK_ROOT=/absolute/path/to/android-sdk/ndk/your-version
+./eng/build-wgpu-native-android.sh arm64
+dotnet build src/ProGPU.Samples.Android/ProGPU.Samples.Android.csproj \
+  -c Debug -f net10.0-android
+```
+
+The Android architecture, exact native ABI pin, ARM64/x64 build lane, AOT
+publishing guidance, input/IME/inset/storage contracts, clean-room research,
+and device validation gates are in [`docs/android.md`](docs/android.md).
+
 ## Browser WebGPU sample
 
-The gallery is split into a shared `ProGPU.Samples` library and thin `ProGPU.Samples.Desktop`, `ProGPU.Samples.Browser`, and `ProGPU.Samples.iOS` hosts. The browser host publishes with the .NET WebAssembly SDK, negotiates WebGPU capabilities, sends aligned binary command packets directly from WASM memory, and passes embedded WGSL unchanged to `GPUDevice.createShaderModule`.
+The gallery is split into a shared `ProGPU.Samples` library and thin `ProGPU.Samples.Desktop`, `ProGPU.Samples.Browser`, `ProGPU.Samples.iOS`, and `ProGPU.Samples.Android` hosts. The browser host publishes with the .NET WebAssembly SDK, negotiates WebGPU capabilities, sends aligned binary command packets directly from WASM memory, and passes embedded WGSL unchanged to `GPUDevice.createShaderModule`.
 
 ### Prerequisites
 

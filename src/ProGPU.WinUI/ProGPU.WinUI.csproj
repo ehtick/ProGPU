@@ -6,7 +6,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Silk.NET.Input" />
+    <PackageReference Include="Silk.NET.Input.Common" />
     <PackageReference Include="Markdig" />
     <PackageReference Include="DocumentFormat.OpenXml" />
     <PackageReference Include="StbImageSharp" />
