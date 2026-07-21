@@ -826,6 +826,14 @@ public static class InputSystem
                 ScreenPosition = input.Position,
                 HoldingState = Microsoft.UI.Input.HoldingState.Completed
             });
+            if (contact.Target.IsRightTapEnabled)
+            {
+                contact.Target.OnRightTapped(new RightTappedRoutedEventArgs
+                {
+                    PointerDeviceType = contact.Pointer.PointerDeviceType,
+                    ScreenPosition = input.Position
+                });
+            }
             return;
         }
 
@@ -836,7 +844,8 @@ public static class InputSystem
         var releaseExceededTapThreshold =
             Vector2.DistanceSquared(contact.DownPosition, input.Position) > tapThreshold * tapThreshold;
         if (contact.ExceededTapThreshold || releaseExceededTapThreshold || contactDuration > 800_000UL) return;
-        if (input.DeviceType == PointerDeviceType.Mouse && contact.StartedWithRightButton)
+        if (input.DeviceType is PointerDeviceType.Mouse or PointerDeviceType.Pen &&
+            contact.StartedWithRightButton)
         {
             if (contact.Target.IsRightTapEnabled)
             {

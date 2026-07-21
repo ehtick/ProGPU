@@ -99,6 +99,22 @@ public sealed class TouchGestureResponsiveTests
     }
 
     [Fact]
+    public void PenBarrelButtonProducesRightTap()
+    {
+        var target = new TrackingControl { Width = 120, Height = 120 };
+        ArrangeRoot(target, new Vector2(120, 120));
+        UseInputRoot(target);
+
+        InputSystem.InjectPointer(new PointerInputEvent(
+            PointerInputKind.Pressed, 91, PointerDeviceType.Pen, new Vector2(40, 40), 1_000,
+            IsInContact: true, IsRightButtonPressed: true));
+        InputSystem.InjectPointer(new PointerInputEvent(
+            PointerInputKind.Released, 91, PointerDeviceType.Pen, new Vector2(40, 40), 20_000));
+
+        Assert.Equal(1, target.RightTappedCount);
+    }
+
+    [Fact]
     public void MobileTextOperationsDoNotDependOnPhysicalKeyEvents()
     {
         var textBox = new TextBox();
@@ -990,6 +1006,7 @@ public sealed class TouchGestureResponsiveTests
         public int CaptureLostCount { get; private set; }
         public int TappedCount { get; private set; }
         public int DoubleTappedCount { get; private set; }
+        public int RightTappedCount { get; private set; }
         public int ManipulationStartedCount { get; private set; }
         public int ManipulationCompletedCount { get; private set; }
         public int ManipulationInertiaStartingCount { get; private set; }
@@ -1033,6 +1050,12 @@ public sealed class TouchGestureResponsiveTests
         {
             DoubleTappedCount++;
             base.OnDoubleTapped(e);
+        }
+
+        public override void OnRightTapped(RightTappedRoutedEventArgs e)
+        {
+            RightTappedCount++;
+            base.OnRightTapped(e);
         }
 
         public override void OnManipulationStarted(ManipulationStartedRoutedEventArgs e)
