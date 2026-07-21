@@ -244,7 +244,7 @@ public static unsafe class MainWindowController
             Font = AppState._font, 
             FontSize = 11f, 
             VerticalAlignment = VerticalAlignment.Center,
-            TextAlignment = TextAlignment.Right
+            TextAlignment = Microsoft.UI.Xaml.TextAlignment.Right
         };
         subtitleText.Inlines.Add(new Run(".NET 10 cross-platform high-performance engine showcase"));
         headerGrid.AddChild(subtitleText);
@@ -299,6 +299,7 @@ public static unsafe class MainWindowController
         var imageEffectsItem = PageItem("Image Effects", "🖼️", ImageEffectsPage.Create);
         var gdiShowcaseItem = PageItem("GDI Shim Showcase", "🎨", GdiShowcasePage.Create);
         var glyphRunShowcaseItem = PageItem("Glyph Run Showcase", "🔤", GlyphRunShowcasePage.Create);
+        var textShapingItem = PageItem("Text Shaping Lab", "ﬃ", TextShapingShowcasePage.Create);
         var wpfShowcaseItem = PageItem("WPF Shim Showcase", "📐", WpfShowcasePage.Create);
 
         var computeItem = PageItem("Compute FX", "⚙", ComputeFxPage.Create);
@@ -355,6 +356,7 @@ public static unsafe class MainWindowController
         AppState._navigationView.MenuItems.Add(imageEffectsItem);
         AppState._navigationView.MenuItems.Add(gdiShowcaseItem);
         AppState._navigationView.MenuItems.Add(glyphRunShowcaseItem);
+        AppState._navigationView.MenuItems.Add(textShapingItem);
         AppState._navigationView.MenuItems.Add(wpfShowcaseItem);
         AppState._navigationView.MenuItems.Add(computeItem);
         AppState._navigationView.MenuItems.Add(motionAnimationsItem);

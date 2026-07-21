@@ -172,6 +172,13 @@ public class SamplePagesTests : IDisposable
     }
 
     [Fact]
+    public void Test_TextShapingShowcasePage_Renders()
+    {
+        EnsureFontsAndStateLoaded();
+        RunPageTest(TextShapingShowcasePage.Create(), "Text Shaping Lab");
+    }
+
+    [Fact]
     public void Test_FontGlyphBrowserPage_Hover_Diagnostics()
     {
         EnsureFontsAndStateLoaded();
