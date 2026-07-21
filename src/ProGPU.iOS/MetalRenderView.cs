@@ -19,11 +19,11 @@ internal sealed class MetalRenderView : UIView
     // Keep the framework's conventional low IDs available to simultaneous direct
     // touches while presenting every hover/click/scroll phase as one mouse pointer.
     private const uint IndirectPointerId = uint.MaxValue;
-    private const float PinchWheelUnitsPerNaturalLog = 120f;
     private readonly CAMetalLayer _metalLayer;
     private readonly UIScreen _screen;
     private readonly Dictionary<nint, uint> _pointerIds = [];
-    private readonly UIPanGestureRecognizer _indirectScrollRecognizer;
+    private readonly UIPanGestureRecognizer _continuousScrollRecognizer;
+    private readonly UIPanGestureRecognizer _discreteScrollRecognizer;
     private readonly UIPinchGestureRecognizer _indirectPinchRecognizer;
     private readonly UIHoverGestureRecognizer _hoverRecognizer;
     private readonly IndirectGestureDelegate _scrollGestureDelegate;
@@ -52,9 +52,18 @@ internal sealed class MetalRenderView : UIView
         Layer.AddSublayer(_metalLayer);
         _scrollGestureDelegate = new IndirectGestureDelegate(UIEventType.Scroll);
         _transformGestureDelegate = new IndirectGestureDelegate(UIEventType.Transform);
-        _indirectScrollRecognizer = new UIPanGestureRecognizer(HandleIndirectScroll)
+        // UIKit exposes device precision through disjoint masks rather than on the
+        // callback event. Keeping two recognizers preserves pixel trackpad deltas
+        // while normalizing a notched mouse wheel to framework line units.
+        _continuousScrollRecognizer = new UIPanGestureRecognizer(HandleContinuousScroll)
         {
-            AllowedScrollTypesMask = UIScrollTypeMask.All,
+            AllowedScrollTypesMask = UIScrollTypeMask.Continuous,
+            CancelsTouchesInView = false,
+            Delegate = _scrollGestureDelegate
+        };
+        _discreteScrollRecognizer = new UIPanGestureRecognizer(HandleDiscreteScroll)
+        {
+            AllowedScrollTypesMask = UIScrollTypeMask.Discrete,
             CancelsTouchesInView = false,
             Delegate = _scrollGestureDelegate
         };
@@ -67,7 +76,8 @@ internal sealed class MetalRenderView : UIView
         {
             CancelsTouchesInView = false
         };
-        AddGestureRecognizer(_indirectScrollRecognizer);
+        AddGestureRecognizer(_continuousScrollRecognizer);
+        AddGestureRecognizer(_discreteScrollRecognizer);
         AddGestureRecognizer(_indirectPinchRecognizer);
         AddGestureRecognizer(_hoverRecognizer);
         UpdateDrawableSize();
@@ -211,7 +221,13 @@ internal sealed class MetalRenderView : UIView
         }
     }
 
-    private void HandleIndirectScroll(UIPanGestureRecognizer recognizer)
+    private void HandleContinuousScroll(UIPanGestureRecognizer recognizer) =>
+        HandleIndirectScroll(recognizer, precise: true);
+
+    private void HandleDiscreteScroll(UIPanGestureRecognizer recognizer) =>
+        HandleIndirectScroll(recognizer, precise: false);
+
+    private void HandleIndirectScroll(UIPanGestureRecognizer recognizer, bool precise)
     {
         if (recognizer.State is not (UIGestureRecognizerState.Began or
             UIGestureRecognizerState.Changed or
@@ -225,9 +241,9 @@ internal sealed class MetalRenderView : UIView
             PointerDeviceType.Mouse,
             location,
             checked((ulong)Math.Max(0d, NSProcessInfo.ProcessInfo.SystemUptime * 1_000_000d)),
-            WheelDeltaX: (float)translation.X,
-            WheelDeltaY: (float)translation.Y,
-            IsPreciseWheel: true,
+            WheelDeltaX: IosIndirectScrollPolicy.NormalizeScrollDelta((float)translation.X, precise),
+            WheelDeltaY: IosIndirectScrollPolicy.NormalizeScrollDelta((float)translation.Y, precise),
+            IsPreciseWheel: precise,
             Modifiers: ReadModifiers(recognizer.ModifierFlags)));
         recognizer.SetTranslation(CGPoint.Empty, this);
     }
@@ -241,7 +257,7 @@ internal sealed class MetalRenderView : UIView
         double scale = (double)recognizer.Scale;
         if (!double.IsFinite(scale) || scale <= 0d) return;
         recognizer.Scale = 1;
-        float zoomDelta = (float)(Math.Log(scale) * PinchWheelUnitsPerNaturalLog);
+        float zoomDelta = IosIndirectScrollPolicy.PinchScaleToWheelDelta(scale);
         if (MathF.Abs(zoomDelta) <= float.Epsilon) return;
 
         InputSystem.InjectPointer(new PointerInputEvent(
@@ -275,6 +291,14 @@ internal sealed class MetalRenderView : UIView
     {
         CGPoint point = recognizer.LocationInView(this);
         var position = new Vector2((float)point.X, (float)point.Y);
+        // Native scroll/transform events have no touches. UIKit can return CGPoint.Empty
+        // until hover has supplied a pointer location, so retain the latest hover/click
+        // position and fall back to the view center for the first such event.
+        if (recognizer.NumberOfTouches == 0 && position == Vector2.Zero)
+        {
+            if (_lastIndirectPointerPosition != Vector2.Zero) return _lastIndirectPointerPosition;
+            return new Vector2((float)Bounds.GetMidX(), (float)Bounds.GetMidY());
+        }
         if (float.IsFinite(position.X) && float.IsFinite(position.Y))
         {
             _lastIndirectPointerPosition = position;
@@ -317,9 +341,12 @@ internal sealed class MetalRenderView : UIView
             RemoveGestureRecognizer(_indirectPinchRecognizer);
             _indirectPinchRecognizer.Delegate = null!;
             _indirectPinchRecognizer.Dispose();
-            RemoveGestureRecognizer(_indirectScrollRecognizer);
-            _indirectScrollRecognizer.Delegate = null!;
-            _indirectScrollRecognizer.Dispose();
+            RemoveGestureRecognizer(_discreteScrollRecognizer);
+            _discreteScrollRecognizer.Delegate = null!;
+            _discreteScrollRecognizer.Dispose();
+            RemoveGestureRecognizer(_continuousScrollRecognizer);
+            _continuousScrollRecognizer.Delegate = null!;
+            _continuousScrollRecognizer.Dispose();
             _transformGestureDelegate.Dispose();
             _scrollGestureDelegate.Dispose();
             _metalLayer.RemoveFromSuperLayer();

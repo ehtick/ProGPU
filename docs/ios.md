@@ -130,7 +130,27 @@ The native input design follows Apple's [trackpad and mouse input guidance](http
 `UIPinchGestureRecognizer` consumes transform events, `UIHoverGestureRecognizer`
 tracks an unpressed pointer, and `UIEvent.buttonMask` identifies mouse buttons.
 The event delegate intentionally reads `UIEvent.Type` because non-touch scroll
-and transform events have zero touches after the indirect-input opt-in.
+and transform events have zero touches after the indirect-input opt-in. Disjoint
+continuous and discrete pan recognizers retain logical-pixel trackpad deltas while
+normalizing mouse-wheel detents to the same line units used by desktop hosts.
+Pinch scale is transported without step quantization as `120 * ln(relativeScale)` and
+reconstructed by zooming controls with `exp(delta / 120)`. Pointer location falls back to the last
+hover/click position (or the view center for the first event), because a touchless
+scroll or transform event may report an empty recognizer location.
+
+The portable input layer also implements the current
+[`Microsoft.UI.Input.GestureRecognizer`](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.input.gesturerecognizer)
+contract: official gesture-setting values, pointer-point metadata, tap/double-tap,
+right-tap, holding, mouse/pen dragging, touch cross-slide, one- and multi-pointer
+translation/rails/scale/rotation, wheel manipulation, configurable manual or
+automatic inertia, and completion. XAML routed gesture arguments expose the WinUI
+container, pivot, position, device, cumulative/delta/velocity, completion, and
+inertia-behavior surfaces using the current `Microsoft.UI.Input` value and device
+types. Routed inertia produces timed `ManipulationDelta` events, honors desired
+deceleration or displacement/angle/expansion, supports interruption by a new contact,
+and completes only after motion stops. Recognition is `O(P)` time per sample and `O(P)` retained
+state for `P` active contacts; wheel, tap, drag, and inertia steps are `O(1)` and
+allocation-free after event construction.
 
 ### Responsive offscreen effects
 
@@ -250,8 +270,9 @@ sources. No implementation was copied or translated from another engine.
 | [WinUI/UWP `InputPane`](https://learn.microsoft.com/en-us/uwp/api/windows.ui.viewmanagement.inputpane), [`OccludedRect`](https://learn.microsoft.com/en-us/uwp/api/windows.ui.viewmanagement.inputpane.occludedrect), and [`InputPaneVisibilityEventArgs`](https://learn.microsoft.com/en-us/uwp/api/windows.ui.viewmanagement.inputpanevisibilityeventargs) | Portable keyboard visibility, occlusion, and focused-element reporting | Match the official API shape and keep UIKit geometry out of application code. |
 | [`UIView.safeAreaInsets`](https://developer.apple.com/documentation/uikit/uiview/safeareainsets), [`safeAreaInsetsDidChange`](https://developer.apple.com/documentation/uikit/uiview/safeareainsetsdidchange()), and [`keyboardLayoutGuide`](https://developer.apple.com/documentation/uikit/uiview/keyboardlayoutguide) | System-bar/cutout geometry and keyboard-aware layout | Report logical inset/occlusion values; inset app content without reducing the Metal drawable. |
 | [`UITextInput`](https://developer.apple.com/documentation/uikit/uitextinput) and [`setMarkedText`](https://developer.apple.com/documentation/uikit/uitextinput/setmarkedtext(_:selectedrange:)) | Exact document replacements, selection, and IME marked-text lifecycle | Let UIKit own its native editing document and mirror exact changes into typed ProGPU text operations. |
-| [`UIPanGestureRecognizer.allowedScrollTypesMask`](https://developer.apple.com/documentation/uikit/uipangesturerecognizer/allowedscrolltypesmask) and [`allowedTouchTypes`](https://developer.apple.com/documentation/uikit/uigesturerecognizer/allowedtouchtypes) | Indirect continuous scrolling from trackpads and other scrolling devices, independently from direct touches | Accept all scroll types, exclude direct touches from the scroll recognizer, and preserve pixel deltas through routed input. |
+| [`UIPanGestureRecognizer.allowedScrollTypesMask`](https://developer.apple.com/documentation/uikit/uipangesturerecognizer/allowedscrolltypesmask), [`UIScrollTypeMask`](https://developer.apple.com/documentation/uikit/uiscrolltypemask), and [`allowedTouchTypes`](https://developer.apple.com/documentation/uikit/uigesturerecognizer/allowedtouchtypes) | Indirect scrolling distinguishes continuous trackpads from discrete mouse wheels independently from direct touches | Use disjoint continuous/discrete recognizers, exclude direct touches, preserve trackpad pixels, and normalize discrete detents. |
 | [Apple TN3210: Optimizing your app for iPhone Mirroring](https://developer.apple.com/documentation/technotes/tn3210-optimizing-your-app-for-iphone-mirroring) | Compatibility requirements for indirect scroll events in apps with older deployment targets | Set `UIApplicationSupportsIndirectInputEvents` to `YES` because the sample supports iOS 15, then use UIKit's built-in pan recognizer for both continuous and discrete scroll events. |
+| [Windows App SDK `GestureRecognizer`](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.input.gesturerecognizer), [`GestureSettings`](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.input.gesturesettings), and [XAML manipulation events](https://learn.microsoft.com/en-us/windows/apps/design/input/touch-interactions) | Public gesture ingestion, settings, typed event payloads, completion, and inertia contracts | Match the Microsoft API surface and implement an original typed recognizer shared by every host; UIKit remains an input adapter rather than a second gesture model. |
 | [`UIDocumentPickerViewController`](https://developer.apple.com/documentation/uikit/uidocumentpickerviewcontroller), [`UTType`](https://developer.apple.com/documentation/uniformtypeidentifiers/uttypereference), and [WinUI file-management guidance](https://learn.microsoft.com/en-us/windows/apps/develop/files/) | Native file/folder selection, extension filtering, save destinations, and sandbox-safe access | Preserve the WinUI-shaped asynchronous picker contract while presenting Files UI, copying opened documents locally, and retaining/coordinating security-scoped save and folder URLs. |
 | [WinUI `ItemsRepeater`](https://learn.microsoft.com/en-us/windows/apps/design/controls/items-repeater), [`VirtualizingLayoutContext`](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.controls.virtualizinglayoutcontext), and [attached-layout guidance](https://learn.microsoft.com/en-us/windows/apps/design/controls/items-repeater#attached-layouts) | Viewport-driven realization, recycling, and variable-sized layouts | Share a prefix-sum geometry index, use bounded overscan, recycle containers, and preserve scroll anchors. |
 
