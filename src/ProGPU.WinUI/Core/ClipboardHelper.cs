@@ -5,30 +5,14 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Documents;
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.IO;
 using System.Linq;
 using System.Text;
 
 namespace Microsoft.UI.Xaml;
 
-/// <summary>Portable clipboard payload that hosts can map to native text and RTF formats.</summary>
-public sealed class RichClipboardPayload
-{
-    public RichClipboardPayload(string plainText, string rtf, string html = "")
-    {
-        PlainText = plainText ?? throw new ArgumentNullException(nameof(plainText));
-        Rtf = rtf ?? throw new ArgumentNullException(nameof(rtf));
-        Html = html ?? throw new ArgumentNullException(nameof(html));
-    }
-
-    public string PlainText { get; }
-    public string Rtf { get; }
-    public string Html { get; }
-}
-
 public static class ClipboardHelper
 {
+    private static string _fallbackText = string.Empty;
     private static string? _richPlainText;
     private static RichTextSpan[]? _richSpans;
     private static RichTextRtfCodec.ParagraphSpan[]? _richParagraphs;
@@ -54,6 +38,7 @@ public static class ClipboardHelper
         _richPlainText = null;
         _richSpans = null;
         _richParagraphs = null;
+        _fallbackText = text;
         SetPlatformText(text);
     }
 
@@ -69,6 +54,7 @@ public static class ClipboardHelper
         RichTextRtfCodec.DecodedDocument decoded = RichTextRtfCodec.DecodeDocument(rtf, fallback);
         string html = Encoding.UTF8.GetString(HtmlDocumentCodec.Default.Export(RtfDocumentCodec.BuildDocument(decoded)));
         var payload = new RichClipboardPayload(text, rtf, html);
+        _fallbackText = text;
         if (PlatformSetRichText is { } platformSetRichText)
             platformSetRichText(payload);
         else if (!MacOsRichClipboard.TrySet(payload) && !WindowsRichClipboard.TrySet(payload))
@@ -166,43 +152,12 @@ public static class ClipboardHelper
             return;
         }
 
-        if (WindowsRichClipboard.TrySetText(text) || LinuxTextClipboard.TrySet(text)) return;
+        if (WindowsRichClipboard.TrySetText(text) ||
+            LinuxTextClipboard.TrySet(text) ||
+            MacOsTextClipboard.TrySet(text)) return;
 
-        try
-        {
-            var psi = new ProcessStartInfo
-            {
-                FileName = "pbcopy",
-                UseShellExecute = false,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
-            };
-
-            using var process = Process.Start(psi);
-            if (process == null)
-            {
-                throw new InvalidOperationException("Failed to start pbcopy process.");
-            }
-
-            using (var writer = process.StandardInput)
-            {
-                writer.Write(text);
-            }
-
-            process.WaitForExit();
-            if (process.ExitCode != 0)
-            {
-                string error = process.StandardError.ReadToEnd();
-                throw new InvalidOperationException($"pbcopy exited with code {process.ExitCode}. Error: {error}");
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[ClipboardHelper] Error setting clipboard text: {ex.Message}");
-            throw;
-        }
+        // Native clipboard access is optional for headless and sandboxed hosts. The
+        // process-local value remains available when no platform transport exists.
     }
 
     public static string GetText()
@@ -210,39 +165,7 @@ public static class ClipboardHelper
         if (PlatformGetText is { } platformGetText) return platformGetText() ?? string.Empty;
         if (WindowsRichClipboard.TryGetText(out string windowsText)) return windowsText;
         if (LinuxTextClipboard.TryGet(out string linuxText)) return linuxText;
-
-        try
-        {
-            var psi = new ProcessStartInfo
-            {
-                FileName = "pbpaste",
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
-            };
-
-            using var process = Process.Start(psi);
-            if (process == null)
-            {
-                throw new InvalidOperationException("Failed to start pbpaste process.");
-            }
-
-            string text = process.StandardOutput.ReadToEnd();
-            process.WaitForExit();
-
-            if (process.ExitCode != 0)
-            {
-                string error = process.StandardError.ReadToEnd();
-                throw new InvalidOperationException($"pbpaste exited with code {process.ExitCode}. Error: {error}");
-            }
-
-            return text;
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[ClipboardHelper] Error getting clipboard text: {ex.Message}");
-            return string.Empty;
-        }
+        if (MacOsTextClipboard.TryGet(out string macOsText)) return macOsText;
+        return _fallbackText;
     }
 }
