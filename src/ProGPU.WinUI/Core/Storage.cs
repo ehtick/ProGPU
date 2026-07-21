@@ -44,6 +44,17 @@ public class StorageFile
         await File.WriteAllTextAsync(Path, text);
     }
 
+    public async Task WriteBytesAsync(byte[] bytes)
+    {
+        ArgumentNullException.ThrowIfNull(bytes);
+        if (StoragePlatformServices.WriteBytesAsync is { } platformWrite &&
+            await platformWrite(Path, bytes).ConfigureAwait(false))
+        {
+            return;
+        }
+        await File.WriteAllBytesAsync(Path, bytes);
+    }
+
     public static Task<StorageFile> GetFileFromPathAsync(string path)
     {
         return Task.FromResult(new StorageFile(path));
@@ -55,6 +66,7 @@ public static class StoragePlatformServices
 {
     public static Func<int, IReadOnlyList<string>?, string?, Task<string?>>? PickPathAsync { get; set; }
     public static Func<string, string, Task<bool>>? WriteTextAsync { get; set; }
+    public static Func<string, byte[], Task<bool>>? WriteBytesAsync { get; set; }
 }
 
 public class StorageFolder

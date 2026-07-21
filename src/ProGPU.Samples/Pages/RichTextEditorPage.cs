@@ -19,6 +19,7 @@ public sealed class RichTextEditorPage : Grid
     private readonly Run _documentRun;
     private readonly Run _statusRun;
     private readonly Button _openButton;
+    private readonly Button _saveButton;
     private StorageFile? _currentFile;
     private IRichDocumentFormatCodec? _currentCodec;
 
@@ -32,6 +33,13 @@ public sealed class RichTextEditorPage : Grid
         _formats = formats ?? throw new ArgumentNullException(nameof(formats));
         SupportedExtensions = _formats.Formats
             .Where(static codec => codec.CanImport)
+            .SelectMany(static codec => codec.FileExtensions)
+            .Select(static extension => extension.StartsWith('.') ? extension : $".{extension}")
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(static extension => extension, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        SupportedExportExtensions = _formats.Formats
+            .Where(static codec => codec.CanExport)
             .SelectMany(static codec => codec.FileExtensions)
             .Select(static extension => extension.StartsWith('.') ? extension : $".{extension}")
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -71,7 +79,7 @@ public sealed class RichTextEditorPage : Grid
             Margin = new Thickness(0f, 4f, 0f, 10f)
         };
         description.Inlines.Add(new Run(
-            "Open plain text, Markdown, RTF, or HTML through the shared format registry, then edit the imported semantic document with the same virtualized layout and rendering engine."));
+            "Open and save plain text, Markdown, RTF, HTML, or Microsoft Word DOCX through the shared format registry, then edit with the same virtualized layout and rendering engine."));
         header.AddChild(description);
 
         var supported = new RichTextBlock
@@ -94,6 +102,7 @@ public sealed class RichTextEditorPage : Grid
         };
 
         _openButton = CreateButton("Open document…", 132f);
+        _saveButton = CreateButton("Save as…", 88f);
         Button newButton = CreateButton("New", 64f);
         Button undoButton = CreateButton("Undo", 64f);
         Button redoButton = CreateButton("Redo", 64f);
@@ -102,6 +111,7 @@ public sealed class RichTextEditorPage : Grid
         Button underlineButton = CreateButton("Underline", 82f);
 
         actions.AddChild(_openButton);
+        actions.AddChild(_saveButton);
         actions.AddChild(newButton);
         actions.AddChild(undoButton);
         actions.AddChild(redoButton);
@@ -155,6 +165,7 @@ public sealed class RichTextEditorPage : Grid
         SetRow(editorCard, 1);
 
         _openButton.Click += async (_, _) => await OpenWithPickerAsync();
+        _saveButton.Click += async (_, _) => await SaveWithPickerAsync();
         newButton.Click += (_, _) => NewDocument();
         undoButton.Click += (_, _) => _editor.Undo();
         redoButton.Click += (_, _) => _editor.Redo();
@@ -168,6 +179,8 @@ public sealed class RichTextEditorPage : Grid
     public RichEditBox Editor => _editor;
 
     public IReadOnlyList<string> SupportedExtensions { get; }
+
+    public IReadOnlyList<string> SupportedExportExtensions { get; }
 
     public StorageFile? CurrentFile => _currentFile;
 
@@ -195,11 +208,30 @@ public sealed class RichTextEditorPage : Grid
             new ThemeResourceBrush("TextPrimary"),
             _editor.ActualTheme);
 
-        _editor.LoadDocument(codec, source, context);
+        RichDocument imported = await Task.Run(() => codec.Import(source, context));
+        _editor.SetRichDocument(imported);
         _currentFile = file;
         _currentCodec = codec;
         _documentRun.Text = $"{file.Name} — {codec.FormatId}";
         _statusRun.Text = $"Loaded {source.Length:N0} bytes. The converted document is ready for editing.";
+    }
+
+    public async Task SaveDocumentAsync(StorageFile file)
+    {
+        ArgumentNullException.ThrowIfNull(file);
+        if (!_formats.TryGetFileExtension(file.FileType, out IRichDocumentFormatCodec? codec) || codec is null || !codec.CanExport)
+        {
+            throw new NotSupportedException(
+                $"No export codec is registered for '{file.FileType}'. Supported extensions: {string.Join(", ", SupportedExportExtensions)}.");
+        }
+
+        RichDocument snapshot = _editor.CreateRichDocumentSnapshot();
+        byte[] output = await Task.Run(() => codec.Export(snapshot));
+        await file.WriteBytesAsync(output);
+        _currentFile = file;
+        _currentCodec = codec;
+        _documentRun.Text = $"{file.Name} — {codec.FormatId}";
+        _statusRun.Text = $"Saved {output.Length:N0} bytes.";
     }
 
     private async Task OpenWithPickerAsync()
@@ -230,6 +262,35 @@ public sealed class RichTextEditorPage : Grid
         finally
         {
             _openButton.IsEnabled = true;
+        }
+    }
+
+    private async Task SaveWithPickerAsync()
+    {
+        _saveButton.IsEnabled = false;
+        _statusRun.Text = "Opening the system save picker…";
+        try
+        {
+            var picker = new FileSavePicker
+            {
+                SuggestedFileName = _currentFile?.Name ?? "Untitled.docx"
+            };
+            picker.FileTypeChoices["Rich documents"] = SupportedExportExtensions.ToList();
+            StorageFile? file = await picker.PickSaveFileAsync();
+            if (file is null)
+            {
+                _statusRun.Text = "Save cancelled; the current document was not changed.";
+                return;
+            }
+            await SaveDocumentAsync(file);
+        }
+        catch (Exception exception)
+        {
+            _statusRun.Text = $"Save failed: {exception.Message}";
+        }
+        finally
+        {
+            _saveButton.IsEnabled = true;
         }
     }
 

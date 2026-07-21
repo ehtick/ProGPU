@@ -359,6 +359,7 @@ public class SamplePagesTests : IDisposable
     [Fact]
     public void Test_RichTextEditorPage_Renders()
     {
+        EnsureFontsAndStateLoaded();
         RunPageTest(RichTextEditorPage.Create(), "Rich Document Editor");
     }
 
@@ -391,6 +392,32 @@ public class SamplePagesTests : IDisposable
 
             Assert.EndsWith(" edited", page.Editor.Text, StringComparison.Ordinal);
             Assert.Contains("ready for editing", page.Status, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task Test_RichTextEditorPage_SavesAndReopensDocx()
+    {
+        EnsureFontsAndStateLoaded();
+        string path = Path.Combine(Path.GetTempPath(), $"progpu-rich-editor-{Guid.NewGuid():N}.docx");
+        try
+        {
+            var page = new RichTextEditorPage();
+            page.Editor.Text = "DOCX Sentinel אבג";
+
+            await page.SaveDocumentAsync(new StorageFile(path));
+
+            Assert.True(File.Exists(path));
+            Assert.True(new FileInfo(path).Length > 256);
+            Assert.Equal(WordDocumentCodec.Default.FormatId, page.CurrentFormatId);
+            var reopened = new RichTextEditorPage();
+            await reopened.OpenDocumentAsync(new StorageFile(path));
+            Assert.Equal("DOCX Sentinel אבג", reopened.Editor.Text);
+            Assert.Contains("Saved", page.Status, StringComparison.Ordinal);
         }
         finally
         {
