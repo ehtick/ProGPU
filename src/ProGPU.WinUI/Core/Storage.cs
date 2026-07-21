@@ -29,6 +29,11 @@ public class StorageFile
         return await File.ReadAllTextAsync(Path);
     }
 
+    public async Task<byte[]> ReadBytesAsync()
+    {
+        return await File.ReadAllBytesAsync(Path);
+    }
+
     public async Task WriteTextAsync(string text)
     {
         if (StoragePlatformServices.WriteTextAsync is { } platformWrite &&

@@ -139,7 +139,7 @@ public class SamplePagesTests : IDisposable
         EnsureFontsAndStateLoaded();
 
         var stack = new Microsoft.UI.Xaml.Controls.StackPanel { Orientation = Orientation.Vertical };
-        
+
         var fontIcon = new FontIcon
         {
             Font = AppState._font,
@@ -357,6 +357,48 @@ public class SamplePagesTests : IDisposable
     }
 
     [Fact]
+    public void Test_RichTextEditorPage_Renders()
+    {
+        RunPageTest(RichTextEditorPage.Create(), "Rich Document Editor");
+    }
+
+    [Theory]
+    [InlineData(".txt", "PlainSentinel", "text/plain")]
+    [InlineData(".md", "**MarkdownSentinel**", "text/markdown")]
+    [InlineData(".rtf", "{\\rtf1\\ansi RtfSentinel}", "application/rtf")]
+    [InlineData(".html", "<p><strong>HtmlSentinel</strong></p>", "text/html")]
+    public async Task Test_RichTextEditorPage_OpensEveryDefaultFormatForEditing(
+        string extension,
+        string source,
+        string expectedFormat)
+    {
+        EnsureFontsAndStateLoaded();
+        string path = Path.Combine(Path.GetTempPath(), $"progpu-rich-editor-{Guid.NewGuid():N}{extension}");
+        await File.WriteAllTextAsync(path, source);
+
+        try
+        {
+            var page = new RichTextEditorPage();
+            Assert.Contains(extension, page.SupportedExtensions, StringComparer.OrdinalIgnoreCase);
+
+            await page.OpenDocumentAsync(new StorageFile(path));
+
+            Assert.Equal(expectedFormat, page.CurrentFormatId);
+            Assert.Contains("Sentinel", page.Editor.Text, StringComparison.Ordinal);
+
+            int end = page.Editor.Text.Length;
+            page.Editor.TextDocument.GetRange(end, end).Text = " edited";
+
+            Assert.EndsWith(" edited", page.Editor.Text, StringComparison.Ordinal);
+            Assert.Contains("ready for editing", page.Status, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public async Task Test_MarkdownPage_RepeatedActivation_RemainsResponsiveAndHighlighted()
     {
         EnsureFontsAndStateLoaded();
@@ -529,21 +571,21 @@ public class SamplePagesTests : IDisposable
     public unsafe void Test_ComputeFxPage_Renders()
     {
         EnsureFontsAndStateLoaded();
-        
+
         var context = HeadlessWindow.Shared.Context;
         AppState._offscreenCompositor = new Compositor(context, Silk.NET.WebGPU.TextureFormat.Rgba8Unorm);
         AppState._compute = new ProGPU.Compute.ComputeAccelerator(context);
-        
-        AppState._canvasSourceTexture = new ProGPU.Backend.GpuTexture(context, 600, 600, Silk.NET.WebGPU.TextureFormat.Rgba8Unorm, 
+
+        AppState._canvasSourceTexture = new ProGPU.Backend.GpuTexture(context, 600, 600, Silk.NET.WebGPU.TextureFormat.Rgba8Unorm,
             Silk.NET.WebGPU.TextureUsage.RenderAttachment | Silk.NET.WebGPU.TextureUsage.TextureBinding | Silk.NET.WebGPU.TextureUsage.CopySrc | Silk.NET.WebGPU.TextureUsage.CopyDst | Silk.NET.WebGPU.TextureUsage.StorageBinding,
             alphaMode: ProGPU.Backend.GpuTextureAlphaMode.Premultiplied);
-        AppState._canvasTempTexture = new ProGPU.Backend.GpuTexture(context, 600, 600, Silk.NET.WebGPU.TextureFormat.Rgba8Unorm, 
+        AppState._canvasTempTexture = new ProGPU.Backend.GpuTexture(context, 600, 600, Silk.NET.WebGPU.TextureFormat.Rgba8Unorm,
             Silk.NET.WebGPU.TextureUsage.RenderAttachment | Silk.NET.WebGPU.TextureUsage.TextureBinding | Silk.NET.WebGPU.TextureUsage.CopySrc | Silk.NET.WebGPU.TextureUsage.CopyDst | Silk.NET.WebGPU.TextureUsage.StorageBinding,
             alphaMode: ProGPU.Backend.GpuTextureAlphaMode.Premultiplied);
-        AppState._canvasBlurTexture = new ProGPU.Backend.GpuTexture(context, 600, 600, Silk.NET.WebGPU.TextureFormat.Rgba8Unorm, 
+        AppState._canvasBlurTexture = new ProGPU.Backend.GpuTexture(context, 600, 600, Silk.NET.WebGPU.TextureFormat.Rgba8Unorm,
             Silk.NET.WebGPU.TextureUsage.RenderAttachment | Silk.NET.WebGPU.TextureUsage.TextureBinding | Silk.NET.WebGPU.TextureUsage.CopySrc | Silk.NET.WebGPU.TextureUsage.CopyDst | Silk.NET.WebGPU.TextureUsage.StorageBinding,
             alphaMode: ProGPU.Backend.GpuTextureAlphaMode.Premultiplied);
-        AppState._canvasShadowTexture = new ProGPU.Backend.GpuTexture(context, 600, 600, Silk.NET.WebGPU.TextureFormat.Rgba8Unorm, 
+        AppState._canvasShadowTexture = new ProGPU.Backend.GpuTexture(context, 600, 600, Silk.NET.WebGPU.TextureFormat.Rgba8Unorm,
             Silk.NET.WebGPU.TextureUsage.RenderAttachment | Silk.NET.WebGPU.TextureUsage.TextureBinding | Silk.NET.WebGPU.TextureUsage.CopySrc | Silk.NET.WebGPU.TextureUsage.CopyDst | Silk.NET.WebGPU.TextureUsage.StorageBinding,
             alphaMode: ProGPU.Backend.GpuTextureAlphaMode.Premultiplied);
 
@@ -651,17 +693,17 @@ public class SamplePagesTests : IDisposable
     public void Test_DxfViewerPage_Renders_GpuTransforms()
     {
         EnsureFontsAndStateLoaded();
-        
+
         bool savedEnableGpuTransforms = AppState.EnableGpuTransforms;
         bool savedEnableStatic = AppState.EnableStaticGpuBuffers;
         bool savedEnableCaching = AppState.EnableCommandCaching;
-        
+
         try
         {
             AppState.EnableGpuTransforms = true;
             AppState.EnableStaticGpuBuffers = false;
             AppState.EnableCommandCaching = false;
-            
+
             var page = DxfViewerPage.Create();
             RunPageTest(page, "Dxf Viewer Gpu Transforms");
         }
@@ -904,7 +946,7 @@ public class SamplePagesTests : IDisposable
         int iterations = 200;
         for (int i = 0; i < iterations; i++)
         {
-            panePanel.IsDirty = true; 
+            panePanel.IsDirty = true;
             window.Render();
         }
         sw.Stop();
@@ -939,7 +981,7 @@ public class SamplePagesTests : IDisposable
         // ==========================================
         // SCENARIO 2: ISOLATED COMPONENT RENDERING
         // ==========================================
-        
+
         // Render ONLY the sidebar pane to isolate the component
         window.Content = panePanel as FrameworkElement;
         window.Render();
@@ -1351,7 +1393,7 @@ public class SamplePagesTests : IDisposable
 
             // Now resize the window!
             window.Resize(1024, 768);
-            
+
             // Force render again, which should invalidate and rebuild because size changed!
             window.Render();
 
@@ -1445,7 +1487,7 @@ public class SamplePagesTests : IDisposable
         sw.Stop();
 
         Console.WriteLine($"[TEST_VIRTUALIZATION] Spec loaded and first frame rendered in {sw.Elapsed.TotalMilliseconds:F2} ms");
-        
+
         // Assert that the initial load + layout pass was extremely fast under virtualization
         Assert.True(sw.Elapsed.TotalMilliseconds < 2000, $"Initial virtualized layout took too long: {sw.Elapsed.TotalMilliseconds} ms");
 
@@ -1474,7 +1516,7 @@ public class SamplePagesTests : IDisposable
         for (float offset = 0f; offset <= maxScrollOffset; offset += scrollStep)
         {
             scrollViewer.VerticalOffset = offset;
-            
+
             // Force a render tick to arrange and layout newly visible blocks
             window.Render();
             scrollFrames++;
@@ -1524,7 +1566,7 @@ public class SamplePagesTests : IDisposable
         // Validate that ALL blocks were rendered at least once!
         Assert.NotNull(allBlocks);
         Console.WriteLine($"[TEST_VIRTUALIZATION] Total blocks parsed: {allBlocks.Count}, Unique blocks rendered during scroll: {renderedBlocks.Count}");
-        
+
         if (allBlocks.Count != renderedBlocks.Count)
         {
             var sb = new System.Text.StringBuilder();
@@ -1755,19 +1797,19 @@ public class SamplePagesTests : IDisposable
 
         var control = new ShaderToyControl();
         control.ShaderSource = ShaderToyPlaygroundPageGrid.Preset2_StarNest;
-        
+
         EnsureFontsAndStateLoaded();
         var window = HeadlessWindow.Shared;
         window.Resize(1280, 800);
         window.Content = control;
         window.Render();
         window.Render();
-        
+
         if (control.CompileError != null)
         {
             throw new Exception("Preset 2 WebGPU Validation Error:\n" + control.CompileError);
         }
-        
+
         byte[] pixels = window.ReadPixels();
         window.SaveScreenshot(GetArtifactPath("preset2.png"));
 
@@ -1792,19 +1834,19 @@ public class SamplePagesTests : IDisposable
     {
         var control = new ShaderToyControl();
         control.ShaderSource = ShaderToyPlaygroundPageGrid.Preset3_RaymarchedTorus;
-        
+
         EnsureFontsAndStateLoaded();
         var window = HeadlessWindow.Shared;
         window.Resize(1280, 800);
         window.Content = control;
         window.Render();
         window.Render();
-        
+
         if (control.CompileError != null)
         {
             throw new Exception("Preset 3 WebGPU Validation Error:\n" + control.CompileError);
         }
-        
+
         byte[] pixels = window.ReadPixels();
         window.SaveScreenshot(GetArtifactPath("preset3.png"));
 
@@ -1829,19 +1871,19 @@ public class SamplePagesTests : IDisposable
     {
         var control = new ShaderToyControl();
         control.ShaderSource = ShaderToyPlaygroundPageGrid.Preset4_RaymarchingPrimitives;
-        
+
         EnsureFontsAndStateLoaded();
         var window = HeadlessWindow.Shared;
         window.Resize(1280, 800);
         window.Content = control;
         window.Render();
         window.Render();
-        
+
         if (control.CompileError != null)
         {
             throw new Exception("Preset 4 (GLSL Raymarching Primitives) WebGPU Transpilation/Validation Error:\n" + control.CompileError);
         }
-        
+
         byte[] pixels = window.ReadPixels();
         window.SaveScreenshot(GetArtifactPath("preset4.png"));
 
@@ -1866,19 +1908,19 @@ public class SamplePagesTests : IDisposable
     {
         var control = new ShaderToyControl();
         control.ShaderSource = ShaderToyPlaygroundPageGrid.Preset5_StarNestGlsl;
-        
+
         EnsureFontsAndStateLoaded();
         var window = HeadlessWindow.Shared;
         window.Resize(1280, 800);
         window.Content = control;
         window.Render();
         window.Render();
-        
+
         if (control.CompileError != null)
         {
             throw new Exception("Preset 5 (GLSL Star Nest) WebGPU Transpilation/Validation Error:\n" + control.CompileError);
         }
-        
+
         byte[] pixels = window.ReadPixels();
         window.SaveScreenshot(GetArtifactPath("preset5.png"));
 
