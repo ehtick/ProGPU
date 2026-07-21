@@ -101,6 +101,38 @@ public sealed class TouchGestureResponsiveTests
     }
 
     [Fact]
+    public void RichEditorMobileInputSupportsCompositionPoliciesAndReadOnly()
+    {
+        var editor = new RichEditBox
+        {
+            Text = "A",
+            CharacterCasing = CharacterCasing.Upper,
+            AcceptsReturn = false,
+            MaxLength = 4
+        };
+        editor.CaretIndex = 1;
+        editor.SelectionStart = 1;
+        ArrangeRoot(editor, new Vector2(320, 120));
+        UseInputRoot(editor);
+        InputSystem.SetFocus(editor);
+
+        InputSystem.InjectTextInput(TextInputEventKind.InsertText, "b");
+        InputSystem.InjectTextInput(TextInputEventKind.InsertLineBreak);
+        Assert.Equal("AB", editor.Text);
+
+        InputSystem.InjectTextInput(TextInputEventKind.CompositionStarted, isComposing: true);
+        InputSystem.InjectTextInput(TextInputEventKind.CompositionUpdated, "に", true);
+        InputSystem.InjectTextInput(TextInputEventKind.CompositionUpdated, "日本", true);
+        InputSystem.InjectTextInput(TextInputEventKind.CompositionCompleted, "日本");
+        Assert.Equal("AB日本", editor.Text);
+
+        editor.IsReadOnly = true;
+        InputSystem.InjectTextInput(TextInputEventKind.DeleteContentBackward);
+        InputSystem.InjectTextInput(TextInputEventKind.InsertText, "C");
+        Assert.Equal("AB日本", editor.Text);
+    }
+
+    [Fact]
     public void ScrollViewerConsumesTouchManipulationAndSupportsChangeView()
     {
         var content = new Border
