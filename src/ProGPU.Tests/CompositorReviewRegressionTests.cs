@@ -177,6 +177,62 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     }
 
     [Fact]
+    public void RepeatedColorEmojiLayersReusePositionIndependentPathAtlasEntries()
+    {
+        const int glyphCount = 48;
+        var font = new TtfFont(BuildColorLayerFont());
+        using var window = new HeadlessWindow(1024, 64);
+        window.Content = new RepeatedColorGlyphVisual(font, glyphCount);
+
+        window.Render();
+
+        Assert.InRange(window.Compositor.PathAtlas.CachedPathCount, 1, 2);
+        Assert.False(window.Compositor.PathAtlas.CapacityExceeded);
+
+        byte[] pixels = window.ReadPixels();
+        for (var glyphIndex = 0; glyphIndex < glyphCount; glyphIndex += 8)
+        {
+            var alphaOffset = (38 * 1024 + glyphIndex * 20 + 8) * 4 + 3;
+            Assert.True(
+                pixels[alphaOffset] > 0,
+                $"Color glyph {glyphIndex} was not rendered at its translated position.");
+        }
+    }
+
+    [Fact]
+    public void CompiledPathCachesStayWithinSharedByteBudget()
+    {
+        const long cacheBudgetBytes = 1024;
+        using var atlas = new PathAtlas(
+            HeadlessWindow.Shared.Context,
+            atlasSize: 256,
+            compiledPathCacheBudgetBytes: cacheBudgetBytes);
+
+        for (var index = 0; index < 24; index++)
+        {
+            PathGeometry path = PrimitivePathGeometry.CreateRectangle(
+                index,
+                index % 3,
+                6f + index,
+                7f + index);
+            _ = atlas.GetOrCreatePath(path, scale: 1f);
+            _ = atlas.TryGetCompiledHitTestPath(
+                path,
+                out _,
+                out _,
+                out _,
+                out _,
+                out _,
+                out _);
+
+            Assert.InRange(atlas.CompiledPathCacheBytes, 0, cacheBudgetBytes);
+        }
+
+        Assert.Equal(cacheBudgetBytes, atlas.CompiledPathCacheBudgetBytes);
+        Assert.InRange(atlas.CachedFillPathCount + atlas.CachedHitTestPathCount, 1, 2);
+    }
+
+    [Fact]
     public void OffscreenVectorGlyphsAreCulledBeforePathAtlasCompilation()
     {
         var font = new TtfFont(BuildMissingGlyphOutlineFont());
@@ -2916,6 +2972,7 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
         {
             GlyphAtlasSize = 256,
             PathAtlasSize = 512,
+            PathAtlasCpuCacheBudgetBytes = 2048,
             InitialVertexCount = 1024,
             InitialIndexCount = 1536
         };
@@ -2924,6 +2981,7 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
         Assert.Same(options, compositor.Options);
         Assert.Equal(256u, compositor.Atlas.AtlasSize);
         Assert.Equal(512u, compositor.PathAtlas.AtlasSize);
+        Assert.Equal(2048, compositor.PathAtlas.CompiledPathCacheBudgetBytes);
         Assert.Equal(
             options.InitialVertexCount * (uint)Marshal.SizeOf<VectorVertex>(),
             GetCompositorField<GpuBuffer>(compositor, "_vectorVertexBuffer").Size);
@@ -5114,6 +5172,39 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
                     Vector2.Zero,
                     useVectorGlyphRendering: true);
             }
+        }
+    }
+
+    private sealed class RepeatedColorGlyphVisual : FrameworkElement
+    {
+        private readonly TtfFont _font;
+        private readonly int _glyphCount;
+
+        public RepeatedColorGlyphVisual(TtfFont font, int glyphCount)
+        {
+            _font = font;
+            _glyphCount = glyphCount;
+            Width = 1024f;
+            Height = 64f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            var glyphIndices = new ushort[_glyphCount];
+            var positions = new Vector2[_glyphCount];
+            Array.Fill(glyphIndices, (ushort)1);
+            for (var index = 0; index < _glyphCount; index++)
+            {
+                positions[index] = new Vector2(index * 20f, 42f);
+            }
+
+            context.DrawGlyphRun(
+                glyphIndices,
+                positions,
+                _font,
+                24f,
+                new SolidColorBrush(Vector4.One),
+                Vector2.Zero);
         }
     }
 

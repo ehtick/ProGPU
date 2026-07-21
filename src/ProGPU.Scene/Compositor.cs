@@ -9483,31 +9483,17 @@ SceneStateUploadComplete:
                     var layerPosition = runGlyph.Position + cmd.Position;
                     var layerScale = cmd.FontSize / glyphFont.UnitsPerEm;
 
-                    var transformedOutline = CreatePositionedGlyphOutline(
+                    CompileColorGlyphLayerPath(
                         layerOutline,
+                        layer,
+                        cmd,
                         layerScale,
                         layerPosition,
-                        italicSkew: glyphItalicSkew,
-                        scaleX: fontScaleX,
-                        usesSvgCoordinates: layer.UsesSvgCoordinates);
-
-                    var pathCmd = new RenderCommand
-                    {
-                        Type = RenderCommandType.DrawPath,
-                        Path = transformedOutline,
-                        Brush = CreatePositionedColorLayerBrush(layer, layerScale, layerPosition),
-                        IsEdgeAliased = cmd.TextRenderingMode == TextRenderingMode.Aliased,
-                        PathSampleGrid = cmd.TextRenderingMode == TextRenderingMode.Aliased
-                            ? PathAtlas.StandardCoverageSampleGrid
-                            : PathAtlas.HighPrecisionCoverageSampleGrid,
-                        PathCoverageGamma = textPathCoverageGamma
-                    };
-                    CompilePathCommand(
-                        pathCmd,
+                        glyphItalicSkew,
+                        textPathCoverageGamma,
                         activeTransform,
-                        subpixelPhaseGrid: VectorGlyphDeviceSubpixelPhaseGrid,
-                        quantizeScale: true,
-                        rasterScale: vectorGlyphRasterScale);
+                        fontScaleX,
+                        vectorGlyphRasterScale);
                 }
 
                 continue;
@@ -9744,31 +9730,17 @@ SceneStateUploadComplete:
                     var layerPosition = position + cmd.Position;
                     var layerScale = cmd.FontSize / font.UnitsPerEm;
 
-                    var transformedOutline = CreatePositionedGlyphOutline(
+                    CompileColorGlyphLayerPath(
                         layerOutline,
+                        layer,
+                        cmd,
                         layerScale,
                         layerPosition,
-                        italicSkew: glyphItalicSkew,
-                        scaleX: fontScaleX,
-                        usesSvgCoordinates: layer.UsesSvgCoordinates);
-
-                    var pathCmd = new RenderCommand
-                    {
-                        Type = RenderCommandType.DrawPath,
-                        Path = transformedOutline,
-                        Brush = CreatePositionedColorLayerBrush(layer, layerScale, layerPosition),
-                        IsEdgeAliased = cmd.TextRenderingMode == TextRenderingMode.Aliased,
-                        PathSampleGrid = cmd.TextRenderingMode == TextRenderingMode.Aliased
-                            ? PathAtlas.StandardCoverageSampleGrid
-                            : PathAtlas.HighPrecisionCoverageSampleGrid,
-                        PathCoverageGamma = textPathCoverageGamma
-                    };
-                    CompilePathCommand(
-                        pathCmd,
+                        glyphItalicSkew,
+                        textPathCoverageGamma,
                         activeTransform,
-                        subpixelPhaseGrid: VectorGlyphDeviceSubpixelPhaseGrid,
-                        quantizeScale: true,
-                        rasterScale: vectorGlyphRasterScale);
+                        fontScaleX,
+                        vectorGlyphRasterScale);
                 }
 
                 continue;
@@ -10082,6 +10054,91 @@ SceneStateUploadComplete:
                 Type = RenderCommandType.DrawPath,
                 Path = positionedOutline,
                 Brush = textCommand.Brush,
+                IsEdgeAliased = textCommand.TextRenderingMode == TextRenderingMode.Aliased,
+                PathSampleGrid = textCommand.TextRenderingMode == TextRenderingMode.Aliased
+                    ? PathAtlas.StandardCoverageSampleGrid
+                    : PathAtlas.HighPrecisionCoverageSampleGrid,
+                PathCoverageGamma = pathCoverageGamma
+            },
+            placementTransform,
+            subpixelPhaseGrid: VectorGlyphDeviceSubpixelPhaseGrid,
+            quantizeScale: true,
+            rasterScale: rasterScale);
+    }
+
+    private void CompileColorGlyphLayerPath(
+        PathGeometry outline,
+        FontColorLayer layer,
+        RenderCommand textCommand,
+        float emScale,
+        Vector2 position,
+        float italicSkew,
+        float pathCoverageGamma,
+        Matrix4x4 activeTransform,
+        float scaleX,
+        float rasterScale)
+    {
+        PathGeometry positionedOutline;
+        Matrix4x4 placementTransform;
+        Vector2 brushPosition;
+
+        if (IsFinite(position))
+        {
+            var integralPosition = new Vector2(MathF.Floor(position.X), MathF.Floor(position.Y));
+            var fractionalPosition = position - integralPosition;
+            var rasterPhase = new Vector2(
+                QuantizeVectorGlyphPhase(fractionalPosition.X),
+                QuantizeVectorGlyphPhase(fractionalPosition.Y));
+            var key = new VectorGlyphPathCacheKey(
+                outline,
+                emScale,
+                rasterPhase,
+                italicSkew,
+                scaleX,
+                layer.UsesSvgCoordinates);
+
+            if (!_vectorGlyphPathCache.TryGetValue(key, out positionedOutline!))
+            {
+                if (_vectorGlyphPathCache.Count >= MaxCachedVectorGlyphPaths)
+                {
+                    _vectorGlyphPathCache.Clear();
+                }
+
+                positionedOutline = CreatePositionedGlyphOutline(
+                    outline,
+                    emScale,
+                    rasterPhase,
+                    italicSkew,
+                    usesSvgCoordinates: layer.UsesSvgCoordinates,
+                    scaleX: scaleX);
+                _vectorGlyphPathCache[key] = positionedOutline;
+            }
+
+            brushPosition = rasterPhase;
+            placementTransform = Matrix4x4.CreateTranslation(
+                position.X - rasterPhase.X,
+                position.Y - rasterPhase.Y,
+                0f) * activeTransform;
+        }
+        else
+        {
+            positionedOutline = CreatePositionedGlyphOutline(
+                outline,
+                emScale,
+                position,
+                italicSkew,
+                usesSvgCoordinates: layer.UsesSvgCoordinates,
+                scaleX: scaleX);
+            brushPosition = position;
+            placementTransform = activeTransform;
+        }
+
+        CompilePathCommand(
+            new RenderCommand
+            {
+                Type = RenderCommandType.DrawPath,
+                Path = positionedOutline,
+                Brush = CreatePositionedColorLayerBrush(layer, emScale, brushPosition),
                 IsEdgeAliased = textCommand.TextRenderingMode == TextRenderingMode.Aliased,
                 PathSampleGrid = textCommand.TextRenderingMode == TextRenderingMode.Aliased
                     ? PathAtlas.StandardCoverageSampleGrid
