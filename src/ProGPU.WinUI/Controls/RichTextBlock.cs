@@ -19,7 +19,7 @@ namespace Microsoft.UI.Xaml.Controls
 {
     using Microsoft.UI.Xaml.Documents;
 
-    public class RichTextBlock : FrameworkElement
+    public class RichTextBlock : FrameworkElement, IScrollViewportAware
     {
         private static readonly SolidColorBrush HyperlinkBrush = new SolidColorBrush(0x0078D4FF);
         private static readonly SolidColorBrush HoveredHyperlinkBrush = new SolidColorBrush(0x005A9EFF);
@@ -35,6 +35,7 @@ namespace Microsoft.UI.Xaml.Controls
         private readonly Block[] _layoutBlocks;
         private bool _isRenderCommandCacheDirty = true;
         private float _layoutHeight;
+        private float _lastLayoutScrollY = -1f;
         private int _cachedSelectionStart = -1;
         private int _cachedSelectionLength;
         private IReadOnlyList<RichEditTableCellRange>? _cachedTableSelection;
@@ -65,6 +66,7 @@ namespace Microsoft.UI.Xaml.Controls
         private TextReadingOrder _lastTextReadingOrder = TextReadingOrder.DetectFromContent;
         private FlowDirection _lastFlowDirection = FlowDirection.LeftToRight;
         private bool _isLayoutDirty = true;
+        private bool _isPerformingLayout;
         private bool _alignmentIncludesTrailingWhitespace;
         private bool _ignoreTrailingCharacterSpacing;
         private bool _syncingTextAlignment;
@@ -472,28 +474,79 @@ namespace Microsoft.UI.Xaml.Controls
             }
 
             _layoutParagraph.TextAlignment = ResolveEffectiveTextAlignment();
-            _layoutHeight = TextLayoutEngine.LayoutSingleColumn(
-                activeBlocks,
-                maxWidth,
-                Padding,
-                activeFont,
-                FontSize,
-                Foreground,
-                ResolveEffectiveTextAlignment(),
-                this.ActualTheme,
-                _positionedChars,
-                _tableDecorations,
-                this,
-                AddChild,
-                RemoveChild,
-                TextWrapping,
-                TextReadingOrder,
-                FlowDirection,
-                _layoutSession,
-                AlignmentIncludesTrailingWhitespace,
-                IgnoreTrailingCharacterSpacing);
+            _isPerformingLayout = true;
+            try
+            {
+                _layoutHeight = TextLayoutEngine.LayoutSingleColumn(
+                    activeBlocks,
+                    maxWidth,
+                    Padding,
+                    activeFont,
+                    FontSize,
+                    Foreground,
+                    ResolveEffectiveTextAlignment(),
+                    this.ActualTheme,
+                    _positionedChars,
+                    _tableDecorations,
+                    this,
+                    AddChild,
+                    RemoveChild,
+                    TextWrapping,
+                    TextReadingOrder,
+                    FlowDirection,
+                    _layoutSession,
+                    AlignmentIncludesTrailingWhitespace,
+                    IgnoreTrailingCharacterSpacing);
+            }
+            finally
+            {
+                _isPerformingLayout = false;
+            }
             _layoutSession.CollectEmptyParagraphCaretAnchors(activeBlocks, _emptyParagraphCaretAnchors);
+            GetScrollViewport(out _lastLayoutScrollY, out _);
             _isRenderCommandCacheDirty = true;
+        }
+
+        public void OnScrollViewportChanged()
+        {
+            if (_isPerformingLayout) return;
+            GetScrollViewport(out float scrollY, out float viewportHeight);
+            float refreshDistance = Math.Max(256f, viewportHeight);
+            if (_lastLayoutScrollY >= 0f &&
+                Math.Abs(scrollY - _lastLayoutScrollY) < refreshDistance)
+            {
+                return;
+            }
+
+            _isLayoutDirty = true;
+            PerformRichLayout(Size.X > 0f ? Size.X : _lastLayoutWidth);
+            base.Invalidate();
+        }
+
+        internal void RefreshViewportLayout()
+        {
+            GetScrollViewport(out float scrollY, out _);
+            if (_lastLayoutScrollY >= 0f && Math.Abs(scrollY - _lastLayoutScrollY) < 0.01f) return;
+            _isLayoutDirty = true;
+            PerformRichLayout(Size.X > 0f ? Size.X : _lastLayoutWidth);
+            base.Invalidate();
+        }
+
+        private void GetScrollViewport(out float scrollY, out float viewportHeight)
+        {
+            scrollY = 0f;
+            viewportHeight = 0f;
+            Visual? current = Parent;
+            while (current is not null)
+            {
+                if (current is ScrollViewer scrollViewer)
+                {
+                    scrollY = scrollViewer.VerticalOffset;
+                    viewportHeight = scrollViewer.Size.Y;
+                    return;
+                }
+                current = current.Parent;
+            }
         }
 
         private TextAlignment ResolveEffectiveTextAlignment()

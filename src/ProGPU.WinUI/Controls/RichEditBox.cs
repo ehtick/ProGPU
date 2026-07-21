@@ -1270,8 +1270,15 @@ namespace Microsoft.UI.Xaml.Controls
             _blockView.PerformRichLayout(Size.X - Padding.Horizontal);
             int start = int.MaxValue;
             int end = 0;
+            float viewportTop = _scrollViewer.VerticalOffset;
+            float viewportBottom = viewportTop + Math.Max(0f, _scrollViewer.Size.Y);
             foreach (PositionedRichChar character in _blockView.PositionedChars)
             {
+                if (character.Position.Y + character.Info.FontSize < viewportTop ||
+                    character.Position.Y > viewportBottom)
+                {
+                    continue;
+                }
                 int clusterStart = character.HasShapedAdvance
                     ? character.ClusterStart
                     : character.Info.TextPosition;
@@ -1283,6 +1290,7 @@ namespace Microsoft.UI.Xaml.Controls
             }
             foreach (RichLogicalCaretAnchor anchor in _blockView.EmptyParagraphCaretAnchors)
             {
+                if (anchor.Y + anchor.Height < viewportTop || anchor.Y > viewportBottom) continue;
                 start = Math.Min(start, anchor.TextPosition);
                 end = Math.Max(end, anchor.TextPosition);
             }
@@ -1396,7 +1404,7 @@ namespace Microsoft.UI.Xaml.Controls
             if (end < start) (start, end) = (end, start);
             if (start == end) return [GetDocumentClientRangeBounds(start, end)];
 
-            var lines = new List<Rect>();
+            var lineGlyphs = new List<List<(Rect Bounds, int BidiLevel)>>();
             foreach (PositionedRichChar character in _blockView.PositionedChars)
             {
                 int clusterStart = character.HasShapedAdvance ? character.ClusterStart : character.Info.TextPosition;
@@ -1409,9 +1417,9 @@ namespace Microsoft.UI.Xaml.Controls
                     Math.Max(1f, advance),
                     Math.Max(1f, character.Info.FontSize));
                 int lineIndex = -1;
-                for (int index = lines.Count - 1; index >= 0; index--)
+                for (int index = lineGlyphs.Count - 1; index >= 0; index--)
                 {
-                    if (Math.Abs(lines[index].Y - glyph.Y) < 1f)
+                    if (lineGlyphs[index].Count > 0 && Math.Abs(lineGlyphs[index][0].Bounds.Y - glyph.Y) < 1f)
                     {
                         lineIndex = index;
                         break;
@@ -1419,17 +1427,39 @@ namespace Microsoft.UI.Xaml.Controls
                 }
                 if (lineIndex < 0)
                 {
-                    lines.Add(glyph);
+                    lineGlyphs.Add([(glyph, character.BidiLevel)]);
                     continue;
                 }
-                Rect line = lines[lineIndex];
-                float left = Math.Min(line.X, glyph.X);
-                float top = Math.Min(line.Y, glyph.Y);
-                float right = Math.Max(line.Right, glyph.Right);
-                float bottom = Math.Max(line.Bottom, glyph.Bottom);
-                lines[lineIndex] = new Rect(left, top, right - left, bottom - top);
+                lineGlyphs[lineIndex].Add((glyph, character.BidiLevel));
             }
-            if (lines.Count == 0) return [GetDocumentClientRangeBounds(start, end)];
+
+            if (lineGlyphs.Count == 0) return [GetDocumentClientRangeBounds(start, end)];
+            var lines = new List<Rect>(lineGlyphs.Count);
+            foreach (List<(Rect Bounds, int BidiLevel)> glyphs in lineGlyphs)
+            {
+                glyphs.Sort(static (left, right) => left.Bounds.X.CompareTo(right.Bounds.X));
+                Rect current = glyphs[0].Bounds;
+                int currentBidiLevel = glyphs[0].BidiLevel;
+                for (int index = 1; index < glyphs.Count; index++)
+                {
+                    Rect glyph = glyphs[index].Bounds;
+                    int bidiLevel = glyphs[index].BidiLevel;
+                    if ((bidiLevel & 1) == (currentBidiLevel & 1) && glyph.X <= current.Right + 1f)
+                    {
+                        float top = Math.Min(current.Y, glyph.Y);
+                        float right = Math.Max(current.Right, glyph.Right);
+                        float bottom = Math.Max(current.Bottom, glyph.Bottom);
+                        current = new Rect(current.X, top, right - current.X, bottom - top);
+                    }
+                    else
+                    {
+                        lines.Add(current);
+                        current = glyph;
+                        currentBidiLevel = bidiLevel;
+                    }
+                }
+                lines.Add(current);
+            }
             lines.Sort(static (left, right) =>
             {
                 int vertical = left.Y.CompareTo(right.Y);
@@ -1504,6 +1534,20 @@ namespace Microsoft.UI.Xaml.Controls
         internal void ScrollDocumentPositionIntoView(int position)
         {
             if (Font == null) return;
+            EnsureBufferSynchronized();
+            position = Math.Clamp(position, 0, _buffer.Length);
+            int blockIndex = FindEditorBlockIndex(position);
+            if ((uint)blockIndex < (uint)_editorLayoutDocument.Blocks.Count)
+            {
+                Block targetBlock = _editorLayoutDocument.Blocks[blockIndex];
+                float viewportTop = _scrollViewer.VerticalOffset;
+                float viewportBottom = viewportTop + Math.Max(0f, _scrollViewer.Size.Y);
+                if (targetBlock.CachedYOffset < viewportTop || targetBlock.CachedYOffset >= viewportBottom)
+                {
+                    _scrollViewer.VerticalOffset = targetBlock.CachedYOffset;
+                    _blockView.RefreshViewportLayout();
+                }
+            }
             List<RichCaretStop> stops = GetVisualCaretStops();
             if (stops.Count == 0) return;
             RichCaretStop stop = GetCaretStop(stops, position, trailingAffinity: false);
