@@ -117,6 +117,7 @@ public struct CompositorMetrics
     public int VectorVerticesCount;
     public int TextVerticesCount;
     public int PathAtlasCachedCount;
+    public long PathAtlasCpuCacheBytes;
     public bool SceneCacheHit;
     public string? SceneCacheMissReason;
 }
@@ -1149,7 +1150,10 @@ public unsafe class Compositor : IDisposable
 
         // 1. Initialize GPU atlases.
         _atlas = new GlyphAtlas(_context, options.GlyphAtlasSize);
-        _pathAtlas = new PathAtlas(_context, options.PathAtlasSize);
+        _pathAtlas = new PathAtlas(
+            _context,
+            options.PathAtlasSize,
+            options.PathAtlasCpuCacheBudgetBytes);
         _hitTestCacheBuilder = new GpuRenderCommandHitTestCacheBuilder(_pathAtlas);
 
         // 2. Uniform Buffer allocation (Projection Matrix + MVP - 128 bytes)
@@ -2932,6 +2936,7 @@ SceneStateUploadComplete:
             VectorVerticesCount = _vectorVerticesList.Count,
             TextVerticesCount = _textVerticesList.Count,
             PathAtlasCachedCount = _pathAtlas.CachedPathCount,
+            PathAtlasCpuCacheBytes = _pathAtlas.CompiledPathCacheBytes,
             SceneCacheHit = reuseCompiledScene,
             SceneCacheMissReason = reuseCompiledScene ? null : _currentSceneCacheMissReason
         };
