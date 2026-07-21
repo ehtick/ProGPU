@@ -90,14 +90,15 @@ an advertised safe boundary with adjusted BOT/EOT, context, and ranged features,
 and requires an exact reconstruction apart from glyph flags. The full pinned
 corpus with `--verify` retains 4,977 exact OpenType passes, zero output
 mismatches, and zero reconstruction failures; 15 unsupported, 106 non-OpenType,
-and 49 missing-system-font classifications remain. The WebGPU
-executor now preserves input flags and emits dependency flags for fractions,
-Arabic joining/tatweel boundaries, pair and legacy kerning, cursive/mark
-attachment, and fallback mark positioning. Exact native GPU regression
-comparisons cover those implemented paths. GPU contextual/chained dependency
-flags, item context, character-level grapheme-interior flagging, the remaining
-specialized script safety rules, and full-corpus GPU execution remain blocking
-parity gaps.
+and 49 missing-system-font classifications remain. The CPU executor preserves
+input flags and emits dependency flags for fractions, Arabic joining/tatweel
+boundaries, contextual and chained lookups, pair and legacy kerning,
+cursive/mark attachment, and fallback mark positioning. The WebGPU executor
+defers those dependency flags to a future bounded pass while native GPU
+regression comparisons continue to cover substitution, positioning, clustering,
+and output ordering. GPU dependency flags, item context, character-level
+grapheme-interior flagging, the remaining specialized script safety rules, and
+full-corpus GPU execution remain blocking parity gaps.
 
 ## 2026-07-21 Metal contextual-pipeline compatibility review
 
@@ -109,17 +110,17 @@ one clean macOS 26 pull-request run but failed on the next clean `main` runner,
 showing that process isolation and call-site movement alone did not put the
 pipeline below the compiler edge. A second exact one-scan specialization for
 monotone clusters was also rejected by a clean macOS 26 runner. The release
-compatibility change therefore restores the last known Metal-compatible,
-format-specific contextual control flow and withdraws only the unreleased GPU
-contextual dependency-flag propagation; contextual substitution output and the
-authoritative CPU flag path are unchanged.
+compatibility change therefore restores the last known Metal-compatible WGSL
+module and withdraws the unreleased GPU dependency-flag propagation;
+contextual substitution output and the authoritative CPU flag path are
+unchanged.
 
 Primary sources consulted for this review:
 
 - [HarfBuzz buffer API](https://harfbuzz.github.io/harfbuzz-hb-buffer.html)
   defines unsafe-to-break, unsafe-to-concat, safe-to-insert-tatweel, and cluster
-  levels. These observable flags remain exact and are not dropped or made
-  conservative to accommodate a compiler.
+  levels. These observable flags remain exact on the authoritative CPU shaping
+  path and are not made conservative to accommodate a compiler.
 - [DirectWrite `GetGlyphPlacements`](https://learn.microsoft.com/en-us/windows/win32/api/dwrite/nf-dwrite-idwritetextanalyzer-getglyphplacements)
   keeps cluster maps, glyph properties, advances, and offsets as reusable
   shaping outputs; the ProGPU CPU reference and shared glyph contract remain
@@ -146,12 +147,13 @@ Primary sources consulted for this review:
 Adopted: preserve HarfBuzz's matched-span flag semantics in the authoritative
 CPU executor and preserve the GPU executor's existing single-invocation,
 deterministic contextual substitution order, including the distinct OpenType
-format 1 glyph matcher and format 2 class matcher. Adapted: GPU contextual
-dependency flags return to the explicit
-parity backlog until they can be emitted by a separate bounded pass that does
-not make Metal compile the complete scan inside the nested-lookup graph. Other
-GPU safety paths—fractions, Arabic joining/tatweel, pair and legacy kerning,
-cursive/mark attachment, and fallback mark positioning—remain active. Rejected:
+format 1 glyph matcher and format 2 class matcher. Adapted: all GPU dependency
+safety flags return to the explicit parity backlog until they can be emitted by
+a separate bounded pass. Metal compiles the complete WGSL module, so leaving
+fraction, joining/tatweel, kerning, cursive/mark attachment, or fallback-mark
+span scans outside the contextual call graph still made the contextual pipeline
+unbuildable. Substitution, positioning, clustering, and output ordering remain
+GPU-validated; public safety flags remain exact on the CPU path. Rejected:
 skipping the GPU tests, retrying an invalid pipeline, over-marking whole runs,
 silently falling back after partial GPU execution, or copying another engine's
 control flow.
@@ -161,8 +163,9 @@ The broader cross-engine matrix in
 remains unchanged: startup/lazy initialization, shaping and layout reuse,
 retained-scene culling, glyph/path/texture cache keys and eviction,
 demand-driven upload, worker preparation, DPI/subpixel/hinting, fallback fonts,
-variable-font state, and device-loss/atlas invalidation are unaffected. Only GPU
-batch compiler organization changes.
+variable-font state, and device-loss/atlas invalidation are unaffected. Only the
+optional GPU executor's dependency-flag implementation and compiler
+organization change.
 
 The first baseline command is:
 

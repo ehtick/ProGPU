@@ -72,7 +72,7 @@ public class ShaderResourceTests
     }
 
     [Fact]
-    public void OpenTypeShapingKeepsContextTasksInPrivateStorageWithoutSafetyScan()
+    public void OpenTypeShapingKeepsContextTasksInPrivateStorageAndDefersSafetyScans()
     {
         string source = ShaderResource.Load(typeof(ComputeShaders), "OpenTypeShaping.wgsl");
 
@@ -80,6 +80,9 @@ public class ShaderResourceTests
         Assert.Contains("var<private> lookup_task_count: u32;", source, StringComparison.Ordinal);
         Assert.Contains("fn match_backtrack_glyphs", source, StringComparison.Ordinal);
         Assert.DoesNotContain("pending_unsafe_to_break", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("fn mark_unsafe_to_break", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("fn mark_unsafe_to_concat", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("fn mark_safe_to_insert_tatweel", source, StringComparison.Ordinal);
         Assert.DoesNotContain("ptr<function, array<LookupTask", source, StringComparison.Ordinal);
     }
 
