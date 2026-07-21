@@ -700,11 +700,9 @@ public static unsafe class MainWindowController
                     AppState._window.FramebufferSize.Y / dpiScale);
             }
 
-            float winX = logicalWindowSize.X;
-            float winY = logicalWindowSize.Y;
-
-            AppState._gearCanvasVisual.Measure(new Vector2(winX - 300f, winY - 140f));
-            AppState._gearCanvasVisual.Arrange(new Rect(0, 0, winX - 300f, winY - 140f));
+            Vector2 effectCanvasSize = ResolveEffectCanvasLogicalSize(logicalWindowSize);
+            AppState._gearCanvasVisual.Measure(effectCanvasSize);
+            AppState._gearCanvasVisual.Arrange(new Rect(Vector2.Zero, effectCanvasSize));
             AppState._gearCanvasVisual.UpdateRotation(AppState._gearRotation);
 
             uint canvasW = (uint)Math.Max(1f, AppState._gearCanvasVisual.Size.X);
@@ -776,6 +774,24 @@ public static unsafe class MainWindowController
         SamplePerformanceBenchmark.ObserveFrame(delta);
     }
 
+    private static Vector2 ResolveEffectCanvasLogicalSize(Vector2 logicalWindowSize)
+    {
+        if (AppState._activeCategory == "Compute FX" &&
+            AppState._computePreviewCanvas is { } preview &&
+            float.IsFinite(preview.Size.X) && preview.Size.X > 0f &&
+            float.IsFinite(preview.Size.Y) && preview.Size.Y > 0f)
+        {
+            return preview.Size;
+        }
+
+        // Before the first layout, retain the desktop inline-pane estimate while
+        // treating compact ResponsiveSplitView panes as overlays with no reserved width.
+        float paneWidth = logicalWindowSize.X >= 760f ? 300f : 0f;
+        return new Vector2(
+            Math.Max(1f, logicalWindowSize.X - paneWidth),
+            Math.Max(1f, logicalWindowSize.Y - 140f));
+    }
+
     private static void Cleanup()
     {
         AppState._hotReloadRegistration?.Dispose();
@@ -790,6 +806,7 @@ public static unsafe class MainWindowController
         AppState._canvasTempTexture?.Dispose();
         AppState._canvasBlurTexture?.Dispose();
         AppState._canvasShadowTexture?.Dispose();
+        AppState._computePreviewCanvas = null;
 
         AppState._compute?.Dispose();
         AppState._offscreenCompositor?.Dispose();

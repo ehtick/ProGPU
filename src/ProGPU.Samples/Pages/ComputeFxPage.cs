@@ -116,6 +116,7 @@ public static class ComputeFxPage
             };
     
             var displayCanvas = new GpuTextureCanvas(AppState._canvasSourceTexture!, AppState._canvasShadowTexture!, AppState._canvasBlurTexture!);
+            AppState._computePreviewCanvas = displayCanvas;
             
             var canvasContainer = new Border
             {
