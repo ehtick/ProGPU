@@ -54,7 +54,7 @@ layout, or control flow was copied.
 | Retained scene and visibility | WebRender and Vello retain scenes and request raster resources only for visible work. | Preserve existing pre-atlas vector-glyph culling and compiled-scene generation checks. |
 | Cache identity and eviction | DirectWrite separates layer baseline origin from glyph identity; Skia exposes byte budgets; WebRender separates glyph keys from texture placement. | Adapt color layers to cache only the bounded local fractional phase and carry the remaining translation in the draw transform. Replace count-only compiled-path caches with one shared byte-budgeted LRU. |
 | Demand-driven upload | WebRender requests/rasterizes visible glyphs; DirectWrite analysis produces only the requested texture bounds. | Keep `RasterizePendingPaths` demand-driven and batched; repeated emoji layers reuse atlas coordinates instead of scheduling duplicate rasterizations. |
-| Worker preparation | WebRender owns a glyph raster worker subsystem; Parley reuses CPU scratch contexts. | Reject adding worker synchronization in this focused change; path compilation remains on the existing compilation boundary. |
+| Worker preparation | WebRender owns a glyph raster worker subsystem; Parley reuses CPU scratch contexts. | Keep path compilation on the existing compilation boundary, but allow fixed-size `TextVisual` shaping to prepare on one CPU worker and publish by revision. GPU atlas allocation stays demand-driven on the compositor thread. |
 | GPU batching/compute | Vello performs parallel path work on GPU; WebRender batches resource upload; Direct2D submits glyph runs/layers. | Preserve ProGPU's batched compute rasterizer and vector draw batching. |
 | DPI, subpixel, and hinting | Platform engines include rendering mode/transform state in raster identity; Vello distinguishes dynamic vector text from cache-friendly hinted UI text. | Preserve the 128 local phases, four device phases per axis, ten-bit scale quantization, 8x8 high-precision coverage, DPI scaling, and unsnapped final placement. |
 | Fallback and color formats | DirectWrite expands a base run into COLR, SVG, or bitmap color runs after layout. | Preserve existing font fallback, COLR/SVG layer order, brush coordinates, bitmap-glyph path, and monochrome fallback. |
@@ -70,6 +70,8 @@ Adopted:
 - position-independent color-layer outline identity with translation carried by
   the draw transform;
 - explicit byte/count diagnostics and focused bounded-memory regressions.
+- sequential background preparation for deferred fixed-size text layouts on
+  threaded hosts, with atomic revision-checked publication.
 
 Adapted:
 
@@ -83,6 +85,7 @@ Rejected:
 - caching exact absolute emoji positions;
 - lowering coverage precision, shrinking the GPU atlas, or snapping final quads;
 - moving Unicode/OpenType shaping to the GPU;
+- creating path-atlas entries or GPU textures from the text-layout worker;
 - copying an external atlas, strike-cache, or eviction implementation;
 - evicting atlas coordinates independently of `Generation`, which would make
   retained UVs stale.
@@ -188,3 +191,37 @@ the shader and batching model were extended. The adopted hybrid is therefore:
 - keep DXF-style immutable GPU buffers for static documents and retained scenes;
 - consider a future dynamic retained-glyph batch only after it preserves command
   order, clips, masks, blend modes, subpixel coverage, and device-loss behavior.
+
+## Inter specimen cold-scroll follow-up
+
+The Inter specimen exposed a CPU preparation issue independent of `PathAtlas`.
+It contains 112 fixed-height retained `TextVisual` specimens. The original page
+deferred those layouts for fast activation, then shaped them in four-millisecond
+chunks posted to the UI dispatcher. A per-layout trace found ordinary specimens
+at roughly 0.3–3 ms, the first italic variable-font shaping plan at 34.7 ms, and
+later complex specimens at 7.5–9.8 ms. Those chunks ran in the host update that
+also advances scrolling. The completed Inter sweep retained only 162 path-atlas
+entries and 157,264 bytes of compiled path data, so replacing or enlarging the
+path atlas could not address this hitch.
+
+`TextVisual.WarmDeferredLayout` now constructs the CPU-only layout and publishes
+the completed reference atomically only when its text/font/width revision is
+still current. Inter starts one sequential worker after the first presentation;
+it stops when navigation detaches the page. The render thread still performs
+visible glyph-atlas allocation and upload. Single-threaded browser hosts retain
+the bounded dispatcher slices instead of pretending `Task.Run` provides a
+worker.
+
+A matched unrestricted-presentation run with two warmup and 220 scrolling frames
+reduced the worst host-update interval from 17.6304 ms to 0.6410 ms (-96.4%).
+The worker shifts the same eventual retained-layout allocations off the UI
+thread, so short-process total-allocation and unrestricted-throughput figures
+remain sensitive to scheduling and are not used as correctness thresholds.
+
+The full same-process sequence then scrolled Inter, Text & Documents, and Font
+Glyph Browser for 180 frames each before Data Virtualization. Its 600 measured
+Data Virtualization frames completed at 514.18 wall FPS with 0.5176 ms average
+compile time, 2.0647 ms maximum compile time, 0.7577 ms compositor time, 69 draw
+calls, 117 path entries, and no glyph-atlas eviction or clear. This verifies that
+the Inter worker stops on detach and does not transfer contention or cache
+pressure to the virtualized page.
