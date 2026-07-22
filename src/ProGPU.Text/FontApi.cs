@@ -190,6 +190,10 @@ public static class FontApi
         return new List<FontInfo>(GetCachedSystemFonts());
     }
 
+    // FontManager only reads the process-wide catalog. Keep the public copy-on-return
+    // ownership contract without cloning the complete catalog during fallback lookup.
+    internal static IReadOnlyList<FontInfo> GetSystemFontsView() => GetCachedSystemFonts();
+
     public static Task WarmUpSystemFontsAsync()
     {
         lock (s_cachedSystemFontsLock)

@@ -48,6 +48,7 @@ public sealed class RichDocumentLayoutSession
         foreach (RichBlockLayoutCache cache in _blocks.Values)
         {
             cache.IsLayoutValid = false;
+            cache.LogicalTextLength = -1;
             cache.Characters.Clear();
             cache.Decorations.Clear();
         }
@@ -60,6 +61,7 @@ public sealed class RichDocumentLayoutSession
         {
             if (!_blocks.TryGetValue(blocks[index], out RichBlockLayoutCache? cache)) continue;
             cache.IsLayoutValid = false;
+            cache.LogicalTextLength = -1;
             cache.Characters.Clear();
             cache.Decorations.Clear();
         }

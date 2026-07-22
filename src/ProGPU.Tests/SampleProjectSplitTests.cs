@@ -179,6 +179,8 @@ public sealed class SampleProjectSplitTests
         Assert.Contains("benchmarkPage: 'PROGPU_SAMPLE_BENCHMARK_PAGE'", browserAsset, StringComparison.Ordinal);
         Assert.Contains("benchmarkMeasureFrames: 'PROGPU_SAMPLE_BENCHMARK_MEASURE_FRAMES'", browserAsset, StringComparison.Ordinal);
         Assert.Contains("benchmarkScrollStep: 'PROGPU_SAMPLE_BENCHMARK_SCROLL_STEP'", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("benchmarkPreconditionPages: 'PROGPU_SAMPLE_BENCHMARK_PRECONDITION_PAGES'", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("benchmarkPreconditionFrames: 'PROGPU_SAMPLE_BENCHMARK_PRECONDITION_FRAMES'", browserAsset, StringComparison.Ordinal);
         Assert.Contains("function readBenchmarkEnvironment()", browserAsset, StringComparison.Ordinal);
         Assert.Contains("dotnet.withEnvironmentVariables(readBenchmarkEnvironment()).create()", browserAsset, StringComparison.Ordinal);
         Assert.DoesNotContain("Object.fromEntries(query", browserAsset, StringComparison.Ordinal);

@@ -271,6 +271,16 @@ namespace Microsoft.UI.Xaml.Controls
             _ => 1
         };
 
+        private static int GetCachedBlockTextLength(Block block, RichBlockLayoutCache cache)
+        {
+            if (cache.LogicalTextLength < 0)
+            {
+                cache.LogicalTextLength = GetBlockTextLength(block);
+            }
+
+            return cache.LogicalTextLength;
+        }
+
         private static void RebaseBlockCharacters(RichBlockLayoutCache cache, int logicalTextOffset)
         {
             cache.RebaseTextPositions(logicalTextOffset);
@@ -1699,7 +1709,7 @@ namespace Microsoft.UI.Xaml.Controls
                         }
                         cursorY += cache.Height;
                     }
-                    logicalTextOffset += GetBlockTextLength(block) + block.LogicalTextSeparatorLength;
+                    logicalTextOffset += GetCachedBlockTextLength(block, cache) + block.LogicalTextSeparatorLength;
                 }
 
                 // Adjust scroll anchoring if preceding block measurements caused absolute shifting
@@ -1766,7 +1776,7 @@ namespace Microsoft.UI.Xaml.Controls
                         }
                     }
                 }
-                gatheredLogicalTextOffset += GetBlockTextLength(block) + block.LogicalTextSeparatorLength;
+                gatheredLogicalTextOffset += GetCachedBlockTextLength(block, cache) + block.LogicalTextSeparatorLength;
             }
 
             // Cleanup recycled off-screen UI controls

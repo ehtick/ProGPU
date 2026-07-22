@@ -108,6 +108,31 @@ public class ShaderResourceTests
     }
 
     [Fact]
+    public void VectorPathAtlasDerivativesExecuteBeforeShapeControlFlow()
+    {
+        Assert.Contains(
+            "let atlasCoordDx = dpdx(input.texCoord);",
+            Shaders.VectorShader,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "let pathAtlasCoordDx = atlasCoordDx / pathAtlasSize;",
+            Shaders.VectorShader,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "let pathAtlasCoordDy = atlasCoordDy / pathAtlasSize;",
+            Shaders.VectorShader,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "dpdx(pathAtlasCoord)",
+            Shaders.VectorShader,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "dpdy(pathAtlasCoord)",
+            Shaders.VectorShader,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void EveryShaderSourceIsEmbeddedAndDocumentsItsCostModel()
     {
         DirectoryInfo root = FindRepositoryRoot();

@@ -51,7 +51,9 @@ const BENCHMARK_QUERY_VARIABLES = Object.freeze({
   benchmarkMeasureFrames: 'PROGPU_SAMPLE_BENCHMARK_MEASURE_FRAMES',
   benchmarkVsync: 'PROGPU_SAMPLE_BENCHMARK_VSYNC',
   benchmarkScroll: 'PROGPU_SAMPLE_BENCHMARK_SCROLL',
-  benchmarkScrollStep: 'PROGPU_SAMPLE_BENCHMARK_SCROLL_STEP'
+  benchmarkScrollStep: 'PROGPU_SAMPLE_BENCHMARK_SCROLL_STEP',
+  benchmarkPreconditionPages: 'PROGPU_SAMPLE_BENCHMARK_PRECONDITION_PAGES',
+  benchmarkPreconditionFrames: 'PROGPU_SAMPLE_BENCHMARK_PRECONDITION_FRAMES'
 });
 const uncappedFrameResolvers = [];
 const uncappedGpuFenceResolvers = new Map();

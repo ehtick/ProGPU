@@ -1279,7 +1279,7 @@ namespace Microsoft.UI.Xaml.Controls
 
         internal (int Start, int End) GetVisibleDocumentRange()
         {
-            _blockView.PerformRichLayout(Size.X - Padding.Horizontal);
+            PerformEditorViewportLayout();
             int start = int.MaxValue;
             int end = 0;
             float viewportTop = _scrollViewer.VerticalOffset;
@@ -1312,7 +1312,7 @@ namespace Microsoft.UI.Xaml.Controls
 
         internal FrameworkElement[] GetDocumentEmbeddedChildren(int start, int end)
         {
-            _blockView.PerformRichLayout(Size.X - Padding.Horizontal);
+            PerformEditorViewportLayout();
             start = Math.Clamp(start, 0, GetTotalCharacters());
             end = Math.Clamp(end, 0, GetTotalCharacters());
             if (end < start) (start, end) = (end, start);
@@ -1331,7 +1331,7 @@ namespace Microsoft.UI.Xaml.Controls
         internal bool TryGetDocumentRangeForChild(FrameworkElement child, out int start, out int end)
         {
             ArgumentNullException.ThrowIfNull(child);
-            _blockView.PerformRichLayout(Size.X - Padding.Horizontal);
+            PerformEditorViewportLayout();
             foreach (PositionedRichChar character in _blockView.PositionedChars)
             {
                 if (!ReferenceEquals(character.Info.EmbeddedElement, child)) continue;
@@ -1357,7 +1357,7 @@ namespace Microsoft.UI.Xaml.Controls
 
         internal Rect GetDocumentClientRangeBounds(int start, int end)
         {
-            _blockView.PerformRichLayout(Size.X - Padding.Horizontal);
+            PerformEditorViewportLayout();
             int total = GetTotalCharacters();
             start = Math.Clamp(start, 0, total);
             end = Math.Clamp(end, 0, total);
@@ -1409,7 +1409,7 @@ namespace Microsoft.UI.Xaml.Controls
 
         internal Rect[] GetDocumentClientRangeRectangles(int start, int end)
         {
-            _blockView.PerformRichLayout(Size.X - Padding.Horizontal);
+            PerformEditorViewportLayout();
             int total = GetTotalCharacters();
             start = Math.Clamp(start, 0, total);
             end = Math.Clamp(end, 0, total);
@@ -1593,7 +1593,7 @@ namespace Microsoft.UI.Xaml.Controls
 
         private List<RichCaretStop> GetVisualCaretStops()
         {
-            _blockView.PerformRichLayout(Size.X - Padding.Horizontal);
+            PerformEditorViewportLayout();
             List<RichCaretStop> stops = _visualCaretStops;
             stops.Clear();
             int neededCapacity = _blockView.PositionedChars.Count * 2 + _blockView.EmptyParagraphCaretAnchors.Count;
@@ -1659,6 +1659,14 @@ namespace Microsoft.UI.Xaml.Controls
             }
 
             return stops;
+        }
+
+        private void PerformEditorViewportLayout()
+        {
+            float width = _blockView.Size.X > 0f
+                ? _blockView.Size.X
+                : Math.Max(0f, Size.X - Padding.Horizontal);
+            _blockView.PerformRichLayout(width);
         }
 
         private RichCaretStop GetCaretStop(int textPosition, bool trailingAffinity)

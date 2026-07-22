@@ -77,6 +77,14 @@ For `G` newly visible glyphs with `S` outline segments, parsing and transferred 
 
 Managed heap profiling found that `RichTextBlock`, `MarkdownTextBlock`, and `FlowDocument` already owned immutable-until-invalidated `DrawingContext` command caches, while the compositor copied the same large value-type command arrays into a pooled recording context and then into a generic retained cache. These controls now implement the typed `IOwnedRenderCommandCache` contract. The compositor requests and compiles their existing cache directly; it neither calls the copying `OnRender` adapter nor creates a second retained stream. Public/manual `OnRender` behavior is unchanged.
 
+### Bounded fallback and rich-document metadata reuse
+
+Allocation-stack profiling of a 5,000-paragraph multilingual editor isolated repeated fallback selection as the dominant managed cost on platforms with system fonts. The layout path copied the complete system-font catalog for each miss and recreated the same variable-font instance for repeated characters. `FontManager` now keeps positive and negative no-language fallback matches in a catalog-versioned FIFO cache capped at 4,096 entries. Registered-font changes advance the catalog version and clear the cache. Variable-font style instances use a separate 256-entry bounded cache, while the public `FontApi.GetSystemFonts()` API retains its copy-on-return ownership contract and internal matching reads an immutable catalog view.
+
+Rich-document layout sessions also retain each block's logical UTF-16 length until that block is invalidated. Viewport refresh remains `O(B + V)` in the current offset-assignment architecture for `B` blocks and `V` realized blocks, but no longer recursively enumerates every block's inline tree twice per refresh. Editor caret, hit-test, and scroll paths use the arranged presenter width so an input query cannot introduce a second layout key.
+
+The native far-jump probe fell from 20,971,771 to 6,240,269 managed bytes per scroll (70.2% lower). This deliberately harsh probe moves among distant regions, forcing new visible paragraphs to shape; it therefore measures bounded fallback/metadata reuse without claiming allocation-free Unicode shaping.
+
 ### Protocol and diagnostics
 
 The typed native and browser WebGPU APIs expose command-encoder buffer-to-texture and texture-to-texture copies. Compositor metrics report current and maximum atlas dimensions, coverage/color/path texture bytes, glyph staging bytes, outline count/capacity/GPU bytes, and current/peak path staging. The sample benchmark additionally reports managed heap and fragmented bytes.
@@ -127,6 +135,20 @@ Wall throughput varied by 1.6%, so it is treated as neutral noise rather than an
 
 An isolated Font Glyph Browser run also reduced compilation from 3.5679 to 1.7468 ms and compositor CPU time from 3.9711 to 2.0189 ms, while allocations fell from 117,561 to 102,670 bytes/frame. These timings support the architectural result but are not substituted for the all-feature sweep.
 
+Matched browser-AOT WebGPU scroll profiles against `main` additionally covered the pages that apply the greatest atlas or document pressure:
+
+| Workload | Main compile | New compile | Main managed heap | New managed heap | Atlas result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Font Glyph Browser, 600 frames | 4.0360 ms | 0.9193 ms | 28,964,208 B | 27,280,832 B | 240 glyph evictions, zero clears; 512 path atlas |
+| Markdown Playground, 600 frames | 9.5631 ms | 0.6763 ms | 51,170,064 B | 48,248,392 B | 32 paths; 512 path atlas |
+| Inter Typeface, 600 frames | 2.4310 ms | 0.3643 ms | 51,587,912 B | 44,215,248 B | 224 paths; 2048 path atlas |
+| Data Virtualization, 600 frames | 3.6888 ms | 1.7267 ms | 30,684,896 B | 26,224,792 B | zero evictions/clears; 512 path atlas |
+| Text & Documents, 180 frames | 45.1189 ms | 39.3411 ms | 290,469,064 B | 276,480,952 B | paths reduced 2,930 to 505; 2048 path atlas |
+
+All runs completed with zero WebGPU console errors after moving path-atlas derivatives to uniform fragment control flow. The rich-editor sequential allocation rate was neutral (9,584,391 versus 9,580,493 bytes/frame); the measurable wins there are 13,988,112 fewer retained managed bytes, fewer vector fallback paths, 12.8% lower compile time, and 9.4% higher wall throughput. The 2048 path texture is retained after Inter/rich-document pressure because its exact R8 cost is 4 MiB and retaining it avoids page-switch repacks and renewed GPU uploads; shrinking it would trade a small bounded high-water mark for the interaction delay this design is intended to remove.
+
+A matched page-switch run scrolled Font Glyph Browser, Text & Documents, Markdown Playground, and Inter Typeface for 60 frames each, then measured Data Virtualization for 300 frames. Browser logs confirmed every transition in order. Against `main`, allocation fell from 31,957 to 13,588 bytes/frame (-57.5%), managed heap from 82,614,376 to 78,255,336 bytes (-5.3%), compile time from 3.6043 to 1.8240 ms (-49.4%), and compositor time from 3.6850 to 1.9197 ms (-47.9%). It completed with zero evictions, clears, capacity failures, generation changes, over-budget compile frames, or console errors.
+
 ## Quality and regression evidence
 
 - The glyph shader retains 8x8 high-precision coverage and the direction-aware half-open quadratic/cubic winding rules.
@@ -140,7 +162,7 @@ An isolated Font Glyph Browser run also reduced compilation from 3.5679 to 1.746
 
 Validation commands:
 
-- `dotnet test src/ProGPU.Tests/ProGPU.Tests.csproj -c Release --no-restore`: 2,260 passed, 0 failed.
+- `dotnet test src/ProGPU.Tests/ProGPU.Tests.csproj -c Release --no-restore`: 2,264 passed, 0 failed.
 - `dotnet test src/ProGPU.Tests.Headless/ProGPU.Tests.Headless.csproj -c Release --no-restore`: 195 passed, 0 failed.
 - `dotnet build src/ProGPU.slnx -c Release --no-restore`: succeeded with 0 errors.
 - `dotnet publish src/ProGPU.Samples.Browser/ProGPU.Samples.Browser.csproj -c Release --no-restore`: AOT-compiled all 68 eligible assemblies and produced the native WebAssembly artifact.

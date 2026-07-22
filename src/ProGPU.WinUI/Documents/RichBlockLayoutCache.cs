@@ -26,6 +26,9 @@ internal sealed class RichBlockLayoutCache
     public bool AlignmentIncludesTrailingWhitespace;
     public bool IgnoreTrailingCharacterSpacing;
     public int LogicalTextOffset;
+    // Computed once per retained block and reset with content invalidation so
+    // viewport refresh does not enumerate every inline in the document twice.
+    public int LogicalTextLength = -1;
     public List<PositionedRichChar> Characters { get; } = new();
     public List<TableVisualDecoration> Decorations { get; } = new();
 
