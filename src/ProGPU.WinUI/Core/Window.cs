@@ -27,6 +27,13 @@ public readonly record struct WindowFrameMetrics(
     double PresentTimeMs,
     double TotalTimeMs);
 
+public readonly record struct WindowResizeMetrics(
+    ulong LogicalResizeEvents,
+    ulong FramebufferResizeEvents,
+    ulong DeferredRenderRequests,
+    double CallbackTimeMs,
+    double MaximumCallbackTimeMs);
+
 public class Window : DependencyObject
 {
     private IWindow? _silkWindow;
@@ -65,6 +72,11 @@ public class Window : DependencyObject
     private WindowInsets _insets;
     private bool _extendsContentIntoSystemInsets;
     private bool _avoidInputPane = true;
+    private ulong _logicalResizeEvents;
+    private ulong _framebufferResizeEvents;
+    private ulong _deferredResizeRenderRequests;
+    private double _resizeCallbackTimeMs;
+    private double _maximumResizeCallbackTimeMs;
 
     public IWindow? SilkWindow => _silkWindow;
     public WgpuContext? WgpuContext => _wgpuContext;
@@ -79,6 +91,12 @@ public class Window : DependencyObject
         _windowController?.FrameInsets ?? NativeWindowFrameInsets.Empty;
     public bool IsUsingSystemBackdropFallback { get; private set; }
     public WindowFrameMetrics FrameMetrics { get; private set; }
+    public WindowResizeMetrics ResizeMetrics => new(
+        _logicalResizeEvents,
+        _framebufferResizeEvents,
+        _deferredResizeRenderRequests,
+        _resizeCallbackTimeMs,
+        _maximumResizeCallbackTimeMs);
     public Windows.Foundation.Rect Bounds => _bounds;
     public bool Visible => _visible;
     public WindowInsets Insets => _insets;
@@ -820,7 +838,10 @@ public class Window : DependencyObject
                 // Resize, display migration, and foreground restoration can invalidate the
                 // platform surface without changing its dimensions. Reconfigure now and let
                 // the next display-link tick acquire the replacement drawable.
-                wgpuContext.TryConfigureSwapChain((uint)framebufferSize.X, (uint)framebufferSize.Y);
+                wgpuContext.TryConfigureSwapChain(
+                    (uint)framebufferSize.X,
+                    (uint)framebufferSize.Y,
+                    refreshCapabilities: true);
             }
             else if (surfaceTexture.Status is SurfaceGetCurrentTextureStatus.OutOfMemory or SurfaceGetCurrentTextureStatus.DeviceLost)
             {
@@ -877,19 +898,26 @@ public class Window : DependencyObject
 
     private void OnResize(Vector2D<int> newSize)
     {
+        _logicalResizeEvents++;
         UpdateBounds(newSize.X, newSize.Y);
         _content?.Invalidate();
         _renderRoot.Invalidate();
     }
 
-    private void OnFramebufferResize(Vector2D<int> newSize)
+    private void OnFramebufferResize(Vector2D<int> _)
     {
         if (_wgpuContext == null || _silkWindow == null) return;
-        var framebufferSize = NormalizeFramebufferSize(newSize);
-        _wgpuContext.ConfigureSwapChain((uint)framebufferSize.X, (uint)framebufferSize.Y);
-        _content?.Invalidate();
+        long callbackStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        _framebufferResizeEvents++;
+
+        // GLFW may deliver many logical/framebuffer callbacks before the next display
+        // tick. Publish invalidation here and let RenderFrameCore configure and draw the
+        // latest physical size once; nested rendering doubles layout, uploads, and present.
         _renderRoot.Invalidate();
-        RenderFrame(0d);
+        _deferredResizeRenderRequests++;
+        double elapsedMilliseconds = System.Diagnostics.Stopwatch.GetElapsedTime(callbackStart).TotalMilliseconds;
+        _resizeCallbackTimeMs += elapsedMilliseconds;
+        _maximumResizeCallbackTimeMs = Math.Max(_maximumResizeCallbackTimeMs, elapsedMilliseconds);
     }
 
     private Vector2D<int> GetCurrentFramebufferSize()

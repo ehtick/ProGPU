@@ -588,7 +588,7 @@ namespace Microsoft.UI.Xaml.Controls
             }
         ];
 
-        private sealed class ParagraphShapingMetrics
+        internal sealed class ParagraphShapingMetrics
         {
             public ParagraphShapingMetrics(int length)
             {
@@ -2611,19 +2611,25 @@ namespace Microsoft.UI.Xaml.Controls
             Action<Visual> removeChild,
             TextReadingOrder textReadingOrder = TextReadingOrder.DetectFromContent,
             FlowDirection flowDirection = FlowDirection.LeftToRight,
-            TextAlignment alignment = TextAlignment.Left)
+            TextAlignment alignment = TextAlignment.Left,
+            RichDocumentLayoutSession? layoutSession = null)
         {
-            positionedChars.Clear();
+            layoutSession ??= new RichDocumentLayoutSession();
+            layoutSession.ReleaseCharacters(positionedChars);
             tableDecorations.Clear();
 
-            var currentChildren = new List<Visual>(parent.Children);
+            List<Visual> currentChildren = layoutSession.CurrentChildren;
+            currentChildren.Clear();
+            currentChildren.AddRange(parent.Children);
 
-            var allBlocks = new List<Block>();
+            List<Block> allBlocks = layoutSession.CurrentBlocks;
+            allBlocks.Clear();
             allBlocks.AddRange(blocks);
             foreach (var p in extraParagraphs)
             {
                 if (!allBlocks.Contains(p)) allBlocks.Add(p);
             }
+            layoutSession.RetainOnly(allBlocks);
 
             if (activeFont == null || allBlocks.Count == 0 || width <= 0f || height <= 0f)
             {
@@ -2649,36 +2655,50 @@ namespace Microsoft.UI.Xaml.Controls
 
             var resolvedFg = defaultFg ?? ThemeManager.GetBrush("TextPrimary", theme);
 
-            var encounteredChildren = new HashSet<Visual>();
+            HashSet<Visual> encounteredChildren = layoutSession.EncounteredChildren;
+            encounteredChildren.Clear();
 
             foreach (var block in allBlocks)
             {
                 Paragraph? paragraphBlock = block as Paragraph;
                 FlowDirection blockFlowDirection = paragraphBlock?.FlowDirection ?? flowDirection;
                 Microsoft.UI.Text.RichParagraphFormatState? paragraphState = paragraphBlock?.EditorFormatState;
-                var charList = new List<RichChar>();
-                if (block is Paragraph paragraph)
+                RichBlockLayoutCache blockCache = layoutSession.GetOrCreate(block);
+                bool requiresShaping = !blockCache.MatchesShaping(
+                        activeFont,
+                        baseFontSize,
+                        defaultFg,
+                        theme,
+                        textReadingOrder,
+                        blockFlowDirection);
+                if (requiresShaping)
                 {
-                    foreach (var inline in paragraph.Inlines)
+                    List<RichChar> shapingCharacters = blockCache.ShapingCharacters;
+                    shapingCharacters.Clear();
+                    if (block is Paragraph paragraph)
                     {
-                        AccumulateInlines(inline, charList, resolvedFg, baseFontSize, false, false, false, theme, null, 0f);
+                        foreach (var inline in paragraph.Inlines)
+                        {
+                            AccumulateInlines(inline, shapingCharacters, resolvedFg, baseFontSize, false, false, false, theme, null, 0f);
+                        }
                     }
-                }
-                else if (block is ListBlock listBlock)
-                {
-                    AccumulateInlines(listBlock, charList, resolvedFg, baseFontSize, false, false, false, theme, null, 0f);
-                }
-                else if (block is Table tableBlock)
-                {
-                    AccumulateInlines(tableBlock, charList, resolvedFg, baseFontSize, false, false, false, theme, null, 0f);
-                }
-                else if (block is Inline inlineBlock)
-                {
-                    AccumulateInlines(inlineBlock, charList, resolvedFg, baseFontSize, false, false, false, theme, null, 0f);
+                    else if (block is ListBlock listBlock)
+                    {
+                        AccumulateInlines(listBlock, shapingCharacters, resolvedFg, baseFontSize, false, false, false, theme, null, 0f);
+                    }
+                    else if (block is Table tableBlock)
+                    {
+                        AccumulateInlines(tableBlock, shapingCharacters, resolvedFg, baseFontSize, false, false, false, theme, null, 0f);
+                    }
+                    else if (block is Inline inlineBlock)
+                    {
+                        AccumulateInlines(inlineBlock, shapingCharacters, resolvedFg, baseFontSize, false, false, false, theme, null, 0f);
+                    }
+
+                    ResolveCharacterFonts(shapingCharacters, activeFont);
                 }
 
-                if (charList.Count == 0) continue;
-
+                List<RichChar> charList = blockCache.ShapingCharacters;
                 for (int charIndex = 0; charIndex < charList.Count; charIndex++)
                 {
                     RichChar character = charList[charIndex];
@@ -2693,13 +2713,34 @@ namespace Microsoft.UI.Xaml.Controls
                     }
                     charList[charIndex] = character;
                 }
-                ResolveCharacterFonts(charList, activeFont);
+                if (requiresShaping)
+                {
+                    blockCache.ShapingMetrics = MeasureShapedParagraphAdvances(
+                        charList,
+                        activeFont,
+                        textReadingOrder,
+                        blockFlowDirection,
+                        layoutSession);
+                    blockCache.SetShapingKey(
+                        activeFont,
+                        baseFontSize,
+                        defaultFg,
+                        theme,
+                        textReadingOrder,
+                        blockFlowDirection);
+                }
 
-                ParagraphShapingMetrics shapingMetrics = MeasureShapedParagraphAdvances(
-                    charList,
-                    activeFont,
-                    textReadingOrder,
-                    blockFlowDirection);
+                if (charList.Count == 0) continue;
+                ParagraphShapingMetrics shapingMetrics = blockCache.ShapingMetrics!;
+                // Embedded elements can remeasure as the column changes even though the
+                // surrounding OpenType shaping is retained. Refresh only their advances.
+                for (int charIndex = 0; charIndex < charList.Count; charIndex++)
+                {
+                    if (charList[charIndex].EmbeddedElement is not { } embeddedElement) continue;
+                    float advance = embeddedElement.DesiredSize.X + 4f;
+                    shapingMetrics.Advances[charIndex] = advance;
+                    shapingMetrics.AdvancesWithoutCharacterSpacing[charIndex] = advance;
+                }
                 float[] shapedAdvances = shapingMetrics.Advances;
 
                 var paragraphLines = new List<(List<PositionedRichChar> Chars, float ColumnX, int[] VisualOrder, sbyte ParagraphLevel)>();
@@ -2708,7 +2749,8 @@ namespace Microsoft.UI.Xaml.Controls
 
                 while (i < charList.Count)
                 {
-                    var lineChars = new List<RichChar>();
+                    int lineStart = i;
+                    int lineEnd = i;
                     float lineW = 0f;
                     int lastWordIdx = -1;
 
@@ -2719,6 +2761,7 @@ namespace Microsoft.UI.Xaml.Controls
 
                         if (c == '\n')
                         {
+                            lineEnd = i;
                             i++;
                             break;
                         }
@@ -2738,38 +2781,37 @@ namespace Microsoft.UI.Xaml.Controls
                                 baseFontSize,
                                 blockFlowDirection == FlowDirection.RightToLeft)
                             : shapedAdvances[i];
-                        if (c == '\t') shapedAdvances[i] = advance;
-
                         if (rc.Character == ' ' || rc.Character == '\t')
                         {
-                            lastWordIdx = lineChars.Count;
+                            lastWordIdx = i;
                         }
 
-                        bool safeWordBreak = lastWordIdx > 0 && lastWordIdx < lineChars.Count &&
-                            IsClusterBoundaryBefore(shapingMetrics, lineChars[lastWordIdx].TextPosition);
+                        bool safeWordBreak = lastWordIdx > lineStart && lastWordIdx < i &&
+                            IsClusterBoundaryBefore(shapingMetrics, charList[lastWordIdx].TextPosition);
                         bool safeCurrentBreak = IsClusterBoundaryBefore(shapingMetrics, i);
-                        if (lineW + advance > colWidth && lineChars.Count > 0 &&
+                        if (lineW + advance > colWidth && i > lineStart &&
                             (safeWordBreak || safeCurrentBreak))
                         {
                             if (safeWordBreak)
                             {
-                                int diff = lineChars.Count - lastWordIdx;
-                                lineChars.RemoveRange(lastWordIdx, diff);
-                                i -= diff;
+                                i = lastWordIdx;
+                                lineEnd = lastWordIdx;
                             }
+                            else lineEnd = i;
                             break;
                         }
 
-                        lineChars.Add(rc);
                         lineW += advance;
                         i++;
+                        lineEnd = i;
                     }
 
-                    if (lineChars.Count > 0)
+                    if (lineEnd > lineStart)
                     {
                         float lineMaxH = lineSpacing;
-                        foreach (var rc in lineChars)
+                        for (int lineIndex = lineStart; lineIndex < lineEnd; lineIndex++)
                         {
+                            RichChar rc = charList[lineIndex];
                             if (rc.EmbeddedElement != null)
                             {
                                 lineMaxH = Math.Max(lineMaxH, rc.EmbeddedElement.DesiredSize.Y);
@@ -2797,8 +2839,9 @@ namespace Microsoft.UI.Xaml.Controls
                         float runningX = cursorX;
                         hasResetLineIndent = false;
 
-                        foreach (var rc in lineChars)
+                        for (int lineIndex = lineStart; lineIndex < lineEnd; lineIndex++)
                         {
+                            RichChar rc = charList[lineIndex];
                             float advance = shapedAdvances[rc.TextPosition];
                             float elementH = 0f;
                             if (rc.EmbeddedElement != null)
@@ -2824,11 +2867,9 @@ namespace Microsoft.UI.Xaml.Controls
 
                             float yOffset = (lineMaxH - elementH) / 2f;
 
-                            currentLine.Add(new PositionedRichChar
-                            {
-                                Info = rc,
-                                Position = new Vector2(finalX, cursorY + yOffset)
-                            });
+                            currentLine.Add(layoutSession.RentPositionedCharacter(
+                                rc,
+                                new Vector2(finalX, cursorY + yOffset)));
                             runningX += advance;
                         }
 

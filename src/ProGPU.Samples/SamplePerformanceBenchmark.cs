@@ -2,6 +2,8 @@ using System;
 using System.Diagnostics;
 using System.Diagnostics.Tracing;
 using System.Runtime.InteropServices;
+using Silk.NET.Maths;
+using Silk.NET.Windowing;
 
 namespace ProGPU.Samples;
 
@@ -17,6 +19,12 @@ internal static class SamplePerformanceBenchmark
     private const string PreconditionFramesVariable = "PROGPU_SAMPLE_BENCHMARK_PRECONDITION_FRAMES";
     private const string MemoryVariable = "PROGPU_SAMPLE_BENCHMARK_MEMORY";
     private const string HoldMillisecondsVariable = "PROGPU_SAMPLE_BENCHMARK_HOLD_MS";
+    private const string ResizeVariable = "PROGPU_SAMPLE_BENCHMARK_RESIZE";
+    private const string ResizeMinimumWidthVariable = "PROGPU_SAMPLE_BENCHMARK_RESIZE_MIN_WIDTH";
+    private const string ResizeMinimumHeightVariable = "PROGPU_SAMPLE_BENCHMARK_RESIZE_MIN_HEIGHT";
+    private const string ResizeMaximumWidthVariable = "PROGPU_SAMPLE_BENCHMARK_RESIZE_MAX_WIDTH";
+    private const string ResizeMaximumHeightVariable = "PROGPU_SAMPLE_BENCHMARK_RESIZE_MAX_HEIGHT";
+    private const string ResizeStepVariable = "PROGPU_SAMPLE_BENCHMARK_RESIZE_STEP";
 
     private static readonly int s_warmupFrames = ReadPositiveInt(WarmupFramesVariable, 180);
     private static readonly int s_measureFrames = ReadPositiveInt(MeasureFramesVariable, 600);
@@ -38,7 +46,11 @@ internal static class SamplePerformanceBenchmark
     private static double s_animationMilliseconds;
     private static double s_surfaceAcquireMilliseconds;
     private static double s_presentMilliseconds;
+    private static double s_totalFrameMilliseconds;
+    private static double s_maximumFrameMilliseconds;
+    private static int s_framesOverBudget;
     private static Microsoft.UI.Xaml.Window? s_window;
+    private static IWindow? s_resizeWindow;
     private static long s_allocatedBytesAtStart;
     private static long s_managedHeapBytesAtStart;
     private static TimeSpan s_gcPauseDurationAtStart;
@@ -73,6 +85,19 @@ internal static class SamplePerformanceBenchmark
     private static readonly int s_preconditionFrames = ReadPositiveInt(PreconditionFramesVariable, 180);
     private static readonly bool s_memoryWorkload = ReadOptionalBool(MemoryVariable) == true;
     private static readonly int s_holdMilliseconds = ReadNonNegativeInt(HoldMillisecondsVariable, 0);
+    private static readonly bool s_resizeWorkload = ReadOptionalBool(ResizeVariable) == true;
+    private static readonly int s_resizeMinimumWidth = ReadPositiveInt(ResizeMinimumWidthVariable, 800);
+    private static readonly int s_resizeMinimumHeight = ReadPositiveInt(ResizeMinimumHeightVariable, 600);
+    private static readonly int s_resizeMaximumWidth = Math.Max(s_resizeMinimumWidth, ReadPositiveInt(ResizeMaximumWidthVariable, 1280));
+    private static readonly int s_resizeMaximumHeight = Math.Max(s_resizeMinimumHeight, ReadPositiveInt(ResizeMaximumHeightVariable, 800));
+    private static readonly int s_resizeStep = ReadPositiveInt(ResizeStepVariable, 8);
+    private static int s_resizeWidth = s_resizeMaximumWidth;
+    private static int s_resizeDirection = -1;
+    private static int s_resizeRequests;
+    private static int s_resizeRequestsAtStart;
+    private static Microsoft.UI.Xaml.WindowResizeMetrics s_resizeMetricsAtStart;
+    private static ulong s_surfaceConfigurationsAtStart;
+    private static double s_surfaceConfigurationTimeAtStart;
     private static int s_preconditionPageIndex;
     private static int s_preconditionFrame;
     private static bool s_isPreconditioning;
@@ -82,6 +107,11 @@ internal static class SamplePerformanceBenchmark
     public static void AttachWindow(Microsoft.UI.Xaml.Window window)
     {
         s_window = window;
+        if (s_resizeWorkload && window.SilkWindow is { } resizeWindow)
+        {
+            s_resizeWindow = resizeWindow;
+            resizeWindow.Update += AdvanceResizeWorkload;
+        }
     }
 
     public static void StartRequestedWorkload(string selectedPage)
@@ -110,6 +140,7 @@ internal static class SamplePerformanceBenchmark
             $"[SampleBenchmark] page={selectedPage} warmupFrames={s_warmupFrames}" +
             $" measureFrames={s_measureFrames} vsync={AppState._wgpuContext?.VSync}" +
             $" scroll={s_scrollWorkload} scrollStep={s_scrollStep:F0}" +
+            $" resize={s_resizeWorkload}" +
             $" preconditionPages={string.Join(';', s_preconditionPages)}" +
             $" preconditionFrames={s_preconditionFrames}");
         SampleBenchmarkEventSource.Log.WorkloadStarted(selectedPage);
@@ -204,6 +235,10 @@ internal static class SamplePerformanceBenchmark
             s_glyphAtlasEvictionsAtStart = AppState._screenCompositor?.Atlas.EvictionCount ?? 0;
             s_glyphAtlasClearsAtStart = AppState._screenCompositor?.Atlas.ClearCount ?? 0;
             s_pathAtlasGenerationAtStart = AppState._screenCompositor?.PathAtlas.Generation ?? 0;
+            s_resizeMetricsAtStart = s_window?.ResizeMetrics ?? default;
+            s_resizeRequestsAtStart = s_resizeRequests;
+            s_surfaceConfigurationsAtStart = AppState._wgpuContext?.SurfaceConfigurationCount ?? 0;
+            s_surfaceConfigurationTimeAtStart = AppState._wgpuContext?.SurfaceConfigurationTimeMs ?? 0d;
             SampleBenchmarkEventSource.Log.MeasurementStarted(RequestedPage!);
         }
 
@@ -215,6 +250,9 @@ internal static class SamplePerformanceBenchmark
             s_animationMilliseconds += frameMetrics.AnimationTimeMs;
             s_surfaceAcquireMilliseconds += frameMetrics.SurfaceAcquireTimeMs;
             s_presentMilliseconds += frameMetrics.PresentTimeMs;
+            s_totalFrameMilliseconds += frameMetrics.TotalTimeMs;
+            s_maximumFrameMilliseconds = Math.Max(s_maximumFrameMilliseconds, frameMetrics.TotalTimeMs);
+            if (frameMetrics.TotalTimeMs > 16.667d) s_framesOverBudget++;
         }
         if (AppState._screenCompositor is { } compositor)
         {
@@ -279,6 +317,13 @@ internal static class SamplePerformanceBenchmark
         process.Refresh();
         ProcessMemorySnapshot processMemory = ProcessMemorySnapshot.Capture(process);
         var finalMetrics = AppState._screenCompositor?.Metrics;
+        var finalResizeMetrics = s_window?.ResizeMetrics ?? default;
+        ulong resizeEvents = finalResizeMetrics.LogicalResizeEvents - s_resizeMetricsAtStart.LogicalResizeEvents;
+        ulong framebufferResizeEvents = finalResizeMetrics.FramebufferResizeEvents - s_resizeMetricsAtStart.FramebufferResizeEvents;
+        ulong deferredResizeRequests = finalResizeMetrics.DeferredRenderRequests - s_resizeMetricsAtStart.DeferredRenderRequests;
+        double resizeCallbackTimeMs = finalResizeMetrics.CallbackTimeMs - s_resizeMetricsAtStart.CallbackTimeMs;
+        ulong surfaceConfigurations = (AppState._wgpuContext?.SurfaceConfigurationCount ?? 0) - s_surfaceConfigurationsAtStart;
+        double surfaceConfigurationTimeMs = (AppState._wgpuContext?.SurfaceConfigurationTimeMs ?? 0d) - s_surfaceConfigurationTimeAtStart;
         string workloadDetails = string.Empty;
         if (string.Equals(RequestedPage, "Font Glyph Browser", StringComparison.OrdinalIgnoreCase))
         {
@@ -371,6 +416,18 @@ internal static class SamplePerformanceBenchmark
             $" animationMs={s_animationMilliseconds / divisor:F4}" +
             $" acquireMs={s_surfaceAcquireMilliseconds / divisor:F4}" +
             $" presentMs={s_presentMilliseconds / divisor:F4}" +
+            $" totalFrameMs={s_totalFrameMilliseconds / divisor:F4}" +
+            $" maxFrameMs={s_maximumFrameMilliseconds:F4}" +
+            $" framesOverBudget={s_framesOverBudget}" +
+            $" resizeRequests={s_resizeRequests - s_resizeRequestsAtStart}" +
+            $" resizeEvents={resizeEvents}" +
+            $" framebufferResizeEvents={framebufferResizeEvents}" +
+            $" deferredResizeRequests={deferredResizeRequests}" +
+            $" resizeCallbackMs={resizeCallbackTimeMs / Math.Max(1d, framebufferResizeEvents):F4}" +
+            $" maxResizeCallbackMs={finalResizeMetrics.MaximumCallbackTimeMs:F4}" +
+            $" surfaceConfigurations={surfaceConfigurations}" +
+            $" surfaceConfigurationMs={surfaceConfigurationTimeMs / Math.Max(1d, surfaceConfigurations):F4}" +
+            $" maxSurfaceConfigurationMs={AppState._wgpuContext?.MaximumSurfaceConfigurationTimeMs ?? 0d:F4}" +
             $" allocatedBytesPerFrame={allocatedBytes / divisor:F0}" +
             $" sceneCacheHits={s_sceneCacheHitFrames}/{measuredFrames}" +
             $" sceneCacheMiss=\"{finalMetrics?.SceneCacheMissReason ?? "none"}\"" +
@@ -433,6 +490,37 @@ internal static class SamplePerformanceBenchmark
         }
 
         AppState._window?.Close();
+    }
+
+    private static void AdvanceResizeWorkload(double _)
+    {
+        if (!s_resizeWorkload || !s_workloadStarted || s_isPreconditioning || s_finished || s_resizeWindow is null)
+        {
+            return;
+        }
+
+        int nextWidth = s_resizeWidth + s_resizeDirection * s_resizeStep;
+        if (nextWidth <= s_resizeMinimumWidth)
+        {
+            nextWidth = s_resizeMinimumWidth;
+            s_resizeDirection = 1;
+        }
+        else if (nextWidth >= s_resizeMaximumWidth)
+        {
+            nextWidth = s_resizeMaximumWidth;
+            s_resizeDirection = -1;
+        }
+
+        s_resizeWidth = nextWidth;
+        float progress = s_resizeMaximumWidth == s_resizeMinimumWidth
+            ? 1f
+            : (nextWidth - s_resizeMinimumWidth) / (float)(s_resizeMaximumWidth - s_resizeMinimumWidth);
+        int nextHeight = (int)MathF.Round(s_resizeMinimumHeight +
+            (s_resizeMaximumHeight - s_resizeMinimumHeight) * progress);
+        var requestedSize = new Vector2D<int>(nextWidth, nextHeight);
+        if (s_resizeWindow.Size == requestedSize) return;
+        s_resizeWindow.Size = requestedSize;
+        s_resizeRequests++;
     }
 
     private static void CollectRetainedMemory()

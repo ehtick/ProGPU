@@ -25,6 +25,7 @@ public sealed class RichDocumentLayoutSession
     private List<RichChar> _richCharacterScratch = new();
     private readonly List<PositionedRichChar> _shapingCharacterScratch = new();
     internal List<Visual> CurrentChildren { get; } = new();
+    internal List<Block> CurrentBlocks { get; } = new();
     internal HashSet<Visual> EncounteredChildren { get; } =
         new(ReferenceEqualityComparer.Instance);
     private long _generation;
@@ -56,6 +57,7 @@ public sealed class RichDocumentLayoutSession
             cache.LogicalTextLength = -1;
             ReleaseCharacters(cache.Characters);
             cache.Decorations.Clear();
+            cache.InvalidateShaping();
         }
     }
 
@@ -69,6 +71,7 @@ public sealed class RichDocumentLayoutSession
             cache.LogicalTextLength = -1;
             ReleaseCharacters(cache.Characters);
             cache.Decorations.Clear();
+            cache.InvalidateShaping();
         }
     }
 
@@ -83,6 +86,9 @@ public sealed class RichDocumentLayoutSession
         foreach (RichBlockLayoutCache cache in _blocks.Values)
             ReleaseCharacters(cache.Characters);
         _blocks.Clear();
+        CurrentBlocks.Clear();
+        CurrentChildren.Clear();
+        EncounteredChildren.Clear();
         _shapingCharacterScratch.Clear();
         _positionedCharacterPool.Clear();
         _richCharacterScratch = new List<RichChar>();

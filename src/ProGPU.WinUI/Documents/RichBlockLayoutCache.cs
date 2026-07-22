@@ -31,6 +31,54 @@ internal sealed class RichBlockLayoutCache
     public int LogicalTextLength = -1;
     public List<PositionedRichChar> Characters { get; } = new();
     public List<TableVisualDecoration> Decorations { get; } = new();
+    public List<RichChar> ShapingCharacters { get; } = new();
+    public TextLayoutEngine.ParagraphShapingMetrics? ShapingMetrics;
+    public bool IsShapingValid;
+    public TtfFont? ShapingFont;
+    public float ShapingFontSize = -1f;
+    public Brush? ShapingForeground;
+    public ElementTheme ShapingTheme;
+    public TextReadingOrder ShapingTextReadingOrder;
+    public FlowDirection ShapingFlowDirection;
+
+    public bool MatchesShaping(
+        TtfFont font,
+        float fontSize,
+        Brush? foreground,
+        ElementTheme theme,
+        TextReadingOrder textReadingOrder,
+        FlowDirection flowDirection) =>
+        IsShapingValid &&
+        ReferenceEquals(ShapingFont, font) &&
+        ShapingFontSize == fontSize &&
+        Equals(ShapingForeground, foreground) &&
+        ShapingTheme == theme &&
+        ShapingTextReadingOrder == textReadingOrder &&
+        ShapingFlowDirection == flowDirection;
+
+    public void SetShapingKey(
+        TtfFont font,
+        float fontSize,
+        Brush? foreground,
+        ElementTheme theme,
+        TextReadingOrder textReadingOrder,
+        FlowDirection flowDirection)
+    {
+        ShapingFont = font;
+        ShapingFontSize = fontSize;
+        ShapingForeground = foreground;
+        ShapingTheme = theme;
+        ShapingTextReadingOrder = textReadingOrder;
+        ShapingFlowDirection = flowDirection;
+        IsShapingValid = true;
+    }
+
+    public void InvalidateShaping()
+    {
+        IsShapingValid = false;
+        ShapingCharacters.Clear();
+        ShapingMetrics = null;
+    }
 
     public void RebaseTextPositions(int logicalTextOffset)
     {

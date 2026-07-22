@@ -261,6 +261,31 @@ public class BidiAndFlowDirectionTests
     }
 
     [Fact]
+    public void FlowDocumentRetainsIdenticalMeasureArrangeLayout()
+    {
+        var document = new FlowDocument
+        {
+            Font = InterFontFamily.Regular,
+            FontSize = 18f,
+            ColumnCount = 1,
+            Padding = new Thickness(0f)
+        };
+        document.Blocks.Add(new Paragraph(new Microsoft.UI.Xaml.Documents.Run("Retained shaping and layout")));
+
+        document.Measure(new System.Numerics.Vector2(200f, 60f));
+        document.Arrange(new Rect(0f, 0f, 200f, 60f));
+        Assert.Equal(1UL, document.FlowLayoutPassCount);
+
+        document.Measure(new System.Numerics.Vector2(200f, 60f));
+        document.Arrange(new Rect(0f, 0f, 200f, 60f));
+        Assert.Equal(1UL, document.FlowLayoutPassCount);
+
+        document.Measure(new System.Numerics.Vector2(240f, 60f));
+        document.Arrange(new Rect(0f, 0f, 240f, 60f));
+        Assert.Equal(2UL, document.FlowLayoutPassCount);
+    }
+
+    [Fact]
     public void RunFlowDirectionFeedsSharedLayoutAndRoundTripsHtmlAndRtf()
     {
         var directionalRun = new Microsoft.UI.Xaml.Documents.Run("123")

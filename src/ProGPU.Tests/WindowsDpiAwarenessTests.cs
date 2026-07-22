@@ -41,6 +41,12 @@ public sealed class WindowsDpiAwarenessTests
 
         Assert.Contains(".FramebufferResize += OnFramebufferResize", window, StringComparison.Ordinal);
         Assert.Contains("!wgpuContext.TryReconfigureIfNeeded((uint)framebufferSize.X, (uint)framebufferSize.Y)", window, StringComparison.Ordinal);
+        string framebufferCallback = window[
+            window.IndexOf("private void OnFramebufferResize", StringComparison.Ordinal)..
+            window.IndexOf("private Vector2D<int> GetCurrentFramebufferSize", StringComparison.Ordinal)];
+        Assert.DoesNotContain("ConfigureSwapChain", framebufferCallback, StringComparison.Ordinal);
+        Assert.DoesNotContain("RenderFrame(", framebufferCallback, StringComparison.Ordinal);
+        Assert.Contains("_renderRoot.Invalidate();", framebufferCallback, StringComparison.Ordinal);
         Assert.Contains("return;", window, StringComparison.Ordinal);
         Assert.Contains("DisplayScaleResolver.ResolveWindowDisplayScale(_silkWindow, monitorScale)", window, StringComparison.Ordinal);
         Assert.Contains("(uint)framebufferSize.X", window, StringComparison.Ordinal);
