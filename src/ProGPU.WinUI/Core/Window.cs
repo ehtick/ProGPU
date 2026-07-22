@@ -78,6 +78,7 @@ public class Window : DependencyObject
     private ulong _liveResizeFrames;
     private ulong _suppressedScheduledResizeFrames;
     private bool _suppressNextScheduledRender;
+    private long _liveResizeRenderedVersion = -1;
     private double _resizeCallbackTimeMs;
     private double _maximumResizeCallbackTimeMs;
 
@@ -744,12 +745,14 @@ public class Window : DependencyObject
 
     private void OnRender(double delta)
     {
-        if (_suppressNextScheduledRender)
+        if (_suppressNextScheduledRender &&
+            _renderRoot.ChangeVersion == _liveResizeRenderedVersion)
         {
             _suppressNextScheduledRender = false;
             _suppressedScheduledResizeFrames++;
             return;
         }
+        _suppressNextScheduledRender = false;
         RenderFrame(delta);
     }
 
@@ -912,6 +915,14 @@ public class Window : DependencyObject
         UpdateBounds(newSize.X, newSize.Y);
         _content?.Invalidate();
         _renderRoot.Invalidate();
+        if (_suppressNextScheduledRender)
+        {
+            // Cocoa may report the logical-size notification immediately after the
+            // framebuffer notification. The live frame already measured from the new
+            // physical size, so include this paired resize invalidation in that frame.
+            // Mutations raised by later application handlers still advance the version.
+            _liveResizeRenderedVersion = _renderRoot.ChangeVersion;
+        }
     }
 
     private void OnFramebufferResize(Vector2D<int> _)
@@ -928,6 +939,7 @@ public class Window : DependencyObject
         {
             _suppressNextScheduledRender = true;
             RenderFrame(0d);
+            _liveResizeRenderedVersion = _renderRoot.ChangeVersion;
             _liveResizeFrames++;
         }
         double elapsedMilliseconds = System.Diagnostics.Stopwatch.GetElapsedTime(callbackStart).TotalMilliseconds;
