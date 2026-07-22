@@ -45,7 +45,8 @@ public sealed class WindowsDpiAwarenessTests
             window.IndexOf("private void OnFramebufferResize", StringComparison.Ordinal)..
             window.IndexOf("private Vector2D<int> GetCurrentFramebufferSize", StringComparison.Ordinal)];
         Assert.DoesNotContain("ConfigureSwapChain", framebufferCallback, StringComparison.Ordinal);
-        Assert.DoesNotContain("RenderFrame(", framebufferCallback, StringComparison.Ordinal);
+        Assert.Contains("RenderFrame(0d);", framebufferCallback, StringComparison.Ordinal);
+        Assert.Contains("_suppressNextScheduledRender = true;", framebufferCallback, StringComparison.Ordinal);
         Assert.Contains("_renderRoot.Invalidate();", framebufferCallback, StringComparison.Ordinal);
         Assert.Contains("return;", window, StringComparison.Ordinal);
         Assert.Contains("DisplayScaleResolver.ResolveWindowDisplayScale(_silkWindow, monitorScale)", window, StringComparison.Ordinal);

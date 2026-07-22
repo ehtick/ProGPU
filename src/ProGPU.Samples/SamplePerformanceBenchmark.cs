@@ -320,7 +320,8 @@ internal static class SamplePerformanceBenchmark
         var finalResizeMetrics = s_window?.ResizeMetrics ?? default;
         ulong resizeEvents = finalResizeMetrics.LogicalResizeEvents - s_resizeMetricsAtStart.LogicalResizeEvents;
         ulong framebufferResizeEvents = finalResizeMetrics.FramebufferResizeEvents - s_resizeMetricsAtStart.FramebufferResizeEvents;
-        ulong deferredResizeRequests = finalResizeMetrics.DeferredRenderRequests - s_resizeMetricsAtStart.DeferredRenderRequests;
+        ulong liveResizeFrames = finalResizeMetrics.LiveResizeFrames - s_resizeMetricsAtStart.LiveResizeFrames;
+        ulong suppressedScheduledFrames = finalResizeMetrics.SuppressedScheduledFrames - s_resizeMetricsAtStart.SuppressedScheduledFrames;
         double resizeCallbackTimeMs = finalResizeMetrics.CallbackTimeMs - s_resizeMetricsAtStart.CallbackTimeMs;
         ulong surfaceConfigurations = (AppState._wgpuContext?.SurfaceConfigurationCount ?? 0) - s_surfaceConfigurationsAtStart;
         double surfaceConfigurationTimeMs = (AppState._wgpuContext?.SurfaceConfigurationTimeMs ?? 0d) - s_surfaceConfigurationTimeAtStart;
@@ -422,7 +423,8 @@ internal static class SamplePerformanceBenchmark
             $" resizeRequests={s_resizeRequests - s_resizeRequestsAtStart}" +
             $" resizeEvents={resizeEvents}" +
             $" framebufferResizeEvents={framebufferResizeEvents}" +
-            $" deferredResizeRequests={deferredResizeRequests}" +
+            $" liveResizeFrames={liveResizeFrames}" +
+            $" suppressedScheduledFrames={suppressedScheduledFrames}" +
             $" resizeCallbackMs={resizeCallbackTimeMs / Math.Max(1d, framebufferResizeEvents):F4}" +
             $" maxResizeCallbackMs={finalResizeMetrics.MaximumCallbackTimeMs:F4}" +
             $" surfaceConfigurations={surfaceConfigurations}" +

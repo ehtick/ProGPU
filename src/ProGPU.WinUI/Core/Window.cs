@@ -30,7 +30,8 @@ public readonly record struct WindowFrameMetrics(
 public readonly record struct WindowResizeMetrics(
     ulong LogicalResizeEvents,
     ulong FramebufferResizeEvents,
-    ulong DeferredRenderRequests,
+    ulong LiveResizeFrames,
+    ulong SuppressedScheduledFrames,
     double CallbackTimeMs,
     double MaximumCallbackTimeMs);
 
@@ -74,7 +75,9 @@ public class Window : DependencyObject
     private bool _avoidInputPane = true;
     private ulong _logicalResizeEvents;
     private ulong _framebufferResizeEvents;
-    private ulong _deferredResizeRenderRequests;
+    private ulong _liveResizeFrames;
+    private ulong _suppressedScheduledResizeFrames;
+    private bool _suppressNextScheduledRender;
     private double _resizeCallbackTimeMs;
     private double _maximumResizeCallbackTimeMs;
 
@@ -94,7 +97,8 @@ public class Window : DependencyObject
     public WindowResizeMetrics ResizeMetrics => new(
         _logicalResizeEvents,
         _framebufferResizeEvents,
-        _deferredResizeRenderRequests,
+        _liveResizeFrames,
+        _suppressedScheduledResizeFrames,
         _resizeCallbackTimeMs,
         _maximumResizeCallbackTimeMs);
     public Windows.Foundation.Rect Bounds => _bounds;
@@ -740,6 +744,12 @@ public class Window : DependencyObject
 
     private void OnRender(double delta)
     {
+        if (_suppressNextScheduledRender)
+        {
+            _suppressNextScheduledRender = false;
+            _suppressedScheduledResizeFrames++;
+            return;
+        }
         RenderFrame(delta);
     }
 
@@ -910,11 +920,16 @@ public class Window : DependencyObject
         long callbackStart = System.Diagnostics.Stopwatch.GetTimestamp();
         _framebufferResizeEvents++;
 
-        // GLFW may deliver many logical/framebuffer callbacks before the next display
-        // tick. Publish invalidation here and let RenderFrameCore configure and draw the
-        // latest physical size once; nested rendering doubles layout, uploads, and present.
+        // Cocoa holds the normal Silk render loop inside native event dispatch during a
+        // live resize. Draw the new physical size synchronously so the window remains
+        // responsive, then suppress the redundant scheduled render after dispatch returns.
         _renderRoot.Invalidate();
-        _deferredResizeRenderRequests++;
+        if (!_isRendering)
+        {
+            _suppressNextScheduledRender = true;
+            RenderFrame(0d);
+            _liveResizeFrames++;
+        }
         double elapsedMilliseconds = System.Diagnostics.Stopwatch.GetElapsedTime(callbackStart).TotalMilliseconds;
         _resizeCallbackTimeMs += elapsedMilliseconds;
         _maximumResizeCallbackTimeMs = Math.Max(_maximumResizeCallbackTimeMs, elapsedMilliseconds);
