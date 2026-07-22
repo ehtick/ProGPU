@@ -200,7 +200,7 @@ jobs:
           }
 
   pack:
-    name: Pack shipping packages
+    name: Pack portable packages
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -215,7 +215,7 @@ jobs:
 
       - name: Pack shipping packages
         shell: bash
-        run: PROGPU_PACKAGE_VERSION=0.1.0-ci.${{ github.run_number }} ./eng/progpu-pack.sh
+        run: PROGPU_PACKAGE_GROUP=portable PROGPU_PACKAGE_VERSION=0.1.0-ci.${{ github.run_number }} ./eng/progpu-pack.sh
 
       - name: Upload NuGet packages
         uses: actions/upload-artifact@v7
@@ -224,4 +224,36 @@ jobs:
           path: |
             artifacts/packages/Release/*.nupkg
             artifacts/packages/Release/*.snupkg
+          if-no-files-found: error
+
+  pack-mobile:
+    name: Pack mobile packages
+    runs-on: macos-26
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Restore mobile workloads
+        run: |
+          dotnet workload restore src/ProGPU.Android/ProGPU.Android.csproj --skip-manifest-update
+          dotnet workload restore src/ProGPU.iOS/ProGPU.iOS.csproj --skip-manifest-update
+
+      - name: Pack mobile packages
+        shell: bash
+        run: PROGPU_PACKAGE_GROUP=mobile PROGPU_PACKAGE_VERSION=0.1.0-ci.${{ github.run_number }} PROGPU_PACKAGE_OUTPUT=artifacts/packages-mobile/Release ./eng/progpu-pack.sh
+
+      - name: Upload NuGet packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: progpu-packages-mobile
+          path: |
+            artifacts/packages-mobile/Release/*.nupkg
+            artifacts/packages-mobile/Release/*.snupkg
           if-no-files-found: error

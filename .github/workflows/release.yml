@@ -6,7 +6,7 @@ on:
       version:
         description: NuGet package version to build.
         required: true
-        default: 0.1.0-preview.24
+        default: 0.1.0-preview.25
       publish:
         description: Push packages to NuGet.org after validation.
         required: true
@@ -20,8 +20,8 @@ permissions:
   contents: write
 
 jobs:
-  nuget:
-    name: Build NuGet release
+  portable:
+    name: Validate and pack portable packages
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
@@ -62,7 +62,7 @@ jobs:
           echo "PROGPU_PACKAGE_VERSION=${version}" >> "${GITHUB_ENV}"
           echo "Resolved ProGPU package version: ${version}"
 
-      - name: Verify docs
+      - name: Verify docs and package manifest
         run: ./eng/progpu-verify-docs.sh
 
       - name: Restore
@@ -85,25 +85,127 @@ jobs:
           export LD_LIBRARY_PATH="${native_root}:${native_rid_root}:${headless_native_root}:${headless_native_rid_root}:${LD_LIBRARY_PATH:-}"
           # Match the green Linux Build lane: Mesa software execution does not
           # complete the GPU shaping contract suite in practical hosted-CI time.
-          # The complete 76-test contract remains a local hardware validation.
+          # The complete contract remains a local hardware validation.
           dotnet test src/ProGPU.Tests/ProGPU.Tests.csproj --configuration Release --runtime linux-x64 --no-build --verbosity normal --filter "FullyQualifiedName!~ShapingContractsTests"
           dotnet test src/ProGPU.Tests.Headless/ProGPU.Tests.Headless.csproj --configuration Release --runtime linux-x64 --no-build --verbosity normal
 
-      - name: Pack
-        run: ./eng/progpu-pack.sh
+      - name: Pack portable packages
+        run: PROGPU_PACKAGE_GROUP=portable ./eng/progpu-pack.sh
 
-      - name: Upload NuGet packages
+      - name: Upload portable packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: progpu-portable-${{ env.PROGPU_PACKAGE_VERSION }}
+          path: |
+            artifacts/packages/Release/*.nupkg
+            artifacts/packages/Release/*.snupkg
+          if-no-files-found: error
+
+  mobile:
+    name: Pack mobile packages
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Resolve release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="${{ inputs.version }}"
+          fi
+          echo "PROGPU_PACKAGE_VERSION=${version}" >> "${GITHUB_ENV}"
+
+      - name: Verify package manifest
+        run: ./eng/progpu-verify-package-list.sh
+
+      - name: Restore mobile workloads
+        run: |
+          dotnet workload restore src/ProGPU.Android/ProGPU.Android.csproj --skip-manifest-update
+          dotnet workload restore src/ProGPU.iOS/ProGPU.iOS.csproj --skip-manifest-update
+
+      - name: Pack mobile packages
+        run: PROGPU_PACKAGE_GROUP=mobile PROGPU_PACKAGE_OUTPUT=artifacts/packages-mobile/Release ./eng/progpu-pack.sh
+
+      - name: Upload mobile packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: progpu-mobile-${{ env.PROGPU_PACKAGE_VERSION }}
+          path: |
+            artifacts/packages-mobile/Release/*.nupkg
+            artifacts/packages-mobile/Release/*.snupkg
+          if-no-files-found: error
+
+  publish:
+    name: Verify and publish complete release
+    needs: [portable, mobile]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Resolve release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="${{ inputs.version }}"
+          fi
+          echo "PROGPU_PACKAGE_VERSION=${version}" >> "${GITHUB_ENV}"
+
+      - name: Download portable packages
+        uses: actions/download-artifact@v8
+        with:
+          name: progpu-portable-${{ env.PROGPU_PACKAGE_VERSION }}
+          path: artifacts/packages/Release
+
+      - name: Download mobile packages
+        uses: actions/download-artifact@v8
+        with:
+          name: progpu-mobile-${{ env.PROGPU_PACKAGE_VERSION }}
+          path: artifacts/packages/Release
+
+      - name: Verify complete package set and dependency closure
+        run: PROGPU_PACKAGE_GROUP=all ./eng/progpu-verify-packages.sh
+
+      - name: Upload complete NuGet release
         uses: actions/upload-artifact@v7
         with:
           name: progpu-nuget-${{ env.PROGPU_PACKAGE_VERSION }}
           path: |
             artifacts/packages/Release/*.nupkg
             artifacts/packages/Release/*.snupkg
+          if-no-files-found: error
 
       - name: Publish to NuGet.org
         if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || startsWith(github.ref, 'refs/tags/v') }}
+        shell: bash
         run: |
-          dotnet nuget push artifacts/packages/Release/*.nupkg --api-key "${{ secrets.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
+          for package in artifacts/packages/Release/*.nupkg; do
+            if [[ "${package}" == *.snupkg ]]; then
+              continue
+            fi
+            dotnet nuget push "${package}" --api-key "${{ secrets.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
+          done
 
       - name: Create GitHub Release
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}

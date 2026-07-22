@@ -9,6 +9,8 @@
     <PublishTrimmed>true</PublishTrimmed>
     <ProGpuUseWindowsBaseShim>true</ProGpuUseWindowsBaseShim>
     <ProGpuWgpuNativeXCFramework Condition="'$(ProGpuWgpuNativeXCFramework)' == ''">$(MSBuildThisFileDirectory)../../artifacts/wgpu-native-ios/wgpu_native.xcframework</ProGpuWgpuNativeXCFramework>
+    <Description>Native UIKit and CAMetalLayer host, input, storage, and WebGPU/Metal integration for ProGPU applications.</Description>
+    <PackageTags>progpu;ios;webgpu;metal;uikit;cametallayer;gpu;ui</PackageTags>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\ProGPU.Backend\ProGPU.Backend.csproj" />
@@ -23,6 +25,9 @@
       <SmartLink>true</SmartLink>
       <Frameworks>Metal</Frameworks>
     </NativeReference>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="buildTransitive/ProGPU.iOS.targets" Pack="true" PackagePath="buildTransitive/ProGPU.iOS.targets" />
   </ItemGroup>
   <Target Name="ProGpuWarnMissingWgpuNative" BeforeTargets="Build"
           Condition="!Exists('$(ProGpuWgpuNativeXCFramework)')">

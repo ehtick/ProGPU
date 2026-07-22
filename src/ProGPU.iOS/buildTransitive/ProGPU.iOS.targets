@@ -1,0 +1,15 @@
+<Project>
+  <ItemGroup Condition="'$(TargetPlatformIdentifier)' == 'ios' And '$(ProGpuWgpuNativeXCFramework)' != '' And Exists('$(ProGpuWgpuNativeXCFramework)')">
+    <NativeReference Include="$(ProGpuWgpuNativeXCFramework)">
+      <Kind>Framework</Kind>
+      <ForceLoad>true</ForceLoad>
+      <SmartLink>true</SmartLink>
+      <Frameworks>Metal</Frameworks>
+    </NativeReference>
+  </ItemGroup>
+  <Target Name="ProGpuPackageWarnMissingIosWgpuNative"
+          BeforeTargets="PrepareForBuild"
+          Condition="'$(TargetPlatformIdentifier)' == 'ios' And ('$(ProGpuWgpuNativeXCFramework)' == '' Or !Exists('$(ProGpuWgpuNativeXCFramework)'))">
+    <Warning Text="ProGPU.iOS requires wgpu_native.xcframework at deployment time. Set ProGpuWgpuNativeXCFramework to the output of eng/build-wgpu-native-ios.sh." />
+  </Target>
+</Project>

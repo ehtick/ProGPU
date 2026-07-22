@@ -14,7 +14,7 @@ if [[ ! -x "${dotnet}" ]]; then
   dotnet="dotnet"
 fi
 
-package_version="${PROGPU_PACKAGE_VERSION:-0.1.0-preview.24}"
+package_version="${PROGPU_PACKAGE_VERSION:-0.1.0-preview.25}"
 configuration="${PROGPU_CONFIGURATION:-Release}"
 package_output="${PROGPU_PACKAGE_OUTPUT:-${repo_root}/artifacts/packages/${configuration}}"
 nuget_source="${NUGET_SOURCE:-https://api.nuget.org/v3/index.json}"
@@ -22,6 +22,7 @@ nuget_source="${NUGET_SOURCE:-https://api.nuget.org/v3/index.json}"
 PROGPU_PACKAGE_VERSION="${package_version}" \
 PROGPU_CONFIGURATION="${configuration}" \
 PROGPU_PACKAGE_OUTPUT="${package_output}" \
+PROGPU_PACKAGE_GROUP=all \
   "${repo_root}/eng/progpu-pack.sh"
 
 for package_id in "${progpu_package_ids[@]}"; do

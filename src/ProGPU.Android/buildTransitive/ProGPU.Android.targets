@@ -1,0 +1,10 @@
+<Project>
+  <ItemGroup Condition="'$(TargetPlatformIdentifier)' == 'android' And '$(ProGpuWgpuNativeAndroidRoot)' != '' And Exists('$(ProGpuWgpuNativeAndroidRoot)')">
+    <AndroidNativeLibrary Include="$(ProGpuWgpuNativeAndroidRoot)\**\libwgpu_native.so" />
+  </ItemGroup>
+  <Target Name="ProGpuPackageWarnMissingAndroidWgpuNative"
+          BeforeTargets="PrepareForBuild"
+          Condition="'$(TargetPlatformIdentifier)' == 'android' And ('$(ProGpuWgpuNativeAndroidRoot)' == '' Or !Exists('$(ProGpuWgpuNativeAndroidRoot)'))">
+    <Warning Text="ProGPU.Android requires libwgpu_native.so at deployment time. Set ProGpuWgpuNativeAndroidRoot to a directory produced by eng/build-wgpu-native-android.sh." />
+  </Target>
+</Project>

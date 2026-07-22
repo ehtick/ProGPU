@@ -9,14 +9,15 @@ ProGPU release packages are built from `eng/progpu-package-list.sh` by the `Rele
 | Package | Purpose | NuGet |
 | --- | --- | --- |
 | `ProGPU.Backend` | WebGPU device, swapchain, Silk.NET windowing, and platform backend services. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.Backend.svg)](https://www.nuget.org/packages/ProGPU.Backend/) |
+| `ProGPU.Text.Shaping` | AOT-safe OpenType shaping contracts and execution primitives. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.Text.Shaping.svg)](https://www.nuget.org/packages/ProGPU.Text.Shaping/) |
 | `ProGPU.Browser` | Batched .NET WebAssembly dispatcher and `navigator.gpu` browser host services. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.Browser.svg)](https://www.nuget.org/packages/ProGPU.Browser/) |
-| `ProGPU.iOS` | Native UIKit/`CAMetalLayer` host using statically linked WebGPU over Metal. | Experimental source project |
-| `ProGPU.Android` | Native `SurfaceView` host using WebGPU and wgpu-native directly over Vulkan. | Experimental source project |
 | `ProGPU.DirectX` | DirectX-compatible facade and shader-oriented API surface implemented on ProGPU/WebGPU. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.DirectX.svg)](https://www.nuget.org/packages/ProGPU.DirectX/) |
 | `ProGPU.Transpiler` | Shader/source transformation helpers used by generated GPU pipelines. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.Transpiler.svg)](https://www.nuget.org/packages/ProGPU.Transpiler/) |
 | `ProGPU.Compute` | Compute pipeline helpers for GPU-side effects, acceleration, and future hit-test indexes. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.Compute.svg)](https://www.nuget.org/packages/ProGPU.Compute/) |
 | `ProGPU.Vector` | Vector primitives, paths, geometry, brushes, pens, and rasterization data models. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.Vector.svg)](https://www.nuget.org/packages/ProGPU.Vector/) |
 | `ProGPU.Text` | Text layout, glyph metrics, and GPU-ready text rendering helpers. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.Text.svg)](https://www.nuget.org/packages/ProGPU.Text/) |
+| `ProGPU.Fonts.Inter` | Official Inter font assets and typed accessors for deterministic UI typography. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.Fonts.Inter.svg)](https://www.nuget.org/packages/ProGPU.Fonts.Inter/) |
+| `ProGPU.Fonts.Noto` | Official Noto fallback assets and typed accessors for CJK and symbol coverage. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.Fonts.Noto.svg)](https://www.nuget.org/packages/ProGPU.Fonts.Noto/) |
 | `ProGPU.Scene` | Scene graph, compositor commands, retained visuals, effects, and presentation primitives. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.Scene.svg)](https://www.nuget.org/packages/ProGPU.Scene/) |
 | `ProGPU.Layout` | Measure/arrange layout substrate shared by higher-level UI adapters. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.Layout.svg)](https://www.nuget.org/packages/ProGPU.Layout/) |
 | `ProGPU.Virtualization` | Virtualization helpers for large retained visual and item surfaces. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.Virtualization.svg)](https://www.nuget.org/packages/ProGPU.Virtualization/) |
@@ -29,12 +30,21 @@ ProGPU release packages are built from `eng/progpu-package-list.sh` by the `Rele
 | `ProGPU.SkiaSharp` | ProGPU-backed portable SkiaSharp compatibility shim used by drawing and imaging adapters. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.SkiaSharp.svg)](https://www.nuget.org/packages/ProGPU.SkiaSharp/) |
 | `ProGPU.System.Drawing.Common` | ProGPU-backed portable System.Drawing.Common compatibility shim for LibreWinForms and GDI-style callers. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.System.Drawing.Common.svg)](https://www.nuget.org/packages/ProGPU.System.Drawing.Common/) |
 | `LibreWPF.Interop` | LibreWPF portable interop contracts consumed by the ProGPU/Silk.NET SDK lane. | [![NuGet](https://img.shields.io/nuget/vpre/LibreWPF.Interop.svg)](https://www.nuget.org/packages/LibreWPF.Interop/) |
+| `ProGPU.Android` | Native Android `SurfaceView` host using WebGPU over Vulkan. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.Android.svg)](https://www.nuget.org/packages/ProGPU.Android/) |
+| `ProGPU.iOS` | Native UIKit/`CAMetalLayer` host using WebGPU over Metal. | [![NuGet](https://img.shields.io/nuget/vpre/ProGPU.iOS.svg)](https://www.nuget.org/packages/ProGPU.iOS/) |
 
 Local package build:
 
 ```bash
-PROGPU_PACKAGE_VERSION=0.1.0-preview.24 ./eng/progpu-pack.sh
+PROGPU_PACKAGE_VERSION=0.1.0-preview.25 ./eng/progpu-pack.sh
 ```
+
+The mobile packages contain the managed hosts and `buildTransitive` native-link
+contracts. Until native binaries are distributed independently, applications set
+`ProGpuWgpuNativeAndroidRoot` or `ProGpuWgpuNativeXCFramework` to outputs from the
+repository's pinned wgpu-native build scripts before deployment.
+Packing the complete set requires macOS with the Android and iOS workloads;
+`PROGPU_PACKAGE_GROUP=portable` packs the 22 cross-platform packages on Linux.
 
 ## Native iPhone WebGPU sample
 
@@ -278,7 +288,7 @@ Without these headers, `Auto` uses the ordinary OffscreenCanvas worker when avai
 Local publishing reads the API key from `NUGET_API_KEY` without storing it in the repository:
 
 ```bash
-PROGPU_PACKAGE_VERSION=0.1.0-preview.24 ./eng/progpu-publish.sh
+PROGPU_PACKAGE_VERSION=0.1.0-preview.25 ./eng/progpu-publish.sh
 ```
 
 The release workflow validates docs, restores, builds, tests, packs `.nupkg`/`.snupkg` artifacts, and can publish to NuGet.org when `NUGET_API_KEY` is configured. See [docs/release.md](docs/release.md).

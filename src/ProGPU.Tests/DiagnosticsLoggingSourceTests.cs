@@ -49,18 +49,22 @@ public class DiagnosticsLoggingSourceTests
     }
 
     [Fact]
-    public void ProGpuPackScriptCleansAndAuditsVersionedPackageArtifacts()
+    public void ProGpuPackScriptsSelectGroupsAndAuditDependencyClosure()
     {
         string source = ReadSource("eng", "progpu-pack.sh");
+        string verifier = ReadSource("eng", "progpu-verify-packages.sh");
+        string manifestVerifier = ReadSource("eng", "progpu-verify-package-list.sh");
 
-        Assert.Contains("\"${package_output}\"/*.\"${package_version}\".nupkg", source, StringComparison.Ordinal);
-        Assert.Contains("\"${package_output}\"/*.\"${package_version}\".snupkg", source, StringComparison.Ordinal);
-        Assert.Contains("is_expected_package_artifact()", source, StringComparison.Ordinal);
-        Assert.Contains("\"${file_name}\" == \"${package_id}.${package_version}.nupkg\"", source, StringComparison.Ordinal);
-        Assert.Contains("\"${file_name}\" == \"${package_id}.${package_version}.snupkg\"", source, StringComparison.Ordinal);
-        Assert.Contains("Expected symbol package was not produced:", source, StringComparison.Ordinal);
-        Assert.Contains("Unexpected package artifact in output:", source, StringComparison.Ordinal);
-        Assert.Contains("find \"${package_output}\" -maxdepth 1 -type f", source, StringComparison.Ordinal);
+        Assert.Contains("package_group=\"${PROGPU_PACKAGE_GROUP:-all}\"", source, StringComparison.Ordinal);
+        Assert.Contains("selected_package_ids=(\"${progpu_portable_package_ids[@]}\")", source, StringComparison.Ordinal);
+        Assert.Contains("selected_package_ids=(\"${progpu_mobile_package_ids[@]}\")", source, StringComparison.Ordinal);
+        Assert.Contains("eng/progpu-verify-package-list.sh", source, StringComparison.Ordinal);
+        Assert.Contains("eng/progpu-verify-packages.sh", source, StringComparison.Ordinal);
+        Assert.Contains("Expected symbol package was not produced:", verifier, StringComparison.Ordinal);
+        Assert.Contains("depends on unpublished internal package", verifier, StringComparison.Ordinal);
+        Assert.Contains("Unexpected ${package_version} package artifact", verifier, StringComparison.Ordinal);
+        Assert.Contains("find \"${repo_root}/src\" -type f -name '*.csproj'", manifestVerifier, StringComparison.Ordinal);
+        Assert.Contains("Owned project is missing from the shipping/non-shipping manifest", manifestVerifier, StringComparison.Ordinal);
         Assert.DoesNotContain("artifacts/packages/Release/*.nupkg", source, StringComparison.Ordinal);
     }
 
@@ -88,7 +92,7 @@ public class DiagnosticsLoggingSourceTests
 
         Assert.Contains("<ProGPUStrongNameKeyFile>$(MSBuildThisFileDirectory)eng/ProGPU.snk</ProGPUStrongNameKeyFile>", directoryBuildProps, StringComparison.Ordinal);
         Assert.Contains("<VersionPrefix Condition=\"'$(VersionPrefix)' == ''\">0.1.0</VersionPrefix>", directoryBuildProps, StringComparison.Ordinal);
-        Assert.Contains("<VersionSuffix Condition=\"'$(VersionSuffix)' == ''\">preview.24</VersionSuffix>", directoryBuildProps, StringComparison.Ordinal);
+        Assert.Contains("<VersionSuffix Condition=\"'$(VersionSuffix)' == ''\">preview.25</VersionSuffix>", directoryBuildProps, StringComparison.Ordinal);
         Assert.Contains("<Version Condition=\"'$(Version)' == ''\">$(VersionPrefix)-$(VersionSuffix)</Version>", directoryBuildProps, StringComparison.Ordinal);
         Assert.Contains("<PackageVersion Condition=\"'$(PackageVersion)' == ''\">$(Version)</PackageVersion>", directoryBuildProps, StringComparison.Ordinal);
         Assert.Contains("<AssemblyVersion Condition=\"'$(AssemblyVersion)' == ''\">0.1.0.0</AssemblyVersion>", directoryBuildProps, StringComparison.Ordinal);
@@ -153,7 +157,12 @@ public class DiagnosticsLoggingSourceTests
         Assert.Contains("FullyQualifiedName!~Test_TypographyScriptsPage_Renders", workflow, StringComparison.Ordinal);
         Assert.Contains("FullyQualifiedName=ProGPU.Tests.Headless.SamplePagesTests.Test_TypographyScriptsPage_Renders", workflow, StringComparison.Ordinal);
         Assert.Contains("dotnet @headlessArgs", workflow, StringComparison.Ordinal);
-        Assert.Contains("  pack:\n    name: Pack shipping packages", workflow, StringComparison.Ordinal);
+        Assert.Contains("  pack:\n    name: Pack portable packages", workflow, StringComparison.Ordinal);
+        Assert.Contains("  pack-mobile:\n    name: Pack mobile packages", workflow, StringComparison.Ordinal);
+        Assert.Contains("PROGPU_PACKAGE_GROUP=portable", workflow, StringComparison.Ordinal);
+        Assert.Contains("PROGPU_PACKAGE_GROUP=mobile", workflow, StringComparison.Ordinal);
+        Assert.Contains("dotnet workload restore src/ProGPU.Android/ProGPU.Android.csproj", workflow, StringComparison.Ordinal);
+        Assert.Contains("dotnet workload restore src/ProGPU.iOS/ProGPU.iOS.csproj", workflow, StringComparison.Ordinal);
         Assert.Contains("uses: actions/upload-artifact@v7", workflow, StringComparison.Ordinal);
         Assert.Contains("name: progpu-packages-linux-x64", workflow, StringComparison.Ordinal);
         Assert.Contains("artifacts/packages/Release/*.nupkg", workflow, StringComparison.Ordinal);
@@ -179,8 +188,11 @@ public class DiagnosticsLoggingSourceTests
         Assert.Contains("export LD_LIBRARY_PATH=\"${native_root}:${native_rid_root}:${headless_native_root}:${headless_native_rid_root}:${LD_LIBRARY_PATH:-}\"", workflow, StringComparison.Ordinal);
         Assert.Contains("dotnet test src/ProGPU.Tests/ProGPU.Tests.csproj --configuration Release --runtime linux-x64 --no-build --verbosity normal --filter \"FullyQualifiedName!~ShapingContractsTests\"", workflow, StringComparison.Ordinal);
         Assert.Contains("dotnet test src/ProGPU.Tests.Headless/ProGPU.Tests.Headless.csproj --configuration Release --runtime linux-x64 --no-build --verbosity normal", workflow, StringComparison.Ordinal);
-        Assert.Contains("dotnet nuget push artifacts/packages/Release/*.nupkg", workflow, StringComparison.Ordinal);
-        Assert.DoesNotContain("dotnet nuget push artifacts/packages/Release/*.snupkg", workflow, StringComparison.Ordinal);
+        Assert.Contains("needs: [portable, mobile]", workflow, StringComparison.Ordinal);
+        Assert.Contains("uses: actions/download-artifact@v8", workflow, StringComparison.Ordinal);
+        Assert.Contains("PROGPU_PACKAGE_GROUP=all ./eng/progpu-verify-packages.sh", workflow, StringComparison.Ordinal);
+        Assert.Contains("dotnet nuget push \"${package}\"", workflow, StringComparison.Ordinal);
+        Assert.Contains("if [[ \"${package}\" == *.snupkg ]]", workflow, StringComparison.Ordinal);
         Assert.Contains("Create GitHub Release", workflow, StringComparison.Ordinal);
         Assert.Contains("GH_TOKEN: ${{ github.token }}", workflow, StringComparison.Ordinal);
         Assert.Contains("if [[ \"${PROGPU_PACKAGE_VERSION}\" == *-* ]]", workflow, StringComparison.Ordinal);

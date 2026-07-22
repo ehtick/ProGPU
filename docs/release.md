@@ -6,12 +6,15 @@ The release workflow does not pack samples, tests, diagnostic tools, or framewor
 ## NuGet Packages
 
 - `ProGPU.Backend`
+- `ProGPU.Text.Shaping`
 - `ProGPU.Browser`
 - `ProGPU.DirectX`
 - `ProGPU.Transpiler`
 - `ProGPU.Compute`
 - `ProGPU.Vector`
 - `ProGPU.Text`
+- `ProGPU.Fonts.Inter`
+- `ProGPU.Fonts.Noto`
 - `ProGPU.Scene`
 - `ProGPU.Layout`
 - `ProGPU.Virtualization`
@@ -24,15 +27,21 @@ The release workflow does not pack samples, tests, diagnostic tools, or framewor
 - `ProGPU.SkiaSharp`
 - `ProGPU.System.Drawing.Common`
 - `LibreWPF.Interop`
+- `ProGPU.Android`
+- `ProGPU.iOS`
 
 ## Local Package Build
 
 ```bash
-PROGPU_PACKAGE_VERSION=0.1.0-preview.24 ./eng/progpu-pack.sh
+PROGPU_PACKAGE_VERSION=0.1.0-preview.25 ./eng/progpu-pack.sh
 ```
 
 The script writes packages and symbol packages to `artifacts/packages/Release` by default.
 Set `PROGPU_PACKAGE_OUTPUT` to use a different folder.
+The default `all` group requires macOS with the Android and iOS workloads. Linux
+can validate the portable set with `PROGPU_PACKAGE_GROUP=portable`; use
+`PROGPU_PACKAGE_GROUP=mobile` on macOS for the two mobile host packages. The
+release workflow combines and re-verifies both outputs before publishing.
 
 ## Local Package Publishing
 
@@ -41,7 +50,7 @@ Set `PROGPU_PACKAGE_OUTPUT` to use a different folder.
 ```bash
 read -rsp "NuGet API key: " NUGET_API_KEY
 export NUGET_API_KEY
-PROGPU_PACKAGE_VERSION=0.1.0-preview.24 ./eng/progpu-publish.sh
+PROGPU_PACKAGE_VERSION=0.1.0-preview.25 ./eng/progpu-publish.sh
 unset NUGET_API_KEY
 ```
 
@@ -49,13 +58,13 @@ The target defaults to NuGet.org. Set `NUGET_SOURCE` to publish to another v3-co
 
 ## GitHub Actions
 
-- `Build` restores, builds, and runs the main ProGPU test project on Linux, macOS, and Windows, then packs the explicit shipping package set.
+- `Build` restores, builds, and runs the main ProGPU test project on Linux, macOS, and Windows, packs portable packages on Linux, and packs mobile packages on macOS.
 - `Docs` verifies that README/package documentation stays in sync with the release package list.
 - `Browser Pages` publishes the shared browser gallery with WebAssembly AOT and deploys it to GitHub Pages after changes reach `main`.
-- `Release` runs docs validation, restore, build, tests, package creation, artifact upload, NuGet publish, and tag-driven GitHub Release creation with generated release notes.
+- `Release` validates and packs portable packages on Linux, packs mobile packages on macOS, verifies the combined dependency closure, then publishes and creates a tag-driven GitHub Release.
 
 Manual releases use `workflow_dispatch` with a package version. Tag releases use tags named `v*`,
-for example `v0.1.0-preview.24`.
+for example `v0.1.0-preview.25`.
 
 ## NuGet Publishing
 

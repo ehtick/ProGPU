@@ -10,31 +10,37 @@ if [[ ! -x "${dotnet}" ]]; then
 fi
 
 configuration="${PROGPU_CONFIGURATION:-Release}"
-package_version="${PROGPU_PACKAGE_VERSION:-0.1.0-preview.24}"
+package_version="${PROGPU_PACKAGE_VERSION:-0.1.0-preview.25}"
 package_output="${PROGPU_PACKAGE_OUTPUT:-${repo_root}/artifacts/packages/${configuration}}"
+package_group="${PROGPU_PACKAGE_GROUP:-all}"
+
+case "${package_group}" in
+  all)
+    selected_package_ids=("${progpu_package_ids[@]}")
+    selected_package_projects=("${progpu_package_projects[@]}")
+    ;;
+  portable)
+    selected_package_ids=("${progpu_portable_package_ids[@]}")
+    selected_package_projects=("${progpu_portable_package_projects[@]}")
+    ;;
+  mobile)
+    selected_package_ids=("${progpu_mobile_package_ids[@]}")
+    selected_package_projects=("${progpu_mobile_package_projects[@]}")
+    ;;
+  *)
+    echo "Unknown PROGPU_PACKAGE_GROUP '${package_group}'. Expected all, portable, or mobile." >&2
+    exit 1
+    ;;
+esac
+
+"${repo_root}/eng/progpu-verify-package-list.sh"
 
 mkdir -p "${package_output}"
-rm -f \
-  "${package_output}"/*."${package_version}".nupkg \
-  "${package_output}"/*."${package_version}".snupkg
 
-is_expected_package_artifact() {
-  local file_name="$1"
-  local package_id
-  for package_id in "${progpu_package_ids[@]}"; do
-    if [[ "${file_name}" == "${package_id}.${package_version}.nupkg" ||
-          "${file_name}" == "${package_id}.${package_version}.snupkg" ]]; then
-      return 0
-    fi
-  done
-
-  return 1
-}
-
-echo "Packing ProGPU ${package_version} packages to ${package_output}..."
-for index in "${!progpu_package_ids[@]}"; do
-  package_id="${progpu_package_ids[$index]}"
-  project="${progpu_package_projects[$index]}"
+echo "Packing ProGPU ${package_version} ${package_group} packages to ${package_output}..."
+for index in "${!selected_package_ids[@]}"; do
+  package_id="${selected_package_ids[$index]}"
+  project="${selected_package_projects[$index]}"
 
   rm -f \
     "${package_output}/${package_id}.${package_version}.nupkg" \
@@ -50,28 +56,11 @@ for index in "${!progpu_package_ids[@]}"; do
     -p:Version="${package_version}" \
     -p:PackageVersion="${package_version}"
 
-  if [[ ! -f "${package_output}/${package_id}.${package_version}.nupkg" ]]; then
-    echo "Expected package was not produced: ${package_output}/${package_id}.${package_version}.nupkg" >&2
-    exit 1
-  fi
-
-  if [[ ! -f "${package_output}/${package_id}.${package_version}.snupkg" ]]; then
-    echo "Expected symbol package was not produced: ${package_output}/${package_id}.${package_version}.snupkg" >&2
-    exit 1
-  fi
 done
 
-unexpected_package_found=0
-while IFS= read -r -d '' artifact; do
-  file_name="$(basename "${artifact}")"
-  if ! is_expected_package_artifact "${file_name}"; then
-    echo "Unexpected package artifact in output: ${artifact}" >&2
-    unexpected_package_found=1
-  fi
-done < <(find "${package_output}" -maxdepth 1 -type f \( -name "*.${package_version}.nupkg" -o -name "*.${package_version}.snupkg" \) -print0)
+PROGPU_PACKAGE_VERSION="${package_version}" \
+PROGPU_PACKAGE_OUTPUT="${package_output}" \
+PROGPU_PACKAGE_GROUP="${package_group}" \
+  "${repo_root}/eng/progpu-verify-packages.sh"
 
-if [[ "${unexpected_package_found}" -ne 0 ]]; then
-  exit 1
-fi
-
-echo "ProGPU NuGet package build succeeded for ${package_version}."
+echo "ProGPU ${package_group} NuGet package build succeeded for ${package_version}."

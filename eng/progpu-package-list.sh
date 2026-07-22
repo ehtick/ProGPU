@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
 
-progpu_package_ids=(
+# Keep the portable group buildable on Linux. Mobile target frameworks are packed
+# separately on macOS, then both groups are verified together before publishing.
+progpu_portable_package_ids=(
   ProGPU.Backend
+  ProGPU.Text.Shaping
   ProGPU.Browser
   ProGPU.DirectX
   ProGPU.Transpiler
   ProGPU.Compute
   ProGPU.Vector
   ProGPU.Text
+  ProGPU.Fonts.Inter
+  ProGPU.Fonts.Noto
   ProGPU.Scene
   ProGPU.Layout
   ProGPU.Virtualization
@@ -22,14 +27,17 @@ progpu_package_ids=(
   LibreWPF.Interop
 )
 
-progpu_package_projects=(
+progpu_portable_package_projects=(
   src/ProGPU.Backend/ProGPU.Backend.csproj
+  src/ProGPU.Text.Shaping/ProGPU.Text.Shaping.csproj
   src/ProGPU.Browser/ProGPU.Browser.csproj
   src/ProGPU.DirectX/ProGPU.DirectX.csproj
   src/ProGPU.Transpiler/ProGPU.Transpiler.csproj
   src/ProGPU.Compute/ProGPU.Compute.csproj
   src/ProGPU.Vector/ProGPU.Vector.csproj
   src/ProGPU.Text/ProGPU.Text.csproj
+  src/ProGPU.Fonts.Inter/ProGPU.Fonts.Inter.csproj
+  src/ProGPU.Fonts.Noto/ProGPU.Fonts.Noto.csproj
   src/ProGPU.Scene/ProGPU.Scene.csproj
   src/ProGPU.Layout/ProGPU.Layout.csproj
   src/ProGPU.Virtualization/ProGPU.Virtualization.csproj
@@ -44,14 +52,17 @@ progpu_package_projects=(
   src/ProGPU.Wpf.Interop/ProGPU.Wpf.Interop.csproj
 )
 
-progpu_package_purposes=(
+progpu_portable_package_purposes=(
   "WebGPU device, swapchain, Silk.NET windowing, and platform backend services."
+  "AOT-safe OpenType shaping contracts and execution primitives."
   "Batched .NET WebAssembly dispatcher and navigator.gpu browser host services."
   "DirectX-compatible facade and shader-oriented API surface implemented on ProGPU/WebGPU."
   "Shader/source transformation helpers used by generated GPU pipelines."
   "Compute pipeline helpers for GPU-side effects, acceleration, and future hit-test indexes."
   "Vector primitives, paths, geometry, brushes, pens, and rasterization data models."
   "Text layout, glyph metrics, and GPU-ready text rendering helpers."
+  "Official Inter font assets and typed accessors for deterministic UI typography."
+  "Official Noto fallback assets and typed accessors for CJK and symbol coverage."
   "Scene graph, compositor commands, retained visuals, effects, and presentation primitives."
   "Measure/arrange layout substrate shared by higher-level UI adapters."
   "Virtualization helpers for large retained visual and item surfaces."
@@ -66,9 +77,72 @@ progpu_package_purposes=(
   "LibreWPF portable interop contracts consumed by the ProGPU/Silk.NET SDK lane."
 )
 
-# shellcheck disable=SC2055 # Either mismatched pair must fail validation.
-if [[ "${#progpu_package_ids[@]}" -ne "${#progpu_package_projects[@]}" ||
-      "${#progpu_package_ids[@]}" -ne "${#progpu_package_purposes[@]}" ]]; then
-  echo "ProGPU package list arrays must have the same length." >&2
+progpu_mobile_package_ids=(
+  ProGPU.Android
+  ProGPU.iOS
+)
+
+progpu_mobile_package_projects=(
+  src/ProGPU.Android/ProGPU.Android.csproj
+  src/ProGPU.iOS/ProGPU.iOS.csproj
+)
+
+progpu_mobile_package_purposes=(
+  "Native Android SurfaceView host, input, storage, and WebGPU/Vulkan integration."
+  "Native UIKit and CAMetalLayer host, input, storage, and WebGPU/Metal integration."
+)
+
+progpu_package_ids=("${progpu_portable_package_ids[@]}" "${progpu_mobile_package_ids[@]}")
+progpu_package_projects=("${progpu_portable_package_projects[@]}" "${progpu_mobile_package_projects[@]}")
+progpu_package_purposes=("${progpu_portable_package_purposes[@]}" "${progpu_mobile_package_purposes[@]}")
+
+# Every owned project under src must be classified as shipping or intentionally
+# non-shipping. The verifier fails when a newly added project is omitted.
+progpu_nonshipping_projects=(
+  src/PresentationCore/PresentationCore.csproj
+  src/ProGPU.Samples.Android/ProGPU.Samples.Android.csproj
+  src/ProGPU.Samples.Avalonia/ProGPU.Samples.Avalonia.csproj
+  src/ProGPU.Samples.Browser/ProGPU.Samples.Browser.csproj
+  src/ProGPU.Samples.Desktop/ProGPU.Samples.Desktop.csproj
+  src/ProGPU.Samples.Uno/ProGPU.Samples.Uno/ProGPU.Samples.Uno.csproj
+  src/ProGPU.Samples.iOS/ProGPU.Samples.iOS.csproj
+  src/ProGPU.Samples/ProGPU.Samples.csproj
+  src/ProGPU.Tests.Headless/ProGPU.Tests.Headless.csproj
+  src/ProGPU.Tests/ProGPU.Tests.csproj
+  src/WindowsBase/WindowsBase.csproj
+)
+
+progpu_nonshipping_reasons=(
+  "Framework implementation shim; shipped through consuming compatibility packages."
+  "Android sample application."
+  "Avalonia sample application."
+  "Browser sample application."
+  "Desktop sample application."
+  "Uno sample application."
+  "iOS sample application."
+  "Shared sample gallery."
+  "Headless test project."
+  "Test project."
+  "Framework implementation shim; shipped through consuming compatibility packages."
+)
+
+validate_parallel_arrays() {
+  local group="$1"
+  local ids_count="$2"
+  local projects_count="$3"
+  local purposes_count="$4"
+  # shellcheck disable=SC2055 # Either mismatched pair must fail validation.
+  if [[ "${ids_count}" -ne "${projects_count}" || "${ids_count}" -ne "${purposes_count}" ]]; then
+    echo "ProGPU ${group} package list arrays must have the same length." >&2
+    exit 1
+  fi
+}
+
+validate_parallel_arrays portable "${#progpu_portable_package_ids[@]}" "${#progpu_portable_package_projects[@]}" "${#progpu_portable_package_purposes[@]}"
+validate_parallel_arrays mobile "${#progpu_mobile_package_ids[@]}" "${#progpu_mobile_package_projects[@]}" "${#progpu_mobile_package_purposes[@]}"
+validate_parallel_arrays complete "${#progpu_package_ids[@]}" "${#progpu_package_projects[@]}" "${#progpu_package_purposes[@]}"
+
+if [[ "${#progpu_nonshipping_projects[@]}" -ne "${#progpu_nonshipping_reasons[@]}" ]]; then
+  echo "ProGPU non-shipping project arrays must have the same length." >&2
   exit 1
 fi

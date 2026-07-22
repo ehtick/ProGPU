@@ -2,12 +2,12 @@
   <PropertyGroup>
     <ProGPUStrongNameKeyFile>$(MSBuildThisFileDirectory)eng/ProGPU.snk</ProGPUStrongNameKeyFile>
     <VersionPrefix Condition="'$(VersionPrefix)' == ''">0.1.0</VersionPrefix>
-    <VersionSuffix Condition="'$(VersionSuffix)' == ''">preview.24</VersionSuffix>
+    <VersionSuffix Condition="'$(VersionSuffix)' == ''">preview.25</VersionSuffix>
     <Version Condition="'$(Version)' == ''">$(VersionPrefix)-$(VersionSuffix)</Version>
     <PackageVersion Condition="'$(PackageVersion)' == ''">$(Version)</PackageVersion>
     <Description Condition="'$(Description)' == ''">ProGPU runtime package for GPU-accelerated .NET composition, rendering, vector graphics, text, and WebGPU platform integration.</Description>
     <PackageDescription Condition="'$(PackageDescription)' == ''">$(Description)</PackageDescription>
-    <PackageReleaseNotes Condition="'$(PackageReleaseNotes)' == ''">Adds demand-sized GPU glyph and path atlases with bounded managed caches and batched first-use uploads; preserves responsive live-resize rendering and browser storage pickers; introduces native iOS and Android WebGPU hosts with mobile input and platform services; and improves retained text, virtualization, and sample memory performance.</PackageReleaseNotes>
+    <PackageReleaseNotes Condition="'$(PackageReleaseNotes)' == ''">Completes the public package graph with OpenType shaping, Inter and Noto font assets, and native Android and iOS host packages; adds exhaustive project classification and NuGet dependency-closure validation; and splits portable and mobile release packing across supported CI hosts.</PackageReleaseNotes>
     <Authors Condition="'$(Authors)' == ''">Wieslaw Soltes</Authors>
     <Company Condition="'$(Company)' == ''">ProGPU</Company>
     <PackageProjectUrl Condition="'$(PackageProjectUrl)' == ''">https://github.com/wieslawsoltes/ProGPU</PackageProjectUrl>
@@ -26,6 +26,8 @@
     <IsPackable Condition="'$(MSBuildProjectName)' == 'ProGPU.Text'">true</IsPackable>
     <IsPackable Condition="'$(MSBuildProjectName)' == 'ProGPU.Fonts.Inter'">true</IsPackable>
     <IsPackable Condition="'$(MSBuildProjectName)' == 'ProGPU.Fonts.Noto'">true</IsPackable>
+    <IsPackable Condition="'$(MSBuildProjectName)' == 'ProGPU.Android'">true</IsPackable>
+    <IsPackable Condition="'$(MSBuildProjectName)' == 'ProGPU.iOS'">true</IsPackable>
     <IsPackable Condition="'$(MSBuildProjectName)' == 'ProGPU.Scene'">true</IsPackable>
     <IsPackable Condition="'$(MSBuildProjectName)' == 'ProGPU.Layout'">true</IsPackable>
     <IsPackable Condition="'$(MSBuildProjectName)' == 'ProGPU.Virtualization'">true</IsPackable>

@@ -9,6 +9,8 @@
     <PublishTrimmed>true</PublishTrimmed>
     <ProGpuUseWindowsBaseShim>true</ProGpuUseWindowsBaseShim>
     <ProGpuWgpuNativeAndroidRoot Condition="'$(ProGpuWgpuNativeAndroidRoot)' == ''">$(MSBuildThisFileDirectory)../../artifacts/wgpu-native-android</ProGpuWgpuNativeAndroidRoot>
+    <Description>Native Android SurfaceView host, input, storage, and WebGPU/Vulkan integration for ProGPU applications.</Description>
+    <PackageTags>progpu;android;webgpu;vulkan;surfaceview;gpu;ui</PackageTags>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\ProGPU.Backend\ProGPU.Backend.csproj" />
@@ -18,6 +20,9 @@
   </ItemGroup>
   <ItemGroup Condition="Exists('$(ProGpuWgpuNativeAndroidRoot)')">
     <AndroidNativeLibrary Include="$(ProGpuWgpuNativeAndroidRoot)\**\libwgpu_native.so" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="buildTransitive/ProGPU.Android.targets" Pack="true" PackagePath="buildTransitive/ProGPU.Android.targets" />
   </ItemGroup>
   <Target Name="ProGpuWarnMissingAndroidWgpuNative" BeforeTargets="Build"
           Condition="!Exists('$(ProGpuWgpuNativeAndroidRoot)')">

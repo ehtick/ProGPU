@@ -4,6 +4,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${repo_root}/eng/progpu-package-list.sh"
 
+"${repo_root}/eng/progpu-verify-package-list.sh"
+
 require_text() {
   local file="$1"
   local text="$2"
