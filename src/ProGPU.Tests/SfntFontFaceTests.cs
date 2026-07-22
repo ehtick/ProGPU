@@ -291,6 +291,8 @@ public class SfntFontFaceTests
         Assert.Equal(2f, info.RasterScale);
         Assert.True(info.TexCoordMax.X > info.TexCoordMin.X);
         Assert.True(info.TexCoordMax.Y > info.TexCoordMin.Y);
+        Assert.Contains(atlas.ColorAtlasTexture.ReadPixels(), static value => value != 0);
+        Assert.All(atlas.AtlasTexture.ReadPixels(), static value => Assert.Equal(0, value));
     }
 
     [Theory]
@@ -344,6 +346,7 @@ public class SfntFontFaceTests
         Assert.Equal(3f, info.BearX);
         Assert.Equal(-4f, info.BearY);
         Assert.Equal(2f, info.RasterScale);
+        Assert.Contains(atlas.ColorAtlasTexture.ReadPixels(), static value => value != 0);
     }
 
     [Theory]

@@ -118,6 +118,13 @@ public struct CompositorMetrics
     public int TextVerticesCount;
     public int PathAtlasCachedCount;
     public long PathAtlasCpuCacheBytes;
+    public ulong GlyphAtlasTextureBytes;
+    public ulong ColorGlyphAtlasTextureBytes;
+    public ulong GlyphCoverageStagingBytes;
+    public ulong GlyphOutlineGpuBytes;
+    public ulong PathAtlasTextureBytes;
+    public uint PathRasterStagingBytes;
+    public uint PathPeakRasterStagingBytes;
     public bool SceneCacheHit;
     public string? SceneCacheMissReason;
 }
@@ -1149,7 +1156,11 @@ public unsafe class Compositor : IDisposable
         _compute = new ComputeAccelerator(_context);
 
         // 1. Initialize GPU atlases.
-        _atlas = new GlyphAtlas(_context, options.GlyphAtlasSize);
+        _atlas = new GlyphAtlas(
+            _context,
+            options.GlyphAtlasSize,
+            options.ColorGlyphAtlasSize,
+            options.GlyphCoverageStagingBytes);
         _pathAtlas = new PathAtlas(
             _context,
             options.PathAtlasSize,
@@ -1509,8 +1520,8 @@ public unsafe class Compositor : IDisposable
 
         _pathAtlasBindGroupLayout = CreateSamplerTextureLayout();
         _pathAtlasBindGroupLayoutOffscreen = CreateSamplerTextureLayout();
-        _atlasBindGroupLayout = CreateSamplerTextureLayout();
-        _atlasBindGroupLayoutOffscreen = CreateSamplerTextureLayout();
+        _atlasBindGroupLayout = CreateTextAtlasLayout();
+        _atlasBindGroupLayoutOffscreen = CreateTextAtlasLayout();
         _textureBindGroupLayout = CreateSamplerTextureLayout();
         _textureBindGroupLayoutOffscreen = CreateSamplerTextureLayout();
         _maskBindGroupLayout = CreateSamplerTextureLayout();
@@ -1922,14 +1933,19 @@ public unsafe class Compositor : IDisposable
             TextureView = _atlas.AtlasTexture.ViewPtr
         };
 
-        var atlasEntries = stackalloc BindGroupEntry[2];
+        var atlasEntries = stackalloc BindGroupEntry[3];
         atlasEntries[0] = samplerEntry;
         atlasEntries[1] = viewEntry;
+        atlasEntries[2] = new BindGroupEntry
+        {
+            Binding = 2,
+            TextureView = _atlas.ColorAtlasTexture.ViewPtr
+        };
 
         var atlasDesc = new BindGroupDescriptor
         {
             Layout = _atlasBindGroupLayout,
-            EntryCount = 2,
+            EntryCount = 3,
             Entries = atlasEntries
         };
         _atlasBindGroup = _context.Api.DeviceCreateBindGroup(_context.Device, &atlasDesc);
@@ -1937,7 +1953,7 @@ public unsafe class Compositor : IDisposable
         var atlasDescOffscreen = new BindGroupDescriptor
         {
             Layout = _atlasBindGroupLayoutOffscreen,
-            EntryCount = 2,
+            EntryCount = 3,
             Entries = atlasEntries
         };
         _atlasBindGroupOffscreen = _context.Api.DeviceCreateBindGroup(_context.Device, &atlasDescOffscreen);
@@ -2937,6 +2953,14 @@ SceneStateUploadComplete:
             TextVerticesCount = _textVerticesList.Count,
             PathAtlasCachedCount = _pathAtlas.CachedPathCount,
             PathAtlasCpuCacheBytes = _pathAtlas.CompiledPathCacheBytes,
+            GlyphAtlasTextureBytes = (ulong)_atlas.AtlasSize * _atlas.AtlasSize,
+            ColorGlyphAtlasTextureBytes =
+                (ulong)_atlas.ColorAtlasSize * _atlas.ColorAtlasSize * 4UL,
+            GlyphCoverageStagingBytes = _atlas.CoverageStagingBytes,
+            GlyphOutlineGpuBytes = _atlas.AllocatedGpuOutlineBytes,
+            PathAtlasTextureBytes = _pathAtlas.PersistentTextureBytes,
+            PathRasterStagingBytes = _pathAtlas.LastRasterStagingBytes,
+            PathPeakRasterStagingBytes = _pathAtlas.PeakRasterStagingBytes,
             SceneCacheHit = reuseCompiledScene,
             SceneCacheMissReason = reuseCompiledScene ? null : _currentSceneCacheMissReason
         };
@@ -15349,6 +15373,50 @@ SceneStateUploadComplete:
         var desc = new BindGroupLayoutDescriptor
         {
             EntryCount = (UIntPtr)2,
+            Entries = entries
+        };
+
+        return _context.Api.DeviceCreateBindGroupLayout(_context.Device, &desc);
+    }
+
+    private unsafe BindGroupLayout* CreateTextAtlasLayout()
+    {
+        var entries = stackalloc BindGroupLayoutEntry[3];
+        entries[0] = new BindGroupLayoutEntry
+        {
+            Binding = 0,
+            Visibility = ShaderStage.Fragment,
+            Sampler = new SamplerBindingLayout
+            {
+                Type = SamplerBindingType.Filtering
+            }
+        };
+        entries[1] = new BindGroupLayoutEntry
+        {
+            Binding = 1,
+            Visibility = ShaderStage.Fragment,
+            Texture = new TextureBindingLayout
+            {
+                SampleType = TextureSampleType.Float,
+                ViewDimension = TextureViewDimension.Dimension2D,
+                Multisampled = false
+            }
+        };
+        entries[2] = new BindGroupLayoutEntry
+        {
+            Binding = 2,
+            Visibility = ShaderStage.Fragment,
+            Texture = new TextureBindingLayout
+            {
+                SampleType = TextureSampleType.Float,
+                ViewDimension = TextureViewDimension.Dimension2D,
+                Multisampled = false
+            }
+        };
+
+        var desc = new BindGroupLayoutDescriptor
+        {
+            EntryCount = (UIntPtr)3,
             Entries = entries
         };
 

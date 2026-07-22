@@ -47,8 +47,8 @@ public struct GlyphUniforms
     public float Scale;
     public uint GlyphIndex;
     
-    public uint AtlasX;
-    public uint AtlasY;
+    public uint OutputOffsetWords;
+    public uint OutputRowWords;
     public uint Width;
     public uint Height;
     

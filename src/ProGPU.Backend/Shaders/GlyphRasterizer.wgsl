@@ -1,13 +1,13 @@
 // Algorithm: Rasterize glyph coverage with 8x8 supersampling, sharing analytic line, quadratic, and cubic winding intersections across each eight-sample row.
 // Time complexity: O(R*S + A) per texel for R=8 sample rows, A=64 anti-aliasing samples, and S outline segments.
-// Space complexity: O(R) private winding storage plus O(S) read-only segment bandwidth and one rgba8unorm output write per texel.
+// Space complexity: O(R) private winding storage plus O(S) read-only segment bandwidth and one packed u32 output write per four R8 texels.
 struct GlyphUniforms {
     xStart: f32,
     yStart: f32,
     scale: f32,
     glyphIndex: u32,
-    atlasX: u32,
-    atlasY: u32,
+    outputOffsetWords: u32,
+    outputRowWords: u32,
     width: u32,
     height: u32,
     subpixelX: f32,
@@ -41,7 +41,7 @@ struct Segment {
 @group(0) @binding(0) var<uniform> uniforms: GlyphUniforms;
 @group(0) @binding(1) var<storage, read> glyphRecords: array<GlyphRecord>;
 @group(0) @binding(2) var<storage, read> segments: array<Segment>;
-@group(0) @binding(3) var atlasTexture: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(3) var<storage, read_write> coverageOutput: array<u32>;
 
 
 fn solve_quadratic(a: f32, b: f32, c: f32, roots: ptr<function, array<f32, 2>>, root_count: ptr<function, u32>) {
@@ -269,15 +269,7 @@ fn accumulate_winding_row(
     }
 }
 
-@compute @workgroup_size(16, 16)
-fn cs_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let x = global_id.x;
-    let y = global_id.y;
-
-    if (x >= uniforms.width || y >= uniforms.height) {
-        return;
-    }
-
+fn glyph_coverage_byte(x: u32, y: u32) -> u32 {
     let glyphIndex = uniforms.glyphIndex;
     let record = glyphRecords[glyphIndex];
 
@@ -305,7 +297,27 @@ fn cs_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         }
     }
 
-    let coverage = f32(covered_samples) * 0.015625;
-    let writeCoord = vec2<u32>(uniforms.atlasX + x, uniforms.atlasY + y);
-    textureStore(atlasTexture, writeCoord, vec4<f32>(coverage, 0.0, 0.0, 0.0));
+    return min(255u, u32(round(f32(covered_samples) * 3.984375)));
+}
+
+// Four adjacent pixels are packed by one invocation so the storage buffer has
+// the exact byte layout required by WebGPU copyBufferToTexture for R8Unorm.
+@compute @workgroup_size(16, 16)
+fn cs_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let wordX = global_id.x;
+    let y = global_id.y;
+    let firstX = wordX * 4u;
+    if (firstX >= uniforms.width || y >= uniforms.height) {
+        return;
+    }
+
+    var packed = 0u;
+    for (var lane = 0u; lane < 4u; lane = lane + 1u) {
+        let x = firstX + lane;
+        if (x < uniforms.width) {
+            packed = packed | (glyph_coverage_byte(x, y) << (lane * 8u));
+        }
+    }
+
+    coverageOutput[uniforms.outputOffsetWords + y * uniforms.outputRowWords + wordX] = packed;
 }

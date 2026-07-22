@@ -336,6 +336,13 @@ internal static class SamplePerformanceBenchmark
             $" textVertices={finalMetrics?.TextVerticesCount ?? 0}" +
             $" pathAtlasEntries={finalMetrics?.PathAtlasCachedCount ?? 0}" +
             $" pathAtlasCpuCacheBytes={finalMetrics?.PathAtlasCpuCacheBytes ?? 0}" +
+            $" glyphAtlasTextureBytes={finalMetrics?.GlyphAtlasTextureBytes ?? 0}" +
+            $" colorGlyphAtlasTextureBytes={finalMetrics?.ColorGlyphAtlasTextureBytes ?? 0}" +
+            $" glyphCoverageStagingBytes={finalMetrics?.GlyphCoverageStagingBytes ?? 0}" +
+            $" glyphOutlineGpuBytes={finalMetrics?.GlyphOutlineGpuBytes ?? 0}" +
+            $" pathAtlasTextureBytes={finalMetrics?.PathAtlasTextureBytes ?? 0}" +
+            $" pathRasterStagingBytes={finalMetrics?.PathRasterStagingBytes ?? 0}" +
+            $" pathPeakRasterStagingBytes={finalMetrics?.PathPeakRasterStagingBytes ?? 0}" +
             $" pathAtlasFillCacheEntries={AppState._screenCompositor?.PathAtlas.CachedFillPathCount ?? 0}" +
             $" pathAtlasHitTestCacheEntries={AppState._screenCompositor?.PathAtlas.CachedHitTestPathCount ?? 0}");
 

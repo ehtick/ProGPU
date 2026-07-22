@@ -512,7 +512,7 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     {
         var localX = checked((uint)(worldX - (int)info.MinX));
         var localY = checked((uint)(worldY - (int)info.MinY));
-        return checked((int)(((info.Y + localY) * atlasWidth + info.X + localX) * 4));
+        return checked((int)((info.Y + localY) * atlasWidth + info.X + localX));
     }
 
     private static byte ReadGlyphAtlasCoverage(
@@ -522,7 +522,7 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
         uint localX,
         uint localY)
     {
-        int offset = checked((int)(((info.Y + localY) * atlasWidth + info.X + localX) * 4));
+        int offset = checked((int)((info.Y + localY) * atlasWidth + info.X + localX));
         return pixels[offset];
     }
 

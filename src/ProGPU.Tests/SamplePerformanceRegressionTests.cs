@@ -2,6 +2,7 @@ using System.Collections;
 using System.Numerics;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using ProGPU.Backend;
 using ProGPU.Fonts.Inter;
 using ProGPU.Fonts.Noto;
 using ProGPU.Scene;
@@ -9,12 +10,54 @@ using ProGPU.Text;
 using ProGPU.Tests.Headless;
 using ProGPU.Vector;
 using ProGPU.Virtualization;
+using Silk.NET.WebGPU;
 using Xunit;
 
 namespace ProGPU.Tests;
 
 public sealed class SamplePerformanceRegressionTests
 {
+    [Fact]
+    public void CoverageAtlasesUseCompactSingleChannelResidency()
+    {
+        using var glyphAtlas = new GlyphAtlas(
+            HeadlessWindow.Shared.Context,
+            atlasSize: 256,
+            colorAtlasSize: 64,
+            coverageRingBufferSize: 256 * 1024);
+        using var pathAtlas = new PathAtlas(
+            HeadlessWindow.Shared.Context,
+            atlasSize: 256);
+
+        Assert.Equal(TextureFormat.R8Unorm, glyphAtlas.AtlasTexture.Format);
+        Assert.Equal(TextureFormat.Rgba8Unorm, glyphAtlas.ColorAtlasTexture.Format);
+        Assert.Equal(TextureFormat.R8Unorm, pathAtlas.AtlasTexture.Format);
+        Assert.Equal(65_536UL + 16_384UL, glyphAtlas.PersistentTextureBytes);
+        Assert.Equal(65_536UL, pathAtlas.PersistentTextureBytes);
+        Assert.Equal(256u, GpuCoverageUpload.GetBytesPerRow(1));
+        Assert.Equal(512u, GpuCoverageUpload.GetBytesPerRow(257));
+    }
+
+    [Fact]
+    public void SampleAtlasConfigurationCutsPersistentGpuResidencyByTwoThirds()
+    {
+        const ulong glyphSize = 2_560;
+        const ulong pathSize = 2_048;
+        const ulong colorSize = GlyphAtlas.DefaultColorAtlasSize;
+        const ulong legacyBytes =
+            glyphSize * glyphSize * 4UL +
+            pathSize * pathSize * 4UL;
+        const ulong compactBytes =
+            glyphSize * glyphSize +
+            colorSize * colorSize * 4UL +
+            GlyphAtlas.DefaultCoverageRingBufferSize +
+            pathSize * pathSize;
+
+        Assert.Equal(42_991_616UL, legacyBytes);
+        Assert.Equal(13_893_632UL, compactBytes);
+        Assert.True(compactBytes * 100UL / legacyBytes <= 33UL);
+    }
+
     [Fact]
     public void ScrollOffsetsTranslateRetainedContentWithoutRearrangingIt()
     {

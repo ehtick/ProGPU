@@ -1362,6 +1362,9 @@ function execute(opcode, view, payload, payloadLength, absoluteBase) {
         requireResource(view.getUint32(payload + 16, true)), Number(view.getBigUint64(payload + 24, true)),
         Number(view.getBigUint64(payload + 32, true)));
       break;
+    case 61:
+      requireResource(view.getUint32(payload, true)).copyBufferToTexture(imageCopyBuffer(view, payload + 4), imageCopyTexture(view, payload + 28), extent3d(view, payload + 52));
+      break;
     case 62:
       requireResource(view.getUint32(payload, true)).copyTextureToBuffer(imageCopyTexture(view, payload + 4), imageCopyBuffer(view, payload + 28), extent3d(view, payload + 52));
       break;

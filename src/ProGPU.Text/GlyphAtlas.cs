@@ -34,12 +34,17 @@ public struct GlyphInfo
 public unsafe class GlyphAtlas : IDisposable
 {
     private const uint DefaultUniformRingBufferSize = 256 * 1024;
+    public const uint DefaultCoverageRingBufferSize = 2 * 1024 * 1024;
+    public const uint DefaultColorAtlasSize = 512;
     private const int InitialFontRecordCapacity = 32;
     private const int InitialFontSegmentCapacity = 256;
+    public const ulong DefaultGpuOutlineCacheBudgetBytes = 4UL * 1024UL * 1024UL;
 
     private readonly WgpuContext _context;
     private readonly GpuTexture _atlasTexture;
+    private readonly GpuTexture _colorAtlasTexture;
     private readonly uint _atlasSize;
+    private readonly uint _colorAtlasSize;
 
     // Packing state. Shelves are segregated by height so a tall glyph cannot waste
     // the full width of a row containing short punctuation and combining marks.
@@ -51,7 +56,9 @@ public unsafe class GlyphAtlas : IDisposable
     }
 
     private readonly List<AtlasShelf> _shelves = new();
+    private readonly List<AtlasShelf> _colorShelves = new();
     private uint _nextShelfY = 2;
+    private uint _nextColorShelfY = 2;
 
     private readonly record struct GlyphKey(TtfFont Font, ushort GlyphIndex, float Size, byte SubpixelX);
 
@@ -68,13 +75,14 @@ public unsafe class GlyphAtlas : IDisposable
         public required GpuBuffer RecordsBuffer { get; set; }
         public required GpuBuffer SegmentsBuffer { get; set; }
         public Dictionary<ushort, uint> RecordSlots { get; } = new();
-        public List<GpuGlyphRecord> Records { get; } = new(InitialFontRecordCapacity);
-        public List<GpuSegment> Segments { get; } = new(InitialFontSegmentCapacity);
+        public int RecordCount { get; set; }
+        public int SegmentCount { get; set; }
         public int RecordCapacity { get; set; } = InitialFontRecordCapacity;
         public int SegmentCapacity { get; set; } = InitialFontSegmentCapacity;
     }
 
     private readonly Dictionary<TtfFont, FontGpuData> _fontGpuData = new();
+    private readonly List<GpuSegment> _glyphSegmentScratch = new(InitialFontSegmentCapacity);
     
     private readonly RenderPipelineCache _pipelineCache;
     private readonly ComputePipeline* _computePipeline;
@@ -85,7 +93,9 @@ public unsafe class GlyphAtlas : IDisposable
     private readonly List<nint> _batchBindGroups = new();
 
     private readonly GpuBuffer _uniformRingBuffer;
+    private readonly GpuBuffer _coverageRingBuffer;
     private uint _ringOffset;
+    private uint _coverageRingOffset;
     private ulong _frameNumber;
 
     public void BeginBatch()
@@ -94,9 +104,26 @@ public unsafe class GlyphAtlas : IDisposable
         _batchDepth++;
         if (_batchDepth > 1) return;
 
+        TrimGpuOutlineCache();
         _frameNumber++;
 
         CreateBatchEncoder();
+    }
+
+    private void TrimGpuOutlineCache()
+    {
+        if (AllocatedGpuOutlineBytes <= DefaultGpuOutlineCacheBudgetBytes)
+        {
+            return;
+        }
+
+        foreach (FontGpuData data in _fontGpuData.Values)
+        {
+            data.RecordsBuffer.Dispose();
+            data.SegmentsBuffer.Dispose();
+        }
+        _fontGpuData.Clear();
+        GpuOutlineCacheResetCount++;
     }
 
     private void CreateBatchEncoder()
@@ -111,6 +138,7 @@ public unsafe class GlyphAtlas : IDisposable
         }
 
         _ringOffset = 0;
+        _coverageRingOffset = 0;
     }
 
     public void EndBatch()
@@ -173,7 +201,17 @@ public unsafe class GlyphAtlas : IDisposable
 
     public GpuTexture AtlasTexture => _atlasTexture;
 
+    public GpuTexture ColorAtlasTexture => _colorAtlasTexture;
+
     public uint AtlasSize => _atlasSize;
+
+    public uint ColorAtlasSize => _colorAtlasSize;
+
+    public ulong PersistentTextureBytes =>
+        (ulong)_atlasSize * _atlasSize +
+        (ulong)_colorAtlasSize * _colorAtlasSize * 4UL;
+
+    public ulong CoverageStagingBytes => _coverageRingBuffer.Size;
 
     public int CachedGlyphCount => _glyphs.Count;
 
@@ -203,6 +241,24 @@ public unsafe class GlyphAtlas : IDisposable
         }
     }
 
+    public ulong AllocatedGpuOutlineBytes
+    {
+        get
+        {
+            ulong bytes = 0;
+            foreach (FontGpuData data in _fontGpuData.Values)
+            {
+                bytes += data.RecordsBuffer.Size;
+                bytes += data.SegmentsBuffer.Size;
+            }
+            return bytes;
+        }
+    }
+
+    public ulong GpuOutlineCacheBudgetBytes => DefaultGpuOutlineCacheBudgetBytes;
+
+    public ulong GpuOutlineCacheResetCount { get; private set; }
+
     public ulong Generation { get; private set; }
 
     public bool CapacityExceeded { get; private set; }
@@ -211,7 +267,9 @@ public unsafe class GlyphAtlas : IDisposable
 
     public ulong ClearCount { get; private set; }
 
-    public bool IsAlmostFull => _nextShelfY > (_atlasSize * 0.85f);
+    public bool IsAlmostFull =>
+        _nextShelfY > (_atlasSize * 0.85f) ||
+        _nextColorShelfY > (_colorAtlasSize * 0.85f);
 
     public void Clear()
     {
@@ -220,42 +278,102 @@ public unsafe class GlyphAtlas : IDisposable
         ProGpuTextDiagnostics.WriteLine("[GlyphAtlas] Proactive Clear: Resetting packer and clearing cache.");
         _glyphs.Clear();
         _shelves.Clear();
+        _colorShelves.Clear();
         _nextShelfY = 2;
+        _nextColorShelfY = 2;
 
         _atlasTexture.ClearRenderTarget();
+        _colorAtlasTexture.ClearRenderTarget();
         CapacityExceeded = false;
         ClearCount++;
         Generation++;
     }
 
     public GlyphAtlas(WgpuContext context, uint atlasSize = 2048)
-        : this(context, atlasSize, DefaultUniformRingBufferSize)
+        : this(
+            context,
+            atlasSize,
+            Math.Min(atlasSize, DefaultColorAtlasSize),
+            DefaultUniformRingBufferSize,
+            DefaultCoverageRingBufferSize)
     {
     }
 
     internal GlyphAtlas(WgpuContext context, uint atlasSize, uint uniformRingBufferSize)
+        : this(
+            context,
+            atlasSize,
+            Math.Min(atlasSize, DefaultColorAtlasSize),
+            uniformRingBufferSize,
+            DefaultCoverageRingBufferSize)
+    {
+    }
+
+    public GlyphAtlas(
+        WgpuContext context,
+        uint atlasSize,
+        uint colorAtlasSize,
+        uint coverageRingBufferSize)
+        : this(
+            context,
+            atlasSize,
+            colorAtlasSize,
+            DefaultUniformRingBufferSize,
+            coverageRingBufferSize)
+    {
+    }
+
+    private GlyphAtlas(
+        WgpuContext context,
+        uint atlasSize,
+        uint colorAtlasSize,
+        uint uniformRingBufferSize,
+        uint coverageRingBufferSize)
     {
         if (uniformRingBufferSize < 256 || uniformRingBufferSize % 256 != 0)
         {
             throw new ArgumentOutOfRangeException(nameof(uniformRingBufferSize));
         }
+        if (atlasSize <= 4)
+        {
+            throw new ArgumentOutOfRangeException(nameof(atlasSize));
+        }
+        if (colorAtlasSize <= 4)
+        {
+            throw new ArgumentOutOfRangeException(nameof(colorAtlasSize));
+        }
+        if (coverageRingBufferSize < 256 || coverageRingBufferSize % 256 != 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(coverageRingBufferSize));
+        }
 
         _context = context;
         _atlasSize = atlasSize;
+        _colorAtlasSize = colorAtlasSize;
         
-        // Use Rgba8Unorm for dynamic alpha mapping (highly memory efficient and WebGPU Storage standard-compliant)
-        // With TextureUsage.StorageBinding to allow Compute Shader writing directly to it
+        // Monochrome coverage is sampled from one byte per texel. Compute writes a
+        // packed storage buffer and the GPU copies it into this filterable texture.
         _atlasTexture = new GpuTexture(
             _context, 
             _atlasSize, 
             _atlasSize, 
-            TextureFormat.Rgba8Unorm, 
+            TextureFormat.R8Unorm,
             TextureUsage.TextureBinding | TextureUsage.CopySrc | TextureUsage.CopyDst |
-            TextureUsage.StorageBinding | TextureUsage.RenderAttachment,
-            "Dynamic Glyph Atlas"
+            TextureUsage.RenderAttachment,
+            "Dynamic Glyph Coverage Atlas"
+        );
+        _colorAtlasTexture = new GpuTexture(
+            _context,
+            _colorAtlasSize,
+            _colorAtlasSize,
+            TextureFormat.Rgba8Unorm,
+            TextureUsage.TextureBinding | TextureUsage.CopySrc | TextureUsage.CopyDst |
+            TextureUsage.RenderAttachment,
+            "Dynamic Color Glyph Atlas"
         );
 
         _atlasTexture.ClearRenderTarget();
+        _colorAtlasTexture.ClearRenderTarget();
 
         // Compile and create the compute pipeline
         _pipelineCache = new RenderPipelineCache(_context);
@@ -268,7 +386,13 @@ public unsafe class GlyphAtlas : IDisposable
             uniformRingBufferSize,
             BufferUsage.Uniform | BufferUsage.CopyDst,
             "Glyph Atlas Uniform Ring Buffer");
+        _coverageRingBuffer = new GpuBuffer(
+            _context,
+            coverageRingBufferSize,
+            BufferUsage.Storage | BufferUsage.CopySrc,
+            "Glyph Coverage Staging Ring Buffer");
         _ringOffset = 0;
+        _coverageRingOffset = 0;
     }
 
     private static uint DivRoundUp(uint value, uint divisor) => (value + divisor - 1) / divisor;
@@ -433,6 +557,7 @@ public unsafe class GlyphAtlas : IDisposable
                                     gW,
                                     gH,
                                     preferGlyphAtlas,
+                                    colorBitmap: false,
                                     out uint posX,
                                     out uint posY,
                                     out uint regionWidth,
@@ -457,6 +582,8 @@ public unsafe class GlyphAtlas : IDisposable
                                 _fontGpuData[font] = gpuData;
                             }
                             uint gpuGlyphSlot = EnsureGpuGlyph(font, glyphIdx, gpuData);
+                            uint coverageBytesPerRow = GpuCoverageUpload.GetBytesPerRow(gW);
+                            uint coverageBytes = checked(coverageBytesPerRow * gH);
 
                             // Write uniforms for the glyph
                              var uniforms = new GlyphUniforms
@@ -465,8 +592,6 @@ public unsafe class GlyphAtlas : IDisposable
                                  YStart = yStart,
                                  Scale = scale,
                                  GlyphIndex = gpuGlyphSlot,
-                                 AtlasX = posX,
-                                 AtlasY = posY,
                                  Width = gW,
                                  Height = gH,
                                  SubpixelX = subpixelX * 0.25f
@@ -478,19 +603,28 @@ public unsafe class GlyphAtlas : IDisposable
                             if (_batchEncoder != null)
                             {
                                 // Ring buffer slice allocation
-                                if (_ringOffset + alignedSize > _uniformRingBuffer.Size)
+                                if (coverageBytes > _coverageRingBuffer.Size)
+                                {
+                                    throw new InvalidOperationException(
+                                        $"Glyph coverage staging requires {coverageBytes} bytes, exceeding the " +
+                                        $"configured {_coverageRingBuffer.Size}-byte ring.");
+                                }
+                                if (_ringOffset + alignedSize > _uniformRingBuffer.Size ||
+                                    _coverageRingOffset + coverageBytes > _coverageRingBuffer.Size)
                                 {
                                     FlushBatchEncoder();
                                     CreateBatchEncoder();
                                 }
 
+                                uniforms.OutputOffsetWords = _coverageRingOffset / 4;
+                                uniforms.OutputRowWords = coverageBytesPerRow / 4;
                                 _context.Api.QueueWriteBuffer(_context.Queue, _uniformRingBuffer.BufferPtr, _ringOffset, &uniforms, (uint)Marshal.SizeOf<GlyphUniforms>());
 
                                 var entries = stackalloc BindGroupEntry[4];
                                 entries[0] = new BindGroupEntry { Binding = 0, Buffer = _uniformRingBuffer.BufferPtr, Offset = _ringOffset, Size = (uint)Marshal.SizeOf<GlyphUniforms>() };
                                 entries[1] = new BindGroupEntry { Binding = 1, Buffer = gpuData.RecordsBuffer.BufferPtr, Offset = 0, Size = gpuData.RecordsBuffer.Size };
                                 entries[2] = new BindGroupEntry { Binding = 2, Buffer = gpuData.SegmentsBuffer.BufferPtr, Offset = 0, Size = gpuData.SegmentsBuffer.Size };
-                                entries[3] = new BindGroupEntry { Binding = 3, TextureView = _atlasTexture.ViewPtr };
+                                entries[3] = new BindGroupEntry { Binding = 3, Buffer = _coverageRingBuffer.BufferPtr, Offset = 0, Size = _coverageRingBuffer.Size };
 
                                 var bgDesc = new BindGroupDescriptor
                                 {
@@ -507,21 +641,36 @@ public unsafe class GlyphAtlas : IDisposable
                                 _context.Api.ComputePassEncoderSetPipeline(pass, _computePipeline);
                                 _context.Api.ComputePassEncoderSetBindGroup(pass, 0, bg, 0, null);
 
-                                uint workgroupsX = DivRoundUp(gW, 16);
+                                uint workgroupsX = DivRoundUp(DivRoundUp(gW, 4), 16);
                                 uint workgroupsY = DivRoundUp(gH, 16);
                                 _context.Api.ComputePassEncoderDispatchWorkgroups(pass, workgroupsX, workgroupsY, 1);
 
                                 _context.Api.ComputePassEncoderEnd(pass);
                                 _context.Api.ComputePassEncoderRelease(pass);
 
+                                GpuCoverageUpload.RecordCopy(
+                                    _context,
+                                    _batchEncoder,
+                                    _coverageRingBuffer,
+                                    _coverageRingOffset,
+                                    coverageBytesPerRow,
+                                    _atlasTexture,
+                                    posX,
+                                    posY,
+                                    gW,
+                                    gH);
+
                                 _batchBindGroups.Add((nint)bg);
                                 _context.Api.BindGroupLayoutRelease(bindGroupLayout);
 
                                 _ringOffset += alignedSize;
+                                _coverageRingOffset += coverageBytes;
                             }
                             else
                             {
-                                // Immediate path: Allocate a temporary GPU buffer, write, and submit instantly
+                                // Immediate path: use a compact GPU coverage buffer, then copy its R8 bytes.
+                                uniforms.OutputOffsetWords = 0;
+                                uniforms.OutputRowWords = coverageBytesPerRow / 4;
                                 var uniformsBuffer = new GpuBuffer(
                                     _context,
                                     (uint)Marshal.SizeOf<GlyphUniforms>(),
@@ -529,12 +678,17 @@ public unsafe class GlyphAtlas : IDisposable
                                     "Glyph Uniforms"
                                 );
                                 uniformsBuffer.WriteSingle(uniforms);
+                                var coverageBuffer = new GpuBuffer(
+                                    _context,
+                                    coverageBytes,
+                                    BufferUsage.Storage | BufferUsage.CopySrc,
+                                    "Glyph Coverage Staging Buffer");
 
                                 var entries = stackalloc BindGroupEntry[4];
                                 entries[0] = new BindGroupEntry { Binding = 0, Buffer = uniformsBuffer.BufferPtr, Offset = 0, Size = uniformsBuffer.Size };
                                 entries[1] = new BindGroupEntry { Binding = 1, Buffer = gpuData.RecordsBuffer.BufferPtr, Offset = 0, Size = gpuData.RecordsBuffer.Size };
                                 entries[2] = new BindGroupEntry { Binding = 2, Buffer = gpuData.SegmentsBuffer.BufferPtr, Offset = 0, Size = gpuData.SegmentsBuffer.Size };
-                                entries[3] = new BindGroupEntry { Binding = 3, TextureView = _atlasTexture.ViewPtr };
+                                entries[3] = new BindGroupEntry { Binding = 3, Buffer = coverageBuffer.BufferPtr, Offset = 0, Size = coverageBuffer.Size };
 
                                 var bgDesc = new BindGroupDescriptor
                                 {
@@ -554,12 +708,24 @@ public unsafe class GlyphAtlas : IDisposable
                                 _context.Api.ComputePassEncoderSetPipeline(pass, _computePipeline);
                                 _context.Api.ComputePassEncoderSetBindGroup(pass, 0, bg, 0, null);
 
-                                uint workgroupsX = DivRoundUp(gW, 16);
+                                uint workgroupsX = DivRoundUp(DivRoundUp(gW, 4), 16);
                                 uint workgroupsY = DivRoundUp(gH, 16);
                                 _context.Api.ComputePassEncoderDispatchWorkgroups(pass, workgroupsX, workgroupsY, 1);
 
                                 _context.Api.ComputePassEncoderEnd(pass);
                                 _context.Api.ComputePassEncoderRelease(pass);
+
+                                GpuCoverageUpload.RecordCopy(
+                                    _context,
+                                    encoder,
+                                    coverageBuffer,
+                                    0,
+                                    coverageBytesPerRow,
+                                    _atlasTexture,
+                                    posX,
+                                    posY,
+                                    gW,
+                                    gH);
 
                                 // Submit to queue
                                 var cmdDesc = new CommandBufferDescriptor { Label = (byte*)SilkMarshal.StringToPtr("Glyph Rasterizer Command Buffer") };
@@ -574,6 +740,7 @@ public unsafe class GlyphAtlas : IDisposable
                                 _context.Api.BindGroupRelease(bg);
                                 _context.Api.BindGroupLayoutRelease(bindGroupLayout);
                                 uniformsBuffer.Dispose();
+                                coverageBuffer.Dispose();
                             }
 
                             // Compute UV coordinates
@@ -654,6 +821,7 @@ public unsafe class GlyphAtlas : IDisposable
                 width,
                 height,
                 preferGlyphAtlas,
+                colorBitmap: true,
                 out var x,
                 out var y,
                 out var regionWidth,
@@ -662,8 +830,8 @@ public unsafe class GlyphAtlas : IDisposable
             return false;
         }
 
-        _atlasTexture.WritePixelsSubRect(decoded.Data, x, y, width, height);
-        var texelSize = 1f / _atlasSize;
+        _colorAtlasTexture.WritePixelsSubRect(decoded.Data, x, y, width, height);
+        var texelSize = 1f / _colorAtlasSize;
         var bitmapScale = bitmap.PixelsPerEm > 0 ? size / bitmap.PixelsPerEm : 1f;
         var bearX = bitmap.UsesHorizontalMetrics
             ? bitmap.BearingX
@@ -713,6 +881,7 @@ public unsafe class GlyphAtlas : IDisposable
         uint width,
         uint height,
         bool preferGlyphAtlas,
+        bool colorBitmap,
         out uint x,
         out uint y,
         out uint regionWidth,
@@ -722,28 +891,32 @@ public unsafe class GlyphAtlas : IDisposable
         y = 0;
         regionWidth = 0;
         regionHeight = 0;
-        if (_atlasSize <= 4 || width == 0 || height == 0)
+        uint atlasSize = colorBitmap ? _colorAtlasSize : _atlasSize;
+        List<AtlasShelf> shelves = colorBitmap ? _colorShelves : _shelves;
+        uint nextShelfY = colorBitmap ? _nextColorShelfY : _nextShelfY;
+        if (atlasSize <= 4 || width == 0 || height == 0)
         {
             return false;
         }
 
-        if (width > _atlasSize - 4 || height > _atlasSize - 4)
+        if (width > atlasSize - 4 || height > atlasSize - 4)
         {
             CapacityExceeded = true;
             ProGpuTextDiagnostics.WriteLine(
-                $"[GlyphAtlas] Glyph {width}x{height} cannot fit in the {_atlasSize}x{_atlasSize} atlas; using vector fallback.");
+                $"[GlyphAtlas] Glyph {width}x{height} cannot fit in the {atlasSize}x{atlasSize} " +
+                $"{(colorBitmap ? "color" : "coverage")} atlas; using vector fallback.");
             return false;
         }
 
         // Keep reusable size classes, but classify each axis independently. A square
         // based on max(width, height) wastes most of the atlas for narrow glyphs and
         // forces avoidable GPU rerasterization while scrolling through a font.
-        uint allocationWidth = GetPreferredAllocationExtent(width);
-        uint allocationHeight = GetPreferredAllocationExtent(height);
-        for (int shelfIndex = 0; shelfIndex < _shelves.Count; shelfIndex++)
+        uint allocationWidth = GetPreferredAllocationExtent(width, atlasSize);
+        uint allocationHeight = GetPreferredAllocationExtent(height, atlasSize);
+        for (int shelfIndex = 0; shelfIndex < shelves.Count; shelfIndex++)
         {
-            AtlasShelf shelf = _shelves[shelfIndex];
-            if (shelf.Height != allocationHeight || shelf.NextX + allocationWidth + 2 > _atlasSize)
+            AtlasShelf shelf = shelves[shelfIndex];
+            if (shelf.Height != allocationHeight || shelf.NextX + allocationWidth + 2 > atlasSize)
             {
                 continue;
             }
@@ -753,15 +926,16 @@ public unsafe class GlyphAtlas : IDisposable
             regionWidth = allocationWidth;
             regionHeight = allocationHeight;
             shelf.NextX += allocationWidth + 2;
-            _shelves[shelfIndex] = shelf;
+            shelves[shelfIndex] = shelf;
             return true;
         }
 
-        if (_nextShelfY + allocationHeight + 2 > _atlasSize)
+        if (nextShelfY + allocationHeight + 2 > atlasSize)
         {
             if (preferGlyphAtlas && TryReuseLeastRecentlyUsedRegion(
                     allocationWidth,
                     allocationHeight,
+                    colorBitmap,
                     out x,
                     out y,
                     out regionWidth,
@@ -778,32 +952,41 @@ public unsafe class GlyphAtlas : IDisposable
         }
 
         x = 2;
-        y = _nextShelfY;
+        y = nextShelfY;
         regionWidth = allocationWidth;
         regionHeight = allocationHeight;
-        _shelves.Add(new AtlasShelf
+        shelves.Add(new AtlasShelf
         {
             Y = y,
             Height = allocationHeight,
             NextX = x + allocationWidth + 2
         });
-        _nextShelfY += allocationHeight + 2;
+        nextShelfY += allocationHeight + 2;
+        if (colorBitmap)
+        {
+            _nextColorShelfY = nextShelfY;
+        }
+        else
+        {
+            _nextShelfY = nextShelfY;
+        }
         return true;
     }
 
-    private uint GetPreferredAllocationExtent(uint extent)
+    private static uint GetPreferredAllocationExtent(uint extent, uint atlasSize)
     {
         // Eight-pixel classes retain cheap best-fit reuse without the near-2x loss
         // per axis caused by powers of two. Coverage still occupies its exact width
         // and height; this only controls reserved atlas residency.
         extent = Math.Max(8u, extent);
         uint alignedExtent = (extent + 7u) & ~7u;
-        return Math.Min(alignedExtent, _atlasSize - 4);
+        return Math.Min(alignedExtent, atlasSize - 4);
     }
 
     private bool TryReuseLeastRecentlyUsedRegion(
         uint width,
         uint height,
+        bool colorBitmap,
         out uint x,
         out uint y,
         out uint regionWidth,
@@ -826,6 +1009,7 @@ public unsafe class GlyphAtlas : IDisposable
             uint entryWidth = info.AtlasRegionWidth > 0 ? info.AtlasRegionWidth : info.Width;
             uint entryHeight = info.AtlasRegionHeight > 0 ? info.AtlasRegionHeight : info.Height;
             if (entry.LastUsedFrame == _frameNumber ||
+                info.IsColorBitmap != colorBitmap ||
                 entryWidth < width || entryHeight < height ||
                 entryWidth == 0 || entryHeight == 0)
             {
@@ -895,12 +1079,12 @@ public unsafe class GlyphAtlas : IDisposable
             RecordsBuffer = new GpuBuffer(
                 _context,
                 recordsSize,
-                BufferUsage.Storage | BufferUsage.CopyDst,
+                BufferUsage.Storage | BufferUsage.CopyDst | BufferUsage.CopySrc,
                 "Incremental Glyph Records Buffer"),
             SegmentsBuffer = new GpuBuffer(
                 _context,
                 segmentsSize,
-                BufferUsage.Storage | BufferUsage.CopyDst,
+                BufferUsage.Storage | BufferUsage.CopyDst | BufferUsage.CopySrc,
                 "Incremental Glyph Segments Buffer")
         };
     }
@@ -912,96 +1096,96 @@ public unsafe class GlyphAtlas : IDisposable
             return existingSlot;
         }
 
-        int previousSegmentCount = data.Segments.Count;
-        GpuGlyphRecord record;
-        try
-        {
-            record = font.AppendGpuOutlineData(glyphIndex, data.Segments);
-        }
-        catch
-        {
-            if (data.Segments.Count > previousSegmentCount)
-            {
-                data.Segments.RemoveRange(
-                    previousSegmentCount,
-                    data.Segments.Count - previousSegmentCount);
-            }
-            throw;
-        }
-
-        uint recordSlot = checked((uint)data.Records.Count);
-        data.Records.Add(record);
-        int appendedSegmentCount = data.Segments.Count - previousSegmentCount;
+        _glyphSegmentScratch.Clear();
+        GpuGlyphRecord record = font.AppendGpuOutlineData(glyphIndex, _glyphSegmentScratch);
+        record.StartSegment = checked(record.StartSegment + (uint)data.SegmentCount);
+        uint recordSlot = checked((uint)data.RecordCount);
+        int requiredRecordCount = checked(data.RecordCount + 1);
+        int requiredSegmentCount = checked(data.SegmentCount + _glyphSegmentScratch.Count);
         int recordSize = Marshal.SizeOf<GpuGlyphRecord>();
         int segmentSize = Marshal.SizeOf<GpuSegment>();
-        try
+
+        if (requiredRecordCount > data.RecordCapacity)
         {
-            if (data.Records.Count > data.RecordCapacity)
+            int capacity = data.RecordCapacity;
+            while (capacity < requiredRecordCount)
             {
-                int capacity = data.RecordCapacity;
-                while (capacity < data.Records.Count)
-                {
-                    capacity = checked(capacity * 2);
-                }
-
-                var replacement = new GpuBuffer(
-                    _context,
-                    checked((uint)(capacity * recordSize)),
-                    BufferUsage.Storage | BufferUsage.CopyDst,
-                    "Incremental Glyph Records Buffer");
-                replacement.Write(CollectionsMarshal.AsSpan(data.Records));
-                ReplaceBatchBuffer(data.RecordsBuffer);
-                data.RecordsBuffer = replacement;
-                data.RecordCapacity = capacity;
-            }
-            else
-            {
-                data.RecordsBuffer.WriteSingle(
-                    record,
-                    checked(recordSlot * (uint)recordSize));
+                capacity = checked(capacity * 2);
             }
 
-            if (data.Segments.Count > data.SegmentCapacity)
-            {
-                int capacity = data.SegmentCapacity;
-                while (capacity < data.Segments.Count)
-                {
-                    capacity = checked(capacity * 2);
-                }
-
-                var replacement = new GpuBuffer(
-                    _context,
-                    checked((uint)(capacity * segmentSize)),
-                    BufferUsage.Storage | BufferUsage.CopyDst,
-                    "Incremental Glyph Segments Buffer");
-                replacement.Write(CollectionsMarshal.AsSpan(data.Segments));
-                ReplaceBatchBuffer(data.SegmentsBuffer);
-                data.SegmentsBuffer = replacement;
-                data.SegmentCapacity = capacity;
-            }
-            else if (appendedSegmentCount > 0)
-            {
-                data.SegmentsBuffer.Write(
-                    CollectionsMarshal.AsSpan(data.Segments).Slice(
-                        previousSegmentCount,
-                        appendedSegmentCount),
-                    checked((uint)(previousSegmentCount * segmentSize)));
-            }
-
-            data.RecordSlots.Add(glyphIndex, recordSlot);
-            return recordSlot;
+            var replacement = new GpuBuffer(
+                _context,
+                checked((uint)(capacity * recordSize)),
+                BufferUsage.Storage | BufferUsage.CopyDst | BufferUsage.CopySrc,
+                "Incremental Glyph Records Buffer");
+            CopyBufferContents(
+                data.RecordsBuffer,
+                replacement,
+                checked((uint)(data.RecordCount * recordSize)));
+            ReplaceBatchBuffer(data.RecordsBuffer);
+            data.RecordsBuffer = replacement;
+            data.RecordCapacity = capacity;
         }
-        catch
+
+        if (requiredSegmentCount > data.SegmentCapacity)
         {
-            data.Records.RemoveAt(data.Records.Count - 1);
-            if (data.Segments.Count > previousSegmentCount)
+            int capacity = data.SegmentCapacity;
+            while (capacity < requiredSegmentCount)
             {
-                data.Segments.RemoveRange(
-                    previousSegmentCount,
-                    data.Segments.Count - previousSegmentCount);
+                capacity = checked(capacity * 2);
             }
-            throw;
+
+            var replacement = new GpuBuffer(
+                _context,
+                checked((uint)(capacity * segmentSize)),
+                BufferUsage.Storage | BufferUsage.CopyDst | BufferUsage.CopySrc,
+                "Incremental Glyph Segments Buffer");
+            CopyBufferContents(
+                data.SegmentsBuffer,
+                replacement,
+                checked((uint)(data.SegmentCount * segmentSize)));
+            ReplaceBatchBuffer(data.SegmentsBuffer);
+            data.SegmentsBuffer = replacement;
+            data.SegmentCapacity = capacity;
         }
+
+        data.RecordsBuffer.WriteSingle(
+            record,
+            checked(recordSlot * (uint)recordSize));
+        if (_glyphSegmentScratch.Count > 0)
+        {
+            data.SegmentsBuffer.Write(
+                CollectionsMarshal.AsSpan(_glyphSegmentScratch),
+                checked((uint)(data.SegmentCount * segmentSize)));
+        }
+
+        data.RecordCount = requiredRecordCount;
+        data.SegmentCount = requiredSegmentCount;
+        data.RecordSlots.Add(glyphIndex, recordSlot);
+        return recordSlot;
+    }
+
+    private void CopyBufferContents(GpuBuffer source, GpuBuffer destination, uint size)
+    {
+        if (size == 0)
+        {
+            return;
+        }
+
+        var encoderDescriptor = new CommandEncoderDescriptor();
+        var encoder = _context.Api.DeviceCreateCommandEncoder(_context.Device, &encoderDescriptor);
+        _context.Api.CommandEncoderCopyBufferToBuffer(
+            encoder,
+            source.BufferPtr,
+            0,
+            destination.BufferPtr,
+            0,
+            size);
+        var commandBufferDescriptor = new CommandBufferDescriptor();
+        var commandBuffer = _context.Api.CommandEncoderFinish(encoder, &commandBufferDescriptor);
+        _context.Api.QueueSubmit(_context.Queue, 1, &commandBuffer);
+        _context.Api.CommandBufferRelease(commandBuffer);
+        _context.Api.CommandEncoderRelease(encoder);
     }
 
     private void ReplaceBatchBuffer(GpuBuffer previous)
@@ -1027,6 +1211,7 @@ public unsafe class GlyphAtlas : IDisposable
         }
 
         _uniformRingBuffer.Dispose();
+        _coverageRingBuffer.Dispose();
 
         var fontGpuDataEnumerator = _fontGpuData.Values.GetEnumerator();
         while (fontGpuDataEnumerator.MoveNext())
@@ -1039,6 +1224,7 @@ public unsafe class GlyphAtlas : IDisposable
 
         _pipelineCache.Dispose();
         _atlasTexture.Dispose();
+        _colorAtlasTexture.Dispose();
         _glyphs.Clear();
 
         _isDisposed = true;
