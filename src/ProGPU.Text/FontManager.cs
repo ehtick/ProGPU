@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 
 namespace ProGPU.Text;
 
@@ -54,6 +55,40 @@ public sealed class FontFace
 /// </summary>
 public sealed class FontManager
 {
+    private const int MaximumCharacterMatchCacheEntries = 4096;
+    private const int MaximumVariationMatchCacheEntries = 256;
+
+    private readonly record struct CharacterMatchKey(
+        string? FamilyName,
+        FontStyleRequest Style,
+        int CodePoint,
+        TtfFont? ExcludedFont,
+        int CatalogVersion);
+
+    private readonly record struct CharacterMatchResult(TtfFont? Font, ushort GlyphIndex)
+    {
+        public bool Found => Font is not null && GlyphIndex != 0;
+    }
+
+    private sealed class CharacterMatchKeyComparer : IEqualityComparer<CharacterMatchKey>
+    {
+        public static CharacterMatchKeyComparer Instance { get; } = new();
+
+        public bool Equals(CharacterMatchKey left, CharacterMatchKey right) =>
+            left.CodePoint == right.CodePoint &&
+            left.CatalogVersion == right.CatalogVersion &&
+            left.Style.Equals(right.Style) &&
+            ReferenceEquals(left.ExcludedFont, right.ExcludedFont) &&
+            string.Equals(left.FamilyName, right.FamilyName, StringComparison.OrdinalIgnoreCase);
+
+        public int GetHashCode(CharacterMatchKey key) => HashCode.Combine(
+            key.FamilyName is null ? 0 : StringComparer.OrdinalIgnoreCase.GetHashCode(key.FamilyName),
+            key.Style,
+            key.CodePoint,
+            key.ExcludedFont is null ? 0 : RuntimeHelpers.GetHashCode(key.ExcludedFont),
+            key.CatalogVersion);
+    }
+
     private sealed class RegisteredFace
     {
         public required string FamilyName { get; init; }
@@ -71,6 +106,15 @@ public sealed class FontManager
     private readonly object _registeredLock = new();
     private RegisteredFace[] _registeredFaces = [];
     private readonly ConcurrentDictionary<(TtfFont Font, FontStyleRequest Style), TtfFont> _styleMatches = new();
+    private readonly ConcurrentDictionary<(TtfFont Font, FontStyleRequest Style), TtfFont> _variationMatches = new();
+    private readonly ConcurrentQueue<(TtfFont Font, FontStyleRequest Style)> _variationMatchOrder = new();
+    // Fallback lookup is on the per-character layout path. Positive and negative
+    // matches are process-catalog-versioned and FIFO-bounded: average lookup is O(1),
+    // retained state is O(MaximumCharacterMatchCacheEntries).
+    private readonly ConcurrentDictionary<CharacterMatchKey, CharacterMatchResult> _characterMatches =
+        new(CharacterMatchKeyComparer.Instance);
+    private readonly ConcurrentQueue<CharacterMatchKey> _characterMatchOrder = new();
+    private int _catalogVersion;
 
     public static FontManager Default => s_default.Value;
 
@@ -90,7 +134,7 @@ public sealed class FontManager
                 }
             }
 
-            IReadOnlyList<FontInfo> system = FontApi.GetSystemFonts();
+            IReadOnlyList<FontInfo> system = FontApi.GetSystemFontsView();
             for (var index = 0; index < system.Count; index++)
             {
                 if (names.Add(system[index].FamilyName))
@@ -132,7 +176,7 @@ public sealed class FontManager
             styles.Add(face.Style);
         }
 
-        IReadOnlyList<FontInfo> system = FontApi.GetSystemFonts();
+        IReadOnlyList<FontInfo> system = FontApi.GetSystemFontsView();
         for (var index = 0; index < system.Count; index++)
         {
             FontInfo info = system[index];
@@ -223,6 +267,11 @@ public sealed class FontManager
             };
             Volatile.Write(ref _registeredFaces, updated);
             _styleMatches.Clear();
+            _variationMatches.Clear();
+            _variationMatchOrder.Clear();
+            Interlocked.Increment(ref _catalogVersion);
+            _characterMatches.Clear();
+            _characterMatchOrder.Clear();
         }
     }
 
@@ -237,11 +286,11 @@ public sealed class FontManager
         RegisteredFace? registered = FindRegisteredFace(familyName, style);
         if (registered is not null)
         {
-            return ApplyStyleVariations(TryGetRegisteredFont(registered), style);
+            return ApplyStyleVariationsCached(TryGetRegisteredFont(registered), style);
         }
 
         FontInfo? system = FindSystemFace(familyName, style, requiredCodePoint: null);
-        return system is null ? null : ApplyStyleVariations(TryLoadSystemFont(system), style);
+        return system is null ? null : ApplyStyleVariationsCached(TryLoadSystemFont(system), style);
     }
 
     public TtfFont MatchTypeface(TtfFont typeface, FontStyleRequest style)
@@ -261,7 +310,7 @@ public sealed class FontManager
                         ? familyMatch
                         : ApplyStyleVariations(key.Font, key.Style) ?? key.Font);
             }
-            return ApplyStyleVariations(typeface, style) ?? typeface;
+            return ApplyStyleVariationsCached(typeface, style) ?? typeface;
         }
         if (GetStyleDistance(FontStyleRequest.FromFont(typeface), style) == 0)
         {
@@ -281,14 +330,62 @@ public sealed class FontManager
         out TtfFont? font,
         out ushort glyphIndex)
     {
-        font = null;
-        glyphIndex = 0;
         if ((uint)codePoint > 0x10FFFFu)
         {
+            font = null;
+            glyphIndex = 0;
             return false;
         }
 
         style = NormalizeStyle(style);
+        if (languageTags is null)
+        {
+            var key = new CharacterMatchKey(
+                familyName,
+                style,
+                codePoint,
+                excludedFont,
+                Volatile.Read(ref _catalogVersion));
+            if (_characterMatches.TryGetValue(key, out CharacterMatchResult cached))
+            {
+                font = cached.Font;
+                glyphIndex = cached.GlyphIndex;
+                return cached.Found;
+            }
+
+            bool found = TryMatchCharacterCore(
+                familyName,
+                style,
+                languageTags,
+                codePoint,
+                excludedFont,
+                out font,
+                out glyphIndex);
+            CacheCharacterMatch(key, new CharacterMatchResult(font, glyphIndex));
+            return found;
+        }
+
+        return TryMatchCharacterCore(
+            familyName,
+            style,
+            languageTags,
+            codePoint,
+            excludedFont,
+            out font,
+            out glyphIndex);
+    }
+
+    private bool TryMatchCharacterCore(
+        string? familyName,
+        FontStyleRequest style,
+        IReadOnlyList<string>? languageTags,
+        int codePoint,
+        TtfFont? excludedFont,
+        out TtfFont? font,
+        out ushort glyphIndex)
+    {
+        font = null;
+        glyphIndex = 0;
         var visitedRegistered = new HashSet<RegisteredFace>();
         var visitedSystem = new HashSet<(string Path, int FaceIndex)>();
 
@@ -329,7 +426,7 @@ public sealed class FontManager
             }
         }
 
-        IReadOnlyList<FontInfo> systemFonts = FontApi.GetSystemFonts();
+        IReadOnlyList<FontInfo> systemFonts = FontApi.GetSystemFontsView();
         for (var stylePass = 0; stylePass < 2; stylePass++)
         {
             bool requireStyle = stylePass == 0;
@@ -343,7 +440,7 @@ public sealed class FontManager
                     continue;
                 }
 
-                TtfFont? loaded = ApplyStyleVariations(TryLoadSystemFont(candidate), style);
+                TtfFont? loaded = ApplyStyleVariationsCached(TryLoadSystemFont(candidate), style);
                 if (loaded is null || ReferenceEquals(loaded, excludedFont))
                 {
                     continue;
@@ -360,6 +457,21 @@ public sealed class FontManager
         }
 
         return false;
+    }
+
+    private void CacheCharacterMatch(CharacterMatchKey key, CharacterMatchResult result)
+    {
+        if (!_characterMatches.TryAdd(key, result))
+        {
+            return;
+        }
+
+        _characterMatchOrder.Enqueue(key);
+        while (_characterMatches.Count > MaximumCharacterMatchCacheEntries &&
+               _characterMatchOrder.TryDequeue(out CharacterMatchKey oldest))
+        {
+            _characterMatches.TryRemove(oldest, out _);
+        }
     }
 
     public bool TryMatchCharacter(
@@ -542,7 +654,7 @@ public sealed class FontManager
     {
         FontInfo? best = null;
         var bestDistance = int.MaxValue;
-        IReadOnlyList<FontInfo> system = FontApi.GetSystemFonts();
+        IReadOnlyList<FontInfo> system = FontApi.GetSystemFontsView();
         for (var index = 0; index < system.Count; index++)
         {
             FontInfo candidate = system[index];
@@ -617,7 +729,7 @@ public sealed class FontManager
             return false;
         }
 
-        TtfFont? loaded = ApplyStyleVariations(TryLoadSystemFont(candidate), style);
+        TtfFont? loaded = ApplyStyleVariationsCached(TryLoadSystemFont(candidate), style);
         if (loaded is null || ReferenceEquals(loaded, excludedFont))
         {
             font = null;
@@ -638,7 +750,7 @@ public sealed class FontManager
         return true;
     }
 
-    private static bool TryGetRenderableGlyph(
+    private bool TryGetRenderableGlyph(
         RegisteredFace face,
         FontStyleRequest style,
         int codePoint,
@@ -646,7 +758,7 @@ public sealed class FontManager
         out TtfFont? font,
         out ushort glyphIndex)
     {
-        TtfFont? candidate = ApplyStyleVariations(TryGetRegisteredFont(face), style);
+        TtfFont? candidate = ApplyStyleVariationsCached(TryGetRegisteredFont(face), style);
         if (candidate is null || ReferenceEquals(candidate, excludedFont))
         {
             font = null;
@@ -737,6 +849,34 @@ public sealed class FontManager
         }
 
         return settings.Count == 0 ? font : font.WithVariations(settings);
+    }
+
+    private TtfFont? ApplyStyleVariationsCached(TtfFont? font, FontStyleRequest style)
+    {
+        if (font is null || !font.IsVariableFont)
+        {
+            return font;
+        }
+
+        var key = (font, style);
+        if (_variationMatches.TryGetValue(key, out TtfFont? cached))
+        {
+            return cached;
+        }
+
+        TtfFont created = ApplyStyleVariations(font, style) ?? font;
+        if (!_variationMatches.TryAdd(key, created))
+        {
+            return _variationMatches.TryGetValue(key, out cached) ? cached : created;
+        }
+
+        _variationMatchOrder.Enqueue(key);
+        while (_variationMatches.Count > MaximumVariationMatchCacheEntries &&
+               _variationMatchOrder.TryDequeue(out var oldest))
+        {
+            _variationMatches.TryRemove(oldest, out _);
+        }
+        return created;
     }
 
     private static bool SupportsSlantVariation(TtfFont font)

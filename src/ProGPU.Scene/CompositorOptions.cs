@@ -1,4 +1,5 @@
 using ProGPU.Vector;
+using ProGPU.Text;
 
 namespace ProGPU.Scene;
 
@@ -7,6 +8,10 @@ public sealed record CompositorOptions
     public static CompositorOptions Default { get; } = new();
 
     public uint GlyphAtlasSize { get; init; } = 2048;
+
+    public uint ColorGlyphAtlasSize { get; init; } = GlyphAtlas.DefaultColorAtlasSize;
+
+    public uint GlyphCoverageStagingBytes { get; init; } = GlyphAtlas.DefaultCoverageRingBufferSize;
 
     public uint PathAtlasSize { get; init; } = 2048;
 
@@ -28,6 +33,14 @@ public sealed record CompositorOptions
         if (GlyphAtlasSize == 0)
         {
             throw new ArgumentOutOfRangeException(nameof(GlyphAtlasSize));
+        }
+        if (ColorGlyphAtlasSize <= 4)
+        {
+            throw new ArgumentOutOfRangeException(nameof(ColorGlyphAtlasSize));
+        }
+        if (GlyphCoverageStagingBytes < 256 || GlyphCoverageStagingBytes % 256 != 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(GlyphCoverageStagingBytes));
         }
         if (PathAtlasSize == 0)
         {

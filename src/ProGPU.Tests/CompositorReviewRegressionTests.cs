@@ -512,7 +512,7 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     {
         var localX = checked((uint)(worldX - (int)info.MinX));
         var localY = checked((uint)(worldY - (int)info.MinY));
-        return checked((int)(((info.Y + localY) * atlasWidth + info.X + localX) * 4));
+        return checked((int)((info.Y + localY) * atlasWidth + info.X + localX));
     }
 
     private static byte ReadGlyphAtlasCoverage(
@@ -522,7 +522,7 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
         uint localX,
         uint localY)
     {
-        int offset = checked((int)(((info.Y + localY) * atlasWidth + info.X + localX) * 4));
+        int offset = checked((int)((info.Y + localY) * atlasWidth + info.X + localX));
         return pixels[offset];
     }
 
@@ -3115,6 +3115,108 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
         Assert.Same(
             green,
             Assert.Single(updated.Commands, command => command.Type == RenderCommandType.DrawText).Brush);
+    }
+
+    [Fact]
+    public void OwnedRichTextCommandCacheRendersThroughCompositor()
+    {
+        var font = InterFontFamily.Regular;
+        using var window = new HeadlessWindow(320, 64);
+        var block = new RichTextBlock
+        {
+            Font = font,
+            FontSize = 20f,
+            Foreground = new SolidColorBrush(new Vector4(1f, 0f, 0f, 1f))
+        };
+        block.Inlines.Add(new Microsoft.UI.Xaml.Documents.Bold(
+            new Microsoft.UI.Xaml.Documents.Run("WebGPU 3D Mesh Viewer")));
+        window.Content = block;
+
+        window.Render();
+        window.Render();
+
+        Assert.Contains(
+            GetDrawCalls(window.Compositor),
+            drawCall => drawCall.Type == Compositor.DrawCallType.Text && drawCall.IndexCount > 0);
+        byte[] pixels = window.ReadPixels();
+        Assert.Contains(
+            Enumerable.Range(0, pixels.Length / 4),
+            pixel => pixels[pixel * 4] > 160 && pixels[pixel * 4 + 1] < 80);
+    }
+
+    [Fact]
+    public void RichTextSelectionOverlayReusesRetainedTextCommands()
+    {
+        var block = new RichTextBlock
+        {
+            Font = InterFontFamily.Regular,
+            FontSize = 20f,
+            Foreground = new SolidColorBrush(Vector4.One)
+        };
+        block.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run("Retained selection text"));
+        block.Measure(new Vector2(320f, 64f));
+        block.Arrange(new Rect(0f, 0f, 320f, 64f));
+
+        DrawingContext first = ((IOwnedRenderCommandCache)block).GetOrUpdateRenderCommandCache();
+        string[] firstText = first.Commands
+            .Where(static command => command.Type == RenderCommandType.DrawText)
+            .Select(static command => command.Text!)
+            .ToArray();
+        Assert.NotEmpty(firstText);
+        FieldInfo selectionCacheField = typeof(RichTextBlock).GetField(
+            "_selectionRenderCommandCache",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        Assert.Null(selectionCacheField.GetValue(block));
+
+        block.SelectionStart = 0;
+        block.SelectionLength = 8;
+        block.InvalidateSelectionRendering();
+        DrawingContext selected = ((IOwnedRenderCommandCache)block).GetOrUpdateRenderCommandCache();
+        string[] selectedText = selected.Commands
+            .Where(static command => command.Type == RenderCommandType.DrawText)
+            .Select(static command => command.Text!)
+            .ToArray();
+        int selectionIndex = selected.Commands.FindIndex(
+            static command => command.Type == RenderCommandType.DrawRect && command.Brush is not null);
+        int textIndex = selected.Commands.FindIndex(
+            static command => command.Type == RenderCommandType.DrawText);
+
+        Assert.Equal(firstText.Length, selectedText.Length);
+        for (int index = 0; index < firstText.Length; index++)
+            Assert.Same(firstText[index], selectedText[index]);
+        Assert.InRange(selectionIndex, 0, textIndex - 1);
+        Assert.NotNull(selectionCacheField.GetValue(block));
+    }
+
+    [Fact]
+    public void NestedOwnedRichTextCommandCacheRendersThroughCompositor()
+    {
+        var block = new RichTextBlock
+        {
+            Font = InterFontFamily.Regular,
+            FontSize = 20f,
+            Foreground = new SolidColorBrush(new Vector4(1f, 0f, 0f, 1f))
+        };
+        block.Inlines.Add(new Microsoft.UI.Xaml.Documents.Bold(
+            new Microsoft.UI.Xaml.Documents.Run("Nested rich text")));
+        var stack = new StackPanel { Padding = new Thickness(12f) };
+        stack.AddChild(block);
+        var scrollViewer = new ScrollViewer { Content = stack };
+        using var window = new HeadlessWindow(320, 64);
+        window.Content = scrollViewer;
+
+        window.Render();
+        window.Render();
+
+        DrawingContext ownedCommands = ((IOwnedRenderCommandCache)block).GetOrUpdateRenderCommandCache();
+        Assert.Contains(ownedCommands.Commands, command => command.Type == RenderCommandType.DrawText);
+        Assert.Contains(
+            GetDrawCalls(window.Compositor),
+            drawCall => drawCall.Type == Compositor.DrawCallType.Text && drawCall.IndexCount > 0);
+        byte[] pixels = window.ReadPixels();
+        Assert.Contains(
+            Enumerable.Range(0, pixels.Length / 4),
+            pixel => pixels[pixel * 4] > 160 && pixels[pixel * 4 + 1] < 80);
     }
 
     [Fact]

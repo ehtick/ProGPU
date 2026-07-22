@@ -29,6 +29,7 @@ public unsafe interface IWebGpuApi
     ComputePassEncoder* CommandEncoderBeginComputePass(CommandEncoder* commandEncoder, ComputePassDescriptor* descriptor);
     RenderPassEncoder* CommandEncoderBeginRenderPass(CommandEncoder* commandEncoder, RenderPassDescriptor* descriptor);
     void CommandEncoderCopyBufferToBuffer(CommandEncoder* commandEncoder, WgpuBuffer* source, ulong sourceOffset, WgpuBuffer* destination, ulong destinationOffset, ulong size);
+    void CommandEncoderCopyBufferToTexture(CommandEncoder* commandEncoder, ImageCopyBuffer* source, ImageCopyTexture* destination, Extent3D* copySize);
     void CommandEncoderCopyTextureToBuffer(CommandEncoder* commandEncoder, ImageCopyTexture* source, ImageCopyBuffer* destination, Extent3D* copySize);
     void CommandEncoderCopyTextureToTexture(CommandEncoder* commandEncoder, ImageCopyTexture* source, ImageCopyTexture* destination, Extent3D* copySize);
     CommandBuffer* CommandEncoderFinish(CommandEncoder* commandEncoder, CommandBufferDescriptor* descriptor);
@@ -118,6 +119,7 @@ internal unsafe sealed class SilkWebGpuApi(WebGPU api) : IWebGpuApi
     public ComputePassEncoder* CommandEncoderBeginComputePass(CommandEncoder* e, ComputePassDescriptor* x) => api.CommandEncoderBeginComputePass(e, x);
     public RenderPassEncoder* CommandEncoderBeginRenderPass(CommandEncoder* e, RenderPassDescriptor* x) => api.CommandEncoderBeginRenderPass(e, x);
     public void CommandEncoderCopyBufferToBuffer(CommandEncoder* e, WgpuBuffer* s, ulong so, WgpuBuffer* d, ulong @do, ulong z) => api.CommandEncoderCopyBufferToBuffer(e, s, so, d, @do, z);
+    public void CommandEncoderCopyBufferToTexture(CommandEncoder* e, ImageCopyBuffer* s, ImageCopyTexture* d, Extent3D* z) => api.CommandEncoderCopyBufferToTexture(e, s, d, z);
     public void CommandEncoderCopyTextureToBuffer(CommandEncoder* e, ImageCopyTexture* s, ImageCopyBuffer* d, Extent3D* z) => api.CommandEncoderCopyTextureToBuffer(e, s, d, z);
     public void CommandEncoderCopyTextureToTexture(CommandEncoder* e, ImageCopyTexture* s, ImageCopyTexture* d, Extent3D* z) => api.CommandEncoderCopyTextureToTexture(e, s, d, z);
     public CommandBuffer* CommandEncoderFinish(CommandEncoder* e, CommandBufferDescriptor* x) => api.CommandEncoderFinish(e, x);

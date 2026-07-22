@@ -76,7 +76,7 @@ public class Paragraph : Block
     }
 }
 
-public class FlowDocument : FrameworkElement
+public class FlowDocument : FrameworkElement, IOwnedRenderCommandCache
 {
     private float _fontSize = 14f;
     private int _columnCount = 2;
@@ -90,7 +90,12 @@ public class FlowDocument : FrameworkElement
     private RichDocument? _document;
     private readonly List<TableVisualDecoration> _tableDecorations = new();
     private readonly DrawingContext _renderCommandCache = new();
+    private readonly RichDocumentLayoutSession _layoutSession = new();
     private bool _isRenderCommandCacheDirty = true;
+    private bool _isFlowLayoutDirty = true;
+    private float _lastFlowLayoutWidth = -1f;
+    private float _lastFlowLayoutHeight = -1f;
+    internal ulong FlowLayoutPassCount { get; private set; }
     private Hyperlink? _cachedHoveredHyperlink;
 
     public RichDocument? Document
@@ -102,15 +107,13 @@ public class FlowDocument : FrameworkElement
             if (_document is not null) _document.Changed -= OnDocumentChanged;
             _document = value;
             if (_document is not null) _document.Changed += OnDocumentChanged;
-            Invalidate();
-            InvalidateMeasure();
+            InvalidateFlowLayout(invalidateShaping: true);
         }
     }
 
     private void OnDocumentChanged(object? sender, EventArgs e)
     {
-        Invalidate();
-        InvalidateMeasure();
+        InvalidateFlowLayout(invalidateShaping: true);
     }
 
     protected override void OnPropertyChanged(Microsoft.UI.Xaml.DependencyProperty dp, object? oldValue, object? newValue)
@@ -118,33 +121,54 @@ public class FlowDocument : FrameworkElement
         base.OnPropertyChanged(dp, oldValue, newValue);
         if (dp == FontProperty || dp == FlowDirectionProperty)
         {
-            Invalidate();
+            InvalidateFlowLayout(invalidateShaping: true);
         }
     }
 
     public float FontSize
     {
         get => _fontSize;
-        set { _fontSize = value; Invalidate(); }
+        set
+        {
+            if (_fontSize == value) return;
+            _fontSize = value;
+            InvalidateFlowLayout(invalidateShaping: true);
+        }
     }
 
     private Brush? _foreground;
     public Brush? Foreground
     {
         get => _foreground;
-        set { _foreground = value; Invalidate(); }
+        set
+        {
+            if (ReferenceEquals(_foreground, value)) return;
+            _foreground = value;
+            InvalidateFlowLayout(invalidateShaping: true);
+        }
     }
 
     public int ColumnCount
     {
         get => _columnCount;
-        set { _columnCount = Math.Max(1, value); Invalidate(); }
+        set
+        {
+            int normalized = Math.Max(1, value);
+            if (_columnCount == normalized) return;
+            _columnCount = normalized;
+            InvalidateFlowLayout(invalidateShaping: false);
+        }
     }
 
     public float ColumnGap
     {
         get => _columnGap;
-        set { _columnGap = value; Invalidate(); }
+        set
+        {
+            if (_columnGap == value) return;
+            _columnGap = value;
+            InvalidateFlowLayout(invalidateShaping: false);
+        }
     }
 
     public TextAlignment TextAlignment
@@ -155,8 +179,7 @@ public class FlowDocument : FrameworkElement
             if (_textAlignment == value && _hasExplicitTextAlignment) return;
             _textAlignment = value;
             _hasExplicitTextAlignment = true;
-            Invalidate();
-            InvalidateMeasure();
+            InvalidateFlowLayout(invalidateShaping: false);
         }
     }
 
@@ -167,8 +190,7 @@ public class FlowDocument : FrameworkElement
         {
             if (_textReadingOrder == value) return;
             _textReadingOrder = value;
-            Invalidate();
-            InvalidateMeasure();
+            InvalidateFlowLayout(invalidateShaping: true);
         }
     }
 
@@ -186,15 +208,13 @@ public class FlowDocument : FrameworkElement
 
     private void OnContentChanged()
     {
-        Invalidate();
-        InvalidateMeasure();
+        InvalidateFlowLayout(invalidateShaping: true);
     }
 
     protected override void OnThemeChanged()
     {
         base.OnThemeChanged();
-        Invalidate();
-        InvalidateMeasure();
+        InvalidateFlowLayout(invalidateShaping: true);
     }
 
     public override void OnPointerMoved(PointerRoutedEventArgs e)
@@ -272,6 +292,23 @@ public class FlowDocument : FrameworkElement
 
     private void PerformFlowLayout(float width, float height)
     {
+        if (!_isFlowLayoutDirty &&
+            Math.Abs(width - _lastFlowLayoutWidth) < 0.01f &&
+            Math.Abs(height - _lastFlowLayoutHeight) < 0.01f)
+        {
+            return;
+        }
+
+        _lastFlowLayoutWidth = width;
+        _lastFlowLayoutHeight = height;
+        _isFlowLayoutDirty = false;
+        FlowLayoutPassCount++;
+        if (Font is not { } activeFont || width <= 0f || height <= 0f)
+        {
+            ClearFlowLayoutOutput();
+            return;
+        }
+
         TextLayoutEngine.LayoutMultiColumn(
             Document?.Blocks ?? Blocks,
             Paragraphs,
@@ -280,7 +317,7 @@ public class FlowDocument : FrameworkElement
             Padding,
             ColumnCount,
             ColumnGap,
-            Font!,
+            activeFont,
             FontSize,
             Foreground,
             this.ActualTheme,
@@ -291,17 +328,36 @@ public class FlowDocument : FrameworkElement
             RemoveChild,
             TextReadingOrder,
             FlowDirection,
-            ResolveEffectiveTextAlignment());
+            ResolveEffectiveTextAlignment(),
+            _layoutSession);
         _isRenderCommandCacheDirty = true;
     }
 
-    public override void OnRender(DrawingContext context)
+    private void InvalidateFlowLayout(bool invalidateShaping)
+    {
+        if (invalidateShaping) _layoutSession.Invalidate();
+        _isFlowLayoutDirty = true;
+        _isRenderCommandCacheDirty = true;
+        base.Invalidate();
+        InvalidateMeasure();
+    }
+
+    private void ClearFlowLayoutOutput()
+    {
+        _layoutSession.ReleaseCharacters(_positionedChars);
+        _tableDecorations.Clear();
+        while (Children.Count > 0) RemoveChild(Children[^1]);
+        _renderCommandCache.Clear();
+        _isRenderCommandCacheDirty = false;
+    }
+
+    private DrawingContext GetOrUpdateRenderCommandCache()
     {
         if (Font == null || _positionedChars.Count == 0)
         {
             _renderCommandCache.Clear();
             _isRenderCommandCacheDirty = false;
-            return;
+            return _renderCommandCache;
         }
 
         if (!ReferenceEquals(_cachedHoveredHyperlink, _hoveredHyperlink))
@@ -325,8 +381,15 @@ public class FlowDocument : FrameworkElement
             _isRenderCommandCacheDirty = false;
         }
 
-        context.Commands.AddRange(_renderCommandCache.Commands);
+        return _renderCommandCache;
+    }
 
+    DrawingContext IOwnedRenderCommandCache.GetOrUpdateRenderCommandCache() =>
+        GetOrUpdateRenderCommandCache();
+
+    public override void OnRender(DrawingContext context)
+    {
+        context.Commands.AddRange(GetOrUpdateRenderCommandCache().Commands);
         base.OnRender(context);
     }
 }

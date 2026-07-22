@@ -1,5 +1,9 @@
 using System;
 using System.Diagnostics;
+using System.Diagnostics.Tracing;
+using System.Runtime.InteropServices;
+using Silk.NET.Maths;
+using Silk.NET.Windowing;
 
 namespace ProGPU.Samples;
 
@@ -13,6 +17,14 @@ internal static class SamplePerformanceBenchmark
     private const string ScrollStepVariable = "PROGPU_SAMPLE_BENCHMARK_SCROLL_STEP";
     private const string PreconditionPagesVariable = "PROGPU_SAMPLE_BENCHMARK_PRECONDITION_PAGES";
     private const string PreconditionFramesVariable = "PROGPU_SAMPLE_BENCHMARK_PRECONDITION_FRAMES";
+    private const string MemoryVariable = "PROGPU_SAMPLE_BENCHMARK_MEMORY";
+    private const string HoldMillisecondsVariable = "PROGPU_SAMPLE_BENCHMARK_HOLD_MS";
+    private const string ResizeVariable = "PROGPU_SAMPLE_BENCHMARK_RESIZE";
+    private const string ResizeMinimumWidthVariable = "PROGPU_SAMPLE_BENCHMARK_RESIZE_MIN_WIDTH";
+    private const string ResizeMinimumHeightVariable = "PROGPU_SAMPLE_BENCHMARK_RESIZE_MIN_HEIGHT";
+    private const string ResizeMaximumWidthVariable = "PROGPU_SAMPLE_BENCHMARK_RESIZE_MAX_WIDTH";
+    private const string ResizeMaximumHeightVariable = "PROGPU_SAMPLE_BENCHMARK_RESIZE_MAX_HEIGHT";
+    private const string ResizeStepVariable = "PROGPU_SAMPLE_BENCHMARK_RESIZE_STEP";
 
     private static readonly int s_warmupFrames = ReadPositiveInt(WarmupFramesVariable, 180);
     private static readonly int s_measureFrames = ReadPositiveInt(MeasureFramesVariable, 600);
@@ -34,8 +46,17 @@ internal static class SamplePerformanceBenchmark
     private static double s_animationMilliseconds;
     private static double s_surfaceAcquireMilliseconds;
     private static double s_presentMilliseconds;
+    private static double s_totalFrameMilliseconds;
+    private static double s_maximumFrameMilliseconds;
+    private static int s_framesOverBudget;
     private static Microsoft.UI.Xaml.Window? s_window;
+    private static IWindow? s_resizeWindow;
     private static long s_allocatedBytesAtStart;
+    private static long s_managedHeapBytesAtStart;
+    private static TimeSpan s_gcPauseDurationAtStart;
+    private static int s_gen0CollectionsAtStart;
+    private static int s_gen1CollectionsAtStart;
+    private static int s_gen2CollectionsAtStart;
     private static int s_lolsRenderedAtStart;
     private static int s_sceneCacheHitFrames;
     private static int s_glyphStateSamples;
@@ -62,6 +83,21 @@ internal static class SamplePerformanceBenchmark
     private static readonly float s_scrollStep = ReadPositiveFloat(ScrollStepVariable, 40f);
     private static readonly string[] s_preconditionPages = ReadPageList(PreconditionPagesVariable);
     private static readonly int s_preconditionFrames = ReadPositiveInt(PreconditionFramesVariable, 180);
+    private static readonly bool s_memoryWorkload = ReadOptionalBool(MemoryVariable) == true;
+    private static readonly int s_holdMilliseconds = ReadNonNegativeInt(HoldMillisecondsVariable, 0);
+    private static readonly bool s_resizeWorkload = ReadOptionalBool(ResizeVariable) == true;
+    private static readonly int s_resizeMinimumWidth = ReadPositiveInt(ResizeMinimumWidthVariable, 800);
+    private static readonly int s_resizeMinimumHeight = ReadPositiveInt(ResizeMinimumHeightVariable, 600);
+    private static readonly int s_resizeMaximumWidth = Math.Max(s_resizeMinimumWidth, ReadPositiveInt(ResizeMaximumWidthVariable, 1280));
+    private static readonly int s_resizeMaximumHeight = Math.Max(s_resizeMinimumHeight, ReadPositiveInt(ResizeMaximumHeightVariable, 800));
+    private static readonly int s_resizeStep = ReadPositiveInt(ResizeStepVariable, 8);
+    private static int s_resizeWidth = s_resizeMaximumWidth;
+    private static int s_resizeDirection = -1;
+    private static int s_resizeRequests;
+    private static int s_resizeRequestsAtStart;
+    private static Microsoft.UI.Xaml.WindowResizeMetrics s_resizeMetricsAtStart;
+    private static ulong s_surfaceConfigurationsAtStart;
+    private static double s_surfaceConfigurationTimeAtStart;
     private static int s_preconditionPageIndex;
     private static int s_preconditionFrame;
     private static bool s_isPreconditioning;
@@ -71,6 +107,11 @@ internal static class SamplePerformanceBenchmark
     public static void AttachWindow(Microsoft.UI.Xaml.Window window)
     {
         s_window = window;
+        if (s_resizeWorkload && window.SilkWindow is { } resizeWindow)
+        {
+            s_resizeWindow = resizeWindow;
+            resizeWindow.Update += AdvanceResizeWorkload;
+        }
     }
 
     public static void StartRequestedWorkload(string selectedPage)
@@ -99,8 +140,10 @@ internal static class SamplePerformanceBenchmark
             $"[SampleBenchmark] page={selectedPage} warmupFrames={s_warmupFrames}" +
             $" measureFrames={s_measureFrames} vsync={AppState._wgpuContext?.VSync}" +
             $" scroll={s_scrollWorkload} scrollStep={s_scrollStep:F0}" +
+            $" resize={s_resizeWorkload}" +
             $" preconditionPages={string.Join(';', s_preconditionPages)}" +
             $" preconditionFrames={s_preconditionFrames}");
+        SampleBenchmarkEventSource.Log.WorkloadStarted(selectedPage);
     }
 
     public static void ObserveFrame(double deltaSeconds)
@@ -175,13 +218,28 @@ internal static class SamplePerformanceBenchmark
 
         if (s_frame == s_warmupFrames + 1)
         {
+            if (s_memoryWorkload)
+            {
+                CollectRetainedMemory();
+            }
+
             s_wallClock.Restart();
             s_allocatedBytesAtStart = GC.GetTotalAllocatedBytes(precise: false);
+            s_managedHeapBytesAtStart = GC.GetTotalMemory(forceFullCollection: false);
+            s_gcPauseDurationAtStart = GC.GetTotalPauseDuration();
+            s_gen0CollectionsAtStart = GC.CollectionCount(0);
+            s_gen1CollectionsAtStart = GC.CollectionCount(1);
+            s_gen2CollectionsAtStart = GC.CollectionCount(2);
             s_lolsRenderedAtStart = LolsPage.TotalRenderedCount;
             s_glyphAtlasGenerationAtStart = AppState._screenCompositor?.Atlas.Generation ?? 0;
             s_glyphAtlasEvictionsAtStart = AppState._screenCompositor?.Atlas.EvictionCount ?? 0;
             s_glyphAtlasClearsAtStart = AppState._screenCompositor?.Atlas.ClearCount ?? 0;
             s_pathAtlasGenerationAtStart = AppState._screenCompositor?.PathAtlas.Generation ?? 0;
+            s_resizeMetricsAtStart = s_window?.ResizeMetrics ?? default;
+            s_resizeRequestsAtStart = s_resizeRequests;
+            s_surfaceConfigurationsAtStart = AppState._wgpuContext?.SurfaceConfigurationCount ?? 0;
+            s_surfaceConfigurationTimeAtStart = AppState._wgpuContext?.SurfaceConfigurationTimeMs ?? 0d;
+            SampleBenchmarkEventSource.Log.MeasurementStarted(RequestedPage!);
         }
 
         s_deltaSeconds += deltaSeconds;
@@ -192,6 +250,9 @@ internal static class SamplePerformanceBenchmark
             s_animationMilliseconds += frameMetrics.AnimationTimeMs;
             s_surfaceAcquireMilliseconds += frameMetrics.SurfaceAcquireTimeMs;
             s_presentMilliseconds += frameMetrics.PresentTimeMs;
+            s_totalFrameMilliseconds += frameMetrics.TotalTimeMs;
+            s_maximumFrameMilliseconds = Math.Max(s_maximumFrameMilliseconds, frameMetrics.TotalTimeMs);
+            if (frameMetrics.TotalTimeMs > 16.667d) s_framesOverBudget++;
         }
         if (AppState._screenCompositor is { } compositor)
         {
@@ -227,6 +288,7 @@ internal static class SamplePerformanceBenchmark
         s_wallClock.Stop();
         s_finished = true;
         LolsPage.Stop();
+        SampleBenchmarkEventSource.Log.MeasurementStopped(RequestedPage!);
 
         double deltaFps = s_deltaSeconds > 0d ? measuredFrames / s_deltaSeconds : 0d;
         double wallFps = s_wallClock.Elapsed.TotalSeconds > 0d
@@ -234,7 +296,35 @@ internal static class SamplePerformanceBenchmark
             : 0d;
         double divisor = Math.Max(1, measuredFrames);
         long allocatedBytes = Math.Max(0, GC.GetTotalAllocatedBytes(precise: false) - s_allocatedBytesAtStart);
+        int gen0Collections = GC.CollectionCount(0) - s_gen0CollectionsAtStart;
+        int gen1Collections = GC.CollectionCount(1) - s_gen1CollectionsAtStart;
+        int gen2Collections = GC.CollectionCount(2) - s_gen2CollectionsAtStart;
+        double gcPauseMilliseconds = (GC.GetTotalPauseDuration() - s_gcPauseDurationAtStart).TotalMilliseconds;
+        if (s_memoryWorkload)
+        {
+            CollectRetainedMemory();
+        }
+
+        long managedHeapBytes = GC.GetTotalMemory(forceFullCollection: false);
+        var gcMemoryInfo = GC.GetGCMemoryInfo();
+        var generationInfo = gcMemoryInfo.GenerationInfo;
+        long gen0Bytes = generationInfo.Length > 0 ? generationInfo[0].SizeAfterBytes : 0;
+        long gen1Bytes = generationInfo.Length > 1 ? generationInfo[1].SizeAfterBytes : 0;
+        long gen2Bytes = generationInfo.Length > 2 ? generationInfo[2].SizeAfterBytes : 0;
+        long lohBytes = generationInfo.Length > 3 ? generationInfo[3].SizeAfterBytes : 0;
+        long pohBytes = generationInfo.Length > 4 ? generationInfo[4].SizeAfterBytes : 0;
+        using var process = Process.GetCurrentProcess();
+        process.Refresh();
+        ProcessMemorySnapshot processMemory = ProcessMemorySnapshot.Capture(process);
         var finalMetrics = AppState._screenCompositor?.Metrics;
+        var finalResizeMetrics = s_window?.ResizeMetrics ?? default;
+        ulong resizeEvents = finalResizeMetrics.LogicalResizeEvents - s_resizeMetricsAtStart.LogicalResizeEvents;
+        ulong framebufferResizeEvents = finalResizeMetrics.FramebufferResizeEvents - s_resizeMetricsAtStart.FramebufferResizeEvents;
+        ulong liveResizeFrames = finalResizeMetrics.LiveResizeFrames - s_resizeMetricsAtStart.LiveResizeFrames;
+        ulong suppressedScheduledFrames = finalResizeMetrics.SuppressedScheduledFrames - s_resizeMetricsAtStart.SuppressedScheduledFrames;
+        double resizeCallbackTimeMs = finalResizeMetrics.CallbackTimeMs - s_resizeMetricsAtStart.CallbackTimeMs;
+        ulong surfaceConfigurations = (AppState._wgpuContext?.SurfaceConfigurationCount ?? 0) - s_surfaceConfigurationsAtStart;
+        double surfaceConfigurationTimeMs = (AppState._wgpuContext?.SurfaceConfigurationTimeMs ?? 0d) - s_surfaceConfigurationTimeAtStart;
         string workloadDetails = string.Empty;
         if (string.Equals(RequestedPage, "Font Glyph Browser", StringComparison.OrdinalIgnoreCase))
         {
@@ -327,6 +417,19 @@ internal static class SamplePerformanceBenchmark
             $" animationMs={s_animationMilliseconds / divisor:F4}" +
             $" acquireMs={s_surfaceAcquireMilliseconds / divisor:F4}" +
             $" presentMs={s_presentMilliseconds / divisor:F4}" +
+            $" totalFrameMs={s_totalFrameMilliseconds / divisor:F4}" +
+            $" maxFrameMs={s_maximumFrameMilliseconds:F4}" +
+            $" framesOverBudget={s_framesOverBudget}" +
+            $" resizeRequests={s_resizeRequests - s_resizeRequestsAtStart}" +
+            $" resizeEvents={resizeEvents}" +
+            $" framebufferResizeEvents={framebufferResizeEvents}" +
+            $" liveResizeFrames={liveResizeFrames}" +
+            $" suppressedScheduledFrames={suppressedScheduledFrames}" +
+            $" resizeCallbackMs={resizeCallbackTimeMs / Math.Max(1d, framebufferResizeEvents):F4}" +
+            $" maxResizeCallbackMs={finalResizeMetrics.MaximumCallbackTimeMs:F4}" +
+            $" surfaceConfigurations={surfaceConfigurations}" +
+            $" surfaceConfigurationMs={surfaceConfigurationTimeMs / Math.Max(1d, surfaceConfigurations):F4}" +
+            $" maxSurfaceConfigurationMs={AppState._wgpuContext?.MaximumSurfaceConfigurationTimeMs ?? 0d:F4}" +
             $" allocatedBytesPerFrame={allocatedBytes / divisor:F0}" +
             $" sceneCacheHits={s_sceneCacheHitFrames}/{measuredFrames}" +
             $" sceneCacheMiss=\"{finalMetrics?.SceneCacheMissReason ?? "none"}\"" +
@@ -336,10 +439,97 @@ internal static class SamplePerformanceBenchmark
             $" textVertices={finalMetrics?.TextVerticesCount ?? 0}" +
             $" pathAtlasEntries={finalMetrics?.PathAtlasCachedCount ?? 0}" +
             $" pathAtlasCpuCacheBytes={finalMetrics?.PathAtlasCpuCacheBytes ?? 0}" +
+            $" glyphAtlasTextureBytes={finalMetrics?.GlyphAtlasTextureBytes ?? 0}" +
+            $" colorGlyphAtlasTextureBytes={finalMetrics?.ColorGlyphAtlasTextureBytes ?? 0}" +
+            $" glyphCoverageStagingBytes={finalMetrics?.GlyphCoverageStagingBytes ?? 0}" +
+            $" glyphOutlineGpuBytes={finalMetrics?.GlyphOutlineGpuBytes ?? 0}" +
+            $" glyphOutlineCompiled={finalMetrics?.GlyphOutlineCompiledCount ?? 0}" +
+            $" glyphOutlineCapacity={finalMetrics?.GlyphOutlineRecordCapacity ?? 0}" +
+            $" glyphOutlineUploadWrites={finalMetrics?.GlyphOutlineUploadWrites ?? 0}" +
+            $" glyphUniformUploadWrites={finalMetrics?.GlyphUniformUploadWrites ?? 0}" +
+            $" glyphRasterBatchSubmissions={finalMetrics?.GlyphRasterBatchSubmissions ?? 0}" +
+            $" glyphRasterBindGroupCreations={finalMetrics?.GlyphRasterBindGroupCreations ?? 0}" +
+            $" glyphRasterComputePasses={finalMetrics?.GlyphRasterComputePasses ?? 0}" +
+            $" glyphLastBatchNewGlyphs={finalMetrics?.GlyphLastBatchNewGlyphCount ?? 0}" +
+            $" glyphAtlasSize={finalMetrics?.GlyphAtlasSize ?? 0}/{finalMetrics?.GlyphAtlasMaximumSize ?? 0}" +
+            $" colorGlyphAtlasSize={finalMetrics?.ColorGlyphAtlasSize ?? 0}/{finalMetrics?.ColorGlyphAtlasMaximumSize ?? 0}" +
+            $" pathAtlasTextureBytes={finalMetrics?.PathAtlasTextureBytes ?? 0}" +
+            $" pathAtlasSize={finalMetrics?.PathAtlasSize ?? 0}/{finalMetrics?.PathAtlasMaximumSize ?? 0}" +
+            $" pathRasterStagingBytes={finalMetrics?.PathRasterStagingBytes ?? 0}" +
+            $" pathPeakRasterStagingBytes={finalMetrics?.PathPeakRasterStagingBytes ?? 0}" +
+            $" managedHeapStartBytes={s_managedHeapBytesAtStart}" +
+            $" managedHeapBytes={managedHeapBytes}" +
+            $" managedHeapDeltaBytes={managedHeapBytes - s_managedHeapBytesAtStart}" +
+            $" gcHeapSizeBytes={gcMemoryInfo.HeapSizeBytes}" +
+            $" gcCommittedBytes={gcMemoryInfo.TotalCommittedBytes}" +
+            $" managedFragmentedBytes={gcMemoryInfo.FragmentedBytes}" +
+            $" gen0Bytes={gen0Bytes}" +
+            $" gen1Bytes={gen1Bytes}" +
+            $" gen2Bytes={gen2Bytes}" +
+            $" lohBytes={lohBytes}" +
+            $" pohBytes={pohBytes}" +
+            $" gen0Collections={gen0Collections}" +
+            $" gen1Collections={gen1Collections}" +
+            $" gen2Collections={gen2Collections}" +
+            $" gcPauseMs={gcPauseMilliseconds:F3}" +
+            $" pinnedObjects={gcMemoryInfo.PinnedObjectsCount}" +
+            $" finalizationPending={gcMemoryInfo.FinalizationPendingCount}" +
+            $" processWorkingSetBytes={process.WorkingSet64}" +
+            $" processPeakWorkingSetBytes={process.PeakWorkingSet64}" +
+            $" processPrivateBytes={process.PrivateMemorySize64}" +
+            $" processVirtualBytes={process.VirtualMemorySize64}" +
+            $" processResidentBytes={processMemory.ResidentBytes}" +
+            $" processWiredBytes={processMemory.WiredBytes}" +
+            $" processPhysicalFootprintBytes={processMemory.PhysicalFootprintBytes}" +
+            $" processLifetimeMaxPhysicalFootprintBytes={processMemory.LifetimeMaxPhysicalFootprintBytes}" +
             $" pathAtlasFillCacheEntries={AppState._screenCompositor?.PathAtlas.CachedFillPathCount ?? 0}" +
             $" pathAtlasHitTestCacheEntries={AppState._screenCompositor?.PathAtlas.CachedHitTestPathCount ?? 0}");
 
+        if (s_holdMilliseconds > 0)
+        {
+            SampleBenchmarkEventSource.Log.SnapshotHoldStarted(RequestedPage!);
+            Thread.Sleep(s_holdMilliseconds);
+        }
+
         AppState._window?.Close();
+    }
+
+    private static void AdvanceResizeWorkload(double _)
+    {
+        if (!s_resizeWorkload || !s_workloadStarted || s_isPreconditioning || s_finished || s_resizeWindow is null)
+        {
+            return;
+        }
+
+        int nextWidth = s_resizeWidth + s_resizeDirection * s_resizeStep;
+        if (nextWidth <= s_resizeMinimumWidth)
+        {
+            nextWidth = s_resizeMinimumWidth;
+            s_resizeDirection = 1;
+        }
+        else if (nextWidth >= s_resizeMaximumWidth)
+        {
+            nextWidth = s_resizeMaximumWidth;
+            s_resizeDirection = -1;
+        }
+
+        s_resizeWidth = nextWidth;
+        float progress = s_resizeMaximumWidth == s_resizeMinimumWidth
+            ? 1f
+            : (nextWidth - s_resizeMinimumWidth) / (float)(s_resizeMaximumWidth - s_resizeMinimumWidth);
+        int nextHeight = (int)MathF.Round(s_resizeMinimumHeight +
+            (s_resizeMaximumHeight - s_resizeMinimumHeight) * progress);
+        var requestedSize = new Vector2D<int>(nextWidth, nextHeight);
+        if (s_resizeWindow.Size == requestedSize) return;
+        s_resizeWindow.Size = requestedSize;
+        s_resizeRequests++;
+    }
+
+    private static void CollectRetainedMemory()
+    {
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+        GC.WaitForPendingFinalizers();
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
     }
 
     public static void RecordHostUpdate(TimeSpan elapsed)
@@ -468,6 +658,12 @@ internal static class SamplePerformanceBenchmark
         return int.TryParse(value, out int parsed) && parsed > 0 ? parsed : fallback;
     }
 
+    private static int ReadNonNegativeInt(string name, int fallback)
+    {
+        string? value = Environment.GetEnvironmentVariable(name);
+        return int.TryParse(value, out int parsed) && parsed >= 0 ? parsed : fallback;
+    }
+
     private static bool? ReadOptionalBool(string name)
     {
         string? value = Environment.GetEnvironmentVariable(name);
@@ -481,4 +677,105 @@ internal static class SamplePerformanceBenchmark
             ? parsed
             : fallback;
     }
+}
+
+internal readonly record struct ProcessMemorySnapshot(
+    long ResidentBytes,
+    long WiredBytes,
+    long PhysicalFootprintBytes,
+    long LifetimeMaxPhysicalFootprintBytes)
+{
+    public static ProcessMemorySnapshot Capture(Process process)
+    {
+        if (OperatingSystem.IsMacOS() && MacOsProcessMemory.TryCapture(process.Id, out var mac))
+            return mac;
+        return new ProcessMemorySnapshot(
+            process.WorkingSet64,
+            0,
+            process.WorkingSet64,
+            process.PeakWorkingSet64);
+    }
+}
+
+internal static unsafe class MacOsProcessMemory
+{
+    private const int RUsageInfoV4Flavor = 4;
+
+    public static bool TryCapture(int processId, out ProcessMemorySnapshot snapshot)
+    {
+        var usage = default(RUsageInfoV4);
+        if (ProcPidRUsage(processId, RUsageInfoV4Flavor, ref usage) == 0)
+        {
+            snapshot = new ProcessMemorySnapshot(
+                checked((long)usage.ResidentSize),
+                checked((long)usage.WiredSize),
+                checked((long)usage.PhysicalFootprint),
+                checked((long)usage.LifetimeMaxPhysicalFootprint));
+            return true;
+        }
+        snapshot = default;
+        return false;
+    }
+
+    [DllImport("/usr/lib/libproc.dylib", EntryPoint = "proc_pid_rusage")]
+    private static extern int ProcPidRUsage(int processId, int flavor, ref RUsageInfoV4 buffer);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RUsageInfoV4
+    {
+        public fixed byte Uuid[16];
+        public ulong UserTime;
+        public ulong SystemTime;
+        public ulong PackageIdleWakeups;
+        public ulong InterruptWakeups;
+        public ulong PageIns;
+        public ulong WiredSize;
+        public ulong ResidentSize;
+        public ulong PhysicalFootprint;
+        public ulong ProcessStartAbsoluteTime;
+        public ulong ProcessExitAbsoluteTime;
+        public ulong ChildUserTime;
+        public ulong ChildSystemTime;
+        public ulong ChildPackageIdleWakeups;
+        public ulong ChildInterruptWakeups;
+        public ulong ChildPageIns;
+        public ulong ChildElapsedAbsoluteTime;
+        public ulong DiskBytesRead;
+        public ulong DiskBytesWritten;
+        public ulong CpuTimeDefault;
+        public ulong CpuTimeMaintenance;
+        public ulong CpuTimeBackground;
+        public ulong CpuTimeUtility;
+        public ulong CpuTimeLegacy;
+        public ulong CpuTimeUserInitiated;
+        public ulong CpuTimeUserInteractive;
+        public ulong BilledSystemTime;
+        public ulong ServicedSystemTime;
+        public ulong LogicalWrites;
+        public ulong LifetimeMaxPhysicalFootprint;
+        public ulong Instructions;
+        public ulong Cycles;
+        public ulong BilledEnergy;
+        public ulong ServicedEnergy;
+        public ulong IntervalMaxPhysicalFootprint;
+        public ulong RunnableTime;
+    }
+}
+
+[EventSource(Name = "ProGPU-SampleBenchmark")]
+internal sealed class SampleBenchmarkEventSource : EventSource
+{
+    public static readonly SampleBenchmarkEventSource Log = new();
+
+    [Event(1, Level = EventLevel.Informational)]
+    public void WorkloadStarted(string page) => WriteEvent(1, page);
+
+    [Event(2, Level = EventLevel.Informational)]
+    public void MeasurementStarted(string page) => WriteEvent(2, page);
+
+    [Event(3, Level = EventLevel.Informational)]
+    public void MeasurementStopped(string page) => WriteEvent(3, page);
+
+    [Event(4, Level = EventLevel.Informational)]
+    public void SnapshotHoldStarted(string page) => WriteEvent(4, page);
 }

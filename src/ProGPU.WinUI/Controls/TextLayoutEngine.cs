@@ -20,17 +20,21 @@ namespace Microsoft.UI.Xaml.Controls
         private static readonly SolidColorBrush HyperlinkBrush = new SolidColorBrush(0x0078D4FF);
         private static readonly SolidColorBrush SelectionHighlightBrush = new SolidColorBrush(0x0078D435);
         private static readonly SolidColorBrush HoveredHyperlinkBrush = new SolidColorBrush(0x005A9EFF);
+        private static readonly TextShapingOptions[] CommonLeftToRightShapingOptions =
+            CreateCommonShapingOptions(ShapingDirection.LeftToRight);
+        private static readonly TextShapingOptions[] CommonRightToLeftShapingOptions =
+            CreateCommonShapingOptions(ShapingDirection.RightToLeft);
 
         public static void AccumulateInlines(
-            Inline inline, 
-            List<RichChar> list, 
-            Brush defaultFg, 
-            float defaultSize, 
-            bool isBold, 
-            bool isItalic, 
-            bool isUnderline, 
+            Inline inline,
+            List<RichChar> list,
+            Brush defaultFg,
+            float defaultSize,
+            bool isBold,
+            bool isItalic,
+            bool isUnderline,
             ElementTheme theme,
-            Inline? parentInline = null, 
+            Inline? parentInline = null,
             float leftIndent = 0f,
             TtfFont? parentFont = null)
         {
@@ -271,6 +275,16 @@ namespace Microsoft.UI.Xaml.Controls
             _ => 1
         };
 
+        private static int GetCachedBlockTextLength(Block block, RichBlockLayoutCache cache)
+        {
+            if (cache.LogicalTextLength < 0)
+            {
+                cache.LogicalTextLength = GetBlockTextLength(block);
+            }
+
+            return cache.LogicalTextLength;
+        }
+
         private static void RebaseBlockCharacters(RichBlockLayoutCache cache, int logicalTextOffset)
         {
             cache.RebaseTextPositions(logicalTextOffset);
@@ -432,7 +446,7 @@ namespace Microsoft.UI.Xaml.Controls
                 ShapingBufferFlags flags = ShapingBufferFlags.None;
                 if (runStart == 0) flags |= ShapingBufferFlags.BeginningOfText;
                 if (runEnd == line.Count) flags |= ShapingBufferFlags.EndOfText;
-                TextShapingOptions options = CreateShapingOptions(first, runLevel).WithBufferFlags(flags);
+                TextShapingOptions options = CreateShapingOptions(first, runLevel, flags);
                 string runText = runStart == 0 && runLength == logicalText.Length
                     ? logicalText
                     : logicalText.Substring(runStart, runLength);
@@ -508,7 +522,10 @@ namespace Microsoft.UI.Xaml.Controls
             }
         }
 
-        private static TextShapingOptions CreateShapingOptions(RichChar style, sbyte bidiLevel)
+        private static TextShapingOptions CreateShapingOptions(
+            RichChar style,
+            sbyte bidiLevel,
+            ShapingBufferFlags bufferFlags = ShapingBufferFlags.None)
         {
             ShapingDirection direction = (bidiLevel & 1) == 0
                 ? ShapingDirection.LeftToRight
@@ -529,17 +546,49 @@ namespace Microsoft.UI.Xaml.Controls
                     Direction = direction,
                     Language = string.IsNullOrWhiteSpace(style.LanguageTag) ? null : style.LanguageTag,
                     Features = resolved.Features,
-                    ExplicitFeatureTags = resolved.ExplicitFeatureTags
+                    ExplicitFeatureTags = resolved.ExplicitFeatureTags,
+                    BufferFlags = bufferFlags
                 };
             }
+
+            if (string.IsNullOrWhiteSpace(style.LanguageTag) &&
+                (bufferFlags & ~(ShapingBufferFlags.BeginningOfText | ShapingBufferFlags.EndOfText)) == 0)
+            {
+                TextShapingOptions[] common = direction == ShapingDirection.RightToLeft
+                    ? CommonRightToLeftShapingOptions
+                    : CommonLeftToRightShapingOptions;
+                return common[(int)bufferFlags];
+            }
+
             return new TextShapingOptions
             {
                 Direction = direction,
-                Language = string.IsNullOrWhiteSpace(style.LanguageTag) ? null : style.LanguageTag
+                Language = string.IsNullOrWhiteSpace(style.LanguageTag) ? null : style.LanguageTag,
+                BufferFlags = bufferFlags
             };
         }
 
-        private sealed class ParagraphShapingMetrics
+        private static TextShapingOptions[] CreateCommonShapingOptions(ShapingDirection direction) =>
+        [
+            new TextShapingOptions { Direction = direction },
+            new TextShapingOptions
+            {
+                Direction = direction,
+                BufferFlags = ShapingBufferFlags.BeginningOfText
+            },
+            new TextShapingOptions
+            {
+                Direction = direction,
+                BufferFlags = ShapingBufferFlags.EndOfText
+            },
+            new TextShapingOptions
+            {
+                Direction = direction,
+                BufferFlags = ShapingBufferFlags.BeginningOfText | ShapingBufferFlags.EndOfText
+            }
+        ];
+
+        internal sealed class ParagraphShapingMetrics
         {
             public ParagraphShapingMetrics(int length)
             {
@@ -562,7 +611,8 @@ namespace Microsoft.UI.Xaml.Controls
             List<RichChar> characters,
             TtfFont activeFont,
             TextReadingOrder textReadingOrder,
-            FlowDirection flowDirection)
+            FlowDirection flowDirection,
+            RichDocumentLayoutSession? layoutSession = null)
         {
             var metrics = new ParagraphShapingMetrics(characters.Count);
             int paragraphStart = 0;
@@ -584,11 +634,14 @@ namespace Microsoft.UI.Xaml.Controls
                     paragraphEnd++;
                 }
 
-                var paragraph = new List<PositionedRichChar>(paragraphEnd - paragraphStart);
+                List<PositionedRichChar> paragraph = layoutSession?.GetShapingCharacterScratch() ??
+                    new List<PositionedRichChar>(paragraphEnd - paragraphStart);
                 var textBuilder = new StringBuilder(paragraphEnd - paragraphStart);
                 for (int i = paragraphStart; i < paragraphEnd; i++)
                 {
-                    paragraph.Add(new PositionedRichChar { Info = characters[i] });
+                    RichChar character = characters[i];
+                    paragraph.Add(layoutSession?.RentPositionedCharacter(character) ??
+                        new PositionedRichChar { Info = character });
                     textBuilder.Append(characters[i].Character);
                 }
 
@@ -627,6 +680,8 @@ namespace Microsoft.UI.Xaml.Controls
                                 : (byte)2;
                     }
                 }
+
+                layoutSession?.ReleaseCharacters(paragraph);
 
                 paragraphStart = paragraphEnd;
             }
@@ -668,12 +723,12 @@ namespace Microsoft.UI.Xaml.Controls
         {
             float scale = baseFontSize / activeFont.UnitsPerEm;
             float lineSpacing = (activeFont.Ascender - activeFont.Descender + activeFont.LineGap) * scale;
-            
+
             if (block is Paragraph paragraph)
             {
                 int charCount = GetInlinesLength(paragraph.Inlines);
                 if (charCount == 0) return block.MarginBottom;
-                
+
                 // Detect the maximum font size in children runs/spans
                 float maxFontSize = baseFontSize;
                 foreach (var inline in paragraph.Inlines)
@@ -697,10 +752,10 @@ namespace Microsoft.UI.Xaml.Controls
                 float avgCharWidth = maxFontSize * 0.49f;
                 float charsPerLine = Math.Max(10f, availableWidth / avgCharWidth);
                 int estimatedLines = (int)Math.Ceiling(charCount / charsPerLine);
-                
+
                 int lineBreaks = CountLineBreaks(paragraph.Inlines);
                 estimatedLines = Math.Max(estimatedLines, lineBreaks + 1);
-                
+
                 float blockLineSpacing = (activeFont.Ascender - activeFont.Descender + activeFont.LineGap) * (maxFontSize / activeFont.UnitsPerEm);
 
                 float embeddedHeight = 0f;
@@ -736,12 +791,12 @@ namespace Microsoft.UI.Xaml.Controls
                         }
                     }
                 }
-                
+
                 if (embeddedHeight > 0f)
                 {
                     return embeddedHeight + block.MarginBottom;
                 }
-                
+
                 return estimatedLines * blockLineSpacing + block.MarginBottom;
             }
             else if (block is ListBlock listBlock)
@@ -772,12 +827,12 @@ namespace Microsoft.UI.Xaml.Controls
                     float charsPerLine = Math.Max(5f, cellWidth / (baseFontSize * 0.49f));
                     int cellLines = (int)Math.Ceiling(maxCellChars / charsPerLine);
                     rowHeight = Math.Max(rowHeight, Math.Max(1, cellLines) * lineSpacing + table.CellPadding * 2f);
-                    
+
                     tableHeight += rowHeight;
                 }
                 return tableHeight + block.MarginBottom;
             }
-            
+
             return 30f + block.MarginBottom;
         }
 
@@ -795,6 +850,7 @@ namespace Microsoft.UI.Xaml.Controls
             FrameworkElement parent,
             Action<Visual> addChild,
             HashSet<Visual> encounteredChildren,
+            RichDocumentLayoutSession layoutSession,
             List<PositionedRichChar> blockChars,
             List<TableVisualDecoration> blockDecorations,
             TextWrapping textWrapping,
@@ -803,7 +859,7 @@ namespace Microsoft.UI.Xaml.Controls
             bool alignmentIncludesTrailingWhitespace,
             bool ignoreTrailingCharacterSpacing)
         {
-            blockChars.Clear();
+            layoutSession.ReleaseCharacters(blockChars);
             blockDecorations.Clear();
 
             Paragraph? paragraphBlock = block as Paragraph;
@@ -855,7 +911,7 @@ namespace Microsoft.UI.Xaml.Controls
                 });
             }
 
-            var charList = new List<RichChar>();
+            List<RichChar> charList = layoutSession.GetRichCharacterScratch();
             if (block is Paragraph paragraph)
             {
                 foreach (var inline in paragraph.Inlines)
@@ -945,7 +1001,8 @@ namespace Microsoft.UI.Xaml.Controls
                 charList,
                 activeFont,
                 textReadingOrder,
-                blockFlowDirection);
+                blockFlowDirection,
+                layoutSession);
             float[] shapedAdvances = shapingMetrics.Advances;
 
             var currentLine = new List<PositionedRichChar>();
@@ -1173,7 +1230,7 @@ namespace Microsoft.UI.Xaml.Controls
                             float shift = wc.Position.X - lastWordStartCursorX;
                             remapped.Position = new Vector2(wrapStart + shift, cursorY);
                             currentLine.Add(remapped);
-                            
+
                             float wAdv = shapedAdvances[remapped.Info.TextPosition];
                             cursorX = wrapStart + shift + wAdv;
                         }
@@ -1189,7 +1246,7 @@ namespace Microsoft.UI.Xaml.Controls
                             finalXVal = continuationStartX + rc.LeftIndent - rc.BulletOffset + (cursorX - continuationStartX);
                         }
                         var pos = new Vector2(finalXVal, cursorY);
-                        currentLine.Add(new PositionedRichChar { Info = rc, Position = pos });
+                        currentLine.Add(layoutSession.RentPositionedCharacter(rc, pos));
                         cursorX += advance;
                         lastWordStart = 0;
                         lastWordStartCursorX = continuationStartX + rc.LeftIndent;
@@ -1216,7 +1273,7 @@ namespace Microsoft.UI.Xaml.Controls
                     finalX = continuationStartX + rc.LeftIndent - rc.BulletOffset + (cursorX - continuationStartX);
                 }
                 var charPos = new Vector2(finalX, cursorY);
-                currentLine.Add(new PositionedRichChar { Info = rc, Position = charPos });
+                currentLine.Add(layoutSession.RentPositionedCharacter(rc, charPos));
                 cursorX += advance;
             }
 
@@ -1542,7 +1599,9 @@ namespace Microsoft.UI.Xaml.Controls
 
             List<Visual> currentChildren = layoutSession.CurrentChildren;
             currentChildren.Clear();
-            currentChildren.AddRange(parent.Children);
+            IReadOnlyList<Visual> parentChildren = parent.Children;
+            for (int index = 0; index < parentChildren.Count; index++)
+                currentChildren.Add(parentChildren[index]);
             if (activeFont == null || blocks.Count == 0)
             {
                 foreach (var child in currentChildren)
@@ -1557,8 +1616,9 @@ namespace Microsoft.UI.Xaml.Controls
             encounteredChildren.Clear();
 
             // Invalidate only this presenter's cache when a complete layout key changes.
-            foreach (var block in blocks)
+            for (int blockIndex = 0; blockIndex < blocks.Count; blockIndex++)
             {
+                Block block = blocks[blockIndex];
                 RichBlockLayoutCache cache = layoutSession.GetOrCreate(block);
                 if (!cache.Matches(
                         maxWidth,
@@ -1576,7 +1636,7 @@ namespace Microsoft.UI.Xaml.Controls
                 {
                     cache.IsLayoutValid = false;
                     cache.Height = -1f;
-                    cache.Characters.Clear();
+                    layoutSession.ReleaseCharacters(cache.Characters);
                     cache.Decorations.Clear();
                 }
             }
@@ -1624,8 +1684,9 @@ namespace Microsoft.UI.Xaml.Controls
                 if (scrollViewer != null && iterations == 0)
                 {
                     float currentScrollY = scrollViewer.VerticalOffset - relativeY;
-                    foreach (var block in blocks)
+                    for (int blockIndex = 0; blockIndex < blocks.Count; blockIndex++)
                     {
+                        Block block = blocks[blockIndex];
                         RichBlockLayoutCache cache = layoutSession.GetOrCreate(block);
                         if (cache.Height > 0f)
                         {
@@ -1645,8 +1706,9 @@ namespace Microsoft.UI.Xaml.Controls
 
                 // Pass 1: Offset assignment and block-level measurement (lazy / viewport-driven)
                 int logicalTextOffset = 0;
-                foreach (var block in blocks)
+                for (int blockIndex = 0; blockIndex < blocks.Count; blockIndex++)
                 {
+                    Block block = blocks[blockIndex];
                     RichBlockLayoutCache cache = layoutSession.GetOrCreate(block);
                     cache.YOffset = cursorY;
 
@@ -1673,7 +1735,7 @@ namespace Microsoft.UI.Xaml.Controls
 
                         if (!isCacheValid)
                         {
-                            LayoutBlock(block, cache, cursorY, maxWidth, padding, activeFont, baseFontSize, resolvedFg, alignment, theme, parent, addChild, encounteredChildren, cache.Characters, cache.Decorations, textWrapping, textReadingOrder, flowDirection, alignmentIncludesTrailingWhitespace, ignoreTrailingCharacterSpacing);
+                            LayoutBlock(block, cache, cursorY, maxWidth, padding, activeFont, baseFontSize, resolvedFg, alignment, theme, parent, addChild, encounteredChildren, layoutSession, cache.Characters, cache.Decorations, textWrapping, textReadingOrder, flowDirection, alignmentIncludesTrailingWhitespace, ignoreTrailingCharacterSpacing);
                             cache.LogicalTextOffset = 0;
                             RebaseBlockCharacters(cache, logicalTextOffset);
                             cache.SetKey(maxWidth, padding, activeFont, baseFontSize, defaultFg, alignment, theme, textWrapping, textReadingOrder, flowDirection, alignmentIncludesTrailingWhitespace, ignoreTrailingCharacterSpacing);
@@ -1686,11 +1748,12 @@ namespace Microsoft.UI.Xaml.Controls
                     }
                     else
                     {
-                        // Drop off-screen content but retain list capacity for allocation-free recycling.
+                        // Drop off-screen content and return character objects to the
+                        // presenter-local bounded pool for the next realized block.
                         if (cache.IsLayoutValid)
                         {
                             cache.IsLayoutValid = false;
-                            cache.Characters.Clear();
+                            layoutSession.ReleaseCharacters(cache.Characters);
                             cache.Decorations.Clear();
                         }
                         if (cache.Height <= 0f)
@@ -1699,7 +1762,7 @@ namespace Microsoft.UI.Xaml.Controls
                         }
                         cursorY += cache.Height;
                     }
-                    logicalTextOffset += GetBlockTextLength(block) + block.LogicalTextSeparatorLength;
+                    logicalTextOffset += GetCachedBlockTextLength(block, cache) + block.LogicalTextSeparatorLength;
                 }
 
                 // Adjust scroll anchoring if preceding block measurements caused absolute shifting
@@ -1724,8 +1787,9 @@ namespace Microsoft.UI.Xaml.Controls
 
             // Pass 2: Gather visible chars and decorations, and measure any newly visible blocks
             int gatheredLogicalTextOffset = 0;
-            foreach (var block in blocks)
+            for (int blockIndex = 0; blockIndex < blocks.Count; blockIndex++)
             {
+                Block block = blocks[blockIndex];
                 RichBlockLayoutCache cache = layoutSession.GetOrCreate(block);
                 float blockTop = cache.YOffset;
                 float blockBottom = blockTop + cache.Height;
@@ -1738,7 +1802,7 @@ namespace Microsoft.UI.Xaml.Controls
                 {
                     if (!cache.Matches(maxWidth, padding, activeFont, baseFontSize, defaultFg, alignment, theme, textWrapping, textReadingOrder, flowDirection, alignmentIncludesTrailingWhitespace, ignoreTrailingCharacterSpacing))
                     {
-                        LayoutBlock(block, cache, blockTop, maxWidth, padding, activeFont, baseFontSize, resolvedFg, alignment, theme, parent, addChild, encounteredChildren, cache.Characters, cache.Decorations, textWrapping, textReadingOrder, flowDirection, alignmentIncludesTrailingWhitespace, ignoreTrailingCharacterSpacing);
+                        LayoutBlock(block, cache, blockTop, maxWidth, padding, activeFont, baseFontSize, resolvedFg, alignment, theme, parent, addChild, encounteredChildren, layoutSession, cache.Characters, cache.Decorations, textWrapping, textReadingOrder, flowDirection, alignmentIncludesTrailingWhitespace, ignoreTrailingCharacterSpacing);
                         cache.LogicalTextOffset = 0;
                         RebaseBlockCharacters(cache, gatheredLogicalTextOffset);
                         cache.SetKey(maxWidth, padding, activeFont, baseFontSize, defaultFg, alignment, theme, textWrapping, textReadingOrder, flowDirection, alignmentIncludesTrailingWhitespace, ignoreTrailingCharacterSpacing);
@@ -1766,7 +1830,7 @@ namespace Microsoft.UI.Xaml.Controls
                         }
                     }
                 }
-                gatheredLogicalTextOffset += GetBlockTextLength(block) + block.LogicalTextSeparatorLength;
+                gatheredLogicalTextOffset += GetCachedBlockTextLength(block, cache) + block.LogicalTextSeparatorLength;
             }
 
             // Cleanup recycled off-screen UI controls
@@ -1780,8 +1844,9 @@ namespace Microsoft.UI.Xaml.Controls
 
             // Preserve the existing diagnostics surface without using model-owned
             // state as the authoritative cache.
-            foreach (Block block in blocks)
+            for (int blockIndex = 0; blockIndex < blocks.Count; blockIndex++)
             {
+                Block block = blocks[blockIndex];
                 RichBlockLayoutCache cache = layoutSession.GetOrCreate(block);
                 block.CachedHeight = cache.Height;
                 block.CachedYOffset = cache.YOffset;
@@ -1792,9 +1857,9 @@ namespace Microsoft.UI.Xaml.Controls
         }
 
         private static void LayoutTable(
-            Table table, 
-            ref float cursorY, 
-            float availableWidth, 
+            Table table,
+            ref float cursorY,
+            float availableWidth,
             float leftIndent,
             Thickness padding,
             float baseFontSize,
@@ -2164,9 +2229,9 @@ namespace Microsoft.UI.Xaml.Controls
         }
 
         private static List<PositionedRichChar> LayoutCellChars(
-            TableCell cell, 
-            float cellWidth, 
-            float cellPadding, 
+            TableCell cell,
+            float cellWidth,
+            float cellPadding,
             out float cellHeight,
             float baseFontSize,
             TtfFont activeFont,
@@ -2553,19 +2618,29 @@ namespace Microsoft.UI.Xaml.Controls
             Action<Visual> removeChild,
             TextReadingOrder textReadingOrder = TextReadingOrder.DetectFromContent,
             FlowDirection flowDirection = FlowDirection.LeftToRight,
-            TextAlignment alignment = TextAlignment.Left)
+            TextAlignment alignment = TextAlignment.Left,
+            RichDocumentLayoutSession? layoutSession = null)
         {
-            positionedChars.Clear();
+            layoutSession ??= new RichDocumentLayoutSession();
+            layoutSession.ReleaseCharacters(positionedChars);
             tableDecorations.Clear();
 
-            var currentChildren = new List<Visual>(parent.Children);
+            List<Visual> currentChildren = layoutSession.CurrentChildren;
+            currentChildren.Clear();
+            IReadOnlyList<Visual> parentChildren = parent.Children;
+            for (int index = 0; index < parentChildren.Count; index++)
+                currentChildren.Add(parentChildren[index]);
 
-            var allBlocks = new List<Block>();
-            allBlocks.AddRange(blocks);
-            foreach (var p in extraParagraphs)
+            List<Block> allBlocks = layoutSession.CurrentBlocks;
+            allBlocks.Clear();
+            for (int index = 0; index < blocks.Count; index++)
+                allBlocks.Add(blocks[index]);
+            for (int index = 0; index < extraParagraphs.Count; index++)
             {
+                Paragraph p = extraParagraphs[index];
                 if (!allBlocks.Contains(p)) allBlocks.Add(p);
             }
+            layoutSession.RetainOnly(allBlocks);
 
             if (activeFont == null || allBlocks.Count == 0 || width <= 0f || height <= 0f)
             {
@@ -2591,36 +2666,50 @@ namespace Microsoft.UI.Xaml.Controls
 
             var resolvedFg = defaultFg ?? ThemeManager.GetBrush("TextPrimary", theme);
 
-            var encounteredChildren = new HashSet<Visual>();
+            HashSet<Visual> encounteredChildren = layoutSession.EncounteredChildren;
+            encounteredChildren.Clear();
 
             foreach (var block in allBlocks)
             {
                 Paragraph? paragraphBlock = block as Paragraph;
                 FlowDirection blockFlowDirection = paragraphBlock?.FlowDirection ?? flowDirection;
                 Microsoft.UI.Text.RichParagraphFormatState? paragraphState = paragraphBlock?.EditorFormatState;
-                var charList = new List<RichChar>();
-                if (block is Paragraph paragraph)
+                RichBlockLayoutCache blockCache = layoutSession.GetOrCreate(block);
+                bool requiresShaping = !blockCache.MatchesShaping(
+                        activeFont,
+                        baseFontSize,
+                        defaultFg,
+                        theme,
+                        textReadingOrder,
+                        blockFlowDirection);
+                if (requiresShaping)
                 {
-                    foreach (var inline in paragraph.Inlines)
+                    List<RichChar> shapingCharacters = blockCache.ShapingCharacters;
+                    shapingCharacters.Clear();
+                    if (block is Paragraph paragraph)
                     {
-                        AccumulateInlines(inline, charList, resolvedFg, baseFontSize, false, false, false, theme, null, 0f);
+                        foreach (var inline in paragraph.Inlines)
+                        {
+                            AccumulateInlines(inline, shapingCharacters, resolvedFg, baseFontSize, false, false, false, theme, null, 0f);
+                        }
                     }
-                }
-                else if (block is ListBlock listBlock)
-                {
-                    AccumulateInlines(listBlock, charList, resolvedFg, baseFontSize, false, false, false, theme, null, 0f);
-                }
-                else if (block is Table tableBlock)
-                {
-                    AccumulateInlines(tableBlock, charList, resolvedFg, baseFontSize, false, false, false, theme, null, 0f);
-                }
-                else if (block is Inline inlineBlock)
-                {
-                    AccumulateInlines(inlineBlock, charList, resolvedFg, baseFontSize, false, false, false, theme, null, 0f);
+                    else if (block is ListBlock listBlock)
+                    {
+                        AccumulateInlines(listBlock, shapingCharacters, resolvedFg, baseFontSize, false, false, false, theme, null, 0f);
+                    }
+                    else if (block is Table tableBlock)
+                    {
+                        AccumulateInlines(tableBlock, shapingCharacters, resolvedFg, baseFontSize, false, false, false, theme, null, 0f);
+                    }
+                    else if (block is Inline inlineBlock)
+                    {
+                        AccumulateInlines(inlineBlock, shapingCharacters, resolvedFg, baseFontSize, false, false, false, theme, null, 0f);
+                    }
+
+                    ResolveCharacterFonts(shapingCharacters, activeFont);
                 }
 
-                if (charList.Count == 0) continue;
-
+                List<RichChar> charList = blockCache.ShapingCharacters;
                 for (int charIndex = 0; charIndex < charList.Count; charIndex++)
                 {
                     RichChar character = charList[charIndex];
@@ -2635,13 +2724,34 @@ namespace Microsoft.UI.Xaml.Controls
                     }
                     charList[charIndex] = character;
                 }
-                ResolveCharacterFonts(charList, activeFont);
+                if (requiresShaping)
+                {
+                    blockCache.ShapingMetrics = MeasureShapedParagraphAdvances(
+                        charList,
+                        activeFont,
+                        textReadingOrder,
+                        blockFlowDirection,
+                        layoutSession);
+                    blockCache.SetShapingKey(
+                        activeFont,
+                        baseFontSize,
+                        defaultFg,
+                        theme,
+                        textReadingOrder,
+                        blockFlowDirection);
+                }
 
-                ParagraphShapingMetrics shapingMetrics = MeasureShapedParagraphAdvances(
-                    charList,
-                    activeFont,
-                    textReadingOrder,
-                    blockFlowDirection);
+                if (charList.Count == 0) continue;
+                ParagraphShapingMetrics shapingMetrics = blockCache.ShapingMetrics!;
+                // Embedded elements can remeasure as the column changes even though the
+                // surrounding OpenType shaping is retained. Refresh only their advances.
+                for (int charIndex = 0; charIndex < charList.Count; charIndex++)
+                {
+                    if (charList[charIndex].EmbeddedElement is not { } embeddedElement) continue;
+                    float advance = embeddedElement.DesiredSize.X + 4f;
+                    shapingMetrics.Advances[charIndex] = advance;
+                    shapingMetrics.AdvancesWithoutCharacterSpacing[charIndex] = advance;
+                }
                 float[] shapedAdvances = shapingMetrics.Advances;
 
                 var paragraphLines = new List<(List<PositionedRichChar> Chars, float ColumnX, int[] VisualOrder, sbyte ParagraphLevel)>();
@@ -2650,7 +2760,8 @@ namespace Microsoft.UI.Xaml.Controls
 
                 while (i < charList.Count)
                 {
-                    var lineChars = new List<RichChar>();
+                    int lineStart = i;
+                    int lineEnd = i;
                     float lineW = 0f;
                     int lastWordIdx = -1;
 
@@ -2661,6 +2772,7 @@ namespace Microsoft.UI.Xaml.Controls
 
                         if (c == '\n')
                         {
+                            lineEnd = i;
                             i++;
                             break;
                         }
@@ -2680,38 +2792,37 @@ namespace Microsoft.UI.Xaml.Controls
                                 baseFontSize,
                                 blockFlowDirection == FlowDirection.RightToLeft)
                             : shapedAdvances[i];
-                        if (c == '\t') shapedAdvances[i] = advance;
-
                         if (rc.Character == ' ' || rc.Character == '\t')
                         {
-                            lastWordIdx = lineChars.Count;
+                            lastWordIdx = i;
                         }
 
-                        bool safeWordBreak = lastWordIdx > 0 && lastWordIdx < lineChars.Count &&
-                            IsClusterBoundaryBefore(shapingMetrics, lineChars[lastWordIdx].TextPosition);
+                        bool safeWordBreak = lastWordIdx > lineStart && lastWordIdx < i &&
+                            IsClusterBoundaryBefore(shapingMetrics, charList[lastWordIdx].TextPosition);
                         bool safeCurrentBreak = IsClusterBoundaryBefore(shapingMetrics, i);
-                        if (lineW + advance > colWidth && lineChars.Count > 0 &&
+                        if (lineW + advance > colWidth && i > lineStart &&
                             (safeWordBreak || safeCurrentBreak))
                         {
                             if (safeWordBreak)
                             {
-                                int diff = lineChars.Count - lastWordIdx;
-                                lineChars.RemoveRange(lastWordIdx, diff);
-                                i -= diff;
+                                i = lastWordIdx;
+                                lineEnd = lastWordIdx;
                             }
+                            else lineEnd = i;
                             break;
                         }
 
-                        lineChars.Add(rc);
                         lineW += advance;
                         i++;
+                        lineEnd = i;
                     }
 
-                    if (lineChars.Count > 0)
+                    if (lineEnd > lineStart)
                     {
                         float lineMaxH = lineSpacing;
-                        foreach (var rc in lineChars)
+                        for (int lineIndex = lineStart; lineIndex < lineEnd; lineIndex++)
                         {
+                            RichChar rc = charList[lineIndex];
                             if (rc.EmbeddedElement != null)
                             {
                                 lineMaxH = Math.Max(lineMaxH, rc.EmbeddedElement.DesiredSize.Y);
@@ -2739,8 +2850,9 @@ namespace Microsoft.UI.Xaml.Controls
                         float runningX = cursorX;
                         hasResetLineIndent = false;
 
-                        foreach (var rc in lineChars)
+                        for (int lineIndex = lineStart; lineIndex < lineEnd; lineIndex++)
                         {
+                            RichChar rc = charList[lineIndex];
                             float advance = shapedAdvances[rc.TextPosition];
                             float elementH = 0f;
                             if (rc.EmbeddedElement != null)
@@ -2766,11 +2878,9 @@ namespace Microsoft.UI.Xaml.Controls
 
                             float yOffset = (lineMaxH - elementH) / 2f;
 
-                            currentLine.Add(new PositionedRichChar
-                            {
-                                Info = rc,
-                                Position = new Vector2(finalX, cursorY + yOffset)
-                            });
+                            currentLine.Add(layoutSession.RentPositionedCharacter(
+                                rc,
+                                new Vector2(finalX, cursorY + yOffset)));
                             runningX += advance;
                         }
 
@@ -2891,11 +3001,11 @@ namespace Microsoft.UI.Xaml.Controls
         }
 
         private static void LayoutTableFlow(
-            Table table, 
-            ref int currentColumn, 
-            ref float cursorX, 
-            ref float cursorY, 
-            float colWidth, 
+            Table table,
+            ref int currentColumn,
+            ref float cursorX,
+            ref float cursorY,
+            float colWidth,
             float colHeight,
             Thickness padding,
             int columnCount,
@@ -2959,6 +3069,22 @@ namespace Microsoft.UI.Xaml.Controls
         {
             if (activeFont == null) return;
 
+            RenderTableDecorations(context, tableDecorations);
+            RenderSelection(
+                context,
+                positionedChars,
+                activeFont,
+                selectionStart,
+                selectionLength,
+                tableSelection,
+                selectionHighlightBrush);
+            RenderText(context, positionedChars, activeFont, hoveredHyperlink);
+        }
+
+        internal static void RenderTableDecorations(
+            DrawingContext context,
+            List<TableVisualDecoration> tableDecorations)
+        {
             foreach (var dec in tableDecorations)
             {
                 if (!string.IsNullOrEmpty(dec.Text) && dec.TextFont is { } markerFont && dec.TextForeground is { } markerBrush)
@@ -2996,9 +3122,17 @@ namespace Microsoft.UI.Xaml.Controls
                     }
                 }
             }
+        }
 
-            if (positionedChars.Count == 0) return;
-
+        internal static void RenderSelection(
+            DrawingContext context,
+            List<PositionedRichChar> positionedChars,
+            TtfFont activeFont,
+            int selectionStart,
+            int selectionLength,
+            IReadOnlyList<RichEditTableCellRange>? tableSelection,
+            Brush? selectionHighlightBrush)
+        {
             if ((selectionStart >= 0 && selectionLength > 0) || tableSelection is { Count: > 0 })
             {
                 for (int i = 0; i < positionedChars.Count; i++)
@@ -3022,11 +3156,20 @@ namespace Microsoft.UI.Xaml.Controls
                     }
                 }
             }
+        }
 
+        internal static void RenderText(
+            DrawingContext context,
+            List<PositionedRichChar> positionedChars,
+            TtfFont activeFont,
+            Hyperlink? hoveredHyperlink)
+        {
+            if (positionedChars.Count == 0) return;
             var runBuffer = new StringBuilder(Math.Min(positionedChars.Count, 4096));
             Vector2 startPos = Vector2.Zero;
             RichChar style = default;
             sbyte runBidiLevel = 0;
+            float runWidth = 0f;
 
             void FlushRun()
             {
@@ -3035,8 +3178,16 @@ namespace Microsoft.UI.Xaml.Controls
                     return;
                 }
 
-                RenderRun(context, runBuffer.ToString(), startPos, style, style.Font ?? activeFont, runBidiLevel);
+                RenderRun(
+                    context,
+                    runBuffer.ToString(),
+                    startPos,
+                    runWidth,
+                    style,
+                    style.Font ?? activeFont,
+                    runBidiLevel);
                 runBuffer.Clear();
+                runWidth = 0f;
             }
 
             foreach (var pc in positionedChars)
@@ -3061,7 +3212,14 @@ namespace Microsoft.UI.Xaml.Controls
                 if (pc.Info.Character == ' ' || pc.Info.Character == '\t')
                 {
                     FlushRun();
-                    RenderRun(context, pc.Info.Character.ToString(), pc.Position, pcStyle, pcStyle.Font ?? activeFont, pc.BidiLevel);
+                    RenderRun(
+                        context,
+                        pc.Info.Character.ToString(),
+                        pc.Position,
+                        pc.ShapedAdvance,
+                        pcStyle,
+                        pcStyle.Font ?? activeFont,
+                        pc.BidiLevel);
                     continue;
                 }
 
@@ -3071,6 +3229,7 @@ namespace Microsoft.UI.Xaml.Controls
                     startPos = pc.Position;
                     style = pcStyle;
                     runBidiLevel = pc.BidiLevel;
+                    runWidth = pc.ShapedAdvance;
                 }
                 else if (pcStyle.IsBold == style.IsBold &&
                          pcStyle.IsItalic == style.IsItalic &&
@@ -3090,6 +3249,7 @@ namespace Microsoft.UI.Xaml.Controls
                 {
                     runBuffer.Append(pc.Info.Character);
                     startPos.X = Math.Min(startPos.X, pc.Position.X);
+                    runWidth += pc.ShapedAdvance;
                 }
                 else
                 {
@@ -3098,6 +3258,7 @@ namespace Microsoft.UI.Xaml.Controls
                     startPos = pc.Position;
                     style = pcStyle;
                     runBidiLevel = pc.BidiLevel;
+                    runWidth = pc.ShapedAdvance;
                 }
             }
 
@@ -3128,6 +3289,7 @@ namespace Microsoft.UI.Xaml.Controls
             DrawingContext context,
             string text,
             Vector2 pos,
+            float width,
             RichChar style,
             TtfFont activeFont,
             sbyte bidiLevel)
@@ -3138,17 +3300,8 @@ namespace Microsoft.UI.Xaml.Controls
             bool simulateBold = style.IsBold && runFont.WeightClass < 600;
             bool simulateItalic = style.IsItalic && !runFont.IsItalic;
             TextShapingOptions shapingOptions = CreateShapingOptions(style, bidiLevel);
-            var layout = new TextLayout(
-                text,
-                runFont,
-                style.FontSize,
-                float.PositiveInfinity,
-                ProGPU.Text.TextAlignment.Left,
-                null,
-                shapingOptions);
-            float runW = layout.ContentSize.X;
             if (style.Background is not null)
-                context.DrawRectangle(style.Background, null, new Rect(pos.X, pos.Y, runW, style.FontSize));
+                context.DrawRectangle(style.Background, null, new Rect(pos.X, pos.Y, width, style.FontSize));
             context.DrawText(
                 text,
                 runFont,
@@ -3160,10 +3313,10 @@ namespace Microsoft.UI.Xaml.Controls
                 textShapingOptions: shapingOptions);
             if (style.IsUnderline)
             {
-                DrawUnderline(context, style, text, pos, runW);
+                DrawUnderline(context, style, text, pos, width);
             }
             if (style.IsStrikethrough)
-                context.DrawRectangle(style.Foreground, null, new Rect(pos.X, pos.Y + style.FontSize * 0.55f, runW, 1f));
+                context.DrawRectangle(style.Foreground, null, new Rect(pos.X, pos.Y + style.FontSize * 0.55f, width, 1f));
         }
 
         private static void DrawUnderline(DrawingContext context, RichChar style, string text, Vector2 position, float width)

@@ -350,6 +350,19 @@ public unsafe sealed partial class BrowserWebGpuApi : IWebGpuApi, IDisposable
         _commands.CompleteCommand();
     }
 
+    public void CommandEncoderCopyBufferToTexture(CommandEncoder* commandEncoder, ImageCopyBuffer* source, ImageCopyTexture* destination, Extent3D* copySize)
+    {
+        RequireDescriptor(source);
+        RequireDescriptor(destination);
+        RequireDescriptor(copySize);
+        var payload = _commands.BeginCommand(BrowserGpuOpcode.CopyBufferToTexture, 64);
+        WriteHandle(payload, 0, HandleOf(commandEncoder));
+        WriteImageCopyBuffer(payload, 4, *source);
+        WriteImageCopyTexture(payload, 28, *destination);
+        WriteExtent(payload, 52, *copySize);
+        _commands.CompleteCommand();
+    }
+
     public void CommandEncoderCopyTextureToBuffer(CommandEncoder* commandEncoder, ImageCopyTexture* source, ImageCopyBuffer* destination, Extent3D* copySize)
     {
         RequireDescriptor(source);

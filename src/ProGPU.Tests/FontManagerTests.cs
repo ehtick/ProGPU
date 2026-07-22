@@ -62,6 +62,76 @@ public sealed class FontManagerTests
     }
 
     [Fact]
+    public void RepeatedCharacterFallbackUsesBoundedAllocationFreeMatchCache()
+    {
+        var manager = new FontManager();
+        manager.RegisterFont(
+            "ProGPU Cached Fallback",
+            new Lazy<TtfFont>(() => InterFontFamily.Regular),
+            FontStyleRequest.Normal,
+            isFallback: true);
+
+        Assert.True(manager.TryMatchCharacter(
+            "ProGPU Cached Fallback",
+            FontStyleRequest.Normal,
+            null,
+            'A',
+            out TtfFont? initial,
+            out ushort initialGlyph));
+        Assert.Same(InterFontFamily.Regular, initial);
+        Assert.NotEqual((ushort)0, initialGlyph);
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        bool allMatched = true;
+        for (int index = 0; index < 1_000; index++)
+        {
+            bool matched = manager.TryMatchCharacter(
+                "ProGPU Cached Fallback",
+                FontStyleRequest.Normal,
+                null,
+                'A',
+                out TtfFont? repeated,
+                out ushort repeatedGlyph);
+            allMatched &= matched && ReferenceEquals(initial, repeated) && initialGlyph == repeatedGlyph;
+        }
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.True(allMatched);
+        Assert.InRange(allocated, 0, 4_096);
+    }
+
+    [Fact]
+    public void RegisteringFontInvalidatesCachedCharacterMatch()
+    {
+        var manager = new FontManager();
+        const string family = "ProGPU Dynamic Character Match";
+
+        Assert.True(manager.TryMatchCharacter(
+            family,
+            FontStyleRequest.Normal,
+            null,
+            'A',
+            out TtfFont? original,
+            out _));
+        Assert.NotNull(original);
+
+        manager.RegisterFont(
+            family,
+            new Lazy<TtfFont>(() => InterFontFamily.Regular),
+            FontStyleRequest.Normal);
+
+        Assert.True(manager.TryMatchCharacter(
+            family,
+            FontStyleRequest.Normal,
+            null,
+            'A',
+            out TtfFont? updated,
+            out ushort glyph));
+        Assert.Same(InterFontFamily.Regular, updated);
+        Assert.NotEqual((ushort)0, glyph);
+    }
+
+    [Fact]
     public void FailedRegisteredFaceIsNotRetried()
     {
         var manager = new FontManager();

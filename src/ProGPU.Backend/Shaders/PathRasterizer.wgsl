@@ -1,14 +1,14 @@
 // Algorithm: Rasterize arbitrary path coverage by supersampling each atlas texel and applying analytic non-zero or even-odd winding tests.
 // Time complexity: O(A*S) per texel for A anti-aliasing samples and S path segments.
-// Space complexity: O(1) local storage plus O(S) read-only segment bandwidth.
+// Space complexity: O(1) local storage plus O(S) read-only segment bandwidth and one packed u32 output write per four R8 texels.
 struct PathUniforms {
     xStart: f32,
     yStart: f32,
     scaleX: f32,
     scaleY: f32,
     pathIndex: u32,
-    atlasX: u32,
-    atlasY: u32,
+    outputOffsetWords: u32,
+    outputRowWords: u32,
     width: u32,
     height: u32,
     sampleGrid: u32,
@@ -41,7 +41,7 @@ struct Segment {
 @group(0) @binding(0) var<storage, read> pathUniforms: array<PathUniforms>;
 @group(0) @binding(1) var<storage, read> pathRecords: array<PathRecord>;
 @group(0) @binding(2) var<storage, read> segments: array<Segment>;
-@group(0) @binding(3) var atlasTexture: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(3) var<storage, read_write> coverageOutput: array<u32>;
 
 
 fn solve_quadratic(a: f32, b: f32, c: f32, roots: ptr<function, array<f32, 2>>, root_count: ptr<function, u32>) {
@@ -341,16 +341,7 @@ fn count_row_coverage(
     return covered;
 }
 
-@compute @workgroup_size(16, 16)
-fn cs_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let uniforms = pathUniforms[global_id.z];
-    let x = global_id.x;
-    let y = global_id.y;
-
-    if (x >= uniforms.width || y >= uniforms.height) {
-        return;
-    }
-
+fn path_coverage_byte(x: u32, y: u32, uniforms: PathUniforms) -> u32 {
     let pathIndex = uniforms.pathIndex;
     let record = pathRecords[pathIndex];
 
@@ -369,8 +360,28 @@ fn cs_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             uniforms.scaleX,
             record);
     }
-    let coverage = f32(coveredSamples) * sampleWeight;
+    return min(255u, u32(round(f32(coveredSamples) * sampleWeight * 255.0)));
+}
 
-    let writeCoord = vec2<u32>(uniforms.atlasX + x, uniforms.atlasY + y);
-    textureStore(atlasTexture, writeCoord, vec4<f32>(coverage, 0.0, 0.0, 0.0));
+// Four adjacent pixels are packed by one invocation so the storage buffer has
+// the exact byte layout required by WebGPU copyBufferToTexture for R8Unorm.
+@compute @workgroup_size(16, 16)
+fn cs_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let uniforms = pathUniforms[global_id.z];
+    let wordX = global_id.x;
+    let y = global_id.y;
+    let firstX = wordX * 4u;
+    if (firstX >= uniforms.width || y >= uniforms.height) {
+        return;
+    }
+
+    var packed = 0u;
+    for (var lane = 0u; lane < 4u; lane = lane + 1u) {
+        let x = firstX + lane;
+        if (x < uniforms.width) {
+            packed = packed | (path_coverage_byte(x, y, uniforms) << (lane * 8u));
+        }
+    }
+
+    coverageOutput[uniforms.outputOffsetWords + y * uniforms.outputRowWords + wordX] = packed;
 }

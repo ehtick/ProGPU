@@ -261,6 +261,31 @@ public class BidiAndFlowDirectionTests
     }
 
     [Fact]
+    public void FlowDocumentRetainsIdenticalMeasureArrangeLayout()
+    {
+        var document = new FlowDocument
+        {
+            Font = InterFontFamily.Regular,
+            FontSize = 18f,
+            ColumnCount = 1,
+            Padding = new Thickness(0f)
+        };
+        document.Blocks.Add(new Paragraph(new Microsoft.UI.Xaml.Documents.Run("Retained shaping and layout")));
+
+        document.Measure(new System.Numerics.Vector2(200f, 60f));
+        document.Arrange(new Rect(0f, 0f, 200f, 60f));
+        Assert.Equal(1UL, document.FlowLayoutPassCount);
+
+        document.Measure(new System.Numerics.Vector2(200f, 60f));
+        document.Arrange(new Rect(0f, 0f, 200f, 60f));
+        Assert.Equal(1UL, document.FlowLayoutPassCount);
+
+        document.Measure(new System.Numerics.Vector2(240f, 60f));
+        document.Arrange(new Rect(0f, 0f, 240f, 60f));
+        Assert.Equal(2UL, document.FlowLayoutPassCount);
+    }
+
+    [Fact]
     public void RunFlowDirectionFeedsSharedLayoutAndRoundTripsHtmlAndRtf()
     {
         var directionalRun = new Microsoft.UI.Xaml.Documents.Run("123")
@@ -2693,6 +2718,41 @@ public class BidiAndFlowDirectionTests
         editor.Measure(new System.Numerics.Vector2(420f, 240f));
         editor.Arrange(new Rect(0f, 0f, 420f, 240f));
 
+        Assert.InRange(editor.LayoutSession.RealizedBlockCount, 1, 300);
+    }
+
+    [Fact]
+    public void RichEditBoxRepeatedLargeDocumentScrollKeepsManagedAllocationsBounded()
+    {
+        string text = string.Join('\n', Enumerable.Range(0, 5_000)
+            .Select(static index => $"paragraph {index:D4}: Latin office affinity — العربية مرحبا — 日本語かなカナ"));
+        var editor = new RichEditBox
+        {
+            Font = InterFontFamily.Regular,
+            FontSize = 16f,
+            Text = text
+        };
+        editor.Measure(new System.Numerics.Vector2(420f, 220f));
+        editor.Arrange(new Rect(0f, 0f, 420f, 220f));
+
+        int[] positions = [
+            text.IndexOf("paragraph 1000", StringComparison.Ordinal),
+            text.IndexOf("paragraph 2000", StringComparison.Ordinal),
+            text.IndexOf("paragraph 3000", StringComparison.Ordinal),
+            text.IndexOf("paragraph 4000", StringComparison.Ordinal)];
+        foreach (int position in positions)
+            editor.TextDocument.GetRange(position, position).ScrollIntoView(Microsoft.UI.Text.PointOptions.None);
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        const int Iterations = 12;
+        for (int iteration = 0; iteration < Iterations; iteration++)
+        {
+            int position = positions[iteration % positions.Length];
+            editor.TextDocument.GetRange(position, position).ScrollIntoView(Microsoft.UI.Text.PointOptions.None);
+        }
+        long allocatedPerScroll = (GC.GetAllocatedBytesForCurrentThread() - before) / Iterations;
+
+        Assert.InRange(allocatedPerScroll, 0, 8_000_000);
         Assert.InRange(editor.LayoutSession.RealizedBlockCount, 1, 300);
     }
 

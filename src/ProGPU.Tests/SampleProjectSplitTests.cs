@@ -179,6 +179,8 @@ public sealed class SampleProjectSplitTests
         Assert.Contains("benchmarkPage: 'PROGPU_SAMPLE_BENCHMARK_PAGE'", browserAsset, StringComparison.Ordinal);
         Assert.Contains("benchmarkMeasureFrames: 'PROGPU_SAMPLE_BENCHMARK_MEASURE_FRAMES'", browserAsset, StringComparison.Ordinal);
         Assert.Contains("benchmarkScrollStep: 'PROGPU_SAMPLE_BENCHMARK_SCROLL_STEP'", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("benchmarkPreconditionPages: 'PROGPU_SAMPLE_BENCHMARK_PRECONDITION_PAGES'", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("benchmarkPreconditionFrames: 'PROGPU_SAMPLE_BENCHMARK_PRECONDITION_FRAMES'", browserAsset, StringComparison.Ordinal);
         Assert.Contains("function readBenchmarkEnvironment()", browserAsset, StringComparison.Ordinal);
         Assert.Contains("dotnet.withEnvironmentVariables(readBenchmarkEnvironment()).create()", browserAsset, StringComparison.Ordinal);
         Assert.DoesNotContain("Object.fromEntries(query", browserAsset, StringComparison.Ordinal);
@@ -198,8 +200,16 @@ public sealed class SampleProjectSplitTests
         Assert.Contains("DispatchImmediatePointer", browserInput, StringComparison.Ordinal);
         Assert.Contains("heap.set(bytes, destination);", browserAsset, StringComparison.Ordinal);
         Assert.DoesNotContain("bytesToBase64", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("globalThis.showOpenFilePicker", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("globalThis.showSaveFilePicker", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("globalThis.showDirectoryPicker", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("input.webkitdirectory = true;", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("handle.createWritable()", browserAsset, StringComparison.Ordinal);
+        Assert.Contains("const bytes = heap.slice(source, source + length);", browserAsset, StringComparison.Ordinal);
         Assert.Contains("CopyPickedStorage((nint)destination, length)", storageServices, StringComparison.Ordinal);
         Assert.Contains("ClearPickedStorage();", storageServices, StringComparison.Ordinal);
+        Assert.Contains("WritePickedStorageText(token, text)", storageServices, StringComparison.Ordinal);
+        Assert.Contains("WritePickedStorageBytes(token, (nint)source, bytes.Length)", storageServices, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -41,6 +41,15 @@ public sealed class WindowsDpiAwarenessTests
 
         Assert.Contains(".FramebufferResize += OnFramebufferResize", window, StringComparison.Ordinal);
         Assert.Contains("!wgpuContext.TryReconfigureIfNeeded((uint)framebufferSize.X, (uint)framebufferSize.Y)", window, StringComparison.Ordinal);
+        string framebufferCallback = window[
+            window.IndexOf("private void OnFramebufferResize", StringComparison.Ordinal)..
+            window.IndexOf("private Vector2D<int> GetCurrentFramebufferSize", StringComparison.Ordinal)];
+        Assert.DoesNotContain("ConfigureSwapChain", framebufferCallback, StringComparison.Ordinal);
+        Assert.Contains("RenderFrame(0d);", framebufferCallback, StringComparison.Ordinal);
+        Assert.Contains("_suppressNextScheduledRender = true;", framebufferCallback, StringComparison.Ordinal);
+        Assert.Contains("_liveResizeRenderedVersion = _renderRoot.ChangeVersion;", framebufferCallback, StringComparison.Ordinal);
+        Assert.Contains("if (_suppressNextScheduledRender)", window, StringComparison.Ordinal);
+        Assert.Contains("_renderRoot.Invalidate();", framebufferCallback, StringComparison.Ordinal);
         Assert.Contains("return;", window, StringComparison.Ordinal);
         Assert.Contains("DisplayScaleResolver.ResolveWindowDisplayScale(_silkWindow, monitorScale)", window, StringComparison.Ordinal);
         Assert.Contains("(uint)framebufferSize.X", window, StringComparison.Ordinal);

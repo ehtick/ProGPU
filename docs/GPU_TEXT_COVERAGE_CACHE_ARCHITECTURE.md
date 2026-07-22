@@ -1,0 +1,177 @@
+# GPU text coverage-cache architecture
+
+Date: 2026-07-22
+
+## Objective and constraints
+
+This design reduces persistent GPU memory for ProGPU text and vector coverage without changing the retained-scene, shaping, fallback-font, variable-font, DPI, subpixel, hinting, or winding contracts. Rasterization remains GPU-only: no coverage image is rasterized on, or read back through, the CPU.
+
+The implementation is clean-room. The sources below informed public behavior, architecture, and tradeoffs only; no foreign source code, helper organization, names, or encoded tables were copied or translated.
+
+## Primary-source research
+
+| Engine | Relevant architecture | ProGPU decision |
+| --- | --- | --- |
+| [Skia strike cache](https://skia.googlesource.com/skia/+/main/src/core/SkStrikeCache.h), [SkParagraph API](https://skia.googlesource.com/skia/+/refs/heads/main/modules/skparagraph/include/Paragraph.h), and [SkParagraph LRU cache](https://skia.googlesource.com/skia/+/a1f873e79a50/modules/skparagraph/include/ParagraphCache.h) | Separates reusable font/strike data, bounds caches by bytes/count, retains shaped paragraph state, and treats glyph representations as cacheable resources rather than one unbounded global image. | Adopt byte-accounted resource limits, representation separation, and retained layout reuse. Keep ProGPU's typed font/outline ownership and GPU rasterizer instead of adopting Skia's CPU strike implementation. |
+| [Skia `GrDrawOpAtlas`](https://skia.googlesource.com/skia/+/main/src/gpu/ganesh/GrDrawOpAtlas.cpp) and [atlas contract](https://skia.googlesource.com/skia/+/main/src/gpu/ganesh/GrDrawOpAtlas.h) | Activates backing pages lazily, manages independently reusable plots with generation/LRU state, and uses deferred upload/use tokens so multiple pending plot changes can piggyback on one upload. | Adapt lazy physical residency, separate texture revision from content generation, and coalesce first-use transfers at the compositor batch boundary. Keep ProGPU's single-texture-per-representation contract and original shelf/recovery allocators rather than copying Skia's page/plot organization. |
+| [DirectWrite glyph-run analysis](https://learn.microsoft.com/en-us/windows/win32/api/dwrite/nn-dwriteglyphrunanalysis) and [Direct2D text performance guidance](https://learn.microsoft.com/en-us/windows/win32/direct2d/improving-direct2d-performance) | Exposes bounded glyph-run alpha bounds and uses one byte per pixel for grayscale alpha, three for ClearType; encourages reuse of text layouts and rendering resources. | Adopt compact grayscale coverage and retained shaped-run reuse. Preserve ProGPU's existing shader reconstruction of grayscale/ClearType output and four-way physical-pixel snapping. |
+| [DirectWrite color fonts](https://learn.microsoft.com/en-us/windows/win32/directwrite/color-fonts), [Win2D overview](https://learn.microsoft.com/en-us/windows/apps/develop/win2d/), and [Win2D `CanvasTextLayout`](https://microsoft.github.io/Win2D/WinUI3/html/T_Microsoft_Graphics_Canvas_Text_CanvasTextLayout.htm) | Color glyph layers are a distinct representation, while reusable text layouts retain shaping and line-layout work. Win2D exposes Direct2D/DirectWrite through a GPU-accelerated API. | Split RGBA bitmap/color glyphs from monochrome coverage. Keep shaping/layout above the atlas and preserve fallback/variable-font state in existing typed cache keys. |
+| [WebRender rendering overview](https://searchfox.org/firefox-main/source/gfx/docs/RenderingOverview.rst), [glyph rasterizer](https://searchfox.org/mozilla-central/source/gfx/wr/wr_glyph_rasterizer/src/lib.rs), and [asynchronous blob preparation](https://searchfox.org/firefox-main/source/gfx/wr/webrender/doc/blob.md) | Culls a retained scene before preparing visible resources, prepares glyphs during scene building before final GPU rendering, and separates eager preparation from visibility-driven texture-cache upload. Glyph raster preparation can run on workers. | Adopt alpha/color format separation, demand-driven population after visibility, and a prepare-then-submit glyph batch. Retain ProGPU's analytic GPU compute preparation rather than adding a second CPU rasterizer or speculative whole-page atlas population. |
+| [glyphon text atlas](https://github.com/grovesNL/glyphon/blob/main/src/text_atlas.rs) | Starts mask/color atlases small, grows them geometrically, and applies per-frame usage/LRU policy. | Adapt small initial mask/color textures and bounded geometric growth. ProGPU preserves resident texels by GPU copy and keeps texel-space vertices, an original solution required by its retained-scene contract. |
+| [Vello](https://github.com/linebender/vello) and its [glyph rendering design discussion](https://github.com/linebender/vello/issues/204) | Uses GPU compute for vector rendering and evaluates dynamic outlines versus cached glyph images; transform-specific hinting makes one universal cached representation unsuitable. | Keep analytic GPU rasterization and bounded cached coverage. Reject an all-vector-per-frame design because stable UI text benefits from retained coverage, and reject SDF/MSDF substitution because it would change small-text hinting and coverage quality. |
+| [Parley](https://docs.rs/parley/latest/parley/) | Shares font and layout contexts and keeps shaping/layout reusable and independent of the final renderer. | Preserve ProGPU's reusable CPU shaping/layout results and glyph indices; do not move Unicode/OpenType shaping into the coverage cache. |
+| [HarfBuzz shaping-plan caching](https://harfbuzz.github.io/shaping-plans-and-caching.html) | Reuses shaping plans for matching face, segment properties, and features. | Preserve current shaped results, OpenType feature state, fallback selection, and variable-font instance identity; atlas changes start only after glyph identity and position are known. |
+| [WebGPU specification](https://gpuweb.github.io/gpuweb/) | Defines `r8unorm`, storage buffers, and buffer-to-texture copies with aligned row layout. Storage-texture format capabilities vary by implementation tier. | Use a universally writable storage buffer as compute output, pack four coverage bytes per `u32`, then issue GPU buffer-to-`r8unorm` copies. This avoids depending on optional R8 storage-texture support. |
+| [wgpu `StagingBelt`](https://wgpu.rs/doc/wgpu/util/belt/struct.StagingBelt.html) | Suballocates reusable chunks, recommends sizing below a whole submission, and allocates an exceptional buffer when one operation exceeds a normal chunk. | Adapt bounded 64 KiB uniform and 256 KiB coverage rings, exact temporary storage for a single oversized glyph, and 256 KiB path dispatch chunks. No wgpu implementation source was ported. |
+
+The required comparison areas map as follows:
+
+- Startup and lazy initialization: maximum atlas dimensions are capacity limits, not startup allocations. Coverage/path begin at 512 square and color at 256 square; no font enumeration, outline upload, or raster work is added at startup.
+- Shaping and layout reuse: unchanged. Positioned glyph indices and advances remain reusable CPU results, following the separation used by DirectWrite, Parley, HarfBuzz, and SkParagraph-style stacks.
+- Retained scene and visibility: unchanged. Only glyphs and paths demanded by compiled visible commands enter the atlas, comparable to WebRender's retained-scene resource preparation.
+- Cache keys and eviction: all existing glyph style, physical size, DPI/subpixel, local-transform, variable-font, path-phase, and generation keys remain intact. Alpha and color entries cannot reuse one another's storage.
+- Demand-driven upload: compute output is copied only for pending glyph/path rectangles. There is no full-atlas upload or CPU readback.
+- Worker preparation: font parsing/shaping remains reusable CPU work. Coverage preparation is GPU compute, batched before rendering; adding CPU raster workers was rejected.
+- GPU batching: glyphs share small persistent rings, stage uniforms/outlines contiguously, reuse one dynamic-offset bind group and compute pass per ring submission, and use an exact exceptional buffer only for one oversized glyph. Paths reuse a buffer per bounded dispatch chunk rather than allocating the sum of all pending output. One invocation produces four adjacent coverage texels.
+- DPI, subpixel, and hinting: raster dimensions, physical-space phase keys, final unsnapped placement, sample grids, gamma, and ClearType reconstruction are unchanged.
+- Fallback and variable fonts: existing font identity, shaped glyph index, and outline selection remain the authoritative inputs. The storage format does not merge font instances.
+- Device loss and atlas generations: resources remain owned by the compositor/context; atlas `Generation` changes only on real clear/repack. A format split does not weaken retained-scene invalidation or capacity-retry behavior.
+
+## Implemented design
+
+### Compact GPU coverage pipeline
+
+The glyph and path compute shaders keep their existing analytic winding and sample grids. Each invocation now rasterizes four adjacent output pixels and packs the four normalized coverage bytes into one `u32` in a storage buffer. A command-encoder buffer-to-texture copy places the result in an `R8Unorm` atlas. Row pitch is aligned to WebGPU's 256-byte copy requirement.
+
+For a raster rectangle of width `W`, height `H`, segment count `S`, and sample grid `A`, raster work remains `O(W * H * A * S)` in the worst case. Output storage is `O(align256(W) * H)` bytes rather than `O(4 * atlasWidth * atlasHeight)` writable RGBA storage. The output never crosses the CPU boundary.
+
+### Representation-separated atlases
+
+- Monochrome glyph coverage: starts at `512 x 512 x 1` byte R8 and doubles on demand up to the configured maximum (`2560` in the sample).
+- Bitmap/color glyphs: starts at `256 x 256 x 4` byte RGBA and grows independently up to `512`.
+- Paths and vector-glyph fallback: starts at `512 x 512 x 1` byte R8 and grows up to `2048`.
+- Glyph compute staging: 64 KiB uniform ring plus 256 KiB coverage ring. A single glyph larger than the normal ring is processed with exact temporary GPU storage rather than failing or permanently enlarging the ring.
+- Path compute staging: one buffer bounded to a 256 KiB dispatch chunk in the ordinary case. A single larger path receives the exact space it requires, preserving coverage quality.
+
+Growth clears a new texture, copies the old top-left texels entirely on the GPU, swaps texture ownership, and increments a texture revision. Atlas `Generation` does not change because no entry moved and no content became invalid. Retained text/path vertices carry texel coordinates; the shaders normalize against the currently bound texture dimensions. Consequently, a texture can grow during compilation without invalidating already compiled vertices or normalized public metadata. The compositor rebuilds only the affected bind groups when a texture revision changes.
+
+The text shader selects the R8 or RGBA binding from the retained glyph representation flag. This avoids scaling the color allocation to the dimensions required by Latin/CJK/vector coverage while preserving premultiplied bitmap-glyph sampling.
+
+### Bounded outline storage
+
+GPU glyph outline records and segments now use one global pair of buffers across all fonts. Per-font state contains only the glyph-to-global-slot map, eliminating per-font minimum allocations and slack. Capacity grows by 1.5x through GPU-to-GPU copy instead of doubling. A reusable CPU scratch list is used only while parsing a newly demanded outline. Allocated GPU outline capacity is measured and bounded to 4 MiB by default; the cache is rebuilt lazily after a frame-boundary trim. Coverage already resident in the atlas remains valid.
+
+### First-interaction upload batching
+
+The retained scene compiler still discovers only glyphs required by the visible page, but newly discovered glyphs no longer issue three queue writes, create a bind group, and open a compute pass apiece. During a glyph batch:
+
+- 256-byte-aligned uniforms are written into a reusable 64 KiB CPU shadow and transferred to the GPU ring with one queue write per ring submission;
+- new global outline records and segments are appended to contiguous staging lists and uploaded with at most two writes per ordinary 256 KiB outline chunk; an exceptional large-glyph backing array is released after upload rather than becoming permanent managed residency;
+- one bind group binds the uniform/record/segment/coverage buffers, and each glyph selects its uniform slice with a WebGPU dynamic offset;
+- disjoint coverage dispatches share one compute pass; buffer-to-texture copies are recorded after that pass and before the single queue submission;
+- a batch that discovers no new coverage releases its empty encoder without submitting GPU work.
+
+For `G` newly visible glyphs with `S` outline segments, parsing and transferred bytes remain `O(G + S)` and analytic raster work is unchanged. Ordinary queue-write and pass setup count changes from `O(G)` to `O(ceil(B / C))`, where `B` is staged bytes and `C` is the bounded ring/chunk size. The staging lists are capped at the ordinary 256 KiB outline chunk per representation, except for one exact oversized outline. This follows the deferred/coalesced preparation pattern without speculatively populating hidden pages, which would conflict with the residency goal.
+
+### Managed retained-command ownership
+
+Managed heap profiling found that `RichTextBlock`, `MarkdownTextBlock`, and `FlowDocument` already owned immutable-until-invalidated `DrawingContext` command caches, while the compositor copied the same large value-type command arrays into a pooled recording context and then into a generic retained cache. These controls now implement the typed `IOwnedRenderCommandCache` contract. The compositor requests and compiles their existing cache directly; it neither calls the copying `OnRender` adapter nor creates a second retained stream. Public/manual `OnRender` behavior is unchanged.
+
+### Bounded fallback and rich-document metadata reuse
+
+Allocation-stack profiling of a 5,000-paragraph multilingual editor isolated repeated fallback selection as the dominant managed cost on platforms with system fonts. The layout path copied the complete system-font catalog for each miss and recreated the same variable-font instance for repeated characters. `FontManager` now keeps positive and negative no-language fallback matches in a catalog-versioned FIFO cache capped at 4,096 entries. Registered-font changes advance the catalog version and clear the cache. Variable-font style instances use a separate 256-entry bounded cache, while the public `FontApi.GetSystemFonts()` API retains its copy-on-return ownership contract and internal matching reads an immutable catalog view.
+
+Rich-document layout sessions also retain each block's logical UTF-16 length until that block is invalidated. Viewport refresh remains `O(B + V)` in the current offset-assignment architecture for `B` blocks and `V` realized blocks, but no longer recursively enumerates every block's inline tree twice per refresh. Editor caret, hit-test, and scroll paths use the arranged presenter width so an input query cannot introduce a second layout key.
+
+The native far-jump probe fell from 20,971,771 to 6,240,269 managed bytes per scroll (70.2% lower). This deliberately harsh probe moves among distant regions, forcing new visible paragraphs to shape; it therefore measures bounded fallback/metadata reuse without claiming allocation-free Unicode shaping.
+
+### Protocol and diagnostics
+
+The typed native and browser WebGPU APIs expose command-encoder buffer-to-texture and texture-to-texture copies. Compositor metrics report current and maximum atlas dimensions, coverage/color/path texture bytes, glyph staging bytes, outline count/capacity/GPU bytes, and current/peak path staging. The sample benchmark additionally reports managed heap and fragmented bytes.
+
+## Memory and performance evidence
+
+The sample configuration previously reserved two RGBA atlases:
+
+| Persistent/bounded GPU allocation | Before | After |
+| --- | ---: | ---: |
+| Glyph coverage/color textures | 26,214,400 B | 7,602,176 B |
+| Path coverage texture | 16,777,216 B | 4,194,304 B |
+| Bounded glyph staging | 0 B | 2,097,152 B |
+| **Fixed atlas + glyph staging total** | **42,991,616 B** | **13,893,632 B** |
+
+This is a 67.7% reduction (29,097,984 bytes) in the exact fixed/bounded allocation represented by those resources. The new system additionally reports, and bounds, outline and transient path staging rather than hiding them in process-level memory figures.
+
+The second pass changes configured dimensions into maxima. For the same sample configuration, exact startup residency is:
+
+| GPU allocation | First compact pass | Demand-grown pass at startup |
+| --- | ---: | ---: |
+| Glyph coverage texture | 6,553,600 B | 262,144 B |
+| Color glyph texture | 1,048,576 B | 262,144 B |
+| Path coverage texture | 4,194,304 B | 262,144 B |
+| Glyph coverage staging | 2,097,152 B | 262,144 B |
+| Glyph uniform staging | 262,144 B | 65,536 B |
+| Initial global outline buffers | per-font | 51,200 B total |
+| **Known startup total above** | **14,155,776 B plus per-font outlines** | **1,165,312 B** |
+
+The new known startup total is 91.8% below the first compact pass and 97.3% below the original 42,991,616-byte RGBA-atlas allocation, while retaining the same configured maximum coverage capacity. At maximum texture size, the smaller rings still reduce the fixed atlas/staging portion from 13,893,632 to 12,124,160 bytes. Path staging is no longer proportional to the total pending raster area: the ordinary peak is 256 KiB, with only a single quality-preserving oversized path allowed to exceed it.
+
+The upload-batching regression requests 13 unique first-use glyphs in one compilation batch. The old structure required 39 CPU-to-GPU queue writes, 13 bind groups, and 13 compute passes. The new structure performs 3 queue writes (uniforms, records, segments), 1 reusable bind group, 1 compute pass, and 1 submission. An immediately following empty batch performs no submission. This is an exact API-operation count; no wall-time claim is inferred from it.
+
+A release headless profile of all 195 sample-page tests used induced-GC heap dumps plus root analysis. The dominant necessary residency was font payload/parser data and visible rich-document layout. The actionable duplicate was a 2,228,248-byte `RenderCommand[]` for the active Markdown workload: before direct replay, the same-sized array appeared twice (owned cache plus copied compositor context); after direct replay, only the owned array remained. The full induced-GC checkpoint reported 87,062,289 live managed bytes and 711,902 objects after the change. Whole-heap totals are workload-phase sensitive, so the precise claim is the eliminated duplicate command array and ownership path, not a process-RSS percentage.
+
+A release-build sweep visited all text/font sample pages (Text & Documents, Rich Document Editor, Markdown Playground, Glyph Run Showcase, Text Shaping Lab, Typography & Scripts, Inter Typeface, Interactive Input, Font Glyph Browser, WPF Shim Showcase, and SkiaSharp Shim) before measuring the same Data Virtualization scene for 60 warm-up and 180 measured frames:
+
+| Metric | Baseline | New design | Change |
+| --- | ---: | ---: | ---: |
+| Compiled-scene CPU time | 0.9577 ms | 0.5308 ms | -44.6% |
+| Compositor CPU time | 1.2040 ms | 0.7687 ms | -36.2% |
+| Managed allocation/frame | 26,953 B | 25,964 B | -3.7% |
+| Wall throughput | 480.26 FPS | 472.54 FPS | -1.6% |
+| Glyph/path capacity failures | 0 / 0 | 0 / 0 | unchanged |
+| Glyph evictions / atlas clears / path resets | 0 / 0 / 0 | 0 / 0 / 0 | unchanged |
+
+Wall throughput varied by 1.6%, so it is treated as neutral noise rather than an improvement claim. Process RSS and OS memory-footprint counters were also noisy and contradictory between isolated runs; the memory claim therefore uses exact resource sizes exposed by compositor metrics. The populated new run held 2,712 glyph entries and 141 path entries, allocated 1,775,616 bytes of GPU outline capacity, used 196,080 bytes of path CPU cache, and peaked at 1,178,624 bytes of transient path staging.
+
+An isolated Font Glyph Browser run also reduced compilation from 3.5679 to 1.7468 ms and compositor CPU time from 3.9711 to 2.0189 ms, while allocations fell from 117,561 to 102,670 bytes/frame. These timings support the architectural result but are not substituted for the all-feature sweep.
+
+Matched browser-AOT WebGPU scroll profiles against `main` additionally covered the pages that apply the greatest atlas or document pressure:
+
+| Workload | Main compile | New compile | Main managed heap | New managed heap | Atlas result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Font Glyph Browser, 600 frames | 4.0360 ms | 0.9193 ms | 28,964,208 B | 27,280,832 B | 240 glyph evictions, zero clears; 512 path atlas |
+| Markdown Playground, 600 frames | 9.5631 ms | 0.6763 ms | 51,170,064 B | 48,248,392 B | 32 paths; 512 path atlas |
+| Inter Typeface, 600 frames | 2.4310 ms | 0.3643 ms | 51,587,912 B | 44,215,248 B | 224 paths; 2048 path atlas |
+| Data Virtualization, 600 frames | 3.6888 ms | 1.7267 ms | 30,684,896 B | 26,224,792 B | zero evictions/clears; 512 path atlas |
+| Text & Documents, 180 frames | 45.1189 ms | 39.3411 ms | 290,469,064 B | 276,480,952 B | paths reduced 2,930 to 505; 2048 path atlas |
+
+All runs completed with zero WebGPU console errors after moving path-atlas derivatives to uniform fragment control flow. The rich-editor sequential allocation rate was neutral (9,584,391 versus 9,580,493 bytes/frame); the measurable wins there are 13,988,112 fewer retained managed bytes, fewer vector fallback paths, 12.8% lower compile time, and 9.4% higher wall throughput. The 2048 path texture is retained after Inter/rich-document pressure because its exact R8 cost is 4 MiB and retaining it avoids page-switch repacks and renewed GPU uploads; shrinking it would trade a small bounded high-water mark for the interaction delay this design is intended to remove.
+
+A matched page-switch run scrolled Font Glyph Browser, Text & Documents, Markdown Playground, and Inter Typeface for 60 frames each, then measured Data Virtualization for 300 frames. Browser logs confirmed every transition in order. Against `main`, allocation fell from 31,957 to 13,588 bytes/frame (-57.5%), managed heap from 82,614,376 to 78,255,336 bytes (-5.3%), compile time from 3.6043 to 1.8240 ms (-49.4%), and compositor time from 3.6850 to 1.9197 ms (-47.9%). It completed with zero evictions, clears, capacity failures, generation changes, over-budget compile frames, or console errors.
+
+## Quality and regression evidence
+
+- The glyph shader retains 8x8 high-precision coverage and the direction-aware half-open quadratic/cubic winding rules.
+- The path shader retains each command's selected sample grid, fill rule, transform phase, scale quantization, and recovery behavior.
+- Color bitmap glyphs retain RGBA data and filtered sampling in a dedicated texture.
+- The text shader retains aliased, grayscale, gamma/contrast, mask, and ClearType paths; only the sampled texture binding changes.
+- Atlas generations still change only when cached UV contents are cleared, moved, or repacked.
+- Texture growth is covered by a GPU readback regression proving that resident coverage survives growth at unchanged texel coordinates while `Generation` remains stable and texture revision advances.
+- Owned rich-text/Markdown/flow command caches are compiled directly and remain compatible with explicit `OnRender` replay.
+- Regression tests cover exact configured residency, R8 readback, color/coverage separation, shader resource contracts, atlas recovery, phase bounds, and existing rendering behavior.
+
+Validation commands:
+
+- `dotnet test src/ProGPU.Tests/ProGPU.Tests.csproj -c Release --no-restore`: 2,264 passed, 0 failed.
+- `dotnet test src/ProGPU.Tests.Headless/ProGPU.Tests.Headless.csproj -c Release --no-restore`: 195 passed, 0 failed.
+- `dotnet build src/ProGPU.slnx -c Release --no-restore`: succeeded with 0 errors.
+- `dotnet publish src/ProGPU.Samples.Browser/ProGPU.Samples.Browser.csproj -c Release --no-restore`: AOT-compiled all 68 eligible assemblies and produced the native WebAssembly artifact.
+
+## Rejected alternatives
+
+- RGBA storage textures for coverage: portable and simple, but waste three channels for every monochrome texel.
+- R8 storage-texture writes: direct, but not a sufficiently portable baseline across the native and browser targets.
+- CPU rasterization or CPU repacking: lowers GPU requirements but violates the GPU-only goal and adds transfer/synchronization cost.
+- SDF/MSDF atlases: attractive for scale reuse, but change small-text coverage, hinting, stroke, and transformed vector quality.
+- Per-frame uncached vector text: bounds residency but repeats analytic raster work for stable UI text.
+- One universal color/coverage atlas: recreates the RGBA tax and couples unrelated capacity/eviction pressure.

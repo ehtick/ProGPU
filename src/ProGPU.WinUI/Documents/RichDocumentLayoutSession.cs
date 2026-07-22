@@ -15,11 +15,17 @@ namespace Microsoft.UI.Xaml.Documents;
 /// </summary>
 public sealed class RichDocumentLayoutSession
 {
+    private const int MaxPooledPositionedCharacters = 4096;
+    private const int MaxRetainedRichCharacterScratch = 4096;
     private readonly Dictionary<Block, RichBlockLayoutCache> _blocks =
         new(ReferenceEqualityComparer.Instance);
     private readonly HashSet<Block> _liveBlocks = new(ReferenceEqualityComparer.Instance);
     private readonly List<Block> _removedBlocks = new();
+    private readonly Stack<PositionedRichChar> _positionedCharacterPool = new();
+    private List<RichChar> _richCharacterScratch = new();
+    private readonly List<PositionedRichChar> _shapingCharacterScratch = new();
     internal List<Visual> CurrentChildren { get; } = new();
+    internal List<Block> CurrentBlocks { get; } = new();
     internal HashSet<Visual> EncounteredChildren { get; } =
         new(ReferenceEqualityComparer.Instance);
     private long _generation;
@@ -48,8 +54,10 @@ public sealed class RichDocumentLayoutSession
         foreach (RichBlockLayoutCache cache in _blocks.Values)
         {
             cache.IsLayoutValid = false;
-            cache.Characters.Clear();
+            cache.LogicalTextLength = -1;
+            ReleaseCharacters(cache.Characters);
             cache.Decorations.Clear();
+            cache.InvalidateShaping();
         }
     }
 
@@ -60,16 +68,30 @@ public sealed class RichDocumentLayoutSession
         {
             if (!_blocks.TryGetValue(blocks[index], out RichBlockLayoutCache? cache)) continue;
             cache.IsLayoutValid = false;
-            cache.Characters.Clear();
+            cache.LogicalTextLength = -1;
+            ReleaseCharacters(cache.Characters);
             cache.Decorations.Clear();
+            cache.InvalidateShaping();
         }
     }
 
     /// <summary>Releases all retained block state.</summary>
     public void Clear()
     {
-        if (_blocks.Count == 0) return;
+        bool hadState = _blocks.Count != 0 ||
+                        _positionedCharacterPool.Count != 0 ||
+                        _shapingCharacterScratch.Count != 0 ||
+                        _richCharacterScratch.Count != 0;
+        if (!hadState) return;
+        foreach (RichBlockLayoutCache cache in _blocks.Values)
+            ReleaseCharacters(cache.Characters);
         _blocks.Clear();
+        CurrentBlocks.Clear();
+        CurrentChildren.Clear();
+        EncounteredChildren.Clear();
+        _shapingCharacterScratch.Clear();
+        _positionedCharacterPool.Clear();
+        _richCharacterScratch = new List<RichChar>();
         _generation++;
     }
 
@@ -93,7 +115,53 @@ public sealed class RichDocumentLayoutSession
         {
             if (!_liveBlocks.Contains(block)) _removedBlocks.Add(block);
         }
-        for (int index = 0; index < _removedBlocks.Count; index++) _blocks.Remove(_removedBlocks[index]);
+        for (int index = 0; index < _removedBlocks.Count; index++)
+        {
+            Block block = _removedBlocks[index];
+            ReleaseCharacters(_blocks[block].Characters);
+            _blocks.Remove(block);
+        }
+    }
+
+    internal List<RichChar> GetRichCharacterScratch()
+    {
+        if (_richCharacterScratch.Capacity > MaxRetainedRichCharacterScratch)
+            _richCharacterScratch = new List<RichChar>();
+        else
+            _richCharacterScratch.Clear();
+        return _richCharacterScratch;
+    }
+
+    internal List<PositionedRichChar> GetShapingCharacterScratch()
+    {
+        ReleaseCharacters(_shapingCharacterScratch);
+        return _shapingCharacterScratch;
+    }
+
+    internal PositionedRichChar RentPositionedCharacter(RichChar info, System.Numerics.Vector2 position = default)
+    {
+        PositionedRichChar character = _positionedCharacterPool.Count > 0
+            ? _positionedCharacterPool.Pop()
+            : new PositionedRichChar();
+        character.Info = info;
+        character.Position = position;
+        character.BidiLevel = 0;
+        character.ClusterStart = info.TextPosition;
+        character.ClusterLength = 1;
+        character.ShapedAdvance = 0f;
+        character.ShapedAdvanceWithoutCharacterSpacing = 0f;
+        character.HasShapedAdvance = false;
+        character.ShapingFlags = ProGPU.Text.Shaping.ShapingGlyphFlags.None;
+        return character;
+    }
+
+    internal void ReleaseCharacters(List<PositionedRichChar> characters)
+    {
+        int available = MaxPooledPositionedCharacters - _positionedCharacterPool.Count;
+        int keep = Math.Min(available, characters.Count);
+        for (int index = 0; index < keep; index++)
+            _positionedCharacterPool.Push(characters[index]);
+        characters.Clear();
     }
 
     internal void CollectEmptyParagraphCaretAnchors(

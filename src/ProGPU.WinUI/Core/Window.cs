@@ -27,6 +27,14 @@ public readonly record struct WindowFrameMetrics(
     double PresentTimeMs,
     double TotalTimeMs);
 
+public readonly record struct WindowResizeMetrics(
+    ulong LogicalResizeEvents,
+    ulong FramebufferResizeEvents,
+    ulong LiveResizeFrames,
+    ulong SuppressedScheduledFrames,
+    double CallbackTimeMs,
+    double MaximumCallbackTimeMs);
+
 public class Window : DependencyObject
 {
     private IWindow? _silkWindow;
@@ -65,6 +73,14 @@ public class Window : DependencyObject
     private WindowInsets _insets;
     private bool _extendsContentIntoSystemInsets;
     private bool _avoidInputPane = true;
+    private ulong _logicalResizeEvents;
+    private ulong _framebufferResizeEvents;
+    private ulong _liveResizeFrames;
+    private ulong _suppressedScheduledResizeFrames;
+    private bool _suppressNextScheduledRender;
+    private long _liveResizeRenderedVersion = -1;
+    private double _resizeCallbackTimeMs;
+    private double _maximumResizeCallbackTimeMs;
 
     public IWindow? SilkWindow => _silkWindow;
     public WgpuContext? WgpuContext => _wgpuContext;
@@ -79,6 +95,13 @@ public class Window : DependencyObject
         _windowController?.FrameInsets ?? NativeWindowFrameInsets.Empty;
     public bool IsUsingSystemBackdropFallback { get; private set; }
     public WindowFrameMetrics FrameMetrics { get; private set; }
+    public WindowResizeMetrics ResizeMetrics => new(
+        _logicalResizeEvents,
+        _framebufferResizeEvents,
+        _liveResizeFrames,
+        _suppressedScheduledResizeFrames,
+        _resizeCallbackTimeMs,
+        _maximumResizeCallbackTimeMs);
     public Windows.Foundation.Rect Bounds => _bounds;
     public bool Visible => _visible;
     public WindowInsets Insets => _insets;
@@ -722,6 +745,14 @@ public class Window : DependencyObject
 
     private void OnRender(double delta)
     {
+        if (_suppressNextScheduledRender &&
+            _renderRoot.ChangeVersion == _liveResizeRenderedVersion)
+        {
+            _suppressNextScheduledRender = false;
+            _suppressedScheduledResizeFrames++;
+            return;
+        }
+        _suppressNextScheduledRender = false;
         RenderFrame(delta);
     }
 
@@ -820,7 +851,10 @@ public class Window : DependencyObject
                 // Resize, display migration, and foreground restoration can invalidate the
                 // platform surface without changing its dimensions. Reconfigure now and let
                 // the next display-link tick acquire the replacement drawable.
-                wgpuContext.TryConfigureSwapChain((uint)framebufferSize.X, (uint)framebufferSize.Y);
+                wgpuContext.TryConfigureSwapChain(
+                    (uint)framebufferSize.X,
+                    (uint)framebufferSize.Y,
+                    refreshCapabilities: true);
             }
             else if (surfaceTexture.Status is SurfaceGetCurrentTextureStatus.OutOfMemory or SurfaceGetCurrentTextureStatus.DeviceLost)
             {
@@ -877,19 +911,40 @@ public class Window : DependencyObject
 
     private void OnResize(Vector2D<int> newSize)
     {
+        _logicalResizeEvents++;
         UpdateBounds(newSize.X, newSize.Y);
         _content?.Invalidate();
         _renderRoot.Invalidate();
+        if (_suppressNextScheduledRender)
+        {
+            // Cocoa may report the logical-size notification immediately after the
+            // framebuffer notification. The live frame already measured from the new
+            // physical size, so include this paired resize invalidation in that frame.
+            // Mutations raised by later application handlers still advance the version.
+            _liveResizeRenderedVersion = _renderRoot.ChangeVersion;
+        }
     }
 
-    private void OnFramebufferResize(Vector2D<int> newSize)
+    private void OnFramebufferResize(Vector2D<int> _)
     {
         if (_wgpuContext == null || _silkWindow == null) return;
-        var framebufferSize = NormalizeFramebufferSize(newSize);
-        _wgpuContext.ConfigureSwapChain((uint)framebufferSize.X, (uint)framebufferSize.Y);
-        _content?.Invalidate();
+        long callbackStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        _framebufferResizeEvents++;
+
+        // Cocoa holds the normal Silk render loop inside native event dispatch during a
+        // live resize. Draw the new physical size synchronously so the window remains
+        // responsive, then suppress the redundant scheduled render after dispatch returns.
         _renderRoot.Invalidate();
-        RenderFrame(0d);
+        if (!_isRendering)
+        {
+            _suppressNextScheduledRender = true;
+            RenderFrame(0d);
+            _liveResizeRenderedVersion = _renderRoot.ChangeVersion;
+            _liveResizeFrames++;
+        }
+        double elapsedMilliseconds = System.Diagnostics.Stopwatch.GetElapsedTime(callbackStart).TotalMilliseconds;
+        _resizeCallbackTimeMs += elapsedMilliseconds;
+        _maximumResizeCallbackTimeMs = Math.Max(_maximumResizeCallbackTimeMs, elapsedMilliseconds);
     }
 
     private Vector2D<int> GetCurrentFramebufferSize()

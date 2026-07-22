@@ -61,6 +61,60 @@ public unsafe sealed class BrowserWebGpuApiTests
     }
 
     [Fact]
+    public void CoverageBufferToTextureCopyUsesTypedBrowserProtocol()
+    {
+        var packets = new List<byte[]>();
+        using var api = new BrowserWebGpuApi(packet => packets.Add(packet.WrittenSpan.ToArray()));
+        var bufferDescriptor = new BufferDescriptor
+        {
+            Size = 1024,
+            Usage = BufferUsage.Storage | BufferUsage.CopySrc
+        };
+        var textureDescriptor = new TextureDescriptor
+        {
+            Size = new Extent3D { Width = 64, Height = 16, DepthOrArrayLayers = 1 },
+            Format = TextureFormat.R8Unorm,
+            Dimension = TextureDimension.Dimension2D,
+            MipLevelCount = 1,
+            SampleCount = 1,
+            Usage = TextureUsage.TextureBinding | TextureUsage.CopyDst
+        };
+        var sourceBuffer = api.DeviceCreateBuffer(BrowserWebGpuApi.DeviceHandle, &bufferDescriptor);
+        var destinationTexture = api.DeviceCreateTexture(BrowserWebGpuApi.DeviceHandle, &textureDescriptor);
+        var encoder = api.DeviceCreateCommandEncoder(BrowserWebGpuApi.DeviceHandle, null);
+        var source = new ImageCopyBuffer
+        {
+            Buffer = sourceBuffer,
+            Layout = new TextureDataLayout { Offset = 256, BytesPerRow = 256, RowsPerImage = 2 }
+        };
+        var destination = new ImageCopyTexture
+        {
+            Texture = destinationTexture,
+            MipLevel = 0,
+            Origin = new Origin3D { X = 3, Y = 5, Z = 0 },
+            Aspect = TextureAspect.All
+        };
+        var extent = new Extent3D { Width = 17, Height = 2, DepthOrArrayLayers = 1 };
+
+        api.CommandEncoderCopyBufferToTexture(encoder, &source, &destination, &extent);
+        var commands = api.CommandEncoderFinish(encoder, null);
+        api.QueueSubmit(BrowserWebGpuApi.QueueHandle, 1, &commands);
+
+        Assert.Single(packets);
+        Assert.Equal(
+            new[]
+            {
+                BrowserGpuOpcode.CreateBuffer,
+                BrowserGpuOpcode.CreateTexture,
+                BrowserGpuOpcode.CreateCommandEncoder,
+                BrowserGpuOpcode.CopyBufferToTexture,
+                BrowserGpuOpcode.FinishCommandEncoder,
+                BrowserGpuOpcode.Submit
+            },
+            ReadOpcodes(packets[0]));
+    }
+
+    [Fact]
     public void SurfaceRenderPassIsEncodedThroughOrdinaryWebGpuFacade()
     {
         var packets = new List<byte[]>();
