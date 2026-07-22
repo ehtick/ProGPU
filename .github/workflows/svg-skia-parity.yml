@@ -36,7 +36,7 @@ jobs:
   image-parity:
     name: Native and ProGPU image parity
     runs-on: macos-26
-    timeout-minutes: 45
+    timeout-minutes: 15
 
     steps:
       - name: Checkout ProGPU
@@ -102,7 +102,7 @@ jobs:
           --logger "trx;LogFileName=progpu-resvg.trx"
           --results-directory "${{ github.workspace }}/artifacts/svg-skia/progpu"
 
-      - name: Run remaining ProGPU Svg.Skia tests
+      - name: Run remaining ProGPU Svg.Skia tests serially
         working-directory: external/Svg.Skia-progpu
         run: >-
           dotnet test ${{ env.SVG_TEST_PROJECT }}
@@ -115,6 +115,9 @@ jobs:
           --filter "FullyQualifiedName!~W3CTestSuiteTests&FullyQualifiedName!~resvgTests"
           --logger "trx;LogFileName=progpu-remaining.trx"
           --results-directory "${{ github.workspace }}/artifacts/svg-skia/progpu"
+          --blame-hang-dump-type none
+          --blame-hang-timeout 2m
+          -- xUnit.ParallelizeTestCollections=false
 
       - name: Run ProGPU W3C comparison
         id: progpu-w3c
@@ -147,6 +150,7 @@ jobs:
           name: svg-skia-parity-${{ github.sha }}
           path: |
             artifacts/svg-skia/**/*.trx
+            artifacts/svg-skia/**/*.xml
             external/Svg.Skia-native/tests/Tests/**/* (Actual).png
             external/Svg.Skia-progpu/tests/Tests/**/* (Actual).png
           if-no-files-found: warn
