@@ -11,7 +11,7 @@ using Silk.NET.Input;
 using ProGPU.Layout;
 using ProGPU.Vector;
 using ProGPU.Scene;
-using Windows.Devices.Input;
+using Microsoft.UI.Input;
 
 namespace Microsoft.UI.Xaml.Controls;
 

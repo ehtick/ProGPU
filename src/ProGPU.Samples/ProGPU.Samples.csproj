@@ -21,7 +21,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Silk.NET.Input" />
+    <PackageReference Include="Silk.NET.Input.Common" />
   </ItemGroup>
 
   <PropertyGroup>

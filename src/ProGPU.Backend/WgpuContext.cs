@@ -2,11 +2,13 @@ using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Silk.NET.Core.Contexts;
 using Silk.NET.Core.Native;
 using Silk.NET.WebGPU;
 using Silk.NET.Windowing;
+using WgpuAdapter = Silk.NET.WebGPU.Adapter;
 
 namespace ProGPU.Backend;
 
@@ -30,7 +32,7 @@ public unsafe class WgpuContext : IDisposable
     public IWebGpuApi Api { get; private set; } = null!;
     public WgpuBackendKind BackendKind { get; private set; } = WgpuBackendKind.SilkNative;
     public Instance* Instance { get; private set; } = null;
-    public Adapter* Adapter { get; private set; } = null;
+    public WgpuAdapter* Adapter { get; private set; } = null;
     public Device* Device { get; private set; } = null;
     public Queue* Queue { get; private set; } = null;
     public Surface* Surface { get; private set; } = null;
@@ -39,8 +41,11 @@ public unsafe class WgpuContext : IDisposable
     public uint MaxSamplersPerShaderStage { get; private set; } = 16;
     public uint MaxBindGroups { get; private set; } = 4;
     public bool SupportsReadOnlyAndReadWriteStorageTextures { get; private set; }
+    public BackendType AdapterBackendType { get; private set; } = BackendType.Undefined;
+    public string AdapterName { get; private set; } = string.Empty;
 
     public static event Action<ErrorType, string>? OnWebGpuError;
+    public static event Action<DeviceLostReason, string>? OnWebGpuDeviceLost;
 
     public static void RaiseWebGpuError(ErrorType type, string message)
     {
@@ -48,6 +53,7 @@ public unsafe class WgpuContext : IDisposable
     }
 
     private PfnErrorCallback _errorCallback;
+    private nint _devicePollAddress;
 
     public readonly object RenderLock = new();
     public readonly object DisposalLock = new();
@@ -474,6 +480,51 @@ public unsafe class WgpuContext : IDisposable
 
     public void Initialize(IWindow? window)
     {
+        InitializeNative(window, null, null, 0, 0);
+    }
+
+    /// <summary>
+    /// Initializes WebGPU directly against an Apple <c>CAMetalLayer</c>.
+    /// The layer is borrowed for the lifetime of the context and remains owned by UIKit.
+    /// </summary>
+    public void InitializeMetalLayer(nint metalLayer, uint framebufferWidth, uint framebufferHeight)
+    {
+        if (metalLayer == 0)
+            throw new ArgumentException("A valid CAMetalLayer handle is required.", nameof(metalLayer));
+
+        InitializeNative(
+            window: null,
+            metalLayer: (void*)metalLayer,
+            androidNativeWindow: null,
+            framebufferWidth: Math.Max(1u, framebufferWidth),
+            framebufferHeight: Math.Max(1u, framebufferHeight));
+    }
+
+    /// <summary>
+    /// Initializes WebGPU directly against an Android <c>ANativeWindow</c>.
+    /// The caller retains ownership and must keep the native window acquired until this
+    /// context has been disposed.
+    /// </summary>
+    public void InitializeAndroidNativeWindow(nint nativeWindow, uint framebufferWidth, uint framebufferHeight)
+    {
+        if (nativeWindow == 0)
+            throw new ArgumentException("A valid ANativeWindow pointer is required.", nameof(nativeWindow));
+
+        InitializeNative(
+            window: null,
+            metalLayer: null,
+            androidNativeWindow: (void*)nativeWindow,
+            framebufferWidth: Math.Max(1u, framebufferWidth),
+            framebufferHeight: Math.Max(1u, framebufferHeight));
+    }
+
+    private void InitializeNative(
+        IWindow? window,
+        void* metalLayer,
+        void* androidNativeWindow,
+        uint framebufferWidth,
+        uint framebufferHeight)
+    {
         string logPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ProGPU_test_run.log");
         void SafeLog(string msg)
         {
@@ -489,19 +540,23 @@ public unsafe class WgpuContext : IDisposable
 
         SafeLog($"[WGPUCONTEXT] Initialize started, window exists={window != null}\n");
         _window = window;
-        Wgpu = WebGPU.GetApi();
+        Wgpu = CreateNativeWebGpuApi();
         Api = new SilkWebGpuApi(Wgpu);
         
         // 1. Create WebGPU Instance (isolated per context)
         SafeLog("[WGPUCONTEXT] Creating WebGPU Instance\n");
-        var instanceDesc = new InstanceDescriptor();
+        var instanceExtras = CreateNativeInstanceExtras();
+        var instanceDesc = new InstanceDescriptor
+        {
+            NextInChain = instanceExtras.Chain.SType == 0 ? null : &instanceExtras.Chain
+        };
         Instance = Wgpu.CreateInstance(&instanceDesc);
         if (Instance == null)
         {
             throw new InvalidOperationException("Failed to create WebGPU Instance.");
         }
 
-        // 2. Create Surface if window is provided
+        // 2. Create a native presentation surface when requested.
         if (window != null)
         {
             if (!CanCreateNativeSurface(window))
@@ -517,11 +572,42 @@ public unsafe class WgpuContext : IDisposable
                 throw new InvalidOperationException("Failed to create WebGPU Surface from window.");
             }
         }
+        else if (metalLayer != null)
+        {
+            SafeLog("[WGPUCONTEXT] Creating WebGPU Surface from CAMetalLayer\n");
+            var metalDescriptor = new SurfaceDescriptorFromMetalLayer
+            {
+                Chain = new ChainedStruct
+                {
+                    SType = SType.SurfaceDescriptorFromMetalLayer
+                },
+                Layer = metalLayer
+            };
+            var surfaceDescriptor = new SurfaceDescriptor
+            {
+                NextInChain = &metalDescriptor.Chain
+            };
+            Surface = Wgpu.InstanceCreateSurface(Instance, &surfaceDescriptor);
+            if (Surface == null)
+            {
+                throw new InvalidOperationException("Failed to create a WebGPU Surface from CAMetalLayer.");
+            }
+        }
+        else if (androidNativeWindow != null)
+        {
+            SafeLog("[WGPUCONTEXT] Creating WebGPU Surface from ANativeWindow\n");
+            Surface = CreateAndroidSurface(androidNativeWindow);
+            if (Surface == null)
+            {
+                throw new InvalidOperationException("Failed to create a WebGPU Surface from ANativeWindow.");
+            }
+        }
 
         // 3. Request Adapter (synchronously)
         SafeLog("[WGPUCONTEXT] Requesting Adapter\n");
-        var adapterSignal = new ManualResetEventSlim(false);
-        Adapter* requestedAdapter = null;
+        using var adapterSignal = new ManualResetEventSlim(false);
+        var adapterState = new AdapterRequestState(adapterSignal);
+        var adapterStateHandle = GCHandle.Alloc(adapterState);
 
         var requestAdapterOptions = new RequestAdapterOptions
         {
@@ -529,75 +615,95 @@ public unsafe class WgpuContext : IDisposable
             PowerPreference = PowerPreference.HighPerformance
         };
 
-        var onAdapterReceived = PfnRequestAdapterCallback.From((status, adapter, message, userData) =>
+        try
         {
-            if (status == RequestAdapterStatus.Success)
-            {
-                requestedAdapter = adapter;
-            }
-            else
-            {
-                string msg = (message != null ? SilkMarshal.PtrToString((nint)message) : null) ?? "Unknown error";
-                Console.WriteLine($"[WebGPU] RequestAdapter failed: {msg}");
-            }
-            adapterSignal.Set();
-        });
-
-        Wgpu.InstanceRequestAdapter(Instance, &requestAdapterOptions, onAdapterReceived, null);
-        adapterSignal.Wait();
-        
-        SafeLog($"[WGPUCONTEXT] RequestAdapter finished, adapter={(nint)requestedAdapter:X}\n");
-        if (requestedAdapter == null)
-        {
-            throw new InvalidOperationException("Failed to obtain WebGPU Adapter.");
+            var onAdapterReceived = new PfnRequestAdapterCallback(&OnAdapterRequested);
+            Wgpu.InstanceRequestAdapter(
+                Instance,
+                &requestAdapterOptions,
+                onAdapterReceived,
+                (void*)GCHandle.ToIntPtr(adapterStateHandle));
+            adapterSignal.Wait();
         }
-        Adapter = requestedAdapter;
+        finally
+        {
+            adapterStateHandle.Free();
+        }
+        
+        SafeLog($"[WGPUCONTEXT] RequestAdapter finished, adapter={adapterState.Result:X}\n");
+        if (adapterState.Result == 0)
+        {
+            throw new InvalidOperationException($"Failed to obtain WebGPU Adapter. {adapterState.Error}");
+        }
+        Adapter = (WgpuAdapter*)adapterState.Result;
+
+        var adapterProperties = new AdapterProperties();
+        Wgpu.AdapterGetProperties(Adapter, &adapterProperties);
+        AdapterBackendType = adapterProperties.BackendType;
+        AdapterName = adapterProperties.Name == null ? string.Empty : ReadNativeMessage(adapterProperties.Name);
+        SafeLog($"[WGPUCONTEXT] Adapter '{AdapterName}', backend={AdapterBackendType}\n");
+        if (OperatingSystem.IsAndroid() && AdapterBackendType != BackendType.Vulkan)
+        {
+            ReleaseAdapterInitializationResources();
+            throw new InvalidOperationException(
+                $"Android requires the direct Vulkan WebGPU backend, but wgpu-native selected {AdapterBackendType}.");
+        }
+        if (OperatingSystem.IsIOS() && AdapterBackendType != BackendType.Metal)
+        {
+            ReleaseAdapterInitializationResources();
+            throw new InvalidOperationException(
+                $"iOS requires the direct Metal WebGPU backend, but wgpu-native selected {AdapterBackendType}.");
+        }
 
         // 4. Request Device (synchronously)
         SafeLog("[WGPUCONTEXT] Requesting Device\n");
-        var deviceSignal = new ManualResetEventSlim(false);
-        Device* requestedDevice = null;
+        using var deviceSignal = new ManualResetEventSlim(false);
+        var deviceState = new DeviceRequestState(deviceSignal);
+        var deviceStateHandle = GCHandle.Alloc(deviceState);
 
         var adapterLimits = new SupportedLimits();
         Wgpu.AdapterGetLimits(Adapter, &adapterLimits);
         var requiredLimits = CreateRequiredLimits(adapterLimits);
         var requiredFeatures = stackalloc FeatureName[1];
-        requiredFeatures[0] = FeatureName.Bgra8UnormStorage;
+        uint requiredFeatureCount = 0;
+        if (Wgpu.AdapterHasFeature(Adapter, FeatureName.Bgra8UnormStorage))
+        {
+            requiredFeatures[requiredFeatureCount++] = FeatureName.Bgra8UnormStorage;
+        }
 
         var deviceDesc = new DeviceDescriptor
         {
             Label = (byte*)SilkMarshal.StringToPtr("ProGPU Primary Device"),
             RequiredLimits = &requiredLimits,
-            RequiredFeatureCount = 1,
-            RequiredFeatures = requiredFeatures
+            RequiredFeatureCount = requiredFeatureCount,
+            RequiredFeatures = requiredFeatureCount == 0 ? null : requiredFeatures,
+            DeviceLostCallback = new PfnDeviceLostCallback(&OnDeviceLost)
         };
 
-        var onDeviceReceived = PfnRequestDeviceCallback.From((status, device, message, userData) =>
+        try
         {
-            if (status == RequestDeviceStatus.Success)
-            {
-                requestedDevice = device;
-            }
-            else
-            {
-                string msg = (message != null ? SilkMarshal.PtrToString((nint)message) : null) ?? "Unknown error";
-                Console.WriteLine($"[WebGPU] RequestDevice failed: {msg}");
-            }
-            deviceSignal.Set();
-        });
-
-        Wgpu.AdapterRequestDevice(Adapter, &deviceDesc, onDeviceReceived, null);
-        deviceSignal.Wait();
+            var onDeviceReceived = new PfnRequestDeviceCallback(&OnDeviceRequested);
+            Wgpu.AdapterRequestDevice(
+                Adapter,
+                &deviceDesc,
+                onDeviceReceived,
+                (void*)GCHandle.ToIntPtr(deviceStateHandle));
+            deviceSignal.Wait();
+        }
+        finally
+        {
+            deviceStateHandle.Free();
+        }
 
         // Free labeled string
         SilkMarshal.Free((nint)deviceDesc.Label);
 
-        SafeLog($"[WGPUCONTEXT] RequestDevice finished, device={(nint)requestedDevice:X}\n");
-        if (requestedDevice == null)
+        SafeLog($"[WGPUCONTEXT] RequestDevice finished, device={deviceState.Result:X}\n");
+        if (deviceState.Result == 0)
         {
-            throw new InvalidOperationException("Failed to obtain WebGPU Device.");
+            throw new InvalidOperationException($"Failed to obtain WebGPU Device. {deviceState.Error}");
         }
-        Device = requestedDevice;
+        Device = (Device*)deviceState.Result;
 
         var deviceLimits = new SupportedLimits();
         Wgpu.DeviceGetLimits(Device, &deviceLimits);
@@ -612,19 +718,16 @@ public unsafe class WgpuContext : IDisposable
         _sharedDeviceLifetime = new SharedDeviceLifetime(Wgpu, Instance, Adapter, Device, Queue);
 
         // 6. Hook up validation error callback
-        _errorCallback = PfnErrorCallback.From((type, msg, _) =>
-        {
-            string errorMsg = (msg != null ? SilkMarshal.PtrToString((nint)msg) : null) ?? "Unknown error";
-            Console.WriteLine($"[WebGPU Error] Type: {type}, Message: {errorMsg}");
-            OnWebGpuError?.Invoke(type, errorMsg);
-        });
+        _errorCallback = new PfnErrorCallback(&OnUncapturedError);
         Wgpu.DeviceSetUncapturedErrorCallback(Device, _errorCallback, null);
 
         // 7. Configure Surface if window exists
-        if (window != null && Surface != null)
+        if (Surface != null)
         {
             SafeLog("[WGPUCONTEXT] Configuring SwapChain\n");
-            ConfigureSwapChain((uint)window.FramebufferSize.X, (uint)window.FramebufferSize.Y);
+            uint width = window != null ? (uint)Math.Max(1, window.FramebufferSize.X) : framebufferWidth;
+            uint height = window != null ? (uint)Math.Max(1, window.FramebufferSize.Y) : framebufferHeight;
+            ConfigureSwapChain(width, height);
             SafeLog("[WGPUCONTEXT] Configuring SwapChain finished\n");
         }
 
@@ -637,6 +740,257 @@ public unsafe class WgpuContext : IDisposable
         }
 
         Current = this;
+    }
+
+    /// <summary>
+    /// Replaces a temporarily lost Android presentation surface without rebuilding the
+    /// adapter, device, queue, pipelines, atlases, or retained compositor resources.
+    /// </summary>
+    public void AttachAndroidNativeWindow(nint nativeWindow, uint framebufferWidth, uint framebufferHeight)
+    {
+        if (nativeWindow == 0)
+            throw new ArgumentException("A valid ANativeWindow pointer is required.", nameof(nativeWindow));
+
+        lock (RenderLock)
+        {
+            ObjectDisposedException.ThrowIf(_isDisposed, this);
+            if (Instance == null || Adapter == null || Device == null)
+                throw new InvalidOperationException("The WebGPU device must be initialized before attaching a replacement surface.");
+
+            ReleasePresentationSurfaceCore(waitForDevice: true);
+            Surface = CreateAndroidSurface((void*)nativeWindow);
+            if (Surface == null)
+                throw new InvalidOperationException("Failed to create a replacement WebGPU Surface from ANativeWindow.");
+
+            if (!TryConfigureSwapChain(Math.Max(1u, framebufferWidth), Math.Max(1u, framebufferHeight)))
+                throw new InvalidOperationException("The replacement Android WebGPU surface did not expose usable capabilities.");
+        }
+    }
+
+    /// <summary>
+    /// Releases only the Android presentation surface. The device and all reusable GPU
+    /// resources remain alive for a later <see cref="AttachAndroidNativeWindow"/> call.
+    /// </summary>
+    public void DetachAndroidNativeWindow()
+    {
+        lock (RenderLock)
+        {
+            if (_isDisposed) return;
+            ReleasePresentationSurfaceCore(waitForDevice: true);
+        }
+    }
+
+    private Surface* CreateAndroidSurface(void* nativeWindow)
+    {
+        var androidDescriptor = new SurfaceDescriptorFromAndroidNativeWindow
+        {
+            Chain = new ChainedStruct
+            {
+                SType = SType.SurfaceDescriptorFromAndroidNativeWindow
+            },
+            Window = nativeWindow
+        };
+        var surfaceDescriptor = new SurfaceDescriptor
+        {
+            NextInChain = &androidDescriptor.Chain
+        };
+        return Wgpu.InstanceCreateSurface(Instance, &surfaceDescriptor);
+    }
+
+    private void ReleaseAdapterInitializationResources()
+    {
+        ReleasePresentationSurfaceCore(waitForDevice: false);
+        if (Adapter != null)
+        {
+            Wgpu.AdapterRelease(Adapter);
+            Adapter = null;
+        }
+        if (Instance != null)
+        {
+            Wgpu.InstanceRelease(Instance);
+            Instance = null;
+        }
+    }
+
+    private void ReleasePresentationSurfaceCore(bool waitForDevice)
+    {
+        if (Surface == null) return;
+        if (waitForDevice && Device != null) WaitIdle();
+        // Externally owned browser surfaces are opaque command-stream handles and
+        // have no native WebGPU instance to unconfigure. Only the Silk-native path
+        // owns a wgpu-native surface configuration.
+        if (BackendKind == WgpuBackendKind.SilkNative && _isSurfaceConfigured)
+            Wgpu.SurfaceUnconfigure(Surface);
+        Api.SurfaceRelease(Surface);
+        Surface = null;
+        _isSurfaceConfigured = false;
+    }
+
+    private static NativeInstanceExtras CreateNativeInstanceExtras()
+    {
+        uint backends = OperatingSystem.IsAndroid()
+            ? NativeInstanceExtras.VulkanBackend
+            : OperatingSystem.IsIOS()
+                ? NativeInstanceExtras.MetalBackend
+                : 0u;
+        return backends == 0u
+            ? default
+            : new NativeInstanceExtras
+            {
+                Chain = new ChainedStruct { SType = (SType)NativeInstanceExtras.STypeValue },
+                Backends = backends
+            };
+    }
+
+    // wgpu-native 0.19 extension ABI from its public wgpu.h. Silk exposes the
+    // standard WebGPU descriptor chain but intentionally does not generate native-only
+    // extensions, so this private sequential representation keeps that boundary explicit.
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeInstanceExtras
+    {
+        public const uint STypeValue = 0x00030006;
+        public const uint VulkanBackend = 1u << 0;
+        public const uint MetalBackend = 1u << 2;
+
+        public ChainedStruct Chain;
+        public uint Backends;
+        public uint Flags;
+        public int Dx12ShaderCompiler;
+        public int Gles3MinorVersion;
+        public byte* DxilPath;
+        public byte* DxcPath;
+    }
+
+    private static WebGPU CreateNativeWebGpuApi()
+    {
+        if (OperatingSystem.IsIOS())
+        {
+            return new WebGPU(new LamdaNativeContext(ResolveAppleStaticWebGpuSymbol));
+        }
+
+        if (OperatingSystem.IsAndroid())
+        {
+            return new WebGPU(new LamdaNativeContext(ResolveAndroidWebGpuSymbol));
+        }
+
+        return WebGPU.GetApi();
+    }
+
+    private static readonly object s_androidWebGpuLibraryLock = new();
+    private static nint s_androidWebGpuLibrary;
+
+    private static nint ResolveAndroidWebGpuSymbol(string symbol)
+    {
+        if (s_androidWebGpuLibrary == 0)
+        {
+            lock (s_androidWebGpuLibraryLock)
+            {
+                if (s_androidWebGpuLibrary == 0 &&
+                    !NativeLibrary.TryLoad("libwgpu_native.so", out s_androidWebGpuLibrary))
+                {
+                    throw new DllNotFoundException(
+                        "Unable to load libwgpu_native.so. Package the matching Android ABI native library with the application.");
+                }
+            }
+        }
+
+        return NativeLibrary.TryGetExport(s_androidWebGpuLibrary, symbol, out nint address)
+            ? address
+            : 0;
+    }
+
+    private static nint ResolveAppleStaticWebGpuSymbol(string symbol)
+    {
+        nint utf8 = SilkMarshal.StringToPtr(symbol);
+        try
+        {
+            return ResolveStaticallyLinkedWebGpuSymbol((byte*)utf8);
+        }
+        finally
+        {
+            SilkMarshal.Free(utf8);
+        }
+    }
+
+    // A direct import keeps the resolver object, and therefore wgpu-native, rooted by
+    // Apple's static linker. Browser applications provide a link-only no-op definition;
+    // this method is unreachable there because OperatingSystem.IsIOS() is false.
+    [DllImport("__Internal", EntryPoint = "progpu_wgpu_get_proc_address")]
+    private static extern nint ResolveStaticallyLinkedWebGpuSymbol(byte* symbol);
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnAdapterRequested(
+        RequestAdapterStatus status,
+        WgpuAdapter* adapter,
+        byte* message,
+        void* userData)
+    {
+        var state = (AdapterRequestState)GCHandle.FromIntPtr((nint)userData).Target!;
+        if (status == RequestAdapterStatus.Success)
+        {
+            state.Result = (nint)adapter;
+        }
+        else
+        {
+            state.Error = ReadNativeMessage(message);
+            Console.WriteLine($"[WebGPU] RequestAdapter failed: {state.Error}");
+        }
+
+        state.Signal.Set();
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnDeviceRequested(
+        RequestDeviceStatus status,
+        Device* device,
+        byte* message,
+        void* userData)
+    {
+        var state = (DeviceRequestState)GCHandle.FromIntPtr((nint)userData).Target!;
+        if (status == RequestDeviceStatus.Success)
+        {
+            state.Result = (nint)device;
+        }
+        else
+        {
+            state.Error = ReadNativeMessage(message);
+            Console.WriteLine($"[WebGPU] RequestDevice failed: {state.Error}");
+        }
+
+        state.Signal.Set();
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnUncapturedError(ErrorType type, byte* message, void* _)
+    {
+        string errorMessage = ReadNativeMessage(message);
+        Console.WriteLine($"[WebGPU Error] Type: {type}, Message: {errorMessage}");
+        OnWebGpuError?.Invoke(type, errorMessage);
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnDeviceLost(DeviceLostReason reason, byte* message, void* _)
+    {
+        string errorMessage = ReadNativeMessage(message);
+        Console.Error.WriteLine($"[WebGPU Device Lost] Reason: {reason}, Message: {errorMessage}");
+        OnWebGpuDeviceLost?.Invoke(reason, errorMessage);
+    }
+
+    private static string ReadNativeMessage(byte* message) =>
+        (message != null ? SilkMarshal.PtrToString((nint)message) : null) ?? "Unknown error";
+
+    private sealed class AdapterRequestState(ManualResetEventSlim signal)
+    {
+        public ManualResetEventSlim Signal { get; } = signal;
+        public nint Result { get; set; }
+        public string? Error { get; set; }
+    }
+
+    private sealed class DeviceRequestState(ManualResetEventSlim signal)
+    {
+        public ManualResetEventSlim Signal { get; } = signal;
+        public nint Result { get; set; }
+        public string? Error { get; set; }
     }
 
     public Task InitializeAsync(IWindow? window, CancellationToken cancellationToken = default)
@@ -813,15 +1167,7 @@ public unsafe class WgpuContext : IDisposable
             return false;
         }
 
-        TextureFormat swapChainFormat = formats[0];
-        for (int i = 0; i < formats.Length; i++)
-        {
-            if (formats[i] == TextureFormat.Bgra8Unorm)
-            {
-                swapChainFormat = TextureFormat.Bgra8Unorm;
-                break;
-            }
-        }
+        TextureFormat swapChainFormat = ChooseSurfaceFormat(formats);
 
         var alphaMode = ChooseCompositeAlphaMode(
             _window?.TransparentFramebuffer == true,
@@ -858,6 +1204,31 @@ public unsafe class WgpuContext : IDisposable
         ReadOnlySpan<PresentMode> presentModes)
     {
         return !formats.IsEmpty && !alphaModes.IsEmpty && !presentModes.IsEmpty;
+    }
+
+    /// <summary>
+    /// Chooses an encoded-color presentation target. ProGPU theme, vector, and text
+    /// colors are stored as sRGB channel values and the compositor writes those values
+    /// directly. A non-sRGB attachment preserves the established desktop and Metal
+    /// output; selecting an *Srgb format would encode the channels a second time.
+    /// </summary>
+    public static TextureFormat ChooseSurfaceFormat(ReadOnlySpan<TextureFormat> formats)
+    {
+        if (formats.IsEmpty)
+            throw new ArgumentException("At least one surface format is required.", nameof(formats));
+
+        ReadOnlySpan<TextureFormat> preferred =
+            [TextureFormat.Bgra8Unorm, TextureFormat.Rgba8Unorm];
+        for (int preferredIndex = 0; preferredIndex < preferred.Length; preferredIndex++)
+        {
+            for (int availableIndex = 0; availableIndex < formats.Length; availableIndex++)
+            {
+                if (formats[availableIndex] == preferred[preferredIndex])
+                    return preferred[preferredIndex];
+            }
+        }
+
+        return formats[0];
     }
 
     public static CompositeAlphaMode ChooseCompositeAlphaMode(
@@ -997,14 +1368,17 @@ public unsafe class WgpuContext : IDisposable
         return _isSurfaceConfigured;
     }
 
-    [DllImport("wgpu_native", EntryPoint = "wgpuDevicePoll")]
-    private static extern unsafe bool wgpuDevicePoll(Device* device, bool wait, void* wrappedSubmissionIndex);
-
     public void PollDevice(bool wait)
     {
         if (BackendKind == WgpuBackendKind.SilkNative && Device != null && !_isDisposed)
         {
-            wgpuDevicePoll(Device, wait, null);
+            if (_devicePollAddress == 0)
+            {
+                _devicePollAddress = Wgpu.Context.GetProcAddress("wgpuDevicePoll");
+            }
+
+            var poll = (delegate* unmanaged[Cdecl]<Device*, uint, void*, uint>)_devicePollAddress;
+            _ = poll(Device, wait ? 1u : 0u, null);
         }
     }
 
@@ -1076,11 +1450,7 @@ public unsafe class WgpuContext : IDisposable
                 _activeContexts.Remove(this);
             }
             
-            if (Surface != null)
-            {
-                Api.SurfaceRelease(Surface);
-                Surface = null;
-            }
+            ReleasePresentationSurfaceCore(waitForDevice: false);
 
             _sharedDeviceLifetime?.Release();
             _sharedDeviceLifetime = null;
@@ -1105,7 +1475,7 @@ public unsafe class WgpuContext : IDisposable
         private readonly object _sync = new();
         private WebGPU? _wgpu;
         private Instance* _instance;
-        private Adapter* _adapter;
+        private WgpuAdapter* _adapter;
         private Device* _device;
         private Queue* _queue;
         private int _referenceCount = 1;
@@ -1113,7 +1483,7 @@ public unsafe class WgpuContext : IDisposable
         public SharedDeviceLifetime(
             WebGPU wgpu,
             Instance* instance,
-            Adapter* adapter,
+            WgpuAdapter* adapter,
             Device* device,
             Queue* queue)
         {
@@ -1138,7 +1508,7 @@ public unsafe class WgpuContext : IDisposable
         {
             WebGPU? wgpu;
             Instance* instance;
-            Adapter* adapter;
+            WgpuAdapter* adapter;
             Device* device;
             Queue* queue;
             lock (_sync)

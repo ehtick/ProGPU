@@ -1,11 +1,38 @@
 using System.IO;
+using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using ProGPU.Fonts.Inter;
 using Xunit;
 
 namespace ProGPU.Tests.Headless;
 
+[Collection("HeadlessTests")]
 public class DataGridValueProviderTests
 {
+    [Fact]
+    public void DataGrid_WrappedCellMeasuresVariableRowHeight()
+    {
+        InterFontFamily.RegisterFonts();
+        var dataGrid = new DataGrid
+        {
+            Width = 220f,
+            Height = 140f,
+            Font = InterFontFamily.Regular,
+            RowHeight = float.NaN,
+            MinRowHeight = 28f,
+            EstimatedRowHeight = 28f,
+            CellTextWrapping = TextWrapping.WrapWholeWords
+        };
+        dataGrid.Columns.Add(new DataGridColumn("Name", 120f, "Name"));
+        dataGrid.AddItem(new ProviderRow("A long activity name that must wrap across several visual lines"));
+
+        using var window = new HeadlessWindow(220, 140) { Content = dataGrid };
+        window.Render();
+        window.Render();
+
+        Assert.True(dataGrid.TotalBodyHeight > dataGrid.MinRowHeight);
+    }
+
     [Fact]
     public void DataGrid_UsesValueProviderForSortingWithoutPocoProperty()
     {

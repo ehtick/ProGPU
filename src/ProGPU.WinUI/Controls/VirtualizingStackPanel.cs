@@ -4,6 +4,7 @@ using System.Numerics;
 using ProGPU.Layout;
 using ProGPU.Scene;
 using Microsoft.UI.Xaml;
+using ProGPU.Virtualization;
 
 namespace Microsoft.UI.Xaml.Controls;
 
@@ -13,6 +14,14 @@ public class VirtualizingStackPanel : VirtualizingPanel
     private float _itemWidth = 300f;
     private float _itemHeight = 40f;
     private Orientation _orientation = Orientation.Vertical;
+    private float _estimatedItemHeight = 40f;
+    private float _cacheLength = 1f;
+    private readonly VariableSizeIndex _verticalSizeIndex = new();
+    private readonly List<int> _indicesToRecycle = new();
+    private int _indexedItemCount = -1;
+    private float _indexedEstimate = -1f;
+    private float _indexedWidth = -1f;
+    private bool _isUpdatingViewport;
 
     public VirtualizingStackPanel()
     {
@@ -102,6 +111,37 @@ public class VirtualizingStackPanel : VirtualizingPanel
         }
     }
 
+    /// <summary>
+    /// Estimated height used until an auto-sized item is realized and measured.
+    /// Set <see cref="ItemHeight"/> to <see cref="float.NaN"/> to enable variable sizes.
+    /// </summary>
+    public float EstimatedItemHeight
+    {
+        get => _estimatedItemHeight;
+        set
+        {
+            if (!float.IsFinite(value) || value <= 0f) throw new ArgumentOutOfRangeException(nameof(value));
+            if (_estimatedItemHeight == value) return;
+            _estimatedItemHeight = value;
+            ResetSizeIndex();
+            UpdateViewport();
+            Invalidate();
+        }
+    }
+
+    /// <summary>Realization cache measured in viewport lengths on each scroll side.</summary>
+    public float CacheLength
+    {
+        get => _cacheLength;
+        set
+        {
+            if (!float.IsFinite(value) || value < 0f) throw new ArgumentOutOfRangeException(nameof(value));
+            if (_cacheLength == value) return;
+            _cacheLength = value;
+            UpdateViewport();
+        }
+    }
+
     public Orientation Orientation
     {
         get => _orientation;
@@ -116,7 +156,9 @@ public class VirtualizingStackPanel : VirtualizingPanel
         }
     }
 
-    public override float TotalVirtualHeight => Orientation == Orientation.Vertical ? ItemsCount * ItemHeight : ViewportHeight;
+    public override float TotalVirtualHeight => Orientation == Orientation.Vertical
+        ? IsVariableHeight ? EnsureSizeIndex().TotalSize : ItemsCount * ItemHeight
+        : ViewportHeight;
     public override float TotalVirtualWidth => Orientation == Orientation.Horizontal ? ItemsCount * ItemWidth : ViewportWidth;
     public override bool IsHorizontal => Orientation == Orientation.Horizontal;
 
@@ -148,6 +190,10 @@ public class VirtualizingStackPanel : VirtualizingPanel
 
     private void UpdateViewport()
     {
+        if (_isUpdatingViewport) return;
+        _isUpdatingViewport = true;
+        try
+        {
         int itemsCount = ItemsCount;
         var createVisual = CreateVisualFactory;
         var bindVisual = BindVisualCallback;
@@ -163,24 +209,30 @@ public class VirtualizingStackPanel : VirtualizingPanel
 
         if (Orientation == Orientation.Vertical)
         {
-            // 1. Calculate visible item range (Vertical)
-            int startIdx = (int)Math.Floor(ScrollOffset / ItemHeight);
-            int endIdx = (int)Math.Ceiling((ScrollOffset + viewportHeight) / ItemHeight);
+            VariableSizeIndex? sizeIndex = IsVariableHeight ? EnsureSizeIndex(viewportWidth) : null;
+            float realizationPadding = viewportHeight * CacheLength;
+            float realizationStart = Math.Max(0f, ScrollOffset - realizationPadding);
+            float realizationEnd = ScrollOffset + viewportHeight + realizationPadding;
+            int startIdx = sizeIndex?.GetIndexAtOffset(realizationStart) ??
+                (int)Math.Floor(realizationStart / ItemHeight);
+            int endIdx = sizeIndex?.GetIndexAtOffset(realizationEnd) ??
+                (int)Math.Ceiling(realizationEnd / ItemHeight);
+            int anchorIndex = sizeIndex?.GetIndexAtOffset(ScrollOffset) ?? startIdx;
 
             startIdx = Math.Clamp(startIdx, 0, itemsCount - 1);
             endIdx = Math.Clamp(endIdx, 0, itemsCount - 1);
 
             // 2. Recycle items scrolled out of view
-            var indicesToRecycle = new List<int>();
+            _indicesToRecycle.Clear();
             foreach (var key in _activeVisuals.Keys)
             {
                 if (key < startIdx || key > endIdx)
                 {
-                    indicesToRecycle.Add(key);
+                    _indicesToRecycle.Add(key);
                 }
             }
 
-            foreach (var idx in indicesToRecycle)
+            foreach (var idx in _indicesToRecycle)
             {
                 var vis = _activeVisuals[idx];
                 _activeVisuals.Remove(idx);
@@ -199,7 +251,19 @@ public class VirtualizingStackPanel : VirtualizingPanel
                     AddChild(visual);
                 }
 
-                float posY = i * ItemHeight;
+                float itemHeight = sizeIndex?.GetSize(i) ?? ItemHeight;
+                if (sizeIndex != null && !sizeIndex.IsMeasured(i) && visual is LayoutNode measuredNode)
+                {
+                    measuredNode.Measure(new Vector2(viewportWidth, float.PositiveInfinity));
+                    itemHeight = Math.Max(1f, measuredNode.DesiredSize.Y);
+                    float delta = sizeIndex.SetMeasuredSize(i, itemHeight);
+                    if (delta != 0f && i < anchorIndex)
+                    {
+                        ScrollOffset += delta;
+                    }
+                }
+
+                float posY = sizeIndex?.GetOffset(i) ?? i * ItemHeight;
                 if (ScrollViewerOwner == null)
                 {
                     posY = MathF.Round(posY - ScrollOffset);
@@ -207,12 +271,18 @@ public class VirtualizingStackPanel : VirtualizingPanel
                 float itemWidth = viewportWidth;
 
                 visual.Offset = new Vector2(0f, posY);
-                visual.Size = new Vector2(itemWidth, ItemHeight);
+                visual.Size = new Vector2(itemWidth, itemHeight);
 
                 if (visual is LayoutNode childNode)
                 {
-                    childNode.Measure(new Vector2(itemWidth, ItemHeight));
-                    childNode.Arrange(new Rect(0f, posY, itemWidth, ItemHeight));
+                    if (sizeIndex == null) childNode.Measure(new Vector2(itemWidth, itemHeight));
+                    childNode.Arrange(new Rect(0f, posY, itemWidth, itemHeight));
+                }
+
+                if (sizeIndex != null && i == endIdx && i + 1 < itemsCount &&
+                    sizeIndex.GetOffset(i + 1) < realizationEnd)
+                {
+                    endIdx++;
                 }
             }
         }
@@ -225,16 +295,16 @@ public class VirtualizingStackPanel : VirtualizingPanel
             startIdx = Math.Clamp(startIdx, 0, itemsCount - 1);
             endIdx = Math.Clamp(endIdx, 0, itemsCount - 1);
 
-            var indicesToRecycle = new List<int>();
+            _indicesToRecycle.Clear();
             foreach (var key in _activeVisuals.Keys)
             {
                 if (key < startIdx || key > endIdx)
                 {
-                    indicesToRecycle.Add(key);
+                    _indicesToRecycle.Add(key);
                 }
             }
 
-            foreach (var idx in indicesToRecycle)
+            foreach (var idx in _indicesToRecycle)
             {
                 var vis = _activeVisuals[idx];
                 _activeVisuals.Remove(idx);
@@ -269,6 +339,45 @@ public class VirtualizingStackPanel : VirtualizingPanel
                 }
             }
         }
+        }
+        finally
+        {
+            _isUpdatingViewport = false;
+        }
+    }
+
+    private bool IsVariableHeight => float.IsNaN(ItemHeight);
+
+    private VariableSizeIndex EnsureSizeIndex(float viewportWidth = float.NaN)
+    {
+        int count = ItemsCount;
+        if (_indexedEstimate != EstimatedItemHeight || _indexedItemCount < 0)
+        {
+            _verticalSizeIndex.Reset(count, EstimatedItemHeight);
+            _indexedEstimate = EstimatedItemHeight;
+        }
+        else if (_indexedItemCount < count)
+        {
+            _verticalSizeIndex.InsertRange(_indexedItemCount, count - _indexedItemCount);
+        }
+        else if (_indexedItemCount > count)
+        {
+            _verticalSizeIndex.RemoveRange(count, _indexedItemCount - count);
+        }
+        if (float.IsFinite(viewportWidth) && viewportWidth > 0f && _indexedWidth != viewportWidth)
+        {
+            _verticalSizeIndex.InvalidateAllMeasurements();
+            _indexedWidth = viewportWidth;
+        }
+        _indexedItemCount = count;
+        return _verticalSizeIndex;
+    }
+
+    private void ResetSizeIndex()
+    {
+        _indexedItemCount = -1;
+        _indexedEstimate = -1f;
+        _indexedWidth = -1f;
     }
 
     private void ClearActiveToRecycler()
@@ -284,6 +393,17 @@ public class VirtualizingStackPanel : VirtualizingPanel
     public override void ForceRebind()
     {
         ClearActiveToRecycler();
+        ResetSizeIndex();
         base.ForceRebind();
+    }
+
+    public override void RebindVisibleItems()
+    {
+        var bindVisual = BindVisualCallback;
+        if (bindVisual == null) return;
+        foreach (var pair in _activeVisuals) bindVisual(pair.Value, pair.Key);
+        if (IsVariableHeight) _verticalSizeIndex.InvalidateAllMeasurements();
+        UpdateViewport();
+        Invalidate();
     }
 }

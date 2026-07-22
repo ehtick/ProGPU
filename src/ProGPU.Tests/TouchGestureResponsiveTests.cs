@@ -20,7 +20,7 @@ public sealed class TouchGestureResponsiveTests
 
         InputSystem.InjectPointer(Touch(PointerInputKind.Pressed, 17, 20, 20, 1_000, true));
         Assert.Equal((uint)17, target.LastPointerId);
-        Assert.Equal(PointerDeviceType.Touch, target.LastDeviceType);
+        Assert.Equal(Microsoft.UI.Input.PointerDeviceType.Touch, target.LastDeviceType);
         Assert.True(target.CaptureSucceeded);
 
         InputSystem.InjectPointer(Touch(PointerInputKind.Moved, 17, 210, 210, 20_000, true));
@@ -61,6 +61,31 @@ public sealed class TouchGestureResponsiveTests
     }
 
     [Fact]
+    public void RoutedManipulationProducesInertialDeltasBeforeCompletion()
+    {
+        var target = new TrackingControl
+        {
+            Width = 220,
+            Height = 220,
+            ManipulationMode = ManipulationModes.TranslateY | ManipulationModes.TranslateInertia
+        };
+        ArrangeRoot(target, new Vector2(220, 220));
+        UseInputRoot(target);
+
+        InputSystem.InjectPointer(Touch(PointerInputKind.Pressed, 90, 100, 160, 1_000, true));
+        InputSystem.InjectPointer(Touch(PointerInputKind.Moved, 90, 100, 60, 31_000, true));
+        InputSystem.InjectPointer(Touch(PointerInputKind.Released, 90, 100, 60, 32_000, false));
+
+        Assert.Equal(1, target.ManipulationInertiaStartingCount);
+        Assert.Equal(0, target.ManipulationCompletedCount);
+        for (var index = 0; index < 100 && target.ManipulationCompletedCount == 0; index++)
+            InputSystem.UpdateManipulationInertia(0.016f);
+        Assert.True(target.InertialDeltaCount > 0);
+        Assert.Equal(1, target.ManipulationCompletedCount);
+        Assert.True(target.LastManipulationCompletedWasInertial);
+    }
+
+    [Fact]
     public void TouchReleaseBeyondTapThresholdWithoutMoveDoesNotTap()
     {
         var target = new TrackingControl { Width = 220, Height = 220 };
@@ -71,6 +96,22 @@ public sealed class TouchGestureResponsiveTests
         InputSystem.InjectPointer(Touch(PointerInputKind.Released, 5, 180, 180, 30_000, false));
 
         Assert.Equal(0, target.TappedCount);
+    }
+
+    [Fact]
+    public void PenBarrelButtonProducesRightTap()
+    {
+        var target = new TrackingControl { Width = 120, Height = 120 };
+        ArrangeRoot(target, new Vector2(120, 120));
+        UseInputRoot(target);
+
+        InputSystem.InjectPointer(new PointerInputEvent(
+            PointerInputKind.Pressed, 91, PointerDeviceType.Pen, new Vector2(40, 40), 1_000,
+            IsInContact: true, IsRightButtonPressed: true));
+        InputSystem.InjectPointer(new PointerInputEvent(
+            PointerInputKind.Released, 91, PointerDeviceType.Pen, new Vector2(40, 40), 20_000));
+
+        Assert.Equal(1, target.RightTappedCount);
     }
 
     [Fact]
@@ -97,6 +138,13 @@ public sealed class TouchGestureResponsiveTests
         InputSystem.InjectTextInput(TextInputEventKind.CompositionStarted, isComposing: true);
         InputSystem.InjectTextInput(TextInputEventKind.CompositionUpdated, "に", true);
         InputSystem.InjectTextInput(TextInputEventKind.CompositionCanceled);
+        Assert.Equal("A日本", textBox.Text);
+
+        textBox.SelectionStart = 1;
+        textBox.SelectionLength = 2;
+        InputSystem.InjectTextInput(TextInputEventKind.CompositionStarted, isComposing: true);
+        InputSystem.InjectTextInput(TextInputEventKind.CompositionUpdated, "語", true);
+        InputSystem.SetFocus(new Button());
         Assert.Equal("A日本", textBox.Text);
     }
 
@@ -151,6 +199,73 @@ public sealed class TouchGestureResponsiveTests
 
         Assert.True(viewer.ChangeView(null, 200, null));
         Assert.Equal(200f, viewer.VerticalOffset);
+    }
+
+    [Fact]
+    public void PreciseTrackpadWheelPreservesPixelDeltasOnBothAxes()
+    {
+        var content = new Border { Width = 900, Height = 900 };
+        var viewer = new ScrollViewer { Content = content, Width = 220, Height = 180 };
+        ArrangeRoot(viewer, new Vector2(220, 180));
+
+        var wheel = new PointerRoutedEventArgs
+        {
+            WheelDelta = -17f,
+            WheelDeltaX = -13f,
+            IsPreciseScrolling = true
+        };
+        viewer.OnPointerWheelChanged(wheel);
+
+        Assert.True(wheel.Handled);
+        Assert.Equal(17f, viewer.VerticalOffset);
+        Assert.Equal(13f, viewer.HorizontalOffset);
+    }
+
+    [Fact]
+    public void PreciseTrackpadWheelScrollsVirtualizedDataByLogicalPixels()
+    {
+        var dataGrid = new DataGrid { Width = 320, Height = 180 };
+        dataGrid.Columns.Add(new DataGridColumn("Value", 280f, "Value"));
+        for (int index = 0; index < 100; index++) dataGrid.ItemsSource.Add($"Row {index}");
+        ArrangeRoot(dataGrid, new Vector2(320, 180));
+
+        var wheel = new PointerRoutedEventArgs
+        {
+            WheelDelta = -11.5f,
+            IsPreciseScrolling = true
+        };
+        dataGrid.OnPointerWheelChanged(wheel);
+
+        Assert.True(wheel.Handled);
+        Assert.Equal(11.5f, dataGrid.ScrollOffset);
+    }
+
+    [Fact]
+    public void VariablePanelFillsViewportAndPreservesTailMeasurements()
+    {
+        var panel = new VirtualizingStackPanel
+        {
+            Width = 200,
+            Height = 100,
+            ItemsCount = 100,
+            ItemHeight = float.NaN,
+            EstimatedItemHeight = 100f,
+            CacheLength = 0f,
+            CreateVisualFactory = static () => new Border { Height = 10f },
+            BindVisualCallback = static (_, _) => { }
+        };
+        ArrangeRoot(panel, new Vector2(200, 100));
+
+        var activeField = typeof(VirtualizingStackPanel).GetField(
+            "_activeVisuals",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(activeField);
+        var active = Assert.IsAssignableFrom<System.Collections.IDictionary>(activeField.GetValue(panel));
+        Assert.True(active.Count >= 10);
+
+        float measuredExtent = panel.TotalVirtualHeight;
+        panel.ItemsCount = 101;
+        Assert.Equal(measuredExtent + 100f, panel.TotalVirtualHeight);
     }
 
     [Fact]
@@ -540,6 +655,67 @@ public sealed class TouchGestureResponsiveTests
     }
 
     [Fact]
+    public void IndirectMouseDragDropTracksAndCompletesItsStablePointer()
+    {
+        const uint indirectPointerId = uint.MaxValue;
+        var source = new TouchDragSource
+        {
+            Width = 100,
+            Height = 80,
+            Background = new ProGPU.Vector.ThemeResourceBrush("ControlBackground")
+        };
+        var target = new Border
+        {
+            Width = 100,
+            Height = 80,
+            AllowDrop = true,
+            Background = new ProGPU.Vector.ThemeResourceBrush("ControlBackground")
+        };
+        var root = new StackPanel { Orientation = Orientation.Horizontal };
+        root.Children.Add(source);
+        root.Children.Add(target);
+        ArrangeRoot(root, new Vector2(200, 80));
+        UseInputRoot(root);
+        var drops = 0;
+        target.Drop += (_, _) => drops++;
+
+        InputSystem.InjectPointer(new PointerInputEvent(
+            PointerInputKind.Moved,
+            indirectPointerId,
+            PointerDeviceType.Mouse,
+            new Vector2(20, 30),
+            500));
+        InputSystem.InjectPointer(new PointerInputEvent(
+            PointerInputKind.Pressed,
+            indirectPointerId,
+            PointerDeviceType.Mouse,
+            new Vector2(20, 30),
+            1_000,
+            IsInContact: true,
+            IsLeftButtonPressed: true));
+        Assert.True(DragDropManager.IsDragging);
+        Assert.Equal(indirectPointerId, DragDropManager.ActivePointerId);
+
+        InputSystem.InjectPointer(new PointerInputEvent(
+            PointerInputKind.Moved,
+            indirectPointerId,
+            PointerDeviceType.Mouse,
+            new Vector2(150, 30),
+            20_000,
+            IsInContact: true,
+            IsLeftButtonPressed: true));
+        InputSystem.InjectPointer(new PointerInputEvent(
+            PointerInputKind.Released,
+            indirectPointerId,
+            PointerDeviceType.Mouse,
+            new Vector2(150, 30),
+            30_000));
+
+        Assert.Equal(1, drops);
+        Assert.False(DragDropManager.IsDragging);
+    }
+
+    [Fact]
     public void VisualStatesRestoreSettersAndNavigationViewUsesWinUiBreakpoints()
     {
         var control = new Button();
@@ -822,7 +998,7 @@ public sealed class TouchGestureResponsiveTests
     private sealed class TrackingControl : Control
     {
         public uint LastPointerId { get; private set; }
-        public PointerDeviceType LastDeviceType { get; private set; }
+        public Microsoft.UI.Input.PointerDeviceType LastDeviceType { get; private set; }
         public Vector2 LastScreenPosition { get; private set; }
         public bool CaptureSucceeded { get; private set; }
         public bool CaptureOnPress { get; init; }
@@ -830,8 +1006,12 @@ public sealed class TouchGestureResponsiveTests
         public int CaptureLostCount { get; private set; }
         public int TappedCount { get; private set; }
         public int DoubleTappedCount { get; private set; }
+        public int RightTappedCount { get; private set; }
         public int ManipulationStartedCount { get; private set; }
         public int ManipulationCompletedCount { get; private set; }
+        public int ManipulationInertiaStartingCount { get; private set; }
+        public int InertialDeltaCount { get; private set; }
+        public bool LastManipulationCompletedWasInertial { get; private set; }
         public float LastManipulationScale { get; private set; } = 1f;
 
         public override void OnPointerPressed(PointerRoutedEventArgs e)
@@ -872,6 +1052,12 @@ public sealed class TouchGestureResponsiveTests
             base.OnDoubleTapped(e);
         }
 
+        public override void OnRightTapped(RightTappedRoutedEventArgs e)
+        {
+            RightTappedCount++;
+            base.OnRightTapped(e);
+        }
+
         public override void OnManipulationStarted(ManipulationStartedRoutedEventArgs e)
         {
             ManipulationStartedCount++;
@@ -881,12 +1067,21 @@ public sealed class TouchGestureResponsiveTests
         public override void OnManipulationDelta(ManipulationDeltaRoutedEventArgs e)
         {
             LastManipulationScale = e.Delta.Scale;
+            if (e.IsInertial) InertialDeltaCount++;
             base.OnManipulationDelta(e);
+        }
+
+        public override void OnManipulationInertiaStarting(ManipulationInertiaStartingRoutedEventArgs e)
+        {
+            ManipulationInertiaStartingCount++;
+            e.TranslationBehavior.DesiredDeceleration = 0.01;
+            base.OnManipulationInertiaStarting(e);
         }
 
         public override void OnManipulationCompleted(ManipulationCompletedRoutedEventArgs e)
         {
             ManipulationCompletedCount++;
+            LastManipulationCompletedWasInertial = e.IsInertial;
             base.OnManipulationCompleted(e);
         }
     }

@@ -1,7 +1,7 @@
 using System;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Input;
-using Windows.Devices.Input;
+using Microsoft.UI.Input;
 
 namespace Microsoft.UI.Xaml.Controls;
 

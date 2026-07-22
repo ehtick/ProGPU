@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Documents;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Text;
 using System;
 using System.Collections.Generic;
@@ -1080,6 +1081,17 @@ namespace Microsoft.UI.Xaml.Controls
                     break;
                 case TextInputEventKind.CompositionCanceled:
                     CancelComposition();
+                    break;
+                case TextInputEventKind.ReplaceText:
+                    SelectionStart = Math.Clamp(args.ReplacementStart, 0, Text.Length);
+                    SelectionLength = Math.Clamp(args.ReplacementLength, 0, Text.Length - SelectionStart);
+                    InsertText(args.Text);
+                    SelectionStart = Math.Clamp(args.SelectionStart, 0, Text.Length);
+                    SelectionLength = Math.Clamp(args.SelectionLength, 0, Text.Length - SelectionStart);
+                    break;
+                case TextInputEventKind.SelectionChanged:
+                    SelectionStart = Math.Clamp(args.SelectionStart, 0, Text.Length);
+                    SelectionLength = Math.Clamp(args.SelectionLength, 0, Text.Length - SelectionStart);
                     break;
                 case TextInputEventKind.Paste:
                     PasteFromClipboard();

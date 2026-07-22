@@ -73,10 +73,13 @@ namespace Microsoft.UI.Xaml
     }
 
     public delegate void RoutedEventHandler(object sender, RoutedEventArgs e);
+    public delegate void UnhandledExceptionEventHandler(object sender, UnhandledExceptionEventArgs e);
 
     public class UnhandledExceptionEventArgs : EventArgs
     {
-        public Exception Exception { get; set; } = new Exception("Unhandled XAML exception");
+        public Exception Exception { get; internal set; } = new Exception("Unhandled XAML exception");
+        public bool Handled { get; set; }
+        public string Message => Exception.Message;
     }
 
     public partial class FrameworkElement : UIElement, System.ComponentModel.INotifyPropertyChanged
@@ -114,7 +117,13 @@ namespace Windows.Foundation
         public System.Runtime.CompilerServices.TaskAwaiter<TResult> GetAwaiter() => _task.GetAwaiter();
     }
 
-    public readonly record struct Point(double X, double Y);
+    public readonly record struct Point(double X, double Y)
+    {
+        public static implicit operator System.Numerics.Vector2(Point value) => new((float)value.X, (float)value.Y);
+        public static implicit operator Point(System.Numerics.Vector2 value) => new(value.X, value.Y);
+    }
+
+    public readonly record struct Size(double Width, double Height);
 
     public readonly record struct Rect(double X, double Y, double Width, double Height);
 }

@@ -11,7 +11,7 @@ using ProGPU.Layout;
 using ProGPU.Scene;
 using ProGPU.Vector;
 using ProGPU.Text;
-using Windows.Devices.Input;
+using Microsoft.UI.Input;
 using static System.FormattableString;
 
 namespace Microsoft.UI.Xaml.Controls;

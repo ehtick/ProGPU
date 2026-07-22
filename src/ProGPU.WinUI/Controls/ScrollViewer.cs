@@ -223,8 +223,8 @@ public class ScrollViewer : ContentControl
         var oldHorizontal = HorizontalOffset;
         var oldVertical = VerticalOffset;
         var oldZoom = ZoomFactor;
-        if (HorizontalScrollMode != ScrollMode.Disabled) HorizontalOffset -= e.Delta.Translation.X;
-        if (VerticalScrollMode != ScrollMode.Disabled) VerticalOffset -= e.Delta.Translation.Y;
+        if (HorizontalScrollMode != ScrollMode.Disabled) HorizontalOffset -= (float)e.Delta.Translation.X;
+        if (VerticalScrollMode != ScrollMode.Disabled) VerticalOffset -= (float)e.Delta.Translation.Y;
         if (ZoomMode == ZoomMode.Enabled && float.IsFinite(e.Delta.Scale)) ZoomFactor *= e.Delta.Scale;
         if (oldHorizontal != HorizontalOffset || oldVertical != VerticalOffset || oldZoom != ZoomFactor)
         {
@@ -243,7 +243,7 @@ public class ScrollViewer : ContentControl
 
     public override void OnManipulationCompleted(ManipulationCompletedRoutedEventArgs e)
     {
-        if (e.IsInertial) _inertiaVelocity = -e.Velocities.Linear;
+        if (e.IsInertial) _inertiaVelocity = -(Vector2)e.Velocities.Linear;
         RaiseViewChanged(isIntermediate: false);
         base.OnManipulationCompleted(e);
     }
@@ -285,17 +285,35 @@ public class ScrollViewer : ContentControl
     {
         if (IsEnabled)
         {
-            float maxScroll = Math.Max(0f, ContentHeight - Size.Y);
-            if (maxScroll > 0f)
+            bool changed = false;
+            float verticalMaximum = Math.Max(0f, ContentHeight - Size.Y);
+            if (VerticalScrollMode != ScrollMode.Disabled && verticalMaximum > 0f && e.WheelDelta != 0f)
             {
-                float delta = -e.WheelDelta * 30f;
-                float targetOffset = Math.Clamp(_verticalOffset + delta, 0f, maxScroll);
+                float delta = e.IsPreciseScrolling ? -e.WheelDelta : -e.WheelDelta * 30f;
+                float targetOffset = Math.Clamp(_verticalOffset + delta, 0f, verticalMaximum);
                 if (targetOffset != _verticalOffset)
                 {
                     VerticalOffset = targetOffset;
-                    e.Handled = true;
-                    return;
+                    changed = true;
                 }
+            }
+
+            float horizontalMaximum = Math.Max(0f, ContentWidth - Size.X);
+            if (HorizontalScrollMode != ScrollMode.Disabled && horizontalMaximum > 0f && e.WheelDeltaX != 0f)
+            {
+                float delta = e.IsPreciseScrolling ? -e.WheelDeltaX : -e.WheelDeltaX * 30f;
+                float targetOffset = Math.Clamp(_horizontalOffset + delta, 0f, horizontalMaximum);
+                if (targetOffset != _horizontalOffset)
+                {
+                    HorizontalOffset = targetOffset;
+                    changed = true;
+                }
+            }
+
+            if (changed)
+            {
+                e.Handled = true;
+                return;
             }
         }
         base.OnPointerWheelChanged(e);
@@ -305,7 +323,7 @@ public class ScrollViewer : ContentControl
     {
         if (IsEnabled)
         {
-            var localPos = e.GetCurrentPoint(this).Position;
+            Vector2 localPos = e.GetCurrentPoint(this).Position;
             var deviceType = e.Pointer.PointerDeviceType;
             if (ScrollBarInteraction.TryCreateMetrics(0f, Size.Y, ContentHeight, VerticalOffset, out var verticalMetrics) &&
                 ScrollBarInteraction.IsVerticalTrackHit(localPos.X, Size.X, deviceType))
@@ -428,7 +446,7 @@ public class ScrollViewer : ContentControl
 
         if (_scrollbarPointerId == e.Pointer.PointerId && _draggingScrollBar.HasValue && IsEnabled)
         {
-            var localPos = e.GetCurrentPoint(this).Position;
+            Vector2 localPos = e.GetCurrentPoint(this).Position;
             if (_draggingScrollBar == Orientation.Vertical &&
                 ScrollBarInteraction.TryCreateMetrics(0f, Size.Y, ContentHeight, _dragStartOffset, out var verticalMetrics))
             {
@@ -449,7 +467,7 @@ public class ScrollViewer : ContentControl
 
     private void UpdateScrollbarPointerOver(PointerRoutedEventArgs e)
     {
-        var localPos = e.GetCurrentPoint(this).Position;
+        Vector2 localPos = e.GetCurrentPoint(this).Position;
         var deviceType = e.Pointer.PointerDeviceType;
         _isPointerOverVerticalScrollbar = ContentHeight > Size.Y &&
             ScrollBarInteraction.IsVerticalTrackHit(localPos.X, Size.X, deviceType);

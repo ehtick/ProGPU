@@ -58,6 +58,7 @@ public class SamplePagesTests : IDisposable
         AppState._canvasBlurTexture = null;
         AppState._canvasShadowTexture?.Dispose();
         AppState._canvasShadowTexture = null;
+        AppState._computePreviewCanvas = null;
         AppState._wgpuContext = null;
     }
 
@@ -740,6 +741,72 @@ public class SamplePagesTests : IDisposable
             AppState.EnableStaticGpuBuffers = savedEnableStatic;
             AppState.EnableCommandCaching = savedEnableCaching;
         }
+    }
+
+    [Fact]
+    public void Test_ComputeFx_OffscreenSceneUsesArrangedCompactPreviewSize()
+    {
+        EnsureFontsAndStateLoaded();
+        string savedCategory = AppState._activeCategory;
+        try
+        {
+            AppState._activeCategory = "Compute FX";
+            var page = ComputeFxPage.Create();
+            using var window = new HeadlessWindow(390, 700);
+            window.Content = page;
+            window.Render();
+
+            var preview = Assert.IsType<GpuTextureCanvas>(AppState._computePreviewCanvas);
+            Assert.True(preview.Size.X > 300f, $"Expected compact preview width, got {preview.Size.X}.");
+            Assert.True(preview.Size.Y > 300f, $"Expected compact preview height, got {preview.Size.Y}.");
+
+            var resolver = typeof(MainWindowController).GetMethod(
+                "ResolveEffectCanvasLogicalSize",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.NotNull(resolver);
+            var resolved = Assert.IsType<Vector2>(resolver!.Invoke(null, new object[] { new Vector2(390f, 700f) }));
+            Assert.Equal(preview.Size, resolved);
+        }
+        finally
+        {
+            AppState._activeCategory = savedCategory;
+            AppState._computePreviewCanvas = null;
+        }
+    }
+
+    [Fact]
+    public void Test_DxfCanvasControl_TrackpadScrollPansAndPinchZoomsContinuously()
+    {
+        EnsureFontsAndStateLoaded();
+        var control = new DxfCanvasControl();
+        control.LoadDocument(SampleDxfGenerator.GenerateSample());
+        control.Context.Pan = Vector2.Zero;
+
+        var pan = new PointerRoutedEventArgs
+        {
+            Position = new Vector2(100f, 80f),
+            WheelDeltaX = 13.5f,
+            WheelDelta = -17.25f,
+            IsPreciseScrolling = true
+        };
+        control.OnPointerWheelChanged(pan);
+
+        Assert.True(pan.Handled);
+        Assert.Equal(new Vector2(13.5f, -17.25f), control.Context.Pan);
+
+        float initialZoom = control.Context.Zoom;
+        const float requestedScale = 1.25f;
+        var pinch = new PointerRoutedEventArgs
+        {
+            Position = Vector2.Zero,
+            WheelDelta = 120f * MathF.Log(requestedScale),
+            IsPreciseScrolling = true,
+            KeyModifiers = VirtualKeyModifiers.Control
+        };
+        control.OnPointerWheelChanged(pinch);
+
+        Assert.True(pinch.Handled);
+        Assert.InRange(control.Context.Zoom / initialZoom, requestedScale - 0.0001f, requestedScale + 0.0001f);
     }
 
     [Fact]

@@ -34,6 +34,7 @@ public class WindowInputState
     public bool IsMiddleButtonPressed;
     public bool IsRightButtonPressed;
     public Action<StandardCursor>? CursorChanged;
+    internal FrameworkElement? ComposingElement;
     internal Dictionary<uint, PointerContactState> PointerContacts { get; } = new();
     internal Dictionary<uint, FrameworkElement> CapturedElements { get; } = new();
     internal Dictionary<FrameworkElement, ManipulationSession> Manipulations { get; } = new();
@@ -65,6 +66,7 @@ internal sealed class ManipulationSession
 {
     public required FrameworkElement Target { get; init; }
     public required ManipulationModes Mode { get; set; }
+    public Microsoft.UI.Input.PointerDeviceType PointerDeviceType { get; set; }
     public HashSet<uint> PointerIds { get; } = new();
     public Vector2 PreviousCentroid { get; set; }
     public float PreviousDistance { get; set; }
@@ -73,9 +75,14 @@ internal sealed class ManipulationSession
     public float CumulativeScale { get; set; } = 1f;
     public float CumulativeRotation { get; set; }
     public float CumulativeExpansion { get; set; }
-    public ManipulationVelocities Velocities { get; set; }
+    public Microsoft.UI.Input.ManipulationVelocities Velocities { get; set; }
     public ulong PreviousTimestamp { get; set; }
     public bool Started { get; set; }
+    public bool IsInertial { get; set; }
+    public float InertiaTranslationDeceleration { get; set; }
+    public float InertiaRotationDeceleration { get; set; }
+    public float InertiaExpansionDeceleration { get; set; }
+    public float InertiaDistance { get; set; } = 1f;
 }
 
 public static class InputSystem
@@ -110,11 +117,50 @@ public static class InputSystem
     public static void InjectTextInput(TextInputEventKind kind, string? text = null, bool isComposing = false)
     {
         if (_focusedElement == null) return;
-        _focusedElement.OnTextInput(new TextInputRoutedEventArgs
+        FrameworkElement target = _focusedElement;
+        if (kind == TextInputEventKind.CompositionStarted)
+        {
+            Current.ComposingElement = target;
+        }
+        target.OnTextInput(new TextInputRoutedEventArgs
         {
             Kind = kind,
             Text = text ?? string.Empty,
             IsComposing = isComposing
+        });
+        if (kind is TextInputEventKind.CompositionCompleted or TextInputEventKind.CompositionCanceled)
+        {
+            Current.ComposingElement = null;
+        }
+    }
+
+    public static void InjectTextReplacement(
+        string text,
+        int replacementStart,
+        int replacementLength,
+        int selectionStart,
+        int selectionLength)
+    {
+        if (_focusedElement == null) return;
+        _focusedElement.OnTextInput(new TextInputRoutedEventArgs
+        {
+            Kind = TextInputEventKind.ReplaceText,
+            Text = text ?? string.Empty,
+            ReplacementStart = replacementStart,
+            ReplacementLength = replacementLength,
+            SelectionStart = selectionStart,
+            SelectionLength = selectionLength
+        });
+    }
+
+    public static void InjectTextSelection(int selectionStart, int selectionLength)
+    {
+        if (_focusedElement == null) return;
+        _focusedElement.OnTextInput(new TextInputRoutedEventArgs
+        {
+            Kind = TextInputEventKind.SelectionChanged,
+            SelectionStart = selectionStart,
+            SelectionLength = selectionLength
         });
     }
 
@@ -667,6 +713,8 @@ public static class InputSystem
         Pressure = input.Pressure,
         ContactRect = input.ContactRect,
         WheelDelta = input.WheelDeltaY,
+        WheelDeltaX = input.WheelDeltaX,
+        IsPreciseScrolling = input.IsPreciseWheel,
         KeyModifiers = input.Modifiers,
         IsCanceled = canceled
     };
@@ -729,7 +777,8 @@ public static class InputSystem
 
     private static void BeginHolding(PointerContactState contact)
     {
-        if (contact.Target == null || !contact.Target.IsHoldingEnabled || contact.Pointer.PointerDeviceType == PointerDeviceType.Mouse) return;
+        if (contact.Target == null || !contact.Target.IsHoldingEnabled ||
+            contact.Pointer.PointerDeviceType == Microsoft.UI.Input.PointerDeviceType.Mouse) return;
         var cancellation = new CancellationTokenSource();
         contact.HoldingCancellation = cancellation;
         var state = Current;
@@ -745,7 +794,7 @@ public static class InputSystem
                 {
                     PointerDeviceType = active.Pointer.PointerDeviceType,
                     ScreenPosition = active.LastEvent.Position,
-                    HoldingState = HoldingState.Started
+                    HoldingState = Microsoft.UI.Input.HoldingState.Started
                 });
             }
             if (DispatcherQueue != null) DispatcherQueue(Raise); else Raise();
@@ -761,7 +810,7 @@ public static class InputSystem
         {
             PointerDeviceType = contact.Pointer.PointerDeviceType,
             ScreenPosition = contact.LastEvent.Position,
-            HoldingState = HoldingState.Canceled
+            HoldingState = Microsoft.UI.Input.HoldingState.Canceled
         });
     }
 
@@ -775,8 +824,16 @@ public static class InputSystem
             {
                 PointerDeviceType = contact.Pointer.PointerDeviceType,
                 ScreenPosition = input.Position,
-                HoldingState = HoldingState.Completed
+                HoldingState = Microsoft.UI.Input.HoldingState.Completed
             });
+            if (contact.Target.IsRightTapEnabled)
+            {
+                contact.Target.OnRightTapped(new RightTappedRoutedEventArgs
+                {
+                    PointerDeviceType = contact.Pointer.PointerDeviceType,
+                    ScreenPosition = input.Position
+                });
+            }
             return;
         }
 
@@ -787,14 +844,14 @@ public static class InputSystem
         var releaseExceededTapThreshold =
             Vector2.DistanceSquared(contact.DownPosition, input.Position) > tapThreshold * tapThreshold;
         if (contact.ExceededTapThreshold || releaseExceededTapThreshold || contactDuration > 800_000UL) return;
-        if (input.DeviceType == PointerDeviceType.Mouse && contact.StartedWithRightButton)
+        if (input.DeviceType is PointerDeviceType.Mouse or PointerDeviceType.Pen &&
+            contact.StartedWithRightButton)
         {
             if (contact.Target.IsRightTapEnabled)
             {
                 contact.Target.OnRightTapped(new RightTappedRoutedEventArgs
                 {
-                    PointerId = input.PointerId,
-                    PointerDeviceType = input.DeviceType,
+                    PointerDeviceType = contact.Pointer.PointerDeviceType,
                     ScreenPosition = input.Position
                 });
             }
@@ -804,8 +861,7 @@ public static class InputSystem
         if (!contact.Target.IsTapEnabled) return;
         var tapped = new TappedRoutedEventArgs
         {
-            PointerId = input.PointerId,
-            PointerDeviceType = input.DeviceType,
+            PointerDeviceType = contact.Pointer.PointerDeviceType,
             ScreenPosition = input.Position
         };
         contact.Target.OnTapped(tapped);
@@ -819,8 +875,7 @@ public static class InputSystem
         {
             contact.Target.OnDoubleTapped(new DoubleTappedRoutedEventArgs
             {
-                PointerId = input.PointerId,
-                PointerDeviceType = input.DeviceType,
+                PointerDeviceType = contact.Pointer.PointerDeviceType,
                 ScreenPosition = input.Position
             });
             Current.LastTappedElement = null;
@@ -850,13 +905,26 @@ public static class InputSystem
 
     private static void BeginManipulation(PointerContactState contact)
     {
-        if (contact.Pointer.PointerDeviceType == PointerDeviceType.Mouse) return;
+        if (contact.Pointer.PointerDeviceType == Microsoft.UI.Input.PointerDeviceType.Mouse) return;
         if (DragDropManager.IsDragging && DragDropManager.IsPointerOwner(contact.Pointer.PointerId)) return;
         var target = FindManipulationTarget(contact.Target);
         if (target == null) return;
         if (Current.CapturedElements.ContainsKey(contact.Pointer.PointerId)) return;
         contact.ManipulationTarget = target;
-        if (!Current.Manipulations.TryGetValue(target, out var session))
+        Current.Manipulations.TryGetValue(target, out var session);
+        if (session?.IsInertial == true)
+        {
+            session.IsInertial = false;
+            session.Velocities = default;
+            RaiseManipulationCompleted(session, new Microsoft.UI.Input.ManipulationDelta(
+                session.CumulativeTranslation,
+                session.CumulativeScale,
+                session.CumulativeRotation,
+                session.CumulativeExpansion), isInertial: true);
+            Current.Manipulations.Remove(target);
+            session = null;
+        }
+        if (session == null)
         {
             var starting = new ManipulationStartingRoutedEventArgs
             {
@@ -871,7 +939,8 @@ public static class InputSystem
             {
                 Target = target,
                 Mode = starting.Mode,
-                PreviousTimestamp = contact.LastEvent.Timestamp
+                PreviousTimestamp = contact.LastEvent.Timestamp,
+                PointerDeviceType = contact.Pointer.PointerDeviceType
             };
             Current.Manipulations[target] = session;
         }
@@ -952,11 +1021,19 @@ public static class InputSystem
                 if (!Current.PointerContacts.TryGetValue(id, out var state)) continue;
                 CancelContactForManipulation(state);
             }
-            session.Target.OnManipulationStarted(new ManipulationStartedRoutedEventArgs
+            var started = new ManipulationStartedRoutedEventArgs
             {
                 OriginalSource = session.Target,
-                Position = centroid
-            });
+                Container = session.Target,
+                Position = centroid,
+                PointerDeviceType = contact.Pointer.PointerDeviceType
+            };
+            session.Target.OnManipulationStarted(started);
+            if (started.IsCompleteRequested)
+            {
+                CompleteManipulation(session, inertial: false);
+                return;
+            }
         }
 
         session.CumulativeTranslation += translation;
@@ -967,20 +1044,23 @@ public static class InputSystem
             ? contact.LastEvent.Timestamp - session.PreviousTimestamp
             : 1UL;
         var seconds = elapsedMicros / 1_000_000f;
-        session.Velocities = new ManipulationVelocities(translation / seconds, rotation / seconds, expansion / seconds);
+        session.Velocities = new Microsoft.UI.Input.ManipulationVelocities(translation / seconds, rotation / seconds, expansion / seconds);
         session.PreviousTimestamp = contact.LastEvent.Timestamp;
         session.PreviousCentroid = centroid;
-        var delta = new ManipulationDelta(translation, scale, rotation, expansion);
-        var cumulative = new ManipulationDelta(session.CumulativeTranslation, session.CumulativeScale, session.CumulativeRotation, session.CumulativeExpansion);
+        var delta = new Microsoft.UI.Input.ManipulationDelta(translation, scale, rotation, expansion);
+        var cumulative = new Microsoft.UI.Input.ManipulationDelta(session.CumulativeTranslation, session.CumulativeScale, session.CumulativeRotation, session.CumulativeExpansion);
         var args = new ManipulationDeltaRoutedEventArgs
         {
             OriginalSource = session.Target,
+            Container = session.Target,
             Delta = delta,
             Cumulative = cumulative,
-            Velocities = session.Velocities
+            Velocities = session.Velocities,
+            PointerDeviceType = contact.Pointer.PointerDeviceType,
+            Position = centroid
         };
         session.Target.OnManipulationDelta(args);
-        if (args.Complete) CompleteManipulation(session, inertial: false);
+        if (args.IsCompleteRequested) CompleteManipulation(session, inertial: false);
     }
 
     private static void EndManipulation(PointerContactState contact, bool canceled)
@@ -998,27 +1078,153 @@ public static class InputSystem
 
     private static void CompleteManipulation(ManipulationSession session, bool inertial)
     {
-        var cumulative = new ManipulationDelta(session.CumulativeTranslation, session.CumulativeScale, session.CumulativeRotation, session.CumulativeExpansion);
-        if (session.Started && inertial)
+        var cumulative = new Microsoft.UI.Input.ManipulationDelta(session.CumulativeTranslation, session.CumulativeScale, session.CumulativeRotation, session.CumulativeExpansion);
+        if (session.Started && inertial && TryStartManipulationInertia(session, cumulative)) return;
+        RaiseManipulationCompleted(session, cumulative, isInertial: false);
+        Current.Manipulations.Remove(session.Target);
+    }
+
+    private static bool TryStartManipulationInertia(
+        ManipulationSession session,
+        Microsoft.UI.Input.ManipulationDelta cumulative)
+    {
+        var linear = (Vector2)session.Velocities.Linear;
+        var angular = session.Velocities.Angular;
+        var expansion = session.Velocities.Expansion;
+        if (!session.Mode.HasFlag(ManipulationModes.TranslateInertia)) linear = Vector2.Zero;
+        if (!session.Mode.HasFlag(ManipulationModes.RotateInertia)) angular = 0f;
+        if (!session.Mode.HasFlag(ManipulationModes.ScaleInertia)) expansion = 0f;
+        if (linear.LengthSquared() < 4f && MathF.Abs(angular) < 1f && MathF.Abs(expansion) < 1f) return false;
+
+        session.Velocities = new Microsoft.UI.Input.ManipulationVelocities(linear, angular, expansion);
+        var args = new ManipulationInertiaStartingRoutedEventArgs
         {
-            session.Target.OnManipulationInertiaStarting(new ManipulationInertiaStartingRoutedEventArgs
-            {
-                OriginalSource = session.Target,
-                Cumulative = cumulative,
-                Velocities = session.Velocities
-            });
-        }
+            OriginalSource = session.Target,
+            Container = session.Target,
+            Cumulative = cumulative,
+            Delta = new Microsoft.UI.Input.ManipulationDelta(
+                session.Velocities.Linear,
+                1f,
+                session.Velocities.Angular,
+                session.Velocities.Expansion),
+            Velocities = session.Velocities,
+            PointerDeviceType = session.PointerDeviceType
+        };
+        session.Target.OnManipulationInertiaStarting(args);
+        session.InertiaTranslationDeceleration = ResolveInertiaDeceleration(
+            linear.Length(),
+            args.TranslationBehavior.DesiredDeceleration,
+            args.TranslationBehavior.DesiredDisplacement,
+            defaultValue: 2500f);
+        session.InertiaRotationDeceleration = ResolveInertiaDeceleration(
+            MathF.Abs(angular),
+            args.RotationBehavior.DesiredDeceleration,
+            args.RotationBehavior.DesiredRotation,
+            defaultValue: 180f);
+        session.InertiaExpansionDeceleration = ResolveInertiaDeceleration(
+            MathF.Abs(expansion),
+            args.ExpansionBehavior.DesiredDeceleration,
+            args.ExpansionBehavior.DesiredExpansion,
+            defaultValue: 2500f);
+        session.InertiaDistance = Math.Max(1f, session.PreviousDistance);
+        session.IsInertial = true;
+        return true;
+    }
+
+    private static float ResolveInertiaDeceleration(float speed, double desiredDeceleration,
+        double desiredDisplacement, float defaultValue)
+    {
+        if (double.IsFinite(desiredDeceleration) && desiredDeceleration > 0d)
+            return (float)Math.Min(float.MaxValue, desiredDeceleration * 1_000_000d);
+        if (double.IsFinite(desiredDisplacement) && desiredDisplacement > 0d)
+            return speed * speed / (2f * (float)desiredDisplacement);
+        return defaultValue;
+    }
+
+    private static void RaiseManipulationCompleted(ManipulationSession session,
+        Microsoft.UI.Input.ManipulationDelta cumulative, bool isInertial)
+    {
         if (session.Started)
         {
             session.Target.OnManipulationCompleted(new ManipulationCompletedRoutedEventArgs
             {
                 OriginalSource = session.Target,
+                Container = session.Target,
                 Cumulative = cumulative,
                 Velocities = session.Velocities,
-                IsInertial = inertial
+                IsInertial = isInertial,
+                PointerDeviceType = session.PointerDeviceType,
+                Position = session.PreviousCentroid
             });
         }
-        Current.Manipulations.Remove(session.Target);
+    }
+
+    internal static void UpdateManipulationInertia(float elapsedSeconds)
+    {
+        if (elapsedSeconds <= 0f || Current.Manipulations.Count == 0) return;
+        List<FrameworkElement>? completed = null;
+        foreach (var pair in Current.Manipulations)
+        {
+            var session = pair.Value;
+            if (!session.IsInertial) continue;
+
+            var linear = DecelerateInertia((Vector2)session.Velocities.Linear,
+                session.InertiaTranslationDeceleration * elapsedSeconds);
+            var angular = DecelerateInertia(session.Velocities.Angular,
+                session.InertiaRotationDeceleration * elapsedSeconds);
+            var expansion = DecelerateInertia(session.Velocities.Expansion,
+                session.InertiaExpansionDeceleration * elapsedSeconds);
+            var translation = linear * elapsedSeconds;
+            var rotation = angular * elapsedSeconds;
+            var expansionDelta = expansion * elapsedSeconds;
+            var scale = Math.Max(0.001f, 1f + expansionDelta / Math.Max(1f, session.InertiaDistance));
+            session.InertiaDistance = Math.Max(1f, session.InertiaDistance + expansionDelta);
+            session.Velocities = new Microsoft.UI.Input.ManipulationVelocities(linear, angular, expansion);
+            session.CumulativeTranslation += translation;
+            session.CumulativeScale *= scale;
+            session.CumulativeRotation += rotation;
+            session.CumulativeExpansion += expansionDelta;
+            var delta = new Microsoft.UI.Input.ManipulationDelta(translation, scale, rotation, expansionDelta);
+            var cumulative = new Microsoft.UI.Input.ManipulationDelta(
+                session.CumulativeTranslation,
+                session.CumulativeScale,
+                session.CumulativeRotation,
+                session.CumulativeExpansion);
+            var args = new ManipulationDeltaRoutedEventArgs
+            {
+                OriginalSource = session.Target,
+                Container = session.Target,
+                Delta = delta,
+                Cumulative = cumulative,
+                Velocities = session.Velocities,
+                IsInertial = true,
+                PointerDeviceType = session.PointerDeviceType,
+                Position = session.PreviousCentroid
+            };
+            session.Target.OnManipulationDelta(args);
+
+            if (!args.IsCompleteRequested &&
+                (linear.LengthSquared() >= 4f || MathF.Abs(angular) >= 1f || MathF.Abs(expansion) >= 1f)) continue;
+            session.IsInertial = false;
+            session.Velocities = default;
+            RaiseManipulationCompleted(session, cumulative, isInertial: true);
+            (completed ??= []).Add(pair.Key);
+        }
+        if (completed == null) return;
+        foreach (var target in completed) Current.Manipulations.Remove(target);
+    }
+
+    private static Vector2 DecelerateInertia(Vector2 velocity, float amount)
+    {
+        var speed = velocity.Length();
+        if (speed <= amount || speed <= 0f) return Vector2.Zero;
+        return velocity * ((speed - amount) / speed);
+    }
+
+    private static float DecelerateInertia(float velocity, float amount)
+    {
+        if (MathF.Abs(velocity) <= amount) return 0f;
+        return velocity - MathF.CopySign(amount, velocity);
     }
 
     public static void SetFocus(FrameworkElement? element)
@@ -1032,6 +1238,14 @@ public static class InputSystem
         if (_focusedElement == element) return;
 
         var oldFocus = _focusedElement;
+        if (oldFocus != null && ReferenceEquals(Current.ComposingElement, oldFocus))
+        {
+            oldFocus.OnTextInput(new TextInputRoutedEventArgs
+            {
+                Kind = TextInputEventKind.CompositionCanceled
+            });
+            Current.ComposingElement = null;
+        }
         _focusedElement = element;
 
         if (oldFocus is Control oldControl)

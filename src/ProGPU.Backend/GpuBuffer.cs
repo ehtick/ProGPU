@@ -247,18 +247,10 @@ public unsafe class GpuBuffer : IDisposable
         Span<byte> destination,
         bool destroyAfterRead)
     {
-        var mapSignal = new System.Threading.ManualResetEventSlim(false);
-        var mapStatus = BufferMapAsyncStatus.ValidationError;
-        var onMapped = PfnBufferMapCallback.From((status, userData) =>
-        {
-            mapStatus = status;
-            mapSignal.Set();
-        });
-
-        _context.Api.BufferMapAsync(buffer, MapMode.Read, offsetBytes, (nuint)sizeBytes, onMapped, null);
+        var mapTask = _context.Api.BufferMapAsyncTask(buffer, MapMode.Read, offsetBytes, (nuint)sizeBytes);
 
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        while (!mapSignal.IsSet)
+        while (!mapTask.IsCompleted)
         {
             _context.PollDevice(wait: false);
             System.Threading.Thread.Sleep(1);
@@ -269,6 +261,7 @@ public unsafe class GpuBuffer : IDisposable
             }
         }
 
+        var mapStatus = mapTask.GetAwaiter().GetResult();
         if (mapStatus != BufferMapAsyncStatus.Success)
         {
             CleanupMappedReadBuffer(buffer, destroyAfterRead);

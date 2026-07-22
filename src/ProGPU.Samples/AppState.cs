@@ -87,6 +87,7 @@ public static class AppState
     public static GpuTexture? _canvasTempTexture;
     public static GpuTexture? _canvasBlurTexture;
     public static GpuTexture? _canvasShadowTexture;
+    public static GpuTextureCanvas? _computePreviewCanvas;
 
     // DXF viewer optimization controls
     public static bool EnableGpuTransforms { get; set; } = false;

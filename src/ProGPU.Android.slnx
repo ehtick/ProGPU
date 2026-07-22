@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="ProGPU.Android/ProGPU.Android.csproj" />
+  <Project Path="ProGPU.Samples.Android/ProGPU.Samples.Android.csproj" />
+</Solution>
