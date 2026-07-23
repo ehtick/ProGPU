@@ -609,6 +609,81 @@ namespace Demo {
     }
 
     [Fact]
+    public void IncrementalGeneratorUsesExplicitFrameworkPackageRegistry()
+    {
+        const string program = """
+namespace Microsoft.UI.Xaml.HotReload {
+  public interface IHotReloadable { void Reload(HotReloadContext context); }
+  public sealed class HotReloadContext { }
+}
+namespace Microsoft.UI.Xaml.Controls { public class Page { } }
+namespace Demo { public partial class MainPage : Microsoft.UI.Xaml.Controls.Page { } }
+""";
+        const string xaml = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.MainPage" />
+""";
+        var registry = new XamlFrameworkProfileRegistry(
+            new IXamlFrameworkProfileFactory[]
+            {
+                new AliasProfileFactory("Zeta"),
+                new AliasProfileFactory("PackageProfile")
+            });
+        Assert.Equal(new[] { "PackageProfile", "Zeta" }, registry.ProfileIds);
+        var compilation = CSharpCompilation.Create(
+            "PackageProfileGeneratorHarness",
+            new[] { CSharpSyntaxTree.ParseText(program) },
+            PlatformReferences(),
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var options = new GlobalAnalyzerConfigOptionsProvider(
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["build_property.ProGpuXamlFramework"] = "PackageProfile"
+            });
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(
+            ImmutableArray.Create(
+                new ProGpuXamlSourceGenerator(registry).AsSourceGenerator()),
+            ImmutableArray.Create<AdditionalText>(
+                new InMemoryAdditionalText("PackagePage.xaml", xaml)),
+            CSharpParseOptions.Default,
+            options);
+
+        driver = driver.RunGeneratorsAndUpdateCompilation(
+            compilation,
+            out var output,
+            out var generatorDiagnostics);
+
+        Assert.DoesNotContain(
+            generatorDiagnostics,
+            diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        Assert.DoesNotContain(
+            output.GetDiagnostics(),
+            diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        Assert.Single(Assert.Single(driver.GetRunResult().Results).GeneratedSources);
+
+        var missingOptions = new GlobalAnalyzerConfigOptionsProvider(
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["build_property.ProGpuXamlFramework"] = "Missing"
+            });
+        GeneratorDriver missingDriver = CSharpGeneratorDriver.Create(
+            ImmutableArray.Create(
+                new ProGpuXamlSourceGenerator(registry).AsSourceGenerator()),
+            ImmutableArray.Create<AdditionalText>(
+                new InMemoryAdditionalText("PackagePage.xaml", xaml)),
+            CSharpParseOptions.Default,
+            missingOptions);
+        missingDriver = missingDriver.RunGenerators(compilation);
+        var missingDiagnostic = Assert.Single(
+            Assert.Single(missingDriver.GetRunResult().Results).Diagnostics,
+            diagnostic => diagnostic.Id == "PGXAML0002");
+        Assert.Contains(
+            "Installed profiles: PackageProfile, Zeta",
+            missingDiagnostic.GetMessage());
+    }
+
+    [Fact]
     public void IncrementalGeneratorEmitsCompilableStructuredCSharp()
     {
         const string program = """
@@ -2402,6 +2477,74 @@ namespace Demo {
         public XamlSymbolShapePolicy SymbolShapePolicy { get; } = XamlSymbolShapePolicy.Default;
     }
 
+    private sealed class AliasProfileFactory : IXamlFrameworkProfileFactory
+    {
+        public AliasProfileFactory(string id)
+        {
+            Id = id;
+        }
+
+        public string Id { get; }
+        public int ContractVersion => XamlFrameworkContract.CurrentVersion;
+        public IRoslynXamlFrameworkProfile CreateProfile() => new AliasProfile(Id);
+    }
+
+    private sealed class AliasProfile : IRoslynXamlFrameworkProfile
+    {
+        private readonly WinUiXamlProfile _inner = new();
+
+        public AliasProfile(string id)
+        {
+            Id = id;
+        }
+
+        public string Id { get; }
+        public int ContractVersion => _inner.ContractVersion;
+        public XamlFrameworkCapabilities Capabilities => _inner.Capabilities;
+        public IReadOnlyList<string> FileExtensions => _inner.FileExtensions;
+
+        public IReadOnlyList<string> GetClrNamespaceCandidates(
+            string xamlNamespaceUri) =>
+            _inner.GetClrNamespaceCandidates(xamlNamespaceUri);
+
+        public bool TryCreateLiteralExpression(
+            XamlTypeInfo targetType,
+            string text,
+            out Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax expression) =>
+            _inner.TryCreateLiteralExpression(targetType, text, out expression);
+
+        public bool TryCreateMarkupExtensionExpression(
+            XamlMarkupExtension extension,
+            XamlTypeInfo targetType,
+            out Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax expression) =>
+            _inner.TryCreateMarkupExtensionExpression(
+                extension,
+                targetType,
+                out expression);
+
+        public bool TryCreateMarkupExtensionExpression(
+            ProGPU.Xaml.Lowering.XamlIrObject extension,
+            XamlTypeInfo targetType,
+            out Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax expression) =>
+            _inner.TryCreateMarkupExtensionExpression(
+                extension,
+                targetType,
+                out expression);
+
+        public bool TryCreateResourceReferenceExpression(
+            ProGPU.Xaml.Lowering.XamlIrResourceReference reference,
+            XamlTypeInfo targetType,
+            Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax lookupRoot,
+            Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax resourceKey,
+            out Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax expression) =>
+            _inner.TryCreateResourceReferenceExpression(
+                reference,
+                targetType,
+                lookupRoot,
+                resourceKey,
+                out expression);
+    }
+
     private sealed class InMemoryAdditionalText : AdditionalText
     {
         private readonly SourceText _text;
@@ -2412,6 +2555,25 @@ namespace Demo {
         }
         public override string Path { get; }
         public override SourceText GetText(CancellationToken cancellationToken = default) => _text;
+    }
+
+    private sealed class GlobalAnalyzerConfigOptionsProvider :
+        AnalyzerConfigOptionsProvider
+    {
+        private static readonly AnalyzerConfigOptions Empty =
+            new DictionaryAnalyzerConfigOptions(
+                new Dictionary<string, string>(StringComparer.Ordinal));
+        private readonly AnalyzerConfigOptions _globalOptions;
+
+        public GlobalAnalyzerConfigOptionsProvider(
+            IReadOnlyDictionary<string, string> globalOptions)
+        {
+            _globalOptions = new DictionaryAnalyzerConfigOptions(globalOptions);
+        }
+
+        public override AnalyzerConfigOptions GlobalOptions => _globalOptions;
+        public override AnalyzerConfigOptions GetOptions(SyntaxTree tree) => Empty;
+        public override AnalyzerConfigOptions GetOptions(AdditionalText textFile) => Empty;
     }
 
     private sealed class TestAnalyzerConfigOptionsProvider : AnalyzerConfigOptionsProvider

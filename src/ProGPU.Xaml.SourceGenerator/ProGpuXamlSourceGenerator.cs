@@ -17,8 +17,25 @@ namespace ProGPU.Xaml.SourceGeneration;
 [Generator(LanguageNames.CSharp)]
 public sealed class ProGpuXamlSourceGenerator : IIncrementalGenerator
 {
+    private readonly XamlFrameworkProfileRegistry _profiles;
+
+    public ProGpuXamlSourceGenerator()
+        : this(XamlFrameworkProfileRegistry.BuiltIn)
+    {
+    }
+
+    /// <summary>
+    /// Creates an analyzer entry point over an explicit immutable profile registry. Framework
+    /// packages can use this constructor from their own generator facade without assembly scans.
+    /// </summary>
+    public ProGpuXamlSourceGenerator(XamlFrameworkProfileRegistry profiles)
+    {
+        _profiles = profiles ?? throw new ArgumentNullException(nameof(profiles));
+    }
+
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
+        var profiles = _profiles;
         var inputs = context.AdditionalTextsProvider
             .Where(static file => IsXamlPath(file.Path))
             .Combine(context.AnalyzerConfigOptionsProvider)
@@ -55,10 +72,10 @@ public sealed class ProGpuXamlSourceGenerator : IIncrementalGenerator
                 new XamlResourceDocumentManifestBuilder().Build(input.Infoset, input.LogicalPath)))
             .WithTrackingName("XamlResourceManifest");
         var semanticResourceInputs = resourceInputs.Combine(context.CompilationProvider).Combine(options)
-            .Select(static (input, _) =>
+            .Select((input, _) =>
             {
                 var resourceInput = input.Left.Left;
-                if (!XamlFrameworkProfileRegistry.BuiltIn.TryCreate(input.Right.Framework, out var profile))
+                if (!profiles.TryCreate(input.Right.Framework, out var profile))
                     return new SemanticResourceParsedXamlInput(
                         resourceInput.Input,
                         resourceInput.Manifest,
@@ -101,7 +118,7 @@ public sealed class ProGpuXamlSourceGenerator : IIncrementalGenerator
 
         var pipeline = dependencyInputs.Combine(context.CompilationProvider).Combine(options)
             .WithTrackingName("XamlBindLowerEmit");
-        context.RegisterSourceOutput(pipeline, static (productionContext, input) =>
+        context.RegisterSourceOutput(pipeline, (productionContext, input) =>
         {
             var dependentInput = input.Left.Left;
             var xamlInput = dependentInput.Input;
@@ -109,7 +126,12 @@ public sealed class ProGpuXamlSourceGenerator : IIncrementalGenerator
             var generatorOptions = input.Right;
             try
             {
-                Execute(productionContext, dependentInput, compilation, generatorOptions);
+                Execute(
+                    productionContext,
+                    dependentInput,
+                    compilation,
+                    generatorOptions,
+                    profiles);
             }
             catch (OperationCanceledException)
             {
@@ -136,7 +158,8 @@ public sealed class ProGpuXamlSourceGenerator : IIncrementalGenerator
         SourceProductionContext context,
         DependentParsedXamlInput dependentInput,
         Compilation compilation,
-        GeneratorOptions generatorOptions)
+        GeneratorOptions generatorOptions,
+        XamlFrameworkProfileRegistry profiles)
     {
         var input = dependentInput.Input;
         if (!generatorOptions.Enabled)
@@ -144,18 +167,22 @@ public sealed class ProGpuXamlSourceGenerator : IIncrementalGenerator
             return;
         }
 
-        if (!XamlFrameworkProfileRegistry.BuiltIn.TryCreate(generatorOptions.Framework, out var selectedProfile))
+        if (!profiles.TryCreate(generatorOptions.Framework, out var selectedProfile))
         {
+            var installedProfiles = profiles.ProfileIds.Count == 0
+                ? "<none>"
+                : string.Join(", ", profiles.ProfileIds);
             context.ReportDiagnostic(Diagnostic.Create(
                 new DiagnosticDescriptor(
                     "PGXAML0002",
                     "Unknown XAML framework profile",
-                    "XAML framework profile '{0}' is not registered for this generator package. Installed profiles: WinUI.",
+                    "XAML framework profile '{0}' is not registered for this generator package. Installed profiles: {1}.",
                     "ProGPU.Xaml",
                     DiagnosticSeverity.Error,
                     true),
                 Location.None,
-                generatorOptions.Framework));
+                generatorOptions.Framework,
+                installedProfiles));
             return;
         }
 
