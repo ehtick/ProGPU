@@ -4,7 +4,7 @@ Legend: `Done`, `Partial`, `Planned`, `Blocked`. Maturity columns are independen
 
 | Feature | Syntax | Schema | Semantic | Emission | Runtime | Evidence / next gate |
 |---|---|---|---|---|---|---|
-| Lossless XML token stream | Partial | n/a | n/a | n/a | n/a | Lexer reconstructs source; add malformed/fuzz corpus and green-tree reuse |
+| Lossless XML token stream | Partial | n/a | n/a | n/a | n/a | Lexer reconstructs valid and deterministic malformed/fuzz inputs exactly. Positive snapshotted limits, a 1,024 absolute document-depth ceiling, bounded diagnostics, excessive-depth recovery, long-token cancellation, and a one-megabyte/32x allocation gate are covered. Add grammar-aware mutation/coverage guidance, sustained throughput percentiles, and green-tree reuse |
 | Immutable public syntax nodes | Partial | n/a | n/a | n/a | n/a | Immutable green data/red views and non-mutating annotations exist; full node/token union and subtree reuse pending |
 | Strict/recovery modes | Partial | n/a | n/a | n/a | n/a | Options exist; add explicit missing/skipped nodes and recovery tests |
 | XAML infoset section 8 | Partial | n/a | n/a | n/a | n/a | Immutable green/red document/object/member/text model, namespace snapshots, markup-object conversion, strict/recovery, structural pass, lossless whitespace text, and explicit retrieved-object population for same-typed getter-only collection/dictionary property elements exist. Schema-aware binding implements default whitespace collapse/boundaries, inherited `xml:space`, significant collections, trim-surrounding child objects, and lexical-only-member suppression; East Asian linefeed and complete content-wrapper rules remain |
