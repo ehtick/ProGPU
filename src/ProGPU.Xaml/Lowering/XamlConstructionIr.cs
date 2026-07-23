@@ -247,7 +247,7 @@ public sealed class XamlConstructionLowerer
             : resourceGraph.References.ToDictionary(static reference => reference.StableId);
         var resourceValueTypes = resourceGraph == null || document.Root == null
             ? null
-            : CreateResourceValueTypeIndex(document.Root, resourceGraph);
+            : XamlResourceTypeEvidence.CreateValueTypeIndex(document.Root, resourceGraph);
         var terminalResourceKeys = resourceGraph == null
             ? null
             : CreateTerminalResourceKeyIndex(resourceGraph);
@@ -444,113 +444,6 @@ public sealed class XamlConstructionLowerer
         {
             visiting.Remove(reference.StableId);
         }
-    }
-
-    private static IReadOnlyDictionary<ulong, XamlTypeInfo> CreateResourceValueTypeIndex(
-        XamlBoundObject root,
-        XamlResourceGraph graph)
-    {
-        var objects = new Dictionary<ulong, XamlBoundObject>();
-        IndexObjects(root, objects);
-        var references = graph.References.ToDictionary(static reference => reference.StableId);
-        var result = new Dictionary<ulong, XamlTypeInfo>();
-        foreach (var reference in graph.References)
-        {
-            IEnumerable<ulong> candidateIds = reference.DefinitionStableId.HasValue
-                ? new[] { reference.DefinitionStableId.Value }
-                : reference.CandidateDefinitionStableIds;
-            XamlTypeInfo? commonType = null;
-            var hasCandidate = false;
-            var isCommon = true;
-            foreach (var candidateId in candidateIds.Distinct())
-            {
-                var candidateType = ResolveDefinitionValueType(
-                    candidateId,
-                    objects,
-                    references,
-                    new HashSet<ulong>());
-                if (candidateType == null)
-                {
-                    isCommon = false;
-                    break;
-                }
-                hasCandidate = true;
-                if (commonType == null)
-                    commonType = candidateType;
-                else if (!SymbolEqualityComparer.Default.Equals(
-                             commonType.Symbol,
-                             candidateType.Symbol))
-                {
-                    isCommon = false;
-                    break;
-                }
-            }
-            if (hasCandidate && isCommon && commonType != null)
-                result[reference.StableId] = commonType;
-        }
-        return result;
-    }
-
-    private static XamlTypeInfo? ResolveDefinitionValueType(
-        ulong definitionStableId,
-        IReadOnlyDictionary<ulong, XamlBoundObject> objects,
-        IReadOnlyDictionary<ulong, XamlResourceReferenceInfo> references,
-        ISet<ulong> visiting)
-    {
-        if (!visiting.Add(definitionStableId)) return null;
-        try
-        {
-            if (references.TryGetValue(definitionStableId, out var alias) &&
-                alias.Kind == XamlResourceReferenceKind.Static)
-            {
-                IEnumerable<ulong> candidateIds = alias.DefinitionStableId.HasValue
-                    ? new[] { alias.DefinitionStableId.Value }
-                    : alias.CandidateDefinitionStableIds;
-                XamlTypeInfo? commonType = null;
-                var hasCandidate = false;
-                foreach (var candidateId in candidateIds.Distinct())
-                {
-                    var candidateType = ResolveDefinitionValueType(
-                        candidateId,
-                        objects,
-                        references,
-                        visiting);
-                    if (candidateType == null) return null;
-                    hasCandidate = true;
-                    if (commonType == null)
-                        commonType = candidateType;
-                    else if (!SymbolEqualityComparer.Default.Equals(
-                                 commonType.Symbol,
-                                 candidateType.Symbol))
-                        return null;
-                }
-                if (hasCandidate) return commonType;
-            }
-            return objects.TryGetValue(definitionStableId, out var value)
-                ? value.Type.Symbol
-                : null;
-        }
-        finally
-        {
-            visiting.Remove(definitionStableId);
-        }
-    }
-
-    private static void IndexObjects(
-        XamlBoundObject value,
-        IDictionary<ulong, XamlBoundObject> result)
-    {
-        result[value.StableId] = value;
-        foreach (var member in value.Members)
-            foreach (var child in member.Values)
-            {
-                if (child is XamlBoundObject childObject)
-                    IndexObjects(childObject, result);
-                else if (child is XamlBoundBinding binding)
-                    IndexObjects(binding.Extension, result);
-                else if (child is XamlBoundCompiledBinding compiled)
-                    IndexObjects(compiled.Extension, result);
-            }
     }
 
     private static bool CanPublishChildBeforePopulation(
