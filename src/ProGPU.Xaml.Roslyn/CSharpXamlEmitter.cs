@@ -167,6 +167,29 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
             new XamlSemanticBindingOptions { Strict = options.Strict },
             cancellationToken);
         resourceGraph = resourceGraph.WithDocument(bound);
+        var extensionDiagnostics = _extensions.ValidateBoundDocument(
+            new RoslynXamlBoundDocumentValidationContext(
+                bound,
+                resourceGraph,
+                typeSystem,
+                roslynFramework.Id,
+                options.ResourceUri,
+                options.Strict,
+                cancellationToken));
+        if (!extensionDiagnostics.IsEmpty)
+        {
+            var diagnostics = ImmutableArray.CreateBuilder<Diagnostic>(
+                bound.Diagnostics.Length + extensionDiagnostics.Length);
+            diagnostics.AddRange(bound.Diagnostics);
+            diagnostics.AddRange(extensionDiagnostics);
+            bound = new XamlBoundDocument(
+                bound.Infoset,
+                bound.Root,
+                diagnostics.ToImmutable(),
+                bound.DictionaryKeyDirectiveAliases,
+                bound.RootClassType);
+            resourceGraph = resourceGraph.WithDocument(bound);
+        }
         cancellationToken.ThrowIfCancellationRequested();
         var program = new XamlConstructionLowerer().Lower(bound, resourceGraph);
         return EmitProgramCore(

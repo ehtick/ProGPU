@@ -2,8 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Threading;
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
+using ProGPU.Xaml.Binding;
+using ProGPU.Xaml.Diagnostics;
 using ProGPU.Xaml.Lowering;
+using ProGPU.Xaml.Resources;
 using ProGPU.Xaml.Schema;
 
 namespace ProGPU.Xaml.Roslyn;
@@ -12,7 +17,8 @@ namespace ProGPU.Xaml.Roslyn;
 public enum RoslynXamlExtensionCapabilities
 {
     None = 0,
-    MarkupExtensionExpression = 1 << 0
+    MarkupExtensionExpression = 1 << 0,
+    BoundDocumentValidation = 1 << 1
 }
 
 public enum RoslynXamlExtensionConflictPolicy
@@ -40,6 +46,76 @@ public interface IRoslynXamlMarkupExtensionExpressionExtension : IRoslynXamlExte
     bool TryCreateExpression(
         RoslynXamlMarkupExtensionExpressionContext context,
         out ExpressionSyntax expression);
+}
+
+/// <summary>
+/// Optional semantic validation seam over the canonical enriched bound document and
+/// framework-neutral resource graph.
+/// </summary>
+public interface IRoslynXamlBoundDocumentValidatorExtension : IRoslynXamlExtension
+{
+    IEnumerable<RoslynXamlValidationIssue> Validate(
+        RoslynXamlBoundDocumentValidationContext context);
+}
+
+public sealed class RoslynXamlBoundDocumentValidationContext
+{
+    public RoslynXamlBoundDocumentValidationContext(
+        XamlBoundDocument document,
+        XamlResourceGraph resourceGraph,
+        IXamlTypeSystem typeSystem,
+        string frameworkId,
+        string? resourceUri,
+        bool strict,
+        CancellationToken cancellationToken = default)
+    {
+        Document = document ?? throw new ArgumentNullException(nameof(document));
+        ResourceGraph = resourceGraph ?? throw new ArgumentNullException(nameof(resourceGraph));
+        TypeSystem = typeSystem ?? throw new ArgumentNullException(nameof(typeSystem));
+        FrameworkId = string.IsNullOrWhiteSpace(frameworkId)
+            ? throw new ArgumentException(
+                "A framework ID is required.",
+                nameof(frameworkId))
+            : frameworkId;
+        ResourceUri = resourceUri;
+        Strict = strict;
+        CancellationToken = cancellationToken;
+    }
+
+    public XamlBoundDocument Document { get; }
+    public XamlResourceGraph ResourceGraph { get; }
+    public IXamlTypeSystem TypeSystem { get; }
+    public string FrameworkId { get; }
+    public string? ResourceUri { get; }
+    public bool Strict { get; }
+    public CancellationToken CancellationToken { get; }
+}
+
+public sealed class RoslynXamlValidationIssue
+{
+    public RoslynXamlValidationIssue(
+        string id,
+        DiagnosticSeverity severity,
+        string message,
+        TextSpan sourceSpan,
+        string? specificationSection = null)
+    {
+        Id = string.IsNullOrWhiteSpace(id)
+            ? throw new ArgumentException(
+                "A validation diagnostic ID is required.",
+                nameof(id))
+            : id;
+        Severity = severity;
+        Message = message ?? throw new ArgumentNullException(nameof(message));
+        SourceSpan = sourceSpan;
+        SpecificationSection = specificationSection;
+    }
+
+    public string Id { get; }
+    public DiagnosticSeverity Severity { get; }
+    public string Message { get; }
+    public TextSpan SourceSpan { get; }
+    public string? SpecificationSection { get; }
 }
 
 public sealed class RoslynXamlMarkupExtensionExpressionContext
@@ -229,12 +305,101 @@ public sealed class RoslynXamlExtensionHost
                 null);
     }
 
+    public ImmutableArray<Diagnostic> ValidateBoundDocument(
+        RoslynXamlBoundDocumentValidationContext context)
+    {
+        if (context == null) throw new ArgumentNullException(nameof(context));
+        var diagnostics = ImmutableArray.CreateBuilder<Diagnostic>();
+        foreach (var extension in _extensions)
+        {
+            context.CancellationToken.ThrowIfCancellationRequested();
+            if ((extension.Capabilities &
+                 RoslynXamlExtensionCapabilities.BoundDocumentValidation) == 0)
+                continue;
+            if (extension is not IRoslynXamlBoundDocumentValidatorExtension validator)
+            {
+                diagnostics.Add(CreateValidationHostDiagnostic(
+                    context,
+                    "PGXAML2133",
+                    $"Roslyn XAML extension '{extension.Id}' declares bound-document " +
+                    "validation capability without implementing its contract."));
+                continue;
+            }
+
+            try
+            {
+                var issues = validator.Validate(context);
+                if (issues == null)
+                {
+                    diagnostics.Add(CreateValidationHostDiagnostic(
+                        context,
+                        "PGXAML2134",
+                        $"Roslyn XAML extension '{extension.Id}' returned a null validation sequence."));
+                    continue;
+                }
+
+                foreach (var issue in issues)
+                {
+                    context.CancellationToken.ThrowIfCancellationRequested();
+                    if (issue == null ||
+                        issue.SourceSpan.Start < 0 ||
+                        issue.SourceSpan.End > context.Document.Infoset.SourceText.Length)
+                    {
+                        diagnostics.Add(CreateValidationHostDiagnostic(
+                            context,
+                            "PGXAML2134",
+                            $"Roslyn XAML extension '{extension.Id}' returned an invalid validation issue."));
+                        continue;
+                    }
+
+                    diagnostics.Add(XamlDiagnostics.Create(
+                        issue.Id,
+                        issue.Severity,
+                        issue.Message,
+                        context.Document.Infoset.Path,
+                        context.Document.Infoset.SourceText,
+                        issue.SourceSpan,
+                        issue.SpecificationSection));
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                diagnostics.Add(CreateValidationHostDiagnostic(
+                    context,
+                    "PGXAML2133",
+                    $"Roslyn XAML extension '{extension.Id}' failed during bound-document " +
+                    $"validation: {exception.Message}"));
+            }
+        }
+        return diagnostics.ToImmutable();
+    }
+
     private static RoslynXamlExtensionResolution Error(string id, string message) =>
         new RoslynXamlExtensionResolution(
             RoslynXamlExtensionResolutionKind.Error,
             null,
             ImmutableArray.Create(id),
             message);
+
+    private static Diagnostic CreateValidationHostDiagnostic(
+        RoslynXamlBoundDocumentValidationContext context,
+        string id,
+        string message)
+    {
+        var span = context.Document.Root?.SourceSpan ?? default;
+        return XamlDiagnostics.Create(
+            id,
+            DiagnosticSeverity.Error,
+            message,
+            context.Document.Infoset.Path,
+            context.Document.Infoset.SourceText,
+            span,
+            "EXT-004");
+    }
 
     private static void Validate(IRoslynXamlExtension extension)
     {
@@ -254,7 +419,8 @@ public sealed class RoslynXamlExtensionHost
                 $"Roslyn XAML extension '{extension.Id}' does not declare a capability.",
                 nameof(extension));
         if ((extension.Capabilities &
-             ~RoslynXamlExtensionCapabilities.MarkupExtensionExpression) != 0)
+             ~(RoslynXamlExtensionCapabilities.MarkupExtensionExpression |
+               RoslynXamlExtensionCapabilities.BoundDocumentValidation)) != 0)
             throw new ArgumentException(
                 $"Roslyn XAML extension '{extension.Id}' declares unsupported capabilities.",
                 nameof(extension));
@@ -265,10 +431,18 @@ public sealed class RoslynXamlExtensionHost
                 $"Roslyn XAML extension '{extension.Id}' declares markup-expression " +
                 "capability without implementing its contract.",
                 nameof(extension));
+        if ((extension.Capabilities &
+             RoslynXamlExtensionCapabilities.BoundDocumentValidation) != 0 &&
+            extension is not IRoslynXamlBoundDocumentValidatorExtension)
+            throw new ArgumentException(
+                $"Roslyn XAML extension '{extension.Id}' declares bound-document validation " +
+                "capability without implementing its contract.",
+                nameof(extension));
     }
 
     private sealed class RegisteredExtension :
-        IRoslynXamlMarkupExtensionExpressionExtension
+        IRoslynXamlMarkupExtensionExpressionExtension,
+        IRoslynXamlBoundDocumentValidatorExtension
     {
         private readonly IRoslynXamlExtension _extension;
 
@@ -295,5 +469,10 @@ public sealed class RoslynXamlExtensionHost
             out ExpressionSyntax expression)
             => ((IRoslynXamlMarkupExtensionExpressionExtension)_extension)
                 .TryCreateExpression(context, out expression!);
+
+        public IEnumerable<RoslynXamlValidationIssue> Validate(
+            RoslynXamlBoundDocumentValidationContext context) =>
+            ((IRoslynXamlBoundDocumentValidatorExtension)_extension)
+                .Validate(context);
     }
 }

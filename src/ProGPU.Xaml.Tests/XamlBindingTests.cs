@@ -9290,6 +9290,150 @@ namespace Demo {
             }));
         Assert.Throws<ArgumentException>(() => RoslynXamlExtensionHost.Create(
             new IRoslynXamlExtension[] { new InvalidRoslynExtension() }));
+        Assert.Throws<ArgumentException>(() => RoslynXamlExtensionHost.Create(
+            new IRoslynXamlExtension[] { new InvalidBoundValidatorExtension() }));
+    }
+
+    [Fact]
+    public void BoundDocumentValidatorsComposeByPriorityAndRetainXamlLocations()
+    {
+        const string xaml = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.MainPage">
+  <TextBlock Text="Hello" />
+</Page>
+""";
+        var compilation = CreateCompilation();
+        var profile = new WinUiXamlProfile();
+        using var cancellationSource = new CancellationTokenSource();
+        var host = RoslynXamlExtensionHost.Create(
+            new IRoslynXamlExtension[]
+            {
+                new TestBoundDocumentValidator(
+                    "test.validator.low",
+                    priority: 10,
+                    diagnosticId: "TESTV0002",
+                    expectedResourceUri: "Views/Validator.xaml"),
+                new TestBoundDocumentValidator(
+                    "test.validator.high",
+                    priority: 20,
+                    diagnosticId: "TESTV0001",
+                    expectedCancellationToken: cancellationSource.Token,
+                    expectedResourceUri: "Views/Validator.xaml")
+            });
+
+        var result = new CSharpXamlEmitter(host).Emit(
+            ConvertAt("Validator.xaml", xaml),
+            new RoslynXamlTypeSystem(compilation, profile),
+            profile,
+            new XamlCompilerOptions { ResourceUri = "Views/Validator.xaml" },
+            cancellationSource.Token);
+
+        var diagnostics = result.Diagnostics
+            .Where(diagnostic => diagnostic.Id.StartsWith("TESTV", StringComparison.Ordinal))
+            .ToArray();
+        Assert.Equal(
+            new[] { "TESTV0001", "TESTV0002" },
+            diagnostics.Select(diagnostic => diagnostic.Id));
+        Assert.All(diagnostics, diagnostic =>
+        {
+            Assert.Equal("Validator.xaml", diagnostic.Location.GetLineSpan().Path);
+            Assert.False(diagnostic.Location.SourceSpan.IsEmpty);
+            Assert.Equal(DiagnosticSeverity.Warning, diagnostic.Severity);
+        });
+        var tree = Assert.Single(result.Sources).GeneratedSyntaxTree!;
+        Assert.DoesNotContain(
+            compilation.AddSyntaxTrees(tree).GetDiagnostics(),
+            diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+    }
+
+    [Fact]
+    public void BoundDocumentValidatorErrorsParticipateInStrictCompilation()
+    {
+        const string xaml = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.MainPage" />
+""";
+        var compilation = CreateCompilation();
+        var profile = new WinUiXamlProfile();
+        var host = RoslynXamlExtensionHost.Create(
+            new IRoslynXamlExtension[]
+            {
+                new TestBoundDocumentValidator(
+                    "test.validator.error",
+                    priority: 10,
+                    diagnosticId: "TESTV1000",
+                    severity: DiagnosticSeverity.Error)
+            });
+
+        var result = new CSharpXamlEmitter(host).Emit(
+            Convert(xaml),
+            new RoslynXamlTypeSystem(compilation, profile),
+            profile,
+            new XamlCompilerOptions { Strict = true });
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Id == "TESTV1000");
+        Assert.Empty(result.Sources);
+    }
+
+    [Fact]
+    public void BoundDocumentValidatorFailuresAreIsolatedAndCancellationPropagates()
+    {
+        const string xaml = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.MainPage" />
+""";
+        var compilation = CreateCompilation();
+        var profile = new WinUiXamlProfile();
+        var failingHost = RoslynXamlExtensionHost.Create(
+            new IRoslynXamlExtension[]
+            {
+                new TestBoundDocumentValidator(
+                    "test.validator.throwing",
+                    priority: 30,
+                    diagnosticId: "unused",
+                    throwOnInvoke: true),
+                new TestBoundDocumentValidator(
+                    "test.validator.null",
+                    priority: 20,
+                    diagnosticId: "unused",
+                    returnNull: true),
+                new TestBoundDocumentValidator(
+                    "test.validator.invalid",
+                    priority: 10,
+                    diagnosticId: "unused",
+                    returnInvalidSpan: true)
+            });
+
+        var failure = new CSharpXamlEmitter(failingHost).Emit(
+            Convert(xaml),
+            new RoslynXamlTypeSystem(compilation, profile),
+            profile,
+            new XamlCompilerOptions());
+
+        Assert.Single(failure.Diagnostics, diagnostic => diagnostic.Id == "PGXAML2133");
+        Assert.Equal(
+            2,
+            failure.Diagnostics.Count(diagnostic => diagnostic.Id == "PGXAML2134"));
+
+        var cancellationHost = RoslynXamlExtensionHost.Create(
+            new IRoslynXamlExtension[]
+            {
+                new TestBoundDocumentValidator(
+                    "test.validator.cancellation",
+                    priority: 10,
+                    diagnosticId: "unused",
+                    cancelOnInvoke: true)
+            });
+        Assert.Throws<OperationCanceledException>(() =>
+            new CSharpXamlEmitter(cancellationHost).Emit(
+                Convert(xaml),
+                new RoslynXamlTypeSystem(compilation, profile),
+                profile,
+                new XamlCompilerOptions()));
     }
 
     private static XamlInfosetDocument Convert(string source)
@@ -10537,6 +10681,88 @@ namespace Demo {
         }
     }
 
+    private sealed class TestBoundDocumentValidator :
+        IRoslynXamlBoundDocumentValidatorExtension
+    {
+        private readonly string _diagnosticId;
+        private readonly DiagnosticSeverity _severity;
+        private readonly bool _throwOnInvoke;
+        private readonly bool _returnNull;
+        private readonly bool _returnInvalidSpan;
+        private readonly bool _cancelOnInvoke;
+        private readonly CancellationToken? _expectedCancellationToken;
+        private readonly string? _expectedResourceUri;
+
+        public TestBoundDocumentValidator(
+            string id,
+            int priority,
+            string diagnosticId,
+            DiagnosticSeverity severity = DiagnosticSeverity.Warning,
+            bool throwOnInvoke = false,
+            bool returnNull = false,
+            bool returnInvalidSpan = false,
+            bool cancelOnInvoke = false,
+            CancellationToken? expectedCancellationToken = null,
+            string? expectedResourceUri = null)
+        {
+            Id = id;
+            Priority = priority;
+            _diagnosticId = diagnosticId;
+            _severity = severity;
+            _throwOnInvoke = throwOnInvoke;
+            _returnNull = returnNull;
+            _returnInvalidSpan = returnInvalidSpan;
+            _cancelOnInvoke = cancelOnInvoke;
+            _expectedCancellationToken = expectedCancellationToken;
+            _expectedResourceUri = expectedResourceUri;
+        }
+
+        public string Id { get; }
+        public int ContractVersion => RoslynXamlExtensionHost.CurrentContractVersion;
+        public int Version => 1;
+        public int Priority { get; }
+        public RoslynXamlExtensionCapabilities Capabilities =>
+            RoslynXamlExtensionCapabilities.BoundDocumentValidation;
+        public RoslynXamlExtensionConflictPolicy ConflictPolicy =>
+            RoslynXamlExtensionConflictPolicy.Diagnose;
+
+        public IEnumerable<RoslynXamlValidationIssue> Validate(
+            RoslynXamlBoundDocumentValidationContext context)
+        {
+            context.CancellationToken.ThrowIfCancellationRequested();
+            if (_expectedCancellationToken is { } expected &&
+                context.CancellationToken != expected)
+                throw new InvalidOperationException("The validator did not receive the emitter token.");
+            if (!string.Equals(context.FrameworkId, "WinUI", StringComparison.Ordinal) ||
+                !context.Strict ||
+                !string.Equals(
+                    context.ResourceUri,
+                    _expectedResourceUri,
+                    StringComparison.Ordinal))
+                throw new InvalidOperationException("The validator did not receive compiler identity/options.");
+            if (!ReferenceEquals(context.ResourceGraph.Document, context.Document))
+                throw new InvalidOperationException("The validator did not receive the enriched resource graph.");
+            if (_throwOnInvoke)
+                throw new InvalidOperationException("Expected validator failure.");
+            if (_cancelOnInvoke)
+                throw new OperationCanceledException();
+            if (_returnNull)
+                return null!;
+            var rootSpan = context.Document.Root?.SourceSpan ?? default;
+            if (_returnInvalidSpan)
+                rootSpan = new TextSpan(context.Document.Infoset.SourceText.Length + 1, 0);
+            return new[]
+            {
+                new RoslynXamlValidationIssue(
+                    _diagnosticId,
+                    _severity,
+                    "User validation result.",
+                    rootSpan,
+                    "EXT-004")
+            };
+        }
+    }
+
     private sealed class InvalidRoslynExtension : IRoslynXamlExtension
     {
         public string Id => "test.invalid";
@@ -10545,6 +10771,18 @@ namespace Demo {
         public int Priority => 0;
         public RoslynXamlExtensionCapabilities Capabilities =>
             RoslynXamlExtensionCapabilities.MarkupExtensionExpression;
+        public RoslynXamlExtensionConflictPolicy ConflictPolicy =>
+            RoslynXamlExtensionConflictPolicy.Diagnose;
+    }
+
+    private sealed class InvalidBoundValidatorExtension : IRoslynXamlExtension
+    {
+        public string Id => "test.invalid-validator";
+        public int ContractVersion => RoslynXamlExtensionHost.CurrentContractVersion;
+        public int Version => 1;
+        public int Priority => 0;
+        public RoslynXamlExtensionCapabilities Capabilities =>
+            RoslynXamlExtensionCapabilities.BoundDocumentValidation;
         public RoslynXamlExtensionConflictPolicy ConflictPolicy =>
             RoslynXamlExtensionConflictPolicy.Diagnose;
     }
