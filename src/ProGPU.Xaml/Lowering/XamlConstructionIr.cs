@@ -1,0 +1,556 @@
+using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Linq;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Text;
+using ProGPU.Xaml.Binding;
+using ProGPU.Xaml.Resources;
+using ProGPU.Xaml.Schema;
+
+namespace ProGPU.Xaml.Lowering;
+
+public enum XamlIrObjectKind
+{
+    ExistingRoot,
+    Create,
+    Retrieve,
+    InvokeMarkupExtension,
+    CreateArray,
+    InitializeFromText,
+    Error
+}
+
+public enum XamlIrInitializationMode
+{
+    BottomUp,
+    TopDown
+}
+
+public enum XamlIrOperationKind
+{
+    SetMember,
+    SetAttachableMember,
+    AddCollectionItem,
+    AddDictionaryItem,
+    RetrieveMember,
+    SubscribeEvent,
+    ApplyDirective,
+    SetIntrinsicMember,
+    SetDeferredContent,
+    Error
+}
+
+public abstract class XamlIrValue
+{
+    protected XamlIrValue(TextSpan sourceSpan, ulong stableId)
+    {
+        SourceSpan = sourceSpan;
+        StableId = stableId;
+    }
+    public TextSpan SourceSpan { get; }
+    public ulong StableId { get; }
+}
+
+public sealed class XamlIrText : XamlIrValue
+{
+    public XamlIrText(string text, TextSpan sourceSpan, ulong stableId, Schema.XamlTextSyntaxInfo? textSyntax = null)
+        : base(sourceSpan, stableId)
+    {
+        Text = text ?? string.Empty;
+        TextSyntax = textSyntax ?? Schema.XamlTextSyntaxInfo.None;
+    }
+    public string Text { get; }
+    public Schema.XamlTextSyntaxInfo TextSyntax { get; }
+}
+
+public sealed class XamlIrType : XamlIrValue
+{
+    public XamlIrType(XamlBoundTypeReference type, TextSpan sourceSpan, ulong stableId)
+        : base(sourceSpan, stableId) => Type = type ?? throw new ArgumentNullException(nameof(type));
+    public XamlBoundTypeReference Type { get; }
+}
+
+public sealed class XamlIrStaticMember : XamlIrValue
+{
+    public XamlIrStaticMember(XamlBoundStaticMemberValue value)
+        : base(value?.SourceSpan ?? default, value?.StableId ?? 0) => Value = value!;
+    public XamlBoundStaticMemberValue Value { get; }
+}
+
+public sealed class XamlIrFactoryMethod : XamlIrValue
+{
+    public XamlIrFactoryMethod(XamlBoundFactoryMethodValue value)
+        : base(value?.SourceSpan ?? default, value?.StableId ?? 0) => Value = value!;
+    public XamlBoundFactoryMethodValue Value { get; }
+}
+
+public sealed class XamlIrNameReference : XamlIrValue
+{
+    public XamlIrNameReference(XamlBoundNameReferenceValue value)
+        : base(value?.SourceSpan ?? default, value?.StableId ?? 0) => Name = value!.Name;
+    public string Name { get; }
+}
+
+public sealed class XamlIrCompiledBinding : XamlIrValue
+{
+    public XamlIrCompiledBinding(XamlBoundCompiledBinding binding, XamlIrObject extension)
+        : base(binding?.SourceSpan ?? default, binding?.StableId ?? 0)
+    {
+        Binding = binding ?? throw new ArgumentNullException(nameof(binding));
+        Extension = extension ?? throw new ArgumentNullException(nameof(extension));
+    }
+
+    public XamlBoundCompiledBinding Binding { get; }
+    public XamlIrObject Extension { get; }
+}
+
+public sealed class XamlIrResourceReference : XamlIrValue
+{
+    public XamlIrResourceReference(
+        XamlResourceReferenceInfo reference,
+        XamlTypeInfo? resolvedValueType = null,
+        XamlResourceKeyInfo? terminalResourceKey = null)
+        : base(reference?.SourceSpan ?? default, reference?.StableId ?? 0)
+    {
+        Reference = reference ?? throw new ArgumentNullException(nameof(reference));
+        ResolvedValueType = resolvedValueType;
+        TerminalResourceKey = terminalResourceKey ?? reference.ResourceKey;
+    }
+    public XamlResourceReferenceInfo Reference { get; }
+    /// <summary>
+    /// Statically known type of the resolved definition. Null represents an external,
+    /// unresolved, or variant set without one common value type.
+    /// </summary>
+    public XamlTypeInfo? ResolvedValueType { get; }
+    /// <summary>
+    /// Last resource key reached through statically known alias definitions. Framework
+    /// profiles can use this evidence to type authoritative platform-resource leaves.
+    /// </summary>
+    public XamlResourceKeyInfo TerminalResourceKey { get; }
+}
+
+public sealed class XamlIrOperation
+{
+    public XamlIrOperation(
+        XamlIrOperationKind kind,
+        XamlBoundMemberReference member,
+        ImmutableArray<XamlIrValue> values,
+        TextSpan sourceSpan,
+        ulong stableId)
+    {
+        Kind = kind;
+        Member = member ?? throw new ArgumentNullException(nameof(member));
+        Values = values;
+        SourceSpan = sourceSpan;
+        StableId = stableId;
+    }
+    public XamlIrOperationKind Kind { get; }
+    public XamlBoundMemberReference Member { get; }
+    public ImmutableArray<XamlIrValue> Values { get; }
+    public TextSpan SourceSpan { get; }
+    public ulong StableId { get; }
+}
+
+public sealed class XamlIrObject : XamlIrValue
+{
+    public XamlIrObject(
+        XamlIrObjectKind kind,
+        XamlBoundTypeReference type,
+        ImmutableArray<XamlIrOperation> operations,
+        TextSpan sourceSpan,
+        ulong stableId)
+        : this(
+            kind,
+            XamlIrInitializationMode.BottomUp,
+            type,
+            operations,
+            sourceSpan,
+            stableId)
+    {
+    }
+
+    public XamlIrObject(
+        XamlIrObjectKind kind,
+        XamlIrInitializationMode initializationMode,
+        XamlBoundTypeReference type,
+        ImmutableArray<XamlIrOperation> operations,
+        TextSpan sourceSpan,
+        ulong stableId)
+        : base(sourceSpan, stableId)
+    {
+        Kind = kind;
+        InitializationMode = initializationMode;
+        Type = type ?? throw new ArgumentNullException(nameof(type));
+        Operations = operations;
+    }
+    public XamlIrObjectKind Kind { get; }
+    public XamlIrInitializationMode InitializationMode { get; }
+    public XamlBoundTypeReference Type { get; }
+    public ImmutableArray<XamlIrOperation> Operations { get; }
+}
+
+public sealed class XamlConstructionProgram
+{
+    public XamlConstructionProgram(
+        XamlBoundDocument boundDocument,
+        XamlIrObject? root,
+        ImmutableArray<Diagnostic> diagnostics,
+        XamlResourceGraph? resourceGraph = null)
+    {
+        BoundDocument = boundDocument ?? throw new ArgumentNullException(nameof(boundDocument));
+        Root = root;
+        Diagnostics = diagnostics;
+        ResourceGraph = resourceGraph;
+    }
+    public XamlBoundDocument BoundDocument { get; }
+    public XamlIrObject? Root { get; }
+    public ImmutableArray<Diagnostic> Diagnostics { get; }
+    public XamlResourceGraph? ResourceGraph { get; }
+}
+
+public sealed class XamlConstructionLowerer
+{
+    public XamlConstructionProgram Lower(XamlBoundDocument document)
+        => Lower(document, resourceGraph: null);
+
+    public XamlConstructionProgram Lower(XamlBoundDocument document, XamlResourceGraph? resourceGraph)
+    {
+        if (document == null) throw new ArgumentNullException(nameof(document));
+        IReadOnlyDictionary<ulong, XamlResourceReferenceInfo>? resourceReferences = resourceGraph == null
+            ? null
+            : resourceGraph.References.ToDictionary(static reference => reference.StableId);
+        var resourceValueTypes = resourceGraph == null || document.Root == null
+            ? null
+            : CreateResourceValueTypeIndex(document.Root, resourceGraph);
+        var terminalResourceKeys = resourceGraph == null
+            ? null
+            : CreateTerminalResourceKeyIndex(resourceGraph);
+        var root = document.Root == null
+            ? null
+            : LowerObject(
+                document.Root,
+                isRoot: true,
+                allowTopDown: false,
+                resourceReferences,
+                resourceValueTypes,
+                terminalResourceKeys);
+        var diagnostics = ImmutableArray.CreateBuilder<Diagnostic>(
+            document.Diagnostics.Length + (resourceGraph?.Diagnostics.Length ?? 0));
+        diagnostics.AddRange(document.Diagnostics);
+        if (resourceGraph != null) diagnostics.AddRange(resourceGraph.Diagnostics);
+        return new XamlConstructionProgram(document, root, diagnostics.ToImmutable(), resourceGraph);
+    }
+
+    private static XamlIrObject LowerObject(
+        XamlBoundObject value,
+        bool isRoot,
+        bool allowTopDown,
+        IReadOnlyDictionary<ulong, XamlResourceReferenceInfo>? resourceReferences,
+        IReadOnlyDictionary<ulong, XamlTypeInfo>? resourceValueTypes,
+        IReadOnlyDictionary<ulong, XamlResourceKeyInfo>? terminalResourceKeys)
+    {
+        var isArrayIntrinsic = string.Equals(
+                value.Type.RequestedName.NamespaceUri,
+                ProGPU.Xaml.Syntax.XamlNamespaces.Language2006,
+                StringComparison.Ordinal) &&
+            (string.Equals(
+                 value.Type.RequestedName.LocalName,
+                 "Array",
+                 StringComparison.Ordinal) ||
+             string.Equals(
+                 value.Type.RequestedName.LocalName,
+                 "ArrayExtension",
+                 StringComparison.Ordinal));
+        var operations = ImmutableArray.CreateBuilder<XamlIrOperation>(value.Members.Length);
+        foreach (var member in XamlBoundMemberOrdering.Order(value.Members))
+        {
+            var operationKind = ClassifyOperation(member);
+            var allowChildTopDown =
+                !isArrayIntrinsic &&
+                CanPublishChildBeforePopulation(operationKind);
+            var values = ImmutableArray.CreateBuilder<XamlIrValue>(member.Values.Length);
+            foreach (var child in member.Values)
+            {
+                values.Add(child switch
+                {
+                    XamlBoundObject childObject => LowerObjectValue(
+                        childObject,
+                        allowChildTopDown,
+                        resourceReferences,
+                        resourceValueTypes,
+                        terminalResourceKeys),
+                    XamlBoundTypeValue typeValue => new XamlIrType(typeValue.Type, child.SourceSpan, child.StableId),
+                    XamlBoundStaticMemberValue staticValue => new XamlIrStaticMember(staticValue),
+                    XamlBoundFactoryMethodValue factoryValue => new XamlIrFactoryMethod(factoryValue),
+                    XamlBoundNameReferenceValue referenceValue => new XamlIrNameReference(referenceValue),
+                    XamlBoundCompiledBinding compiledBinding => new XamlIrCompiledBinding(
+                        compiledBinding,
+                        LowerObject(
+                            compiledBinding.Extension,
+                            isRoot: false,
+                            allowTopDown: false,
+                            resourceReferences,
+                            resourceValueTypes,
+                            terminalResourceKeys)),
+                    XamlBoundText textValue => new XamlIrText(textValue.Text, child.SourceSpan, child.StableId, textValue.TextSyntax),
+                    _ => throw new InvalidOperationException("Unsupported bound XAML value kind: " + child.GetType().FullName)
+                });
+            }
+            operations.Add(new XamlIrOperation(
+                operationKind,
+                member.Member,
+                values.ToImmutable(),
+                member.SourceSpan,
+                member.StableId));
+        }
+        var hasInitializationText = operations.Any(static operation =>
+            operation.Kind == XamlIrOperationKind.ApplyDirective &&
+            string.Equals(operation.Member.RequestedName.NamespaceUri,
+                ProGPU.Xaml.Syntax.XamlNamespaces.Language2006, StringComparison.Ordinal) &&
+            string.Equals(operation.Member.RequestedName.LocalName, "Initialization", StringComparison.Ordinal));
+        var kind = value.Type.IsError
+            ? XamlIrObjectKind.Error
+            : isRoot
+                ? XamlIrObjectKind.ExistingRoot
+                : isArrayIntrinsic
+                    ? XamlIrObjectKind.CreateArray
+                : hasInitializationText
+                    ? XamlIrObjectKind.InitializeFromText
+                : value.IsRetrieved
+                    ? XamlIrObjectKind.Retrieve
+                    : value.IsMarkupExtension
+                        ? XamlIrObjectKind.InvokeMarkupExtension
+                        : XamlIrObjectKind.Create;
+        var initializationMode =
+            kind == XamlIrObjectKind.Create &&
+            allowTopDown &&
+            value.Type.Symbol?.IsUsableDuringInitialization == true
+                ? XamlIrInitializationMode.TopDown
+                : XamlIrInitializationMode.BottomUp;
+        return new XamlIrObject(
+            kind,
+            initializationMode,
+            value.Type,
+            operations.ToImmutable(),
+            value.SourceSpan,
+            value.StableId);
+    }
+
+    private static XamlIrValue LowerObjectValue(
+        XamlBoundObject value,
+        bool allowTopDown,
+        IReadOnlyDictionary<ulong, XamlResourceReferenceInfo>? resourceReferences,
+        IReadOnlyDictionary<ulong, XamlTypeInfo>? resourceValueTypes,
+        IReadOnlyDictionary<ulong, XamlResourceKeyInfo>? terminalResourceKeys)
+    {
+        if (resourceReferences != null && resourceReferences.TryGetValue(value.StableId, out var reference))
+        {
+            XamlTypeInfo? resolvedValueType = null;
+            if (resourceValueTypes != null)
+                resourceValueTypes.TryGetValue(reference.StableId, out resolvedValueType);
+            XamlResourceKeyInfo? terminalResourceKey = null;
+            if (terminalResourceKeys != null)
+                terminalResourceKeys.TryGetValue(reference.StableId, out terminalResourceKey);
+            return new XamlIrResourceReference(
+                reference,
+                resolvedValueType,
+                terminalResourceKey);
+        }
+        return LowerObject(
+            value,
+            isRoot: false,
+            allowTopDown,
+            resourceReferences,
+            resourceValueTypes,
+            terminalResourceKeys);
+    }
+
+    private static IReadOnlyDictionary<ulong, XamlResourceKeyInfo> CreateTerminalResourceKeyIndex(
+        XamlResourceGraph graph)
+    {
+        var references = graph.References.ToDictionary(static reference => reference.StableId);
+        var result = new Dictionary<ulong, XamlResourceKeyInfo>();
+        foreach (var reference in graph.References)
+            result[reference.StableId] = ResolveTerminalResourceKey(
+                reference,
+                references,
+                new HashSet<ulong>());
+        return result;
+    }
+
+    private static XamlResourceKeyInfo ResolveTerminalResourceKey(
+        XamlResourceReferenceInfo reference,
+        IReadOnlyDictionary<ulong, XamlResourceReferenceInfo> references,
+        ISet<ulong> visiting)
+    {
+        if (!visiting.Add(reference.StableId)) return reference.ResourceKey;
+        try
+        {
+            IEnumerable<ulong> definitionIds = reference.DefinitionStableId.HasValue
+                ? new[] { reference.DefinitionStableId.Value }
+                : reference.CandidateDefinitionStableIds;
+            XamlResourceKeyInfo? common = null;
+            var hasAlias = false;
+            foreach (var definitionId in definitionIds.Distinct())
+            {
+                if (!references.TryGetValue(definitionId, out var alias) ||
+                    alias.Kind != XamlResourceReferenceKind.Static)
+                    return reference.ResourceKey;
+                var terminal = ResolveTerminalResourceKey(alias, references, visiting);
+                hasAlias = true;
+                if (common == null)
+                    common = terminal;
+                else if (!common.Equals(terminal))
+                    return reference.ResourceKey;
+            }
+            return hasAlias && common != null ? common : reference.ResourceKey;
+        }
+        finally
+        {
+            visiting.Remove(reference.StableId);
+        }
+    }
+
+    private static IReadOnlyDictionary<ulong, XamlTypeInfo> CreateResourceValueTypeIndex(
+        XamlBoundObject root,
+        XamlResourceGraph graph)
+    {
+        var objects = new Dictionary<ulong, XamlBoundObject>();
+        IndexObjects(root, objects);
+        var references = graph.References.ToDictionary(static reference => reference.StableId);
+        var result = new Dictionary<ulong, XamlTypeInfo>();
+        foreach (var reference in graph.References)
+        {
+            IEnumerable<ulong> candidateIds = reference.DefinitionStableId.HasValue
+                ? new[] { reference.DefinitionStableId.Value }
+                : reference.CandidateDefinitionStableIds;
+            XamlTypeInfo? commonType = null;
+            var hasCandidate = false;
+            var isCommon = true;
+            foreach (var candidateId in candidateIds.Distinct())
+            {
+                var candidateType = ResolveDefinitionValueType(
+                    candidateId,
+                    objects,
+                    references,
+                    new HashSet<ulong>());
+                if (candidateType == null)
+                {
+                    isCommon = false;
+                    break;
+                }
+                hasCandidate = true;
+                if (commonType == null)
+                    commonType = candidateType;
+                else if (!SymbolEqualityComparer.Default.Equals(
+                             commonType.Symbol,
+                             candidateType.Symbol))
+                {
+                    isCommon = false;
+                    break;
+                }
+            }
+            if (hasCandidate && isCommon && commonType != null)
+                result[reference.StableId] = commonType;
+        }
+        return result;
+    }
+
+    private static XamlTypeInfo? ResolveDefinitionValueType(
+        ulong definitionStableId,
+        IReadOnlyDictionary<ulong, XamlBoundObject> objects,
+        IReadOnlyDictionary<ulong, XamlResourceReferenceInfo> references,
+        ISet<ulong> visiting)
+    {
+        if (!visiting.Add(definitionStableId)) return null;
+        try
+        {
+            if (references.TryGetValue(definitionStableId, out var alias) &&
+                alias.Kind == XamlResourceReferenceKind.Static)
+            {
+                IEnumerable<ulong> candidateIds = alias.DefinitionStableId.HasValue
+                    ? new[] { alias.DefinitionStableId.Value }
+                    : alias.CandidateDefinitionStableIds;
+                XamlTypeInfo? commonType = null;
+                var hasCandidate = false;
+                foreach (var candidateId in candidateIds.Distinct())
+                {
+                    var candidateType = ResolveDefinitionValueType(
+                        candidateId,
+                        objects,
+                        references,
+                        visiting);
+                    if (candidateType == null) return null;
+                    hasCandidate = true;
+                    if (commonType == null)
+                        commonType = candidateType;
+                    else if (!SymbolEqualityComparer.Default.Equals(
+                                 commonType.Symbol,
+                                 candidateType.Symbol))
+                        return null;
+                }
+                if (hasCandidate) return commonType;
+            }
+            return objects.TryGetValue(definitionStableId, out var value)
+                ? value.Type.Symbol
+                : null;
+        }
+        finally
+        {
+            visiting.Remove(definitionStableId);
+        }
+    }
+
+    private static void IndexObjects(
+        XamlBoundObject value,
+        IDictionary<ulong, XamlBoundObject> result)
+    {
+        result[value.StableId] = value;
+        foreach (var member in value.Members)
+            foreach (var child in member.Values)
+            {
+                if (child is XamlBoundObject childObject)
+                    IndexObjects(childObject, result);
+                else if (child is XamlBoundCompiledBinding compiled)
+                    IndexObjects(compiled.Extension, result);
+            }
+    }
+
+    private static bool CanPublishChildBeforePopulation(
+        XamlIrOperationKind kind) =>
+        kind == XamlIrOperationKind.SetMember ||
+        kind == XamlIrOperationKind.SetAttachableMember ||
+        kind == XamlIrOperationKind.AddCollectionItem ||
+        kind == XamlIrOperationKind.AddDictionaryItem;
+
+    private static XamlIrOperationKind ClassifyOperation(XamlBoundMember boundMember)
+    {
+        var member = boundMember.Member;
+        switch (member.Kind)
+        {
+            case XamlBoundReferenceKind.Directive: return XamlIrOperationKind.ApplyDirective;
+            case XamlBoundReferenceKind.Intrinsic: return XamlIrOperationKind.SetIntrinsicMember;
+            case XamlBoundReferenceKind.CollectionItems: return XamlIrOperationKind.AddCollectionItem;
+            case XamlBoundReferenceKind.DictionaryItems: return XamlIrOperationKind.AddDictionaryItem;
+            case XamlBoundReferenceKind.Error: return XamlIrOperationKind.Error;
+        }
+        switch (member.Symbol!.Kind)
+        {
+            case Schema.XamlMemberKind.DeferredContent: return XamlIrOperationKind.SetDeferredContent;
+            case Schema.XamlMemberKind.Collection:
+            case Schema.XamlMemberKind.Dictionary:
+                if (boundMember.Values.Length == 1 &&
+                    boundMember.Values[0] is XamlBoundObject { IsMarkupExtension: true })
+                    return XamlIrOperationKind.SetMember;
+                if (boundMember.Values.Length == 1 && boundMember.Values[0] is XamlBoundObject { IsRetrieved: true })
+                    return XamlIrOperationKind.RetrieveMember;
+                return member.Symbol.Kind == Schema.XamlMemberKind.Collection
+                    ? XamlIrOperationKind.AddCollectionItem
+                    : XamlIrOperationKind.AddDictionaryItem;
+            case Schema.XamlMemberKind.AttachableProperty: return XamlIrOperationKind.SetAttachableMember;
+            case Schema.XamlMemberKind.Event: return XamlIrOperationKind.SubscribeEvent;
+            default: return member.Symbol.CanWrite ? XamlIrOperationKind.SetMember : XamlIrOperationKind.RetrieveMember;
+        }
+    }
+}

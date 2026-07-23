@@ -18,6 +18,7 @@
   <Project Path="ProGPU.Layout/ProGPU.Layout.csproj" />
   <Project Path="ProGPU.Virtualization/ProGPU.Virtualization.csproj" />
   <Project Path="ProGPU.WinUI/ProGPU.WinUI.csproj" />
+  <Project Path="ProGPU.WinUI.Themes.Fluent/ProGPU.WinUI.Themes.Fluent.csproj" />
   <Project Path="ProGPU.WinUI.Charts/ProGPU.WinUI.Charts.csproj" />
   <Project Path="ProGPU.WinUI.Designer/ProGPU.WinUI.Designer.csproj" />
   <Project Path="ProGPU.Avalonia/ProGPU.Avalonia.csproj" />
@@ -31,7 +32,13 @@
   <Project Path="ProGPU.Dxf/ProGPU.Dxf.csproj" />
   <Project Path="ProGPU.Tests.Headless/ProGPU.Tests.Headless.csproj" />
   <Project Path="ProGPU.Tests/ProGPU.Tests.csproj" />
+  <Project Path="ProGPU.Xaml/ProGPU.Xaml.csproj" />
+  <Project Path="ProGPU.Xaml.Roslyn/ProGPU.Xaml.Roslyn.csproj" />
+  <Project Path="ProGPU.Xaml.SourceGenerator/ProGPU.Xaml.SourceGenerator.csproj" />
+  <Project Path="ProGPU.Xaml.Workspaces/ProGPU.Xaml.Workspaces.csproj" />
+  <Project Path="ProGPU.Xaml.Tests/ProGPU.Xaml.Tests.csproj" />
   <Project Path="../tools/TtfDiag/TtfDiag.csproj" />
   <Project Path="../tools/DxfDiag/DxfDiag.csproj" />
   <Project Path="../tools/HarfBuzzParity/HarfBuzzParity.csproj" />
+  <Project Path="../tools/ProGPU.Xaml.Cli/ProGPU.Xaml.Cli.csproj" />
 </Solution>

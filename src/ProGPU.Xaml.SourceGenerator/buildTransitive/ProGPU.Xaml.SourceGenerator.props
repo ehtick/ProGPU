@@ -1,0 +1,27 @@
+<Project>
+  <PropertyGroup>
+    <ProGpuXamlEnabled Condition="'$(ProGpuXamlEnabled)' == ''">true</ProGpuXamlEnabled>
+    <ProGpuXamlFramework Condition="'$(ProGpuXamlFramework)' == ''">WinUI</ProGpuXamlFramework>
+    <ProGpuXamlStrict Condition="'$(ProGpuXamlStrict)' == ''">true</ProGpuXamlStrict>
+    <ProGpuXamlEmitHotReloadHooks Condition="'$(ProGpuXamlEmitHotReloadHooks)' == ''">true</ProGpuXamlEmitHotReloadHooks>
+    <ProGpuXamlEmitSourceComments Condition="'$(ProGpuXamlEmitSourceComments)' == ''">true</ProGpuXamlEmitSourceComments>
+    <ProGpuXamlStaticResourceForwardReferenceMode Condition="'$(ProGpuXamlStaticResourceForwardReferenceMode)' == ''">Error</ProGpuXamlStaticResourceForwardReferenceMode>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(ProGpuXamlEnabled)' == 'true'">
+    <ProGpuXaml Include="**\*.xaml;**\*.axaml"
+                 Exclude="$(DefaultItemExcludes);$(DefaultExcludesInProjectFolder)"
+                 ProGpuXamlLogicalPath="%(Identity)" />
+    <AdditionalFiles Include="@(ProGpuXaml)"
+                     SourceItemGroup="ProGpuXaml"
+                     ProGpuXamlCompile="true" />
+    <CompilerVisibleProperty Include="ProGpuXamlEnabled" />
+    <CompilerVisibleProperty Include="ProGpuXamlFramework" />
+    <CompilerVisibleProperty Include="ProGpuXamlStrict" />
+    <CompilerVisibleProperty Include="ProGpuXamlEmitHotReloadHooks" />
+    <CompilerVisibleProperty Include="ProGpuXamlEmitSourceComments" />
+    <CompilerVisibleProperty Include="ProGpuXamlStaticResourceForwardReferenceMode" />
+    <CompilerVisibleItemMetadata Include="AdditionalFiles" MetadataName="SourceItemGroup" />
+    <CompilerVisibleItemMetadata Include="AdditionalFiles" MetadataName="ProGpuXamlCompile" />
+    <CompilerVisibleItemMetadata Include="AdditionalFiles" MetadataName="ProGpuXamlLogicalPath" />
+  </ItemGroup>
+</Project>

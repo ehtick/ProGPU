@@ -1,0 +1,8 @@
+<Project>
+  <Target Name="ProGpuXamlCompilerConfiguration"
+          BeforeTargets="CoreCompile"
+          Condition="'$(ProGpuXamlEnabled)' == 'true'">
+    <Message Importance="Low"
+             Text="ProGPU XAML compiler: framework=$(ProGpuXamlFramework), strict=$(ProGpuXamlStrict), inputs=@(ProGpuXaml->Count())." />
+  </Target>
+</Project>
