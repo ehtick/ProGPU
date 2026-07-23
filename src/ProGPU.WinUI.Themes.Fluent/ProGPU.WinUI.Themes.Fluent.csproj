@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PackageId>ProGPU.WinUI.Themes.Fluent</PackageId>
+    <Description>Source-generated WinUI Fluent theme resources for ProGPU.</Description>
+    <PackageTags>ProGPU;WinUI;XAML;Fluent;Theme</PackageTags>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <CompilerGeneratedFilesOutputPath>$(BaseIntermediateOutputPath)generated</CompilerGeneratedFilesOutputPath>
+    <ProGpuXamlEnabled>true</ProGpuXamlEnabled>
+    <ProGpuXamlFramework>WinUI</ProGpuXamlFramework>
+    <ProGpuXamlStrict>true</ProGpuXamlStrict>
+    <ProGpuXamlEmitHotReloadHooks>true</ProGpuXamlEmitHotReloadHooks>
+    <ProGpuXamlEmitSourceComments>true</ProGpuXamlEmitSourceComments>
+    <ProGpuXamlStaticResourceForwardReferenceMode>Reorder</ProGpuXamlStaticResourceForwardReferenceMode>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ProGPU.WinUI\ProGPU.WinUI.csproj" />
+    <ProjectReference Include="..\ProGPU.Xaml.SourceGenerator\ProGPU.Xaml.SourceGenerator.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AdditionalFiles Include="..\..\external\microsoft-ui-xaml\src\dxaml\xcp\dxaml\themes\generic.xaml"
+                     Link="Themes\Generic.xaml"
+                     ProGpuXamlCompile="true"
+                     ProGpuXamlLogicalPath="ProGPU.WinUI.Themes.Fluent/Themes/Generic.xaml" />
+    <None Include="..\..\external\microsoft-ui-xaml\src\dxaml\xcp\dxaml\themes\generic.xaml"
+          Link="Themes\Generic.xaml"
+          Pack="true"
+          PackagePath="contentFiles\any\any\Themes\Generic.xaml" />
+    <CompilerVisibleItemMetadata Include="AdditionalFiles" MetadataName="ProGpuXamlCompile" />
+    <CompilerVisibleItemMetadata Include="AdditionalFiles" MetadataName="ProGpuXamlLogicalPath" />
+    <CompilerVisibleProperty Include="ProGpuXamlEnabled" />
+    <CompilerVisibleProperty Include="ProGpuXamlFramework" />
+    <CompilerVisibleProperty Include="ProGpuXamlStrict" />
+    <CompilerVisibleProperty Include="ProGpuXamlEmitHotReloadHooks" />
+    <CompilerVisibleProperty Include="ProGpuXamlEmitSourceComments" />
+    <CompilerVisibleProperty Include="ProGpuXamlStaticResourceForwardReferenceMode" />
+    <Analyzer Include="..\ProGPU.Xaml\bin\$(Configuration)\netstandard2.0\ProGPU.Xaml.dll" />
+    <Analyzer Include="..\ProGPU.Xaml.Roslyn\bin\$(Configuration)\netstandard2.0\ProGPU.Xaml.Roslyn.dll" />
+  </ItemGroup>
+</Project>
