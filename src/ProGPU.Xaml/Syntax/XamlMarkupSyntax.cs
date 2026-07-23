@@ -5,6 +5,7 @@ using System.Threading;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Text;
 using ProGPU.Xaml.Diagnostics;
+using ProGPU.Xaml.Parsing;
 
 namespace ProGPU.Xaml.Syntax;
 
@@ -83,6 +84,11 @@ public interface IXamlMarkupTokenRecognizer
     bool TryRecognize(SourceText source, TextSpan remaining, out XamlMarkupTokenRecognition recognition);
 }
 
+internal interface IXamlMarkupTokenConflictPolicyProvider
+{
+    XamlMarkupSyntaxConflictPolicy ConflictPolicy { get; }
+}
+
 public interface IXamlMarkupBracketPairResolver
 {
     IReadOnlyDictionary<char, char> GetBracketPairs(
@@ -92,6 +98,8 @@ public interface IXamlMarkupBracketPairResolver
 
 public sealed class XamlMarkupParseOptions
 {
+    private XamlMarkupLanguage _syntaxLanguage = XamlMarkupLanguage.Empty;
+
     public int MaximumDepth { get; set; } = 128;
     public int MaximumTokens { get; set; } = 16 * 1024;
     public int MaximumTokenLength { get; set; } = 1024 * 1024;
@@ -106,6 +114,12 @@ public sealed class XamlMarkupParseOptions
     public IXamlMarkupBracketPairResolver? BracketPairResolver { get; set; }
     public IReadOnlyList<IXamlMarkupTokenRecognizer> TokenRecognizers { get; set; } =
         Array.Empty<IXamlMarkupTokenRecognizer>();
+    public XamlMarkupLanguage SyntaxLanguage
+    {
+        get => _syntaxLanguage;
+        set => _syntaxLanguage = value ?? throw new ArgumentNullException(nameof(value));
+    }
+    public XamlMarkupSyntaxContexts Context { get; set; } = XamlMarkupSyntaxContexts.Standalone;
 }
 
 public sealed class XamlMarkupLexResult
@@ -138,7 +152,7 @@ public static class XamlMarkupTokenizer
 
         var tokens = ImmutableArray.CreateBuilder<XamlMarkupSyntaxToken>();
         var diagnostics = ImmutableArray.CreateBuilder<Diagnostic>();
-        var recognizers = CreateRecognizerMap(options.TokenRecognizers);
+        var recognizers = CreateRecognizerMap(options.TokenRecognizers, options.SyntaxLanguage.TokenRecognizers);
         var position = span.Start;
         while (position < span.End)
         {
@@ -154,25 +168,84 @@ public static class XamlMarkupTokenizer
             var current = source[position];
             if (recognizers.TryGetValue(current, out var candidates))
             {
-                var matched = false;
+                IXamlMarkupTokenRecognizer? winner = null;
+                var winningRecognition = default(XamlMarkupTokenRecognition);
+                var ambiguous = false;
                 foreach (var recognizer in candidates)
                 {
-                    if (!recognizer.TryRecognize(source, TextSpan.FromBounds(position, span.End), out var recognition))
+                    if (winner != null && recognizer.Priority < winner.Priority)
+                        break;
+
+                    XamlMarkupTokenRecognition recognition;
+                    bool recognized;
+                    try
+                    {
+                        recognized = recognizer.TryRecognize(
+                            source,
+                            TextSpan.FromBounds(position, span.End),
+                            out recognition);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception exception)
+                    {
+                        AddDiagnostic(diagnostics, options, source, path, "PGXAML1155",
+                            $"Custom markup token recognizer '{recognizer.Id}' failed: {exception.Message}",
+                            new TextSpan(position, 1));
                         continue;
-                    if (recognition.Length > span.End - position || recognition.Length > options.MaximumTokenLength)
+                    }
+
+                    if (!recognized)
+                        continue;
+                    if (recognition.RawKind < (int)XamlMarkupTokenKind.FirstCustom ||
+                        recognition.Length <= 0 ||
+                        recognition.Length > span.End - position ||
+                        recognition.Length > options.MaximumTokenLength)
                     {
                         AddDiagnostic(diagnostics, options, source, path, "PGXAML1151",
-                            $"Custom markup token from '{recognizer.Id}' exceeds its source span or configured token limit.",
-                            new TextSpan(position, Math.Min(span.End - position, Math.Max(1, recognition.Length))));
-                        break;
+                            $"Custom markup token from '{recognizer.Id}' has an invalid kind or length.",
+                            new TextSpan(position, Math.Min(
+                                span.End - position,
+                                Math.Max(1, recognition.Length))));
+                        continue;
                     }
-                    tokens.Add(new XamlMarkupSyntaxToken(recognition.RawKind, source,
-                        new TextSpan(position, recognition.Length)));
-                    position += recognition.Length;
-                    matched = true;
-                    break;
+
+                    if (winner == null)
+                    {
+                        winner = recognizer;
+                        winningRecognition = recognition;
+                    }
+                    else
+                    {
+                        var canCoalesce =
+                            winner is IXamlMarkupTokenConflictPolicyProvider winnerPolicy &&
+                            recognizer is IXamlMarkupTokenConflictPolicyProvider candidatePolicy &&
+                            winnerPolicy.ConflictPolicy ==
+                                XamlMarkupSyntaxConflictPolicy.CoalesceEquivalent &&
+                            candidatePolicy.ConflictPolicy ==
+                                XamlMarkupSyntaxConflictPolicy.CoalesceEquivalent &&
+                            winningRecognition.RawKind == recognition.RawKind &&
+                            winningRecognition.Length == recognition.Length;
+                        if (!canCoalesce)
+                            ambiguous = true;
+                    }
                 }
-                if (matched) continue;
+                if (winner != null)
+                {
+                    if (ambiguous)
+                    {
+                        AddDiagnostic(diagnostics, options, source, path, "PGXAML1154",
+                            $"Custom markup token beginning with '{current}' is ambiguous at " +
+                            $"priority {winner.Priority}.",
+                            new TextSpan(position, winningRecognition.Length));
+                    }
+                    tokens.Add(new XamlMarkupSyntaxToken(winningRecognition.RawKind, source,
+                        new TextSpan(position, winningRecognition.Length)));
+                    position += winningRecognition.Length;
+                    continue;
+                }
             }
 
             switch (current)
@@ -258,10 +331,14 @@ public static class XamlMarkupTokenizer
     }
 
     private static Dictionary<char, List<IXamlMarkupTokenRecognizer>> CreateRecognizerMap(
-        IReadOnlyList<IXamlMarkupTokenRecognizer> registrations)
+        IReadOnlyList<IXamlMarkupTokenRecognizer> registrations,
+        ImmutableArray<IXamlMarkupTokenRecognizer> languageRegistrations)
     {
         var result = new Dictionary<char, List<IXamlMarkupTokenRecognizer>>();
-        foreach (var registration in registrations)
+        var all = new List<IXamlMarkupTokenRecognizer>(registrations.Count + languageRegistrations.Length);
+        all.AddRange(registrations);
+        all.AddRange(languageRegistrations);
+        foreach (var registration in all)
         {
             foreach (var trigger in registration.TriggerCharacters)
             {
@@ -278,7 +355,9 @@ public static class XamlMarkupTokenizer
             pair.Value.Sort((left, right) =>
             {
                 var priority = right.Priority.CompareTo(left.Priority);
-                return priority != 0 ? priority : StringComparer.Ordinal.Compare(left.Id, right.Id);
+                if (priority != 0) return priority;
+                var id = StringComparer.Ordinal.Compare(left.Id, right.Id);
+                return id != 0 ? id : right.Version.CompareTo(left.Version);
             });
         }
         return result;

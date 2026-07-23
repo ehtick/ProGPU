@@ -39,6 +39,8 @@ public static class XamlMarkupBracketPolicy
             MaximumArguments = template.MaximumArguments,
             MaximumDiagnostics = template.MaximumDiagnostics,
             TokenRecognizers = template.TokenRecognizers,
+            SyntaxLanguage = template.SyntaxLanguage,
+            Context = template.Context,
             BracketPairs = CreatePairs(member),
             BracketPairResolver = template.BracketPairResolver
         };

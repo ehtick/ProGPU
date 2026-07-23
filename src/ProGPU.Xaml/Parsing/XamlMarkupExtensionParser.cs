@@ -67,18 +67,24 @@ public sealed class XamlMarkupParseResult
         XamlMarkupExtension? root,
         bool isMarkupExtension,
         ImmutableArray<XamlMarkupSyntaxToken> tokens,
-        ImmutableArray<Diagnostic> diagnostics)
+        ImmutableArray<Diagnostic> diagnostics,
+        TextSpan valueSpan,
+        string? syntaxPluginId = null)
     {
         Root = root;
         IsMarkupExtension = isMarkupExtension;
         Tokens = tokens;
         Diagnostics = diagnostics;
+        ValueSpan = valueSpan;
+        SyntaxPluginId = syntaxPluginId;
     }
 
     public XamlMarkupExtension? Root { get; }
     public bool IsMarkupExtension { get; }
     public ImmutableArray<XamlMarkupSyntaxToken> Tokens { get; }
     public ImmutableArray<Diagnostic> Diagnostics { get; }
+    public TextSpan ValueSpan { get; }
+    public string? SyntaxPluginId { get; }
     public bool HasErrors
     {
         get
@@ -111,9 +117,37 @@ public sealed class XamlMarkupExtensionParser
 
         var cursor = new Cursor(source, span, options, cancellationToken);
         cursor.SkipWhitespace();
-        if (cursor.AtEnd || cursor.Current != '{' || cursor.StartsWith("{}"))
+        if (cursor.AtEnd)
         {
-            return new XamlMarkupParseResult(null, false, lexed.Tokens, diagnostics.ToImmutable());
+            return new XamlMarkupParseResult(
+                null,
+                false,
+                lexed.Tokens,
+                diagnostics.ToImmutable(),
+                span);
+        }
+
+        if (cursor.Current != '{')
+        {
+            return ParseCustomSyntax(
+                source,
+                span,
+                path,
+                options,
+                cancellationToken,
+                cursor.Position,
+                lexed.Tokens,
+                diagnostics);
+        }
+
+        if (cursor.StartsWith("{}"))
+        {
+            return new XamlMarkupParseResult(
+                null,
+                false,
+                lexed.Tokens,
+                diagnostics.ToImmutable(),
+                span);
         }
 
         XamlMarkupExtension? extension = null;
@@ -139,7 +173,188 @@ public sealed class XamlMarkupExtensionParser
             }
         }
 
-        return new XamlMarkupParseResult(extension, true, lexed.Tokens, diagnostics.ToImmutable());
+        return new XamlMarkupParseResult(
+            extension,
+            true,
+            lexed.Tokens,
+            diagnostics.ToImmutable(),
+            span);
+    }
+
+    private static XamlMarkupParseResult ParseCustomSyntax(
+        SourceText source,
+        TextSpan span,
+        string path,
+        XamlMarkupParseOptions options,
+        CancellationToken cancellationToken,
+        int firstNonWhitespace,
+        ImmutableArray<XamlMarkupSyntaxToken> tokens,
+        ImmutableArray<Diagnostic>.Builder diagnostics)
+    {
+        var language = options.SyntaxLanguage ?? XamlMarkupLanguage.Empty;
+        var candidates = language.GetCandidates(source[firstNonWhitespace], options.Context);
+        if (candidates.IsDefaultOrEmpty)
+            return new XamlMarkupParseResult(
+                null,
+                false,
+                tokens,
+                diagnostics.ToImmutable(),
+                span);
+
+        var end = span.End;
+        while (end > firstNonWhitespace && char.IsWhiteSpace(source[end - 1])) end--;
+        var valueSpan = TextSpan.FromBounds(firstNonWhitespace, end);
+        IXamlMarkupSyntaxPlugin? winner = null;
+        XamlMarkupSyntaxPluginResult? winningResult = null;
+        var ambiguous = false;
+
+        foreach (var candidate in candidates)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (winner != null && candidate.Priority < winner.Priority)
+                break;
+
+            XamlMarkupSyntaxPluginResult result;
+            try
+            {
+                result = candidate.Parse(new XamlMarkupSyntaxPluginContext(
+                    source,
+                    valueSpan,
+                    path,
+                    options,
+                    cancellationToken));
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                AddPluginDiagnostic(
+                    diagnostics,
+                    options,
+                    source,
+                    path,
+                    "PGXAML1155",
+                    $"Markup syntax plugin '{candidate.Id}' failed: {exception.Message}",
+                    valueSpan);
+                continue;
+            }
+
+            if (result == null)
+            {
+                AddPluginDiagnostic(
+                    diagnostics,
+                    options,
+                    source,
+                    path,
+                    "PGXAML1155",
+                    $"Markup syntax plugin '{candidate.Id}' returned a null result.",
+                    valueSpan);
+                continue;
+            }
+            if (!result.IsRecognized) continue;
+
+            if (!result.IsSuccess)
+            {
+                var errorSpan = NormalizePluginSpan(result.ErrorSpan, valueSpan);
+                AddPluginDiagnostic(
+                    diagnostics,
+                    options,
+                    source,
+                    path,
+                    "PGXAML1156",
+                    $"Markup syntax plugin '{candidate.Id}': " +
+                    (result.ErrorMessage ?? "The custom value is invalid."),
+                    errorSpan);
+                return new XamlMarkupParseResult(
+                    null,
+                    true,
+                    tokens,
+                    diagnostics.ToImmutable(),
+                    valueSpan,
+                    candidate.Id);
+            }
+
+            if (winner == null)
+            {
+                winner = candidate;
+                winningResult = result;
+                continue;
+            }
+
+            var canCoalesce =
+                winner.ConflictPolicy == XamlMarkupSyntaxConflictPolicy.CoalesceEquivalent &&
+                candidate.ConflictPolicy == XamlMarkupSyntaxConflictPolicy.CoalesceEquivalent &&
+                XamlMarkupLanguage.AreEquivalent(
+                    winningResult!.Extension!,
+                    result.Extension!);
+            if (!canCoalesce)
+                ambiguous = true;
+        }
+
+        if (ambiguous)
+        {
+            AddPluginDiagnostic(
+                diagnostics,
+                options,
+                source,
+                path,
+                "PGXAML1154",
+                $"Custom markup syntax beginning with '{source[firstNonWhitespace]}' is ambiguous " +
+                $"at priority {winner!.Priority}.",
+                valueSpan);
+            return new XamlMarkupParseResult(
+                null,
+                true,
+                tokens,
+                diagnostics.ToImmutable(),
+                valueSpan);
+        }
+
+        return winner == null
+            ? new XamlMarkupParseResult(
+                null,
+                false,
+                tokens,
+                diagnostics.ToImmutable(),
+                valueSpan)
+            : new XamlMarkupParseResult(
+                winningResult!.Extension,
+                true,
+                tokens,
+                diagnostics.ToImmutable(),
+                valueSpan,
+                winner.Id);
+    }
+
+    private static TextSpan NormalizePluginSpan(TextSpan pluginSpan, TextSpan valueSpan)
+    {
+        if (pluginSpan.Length == 0)
+            return valueSpan;
+        var start = Math.Max(valueSpan.Start, Math.Min(pluginSpan.Start, valueSpan.End));
+        var end = Math.Max(start, Math.Min(pluginSpan.End, valueSpan.End));
+        return TextSpan.FromBounds(start, end);
+    }
+
+    private static void AddPluginDiagnostic(
+        ImmutableArray<Diagnostic>.Builder diagnostics,
+        XamlMarkupParseOptions options,
+        SourceText source,
+        string path,
+        string id,
+        string message,
+        TextSpan span)
+    {
+        if (diagnostics.Count >= options.MaximumDiagnostics) return;
+        diagnostics.Add(XamlDiagnostics.Create(
+            id,
+            DiagnosticSeverity.Error,
+            message,
+            path,
+            source,
+            span,
+            "8.6.7.1"));
     }
 
     public bool TryParse(

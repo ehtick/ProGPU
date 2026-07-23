@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis.Text;
 using ProGPU.Xaml.Formatting;
 using ProGPU.Xaml.Generation;
+using ProGPU.Xaml.Infoset;
 using ProGPU.Xaml.Parsing;
 using ProGPU.Xaml.Syntax;
 using Xunit;
@@ -62,6 +63,216 @@ public sealed class XamlMarkupTests
             new XamlMarkupParseOptions { TokenRecognizers = new[] { new PercentRecognizer() } });
         Assert.True(result.Tokens[0].IsCustom);
         Assert.Equal("%name", result.Tokens[0].Text);
+    }
+
+    [Fact]
+    public void VersionedSyntaxPluginProjectsIntoCanonicalMarkupAstAndRoundTrips()
+    {
+        var plugin = new AtBindingSyntaxPlugin("test.at-binding", priority: 20);
+        var language = XamlMarkupLanguage.Create(new[] { plugin });
+        var source = SourceText.From("@Customer.Name");
+        var options = new XamlMarkupParseOptions
+        {
+            SyntaxLanguage = language,
+            Context = XamlMarkupSyntaxContexts.Standalone
+        };
+
+        var parsed = new XamlMarkupExtensionParser().Parse(
+            source,
+            new TextSpan(0, source.Length),
+            options: options);
+
+        Assert.False(parsed.HasErrors, string.Join(Environment.NewLine, parsed.Diagnostics));
+        Assert.True(parsed.IsMarkupExtension);
+        Assert.Equal(plugin.Id, parsed.SyntaxPluginId);
+        Assert.Equal("Binding", parsed.Root!.Name);
+        var path = Assert.Single(parsed.Root.NamedArguments);
+        Assert.Equal("Path", path.Name);
+        Assert.Equal("Customer.Name", Assert.IsType<XamlMarkupTextValue>(path.Value).Text);
+        Assert.True(parsed.Tokens[0].IsCustom);
+
+        var generated = XamlMarkupSyntaxGenerator.Generate(
+            parsed.Root,
+            language,
+            preferredPluginId: plugin.Id);
+        Assert.Equal("@Customer.Name", generated.ToString());
+        var formatted = XamlMarkupFormatter.Format(parsed, source, language: language);
+        Assert.Equal("@Customer.Name", formatted.ToString());
+    }
+
+    [Fact]
+    public void InfosetUsesRegisteredAttributeSyntaxWithoutDialectParserFork()
+    {
+        var language = XamlMarkupLanguage.Create(new[]
+        {
+            new AtBindingSyntaxPlugin("test.at-binding", priority: 20)
+        });
+        const string xaml =
+            "<TextBlock xmlns=\"using:Test\" Text=\"@Customer.Name\" />";
+        var syntax = XamlParser.Parse(SourceText.From(xaml), "Custom.xaml");
+        var infoset = new XamlInfosetConverter().Convert(
+            syntax.Document,
+            new XamlInfosetConversionOptions
+            {
+                MarkupOptions = new XamlMarkupParseOptions
+                {
+                    SyntaxLanguage = language
+                }
+            });
+
+        Assert.False(infoset.HasErrors, string.Join(Environment.NewLine, infoset.Diagnostics));
+        var textMember = Assert.Single(infoset.Root!.Members.Where(
+            static member => member.Name.LocalName == "Text"));
+        var binding = Assert.IsType<XamlInfosetObject>(Assert.Single(textMember.Values));
+        Assert.True(binding.IsMarkupExtension);
+        Assert.Equal("Binding", binding.TypeName.LocalName);
+        Assert.Equal(
+            "Customer.Name",
+            Assert.IsType<XamlInfosetText>(
+                Assert.Single(Assert.Single(binding.Members).Values)).Text);
+    }
+
+    [Fact]
+    public void SyntaxPluginPriorityIsDeterministicAndEqualPriorityOverlapIsDiagnosed()
+    {
+        var selectedLanguage = XamlMarkupLanguage.Create(new IXamlMarkupSyntaxPlugin[]
+        {
+            new AtBindingSyntaxPlugin("test.low", priority: 10, canonicalName: "Binding"),
+            new AtBindingSyntaxPlugin("test.high", priority: 20, canonicalName: "x:Bind")
+        });
+        var source = SourceText.From("@Name");
+        var selected = new XamlMarkupExtensionParser().Parse(
+            source,
+            new TextSpan(0, source.Length),
+            options: new XamlMarkupParseOptions { SyntaxLanguage = selectedLanguage });
+        Assert.False(selected.HasErrors);
+        Assert.Equal("test.high", selected.SyntaxPluginId);
+        Assert.Equal("x:Bind", selected.Root!.Name);
+
+        var ambiguousLanguage = XamlMarkupLanguage.Create(new IXamlMarkupSyntaxPlugin[]
+        {
+            new AtBindingSyntaxPlugin("test.a", priority: 20, canonicalName: "Binding"),
+            new AtBindingSyntaxPlugin("test.b", priority: 20, canonicalName: "x:Bind")
+        });
+        var ambiguous = new XamlMarkupExtensionParser().Parse(
+            source,
+            new TextSpan(0, source.Length),
+            options: new XamlMarkupParseOptions { SyntaxLanguage = ambiguousLanguage });
+        Assert.True(ambiguous.HasErrors);
+        Assert.Null(ambiguous.Root);
+        Assert.Contains(ambiguous.Diagnostics, static diagnostic =>
+            diagnostic.Id == "PGXAML1154");
+    }
+
+    [Fact]
+    public void EquivalentSyntaxPluginsCanCoalesceAndInvalidRegistrationsFailFast()
+    {
+        var language = XamlMarkupLanguage.Create(new IXamlMarkupSyntaxPlugin[]
+        {
+            new AtBindingSyntaxPlugin(
+                "test.a",
+                priority: 20,
+                conflictPolicy: XamlMarkupSyntaxConflictPolicy.CoalesceEquivalent),
+            new AtBindingSyntaxPlugin(
+                "test.b",
+                priority: 20,
+                conflictPolicy: XamlMarkupSyntaxConflictPolicy.CoalesceEquivalent)
+        });
+        var source = SourceText.From("@Name");
+        var parsed = new XamlMarkupExtensionParser().Parse(
+            source,
+            new TextSpan(0, source.Length),
+            options: new XamlMarkupParseOptions { SyntaxLanguage = language });
+        Assert.False(parsed.HasErrors);
+        Assert.Equal("test.a", parsed.SyntaxPluginId);
+
+        Assert.Throws<ArgumentException>(() => XamlMarkupLanguage.Create(
+            new IXamlMarkupSyntaxPlugin[]
+            {
+                new AtBindingSyntaxPlugin("duplicate", priority: 1),
+                new AtBindingSyntaxPlugin("duplicate", priority: 2)
+            }));
+        Assert.Throws<ArgumentException>(() => XamlMarkupLanguage.Create(
+            new[] { new AtBindingSyntaxPlugin("wrong.contract", priority: 1, contractVersion: 2) }));
+    }
+
+    [Fact]
+    public void SyntaxPluginContextsFailuresAndExceptionsAreExplicit()
+    {
+        var attributeOnly = XamlMarkupLanguage.Create(new[]
+        {
+            new AtBindingSyntaxPlugin(
+                "test.attribute-only",
+                priority: 10,
+                contexts: XamlMarkupSyntaxContexts.AttributeValue)
+        });
+        var source = SourceText.From("@Name");
+        var standalone = new XamlMarkupExtensionParser().Parse(
+            source,
+            new TextSpan(0, source.Length),
+            options: new XamlMarkupParseOptions
+            {
+                SyntaxLanguage = attributeOnly,
+                Context = XamlMarkupSyntaxContexts.Standalone
+            });
+        Assert.False(standalone.IsMarkupExtension);
+        Assert.Equal(
+            "@Name",
+            string.Concat(standalone.Tokens
+                .Where(static token => token.Kind != XamlMarkupTokenKind.EndOfFile)
+                .Select(static token => token.Text)));
+
+        var attribute = new XamlMarkupExtensionParser().Parse(
+            source,
+            new TextSpan(0, source.Length),
+            options: new XamlMarkupParseOptions
+            {
+                SyntaxLanguage = attributeOnly,
+                Context = XamlMarkupSyntaxContexts.AttributeValue
+            });
+        Assert.False(attribute.HasErrors);
+        Assert.True(attribute.IsMarkupExtension);
+
+        var empty = SourceText.From("@");
+        var malformed = new XamlMarkupExtensionParser().Parse(
+            empty,
+            new TextSpan(0, empty.Length),
+            options: new XamlMarkupParseOptions
+            {
+                SyntaxLanguage = attributeOnly,
+                Context = XamlMarkupSyntaxContexts.AttributeValue
+            });
+        Assert.Contains(malformed.Diagnostics, static diagnostic =>
+            diagnostic.Id == "PGXAML1156");
+
+        var throwingLanguage = XamlMarkupLanguage.Create(
+            new IXamlMarkupSyntaxPlugin[] { new ThrowingSyntaxPlugin() });
+        var failed = new XamlMarkupExtensionParser().Parse(
+            source,
+            new TextSpan(0, source.Length),
+            options: new XamlMarkupParseOptions { SyntaxLanguage = throwingLanguage });
+        Assert.Contains(failed.Diagnostics, static diagnostic =>
+            diagnostic.Id == "PGXAML1155");
+        Assert.False(failed.IsMarkupExtension);
+    }
+
+    [Fact]
+    public void SyntaxPluginParsingPropagatesCancellation()
+    {
+        var language = XamlMarkupLanguage.Create(new[]
+        {
+            new AtBindingSyntaxPlugin("test.cancel", priority: 10)
+        });
+        var source = SourceText.From("@Name");
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        Assert.ThrowsAny<OperationCanceledException>(() =>
+            new XamlMarkupExtensionParser().Parse(
+                source,
+                new TextSpan(0, source.Length),
+                options: new XamlMarkupParseOptions { SyntaxLanguage = language },
+                cancellationToken: cancellation.Token));
     }
 
     [Fact]
@@ -310,6 +521,145 @@ public sealed class XamlMarkupTests
             while (length < remaining.Length && char.IsLetter(source[remaining.Start + length])) length++;
             recognition = new XamlMarkupTokenRecognition((int)XamlMarkupTokenKind.FirstCustom, length);
             return true;
+        }
+    }
+
+    private sealed class AtBindingSyntaxPlugin : IXamlMarkupSyntaxPlugin
+    {
+        private readonly string _canonicalName;
+
+        public AtBindingSyntaxPlugin(
+            string id,
+            int priority,
+            string canonicalName = "Binding",
+            XamlMarkupSyntaxConflictPolicy conflictPolicy =
+                XamlMarkupSyntaxConflictPolicy.Diagnose,
+            int contractVersion = XamlMarkupLanguage.CurrentContractVersion,
+            bool tokenize = true,
+            XamlMarkupSyntaxContexts contexts = XamlMarkupSyntaxContexts.All)
+        {
+            Id = id;
+            Priority = priority;
+            _canonicalName = canonicalName;
+            ConflictPolicy = conflictPolicy;
+            ContractVersion = contractVersion;
+            Contexts = contexts;
+            TokenRecognizer = tokenize ? new AtTokenRecognizer(id, priority) : null;
+        }
+
+        public string Id { get; }
+        public int ContractVersion { get; }
+        public int Version => 1;
+        public int Priority { get; }
+        public XamlMarkupSyntaxContexts Contexts { get; }
+        public XamlMarkupSyntaxAssociativity Associativity =>
+            XamlMarkupSyntaxAssociativity.None;
+        public XamlMarkupSyntaxConflictPolicy ConflictPolicy { get; }
+        public XamlMarkupSyntaxCapabilities Capabilities =>
+            (TokenRecognizer == null
+                ? XamlMarkupSyntaxCapabilities.None
+                : XamlMarkupSyntaxCapabilities.Tokenize) |
+            XamlMarkupSyntaxCapabilities.Parse |
+            XamlMarkupSyntaxCapabilities.Format |
+            XamlMarkupSyntaxCapabilities.CanonicalProjection;
+        public IReadOnlyList<char> TriggerCharacters { get; } = new[] { '@' };
+        public IXamlMarkupTokenRecognizer? TokenRecognizer { get; }
+
+        public XamlMarkupSyntaxPluginResult Parse(XamlMarkupSyntaxPluginContext context)
+        {
+            if (context.Span.Length == 0 || context.Source[context.Span.Start] != '@')
+                return XamlMarkupSyntaxPluginResult.NotRecognized;
+            var valueSpan = new TextSpan(context.Span.Start + 1, context.Span.Length - 1);
+            if (valueSpan.Length == 0)
+                return XamlMarkupSyntaxPluginResult.Failure(
+                    "A binding path is required after '@'.",
+                    context.Span);
+            var path = context.Source.ToString(valueSpan);
+            return XamlMarkupSyntaxPluginResult.Success(
+                new XamlMarkupExtension(
+                    _canonicalName,
+                    Array.Empty<XamlMarkupValue>(),
+                    new[]
+                    {
+                        new XamlMarkupNamedArgument(
+                            "Path",
+                            new XamlMarkupTextValue(path, valueSpan),
+                            context.Span)
+                    },
+                    context.Span));
+        }
+
+        public bool TryFormat(XamlMarkupExtension extension, out string text)
+        {
+            text = string.Empty;
+            if (!string.Equals(extension.Name, _canonicalName, StringComparison.Ordinal) ||
+                extension.PositionalArguments.Count != 0 ||
+                extension.NamedArguments.Count != 1 ||
+                !string.Equals(extension.NamedArguments[0].Name, "Path", StringComparison.Ordinal) ||
+                extension.NamedArguments[0].Value is not XamlMarkupTextValue path)
+                return false;
+            text = "@" + path.Text;
+            return true;
+        }
+    }
+
+    private sealed class AtTokenRecognizer : IXamlMarkupTokenRecognizer
+    {
+        public AtTokenRecognizer(string id, int priority)
+        {
+            Id = id + ".token";
+            Priority = priority;
+        }
+
+        public string Id { get; }
+        public int Version => 1;
+        public int Priority { get; }
+        public IReadOnlyList<char> TriggerCharacters { get; } = new[] { '@' };
+
+        public bool TryRecognize(
+            SourceText source,
+            TextSpan remaining,
+            out XamlMarkupTokenRecognition recognition)
+        {
+            if (remaining.Length == 0 || source[remaining.Start] != '@')
+            {
+                recognition = default;
+                return false;
+            }
+            var length = 1;
+            while (length < remaining.Length && !char.IsWhiteSpace(source[remaining.Start + length]))
+                length++;
+            recognition = new XamlMarkupTokenRecognition(
+                (int)XamlMarkupTokenKind.FirstCustom + 1,
+                length);
+            return true;
+        }
+    }
+
+    private sealed class ThrowingSyntaxPlugin : IXamlMarkupSyntaxPlugin
+    {
+        public string Id => "test.throwing";
+        public int ContractVersion => XamlMarkupLanguage.CurrentContractVersion;
+        public int Version => 1;
+        public int Priority => 100;
+        public XamlMarkupSyntaxContexts Contexts => XamlMarkupSyntaxContexts.All;
+        public XamlMarkupSyntaxAssociativity Associativity =>
+            XamlMarkupSyntaxAssociativity.None;
+        public XamlMarkupSyntaxConflictPolicy ConflictPolicy =>
+            XamlMarkupSyntaxConflictPolicy.Diagnose;
+        public XamlMarkupSyntaxCapabilities Capabilities =>
+            XamlMarkupSyntaxCapabilities.Parse |
+            XamlMarkupSyntaxCapabilities.CanonicalProjection;
+        public IReadOnlyList<char> TriggerCharacters { get; } = new[] { '@' };
+        public IXamlMarkupTokenRecognizer? TokenRecognizer => null;
+
+        public XamlMarkupSyntaxPluginResult Parse(XamlMarkupSyntaxPluginContext context) =>
+            throw new InvalidOperationException("Expected plugin failure.");
+
+        public bool TryFormat(XamlMarkupExtension extension, out string text)
+        {
+            text = string.Empty;
+            return false;
         }
     }
 }

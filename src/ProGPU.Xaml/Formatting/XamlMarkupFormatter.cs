@@ -20,11 +20,27 @@ public static class XamlMarkupFormatter
     public static ImmutableArray<TextChange> GetTextChanges(
         XamlMarkupParseResult syntax,
         SourceText source,
-        XamlMarkupFormattingOptions? options = null)
+        XamlMarkupFormattingOptions? options = null,
+        XamlMarkupLanguage? language = null)
     {
         if (syntax == null) throw new ArgumentNullException(nameof(syntax));
         if (source == null) throw new ArgumentNullException(nameof(source));
         options = options ?? new XamlMarkupFormattingOptions();
+
+        if (syntax.SyntaxPluginId != null && syntax.Root != null &&
+            language != null &&
+            language.TryGetPlugin(syntax.SyntaxPluginId, out var plugin) &&
+            (plugin.Capabilities & XamlMarkupSyntaxCapabilities.Format) != 0 &&
+            plugin.TryFormat(syntax.Root, out var customText))
+        {
+            if (customText == null)
+                throw new InvalidOperationException(
+                    $"Markup syntax plugin '{plugin.Id}' returned null formatted text.");
+            if (string.Equals(source.ToString(syntax.ValueSpan), customText, StringComparison.Ordinal))
+                return ImmutableArray<TextChange>.Empty;
+            return ImmutableArray.Create(new TextChange(syntax.ValueSpan, customText));
+        }
+
         var changes = ImmutableArray.CreateBuilder<TextChange>();
         var tokens = syntax.Tokens;
         for (var index = 0; index < tokens.Length; index++)
@@ -56,8 +72,9 @@ public static class XamlMarkupFormatter
     public static SourceText Format(
         XamlMarkupParseResult syntax,
         SourceText source,
-        XamlMarkupFormattingOptions? options = null) =>
-        source.WithChanges(GetTextChanges(syntax, source, options));
+        XamlMarkupFormattingOptions? options = null,
+        XamlMarkupLanguage? language = null) =>
+        source.WithChanges(GetTextChanges(syntax, source, options, language));
 
     private static XamlMarkupTokenKind PreviousSignificant(
         ImmutableArray<XamlMarkupSyntaxToken> tokens,

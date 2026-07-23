@@ -243,7 +243,16 @@ public sealed class XamlInfosetConverter
                 isCData: false);
         }
 
-        if (attribute.Value.Length != 0 && attribute.Value[0] == '{')
+        var markupOptions = CreateAttributeMarkupOptions(_options.MarkupOptions);
+        var firstNonWhitespace = 0;
+        while (firstNonWhitespace < attribute.Value.Length &&
+               char.IsWhiteSpace(attribute.Value[firstNonWhitespace]))
+            firstNonWhitespace++;
+        var mayContainMarkup =
+            firstNonWhitespace < attribute.Value.Length &&
+            (attribute.Value[firstNonWhitespace] == '{' ||
+             markupOptions.SyntaxLanguage.CanStartWith(attribute.Value[firstNonWhitespace]));
+        if (mayContainMarkup)
         {
             if (_markupParser.TryParse(
                     attribute.Value,
@@ -252,7 +261,7 @@ public sealed class XamlInfosetConverter
                     attribute.Span,
                     out var extension,
                     out var diagnostic,
-                    _options.MarkupOptions))
+                    markupOptions))
             {
                 return ConvertMarkupExtension(
                     extension!,
@@ -269,6 +278,25 @@ public sealed class XamlInfosetConverter
             attribute.ValueSpan,
             attribute.StableId,
             isCData: false);
+    }
+
+    private static XamlMarkupParseOptions CreateAttributeMarkupOptions(
+        XamlMarkupParseOptions template)
+    {
+        if (template == null) throw new ArgumentNullException(nameof(template));
+        return new XamlMarkupParseOptions
+        {
+            MaximumDepth = template.MaximumDepth,
+            MaximumTokens = template.MaximumTokens,
+            MaximumTokenLength = template.MaximumTokenLength,
+            MaximumArguments = template.MaximumArguments,
+            MaximumDiagnostics = template.MaximumDiagnostics,
+            BracketPairs = template.BracketPairs,
+            BracketPairResolver = template.BracketPairResolver,
+            TokenRecognizers = template.TokenRecognizers,
+            SyntaxLanguage = template.SyntaxLanguage,
+            Context = XamlMarkupSyntaxContexts.AttributeValue
+        };
     }
 
     private GreenXamlInfosetObject ConvertMarkupExtension(
