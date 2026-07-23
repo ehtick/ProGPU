@@ -38,6 +38,8 @@ Roslyn's C# and Visual Basic `SyntaxNode` implementations cannot be subclassed b
 
 This layer implements MS-XAML section 8. It produces document, object, member, and text information items with retrieved-object state and namespace snapshots. It owns property-element recognition, content wrapping, effective XML namespace/`xml:space` evidence, and markup-extension dispatch. It retains whitespace-only text as lexical information; schema-dependent deletion or normalization cannot occur here because no type symbol is available.
 
+Conditional namespace decoding is also infoset-owned and framework-neutral. A qualified object or member name uses the base namespace for schema identity while retaining an immutable original URI, predicate method, and ordered arguments. Binding and construction IR copy that descriptor without evaluation. During emission the core groups the complete structured operation statement sequence under one Roslyn `IfStatementSyntax`, while an optional profile contract supplies only the typed Boolean expression. Runtime capability discovery, negation behavior, and platform metadata are framework concerns; string-based C# generation and compiler-time platform guessing are prohibited.
+
 No Roslyn symbol appears here.
 
 ### 2A. Shared markup-value language service
