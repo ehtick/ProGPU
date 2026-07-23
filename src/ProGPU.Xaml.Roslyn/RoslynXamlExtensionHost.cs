@@ -5,6 +5,7 @@ using System.Threading;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using ProGPU.Xaml.Diagnostics;
+using ProGPU.Xaml.Lowering;
 
 namespace ProGPU.Xaml.Roslyn;
 
@@ -14,13 +15,19 @@ namespace ProGPU.Xaml.Roslyn;
 /// </summary>
 public sealed class RoslynXamlExtensionHost
 {
+    public const int DefaultMaximumTransformedIrNodes = 4 * 1024 * 1024;
+
     public const int CurrentContractVersion = 1;
 
     private readonly ImmutableArray<IRoslynXamlExtension> _extensions;
+    private readonly int _maximumTransformedIrNodes;
 
-    private RoslynXamlExtensionHost(ImmutableArray<IRoslynXamlExtension> extensions)
+    private RoslynXamlExtensionHost(
+        ImmutableArray<IRoslynXamlExtension> extensions,
+        int maximumTransformedIrNodes)
     {
         _extensions = extensions;
+        _maximumTransformedIrNodes = maximumTransformedIrNodes;
     }
 
     public static RoslynXamlExtensionHost Empty { get; } =
@@ -30,9 +37,21 @@ public sealed class RoslynXamlExtensionHost
     public ImmutableArray<IRoslynXamlExtension> Extensions => _extensions;
 
     public static RoslynXamlExtensionHost Create(
-        IEnumerable<IRoslynXamlExtension> extensions)
+        IEnumerable<IRoslynXamlExtension> extensions) =>
+        Create(extensions, options: null);
+
+    public static RoslynXamlExtensionHost Create(
+        IEnumerable<IRoslynXamlExtension> extensions,
+        RoslynXamlExtensionHostOptions? options)
     {
         if (extensions == null) throw new ArgumentNullException(nameof(extensions));
+        var maximumTransformedIrNodes =
+            options?.MaximumTransformedIrNodes ??
+            DefaultMaximumTransformedIrNodes;
+        if (maximumTransformedIrNodes <= 0)
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                "The transformed IR node limit must be positive.");
         var ordered = new List<IRoslynXamlExtension>();
         var ids = new HashSet<string>(StringComparer.Ordinal);
         foreach (var extension in extensions)
@@ -54,7 +73,9 @@ public sealed class RoslynXamlExtensionHost
             var id = StringComparer.Ordinal.Compare(left.Id, right.Id);
             return id != 0 ? id : right.Version.CompareTo(left.Version);
         });
-        return new RoslynXamlExtensionHost(ordered.ToImmutableArray());
+        return new RoslynXamlExtensionHost(
+            ordered.ToImmutableArray(),
+            maximumTransformedIrNodes);
     }
 
     public RoslynXamlExtensionResolution ResolveMarkupExtensionExpression(
@@ -211,6 +232,100 @@ public sealed class RoslynXamlExtensionHost
         return diagnostics.ToImmutable();
     }
 
+    public XamlConstructionProgram ApplyConstructionProgramTransforms(
+        RoslynXamlConstructionTransformContext context)
+    {
+        if (context == null) throw new ArgumentNullException(nameof(context));
+        var current = context.Program;
+        foreach (var extension in _extensions)
+        {
+            context.CancellationToken.ThrowIfCancellationRequested();
+            if ((extension.Capabilities &
+                 RoslynXamlExtensionCapabilities.ConstructionProgramTransform) == 0)
+                continue;
+            if (extension is not IRoslynXamlConstructionProgramTransformExtension transform)
+            {
+                current = AppendProgramDiagnostic(
+                    current,
+                    CreateProgramHostDiagnostic(
+                        current,
+                        "PGXAML3052",
+                        $"Roslyn XAML extension '{extension.Id}' declares construction-program " +
+                        "transform capability without implementing its contract."));
+                continue;
+            }
+
+            RoslynXamlConstructionTransformResult result;
+            try
+            {
+                result = transform.Transform(
+                    new RoslynXamlConstructionTransformContext(
+                        current,
+                        context.FrameworkId,
+                        context.ResourceUri,
+                        context.Strict,
+                        context.CancellationToken));
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                current = AppendProgramDiagnostic(
+                    current,
+                    CreateProgramHostDiagnostic(
+                        current,
+                        "PGXAML3052",
+                        $"Roslyn XAML extension '{extension.Id}' failed while transforming " +
+                        $"construction IR: {exception.Message}"));
+                continue;
+            }
+
+            string? validationError = null;
+            if (result == null ||
+                !TryValidateTransformedRoot(
+                    current,
+                    result.Root,
+                    _maximumTransformedIrNodes,
+                    out validationError))
+            {
+                current = AppendProgramDiagnostic(
+                    current,
+                    CreateProgramHostDiagnostic(
+                        current,
+                        "PGXAML3053",
+                        $"Roslyn XAML extension '{extension.Id}' returned invalid construction IR: " +
+                        (validationError ?? "the result was null.")));
+                continue;
+            }
+
+            var diagnostics = ImmutableArray.CreateBuilder<Diagnostic>(
+                current.Diagnostics.Length + result.Issues.Length);
+            diagnostics.AddRange(current.Diagnostics);
+            foreach (var issue in result.Issues)
+            {
+                context.CancellationToken.ThrowIfCancellationRequested();
+                if (!TryCreateIssueDiagnostic(current, issue, out var diagnostic))
+                {
+                    diagnostics.Add(CreateProgramHostDiagnostic(
+                        current,
+                        "PGXAML3053",
+                        $"Roslyn XAML extension '{extension.Id}' returned an invalid " +
+                        "construction-transform issue."));
+                    continue;
+                }
+                diagnostics.Add(diagnostic!);
+            }
+            current = new XamlConstructionProgram(
+                current.BoundDocument,
+                result.Root,
+                diagnostics.ToImmutable(),
+                current.ResourceGraph);
+        }
+        return current;
+    }
+
     private static RoslynXamlExtensionResolution Error(string id, string message) =>
         new RoslynXamlExtensionResolution(
             RoslynXamlExtensionResolutionKind.Error,
@@ -234,6 +349,144 @@ public sealed class RoslynXamlExtensionHost
             "EXT-004");
     }
 
+    private static bool TryValidateTransformedRoot(
+        XamlConstructionProgram program,
+        XamlIrObject? candidate,
+        int maximumTransformedIrNodes,
+        out string? error)
+    {
+        var original = program.Root;
+        if (original == null || candidate == null)
+        {
+            error = original == null && candidate == null
+                ? null
+                : "the transform changed whether the compilation unit has a root.";
+            return error == null;
+        }
+        if (candidate.StableId != original.StableId ||
+            candidate.SourceSpan != original.SourceSpan ||
+            candidate.Kind != original.Kind ||
+            !ReferenceEquals(candidate.Type, original.Type))
+        {
+            error = "the compilation-unit root identity, span, kind, or type changed.";
+            return false;
+        }
+
+        var sourceLength = program.BoundDocument.Infoset.SourceText.Length;
+        var stack = new List<XamlIrValue> { candidate };
+        var visited = new HashSet<XamlIrValue>();
+        var count = 0;
+        while (stack.Count != 0)
+        {
+            var last = stack.Count - 1;
+            var value = stack[last];
+            stack.RemoveAt(last);
+            if (!visited.Add(value)) continue;
+            count++;
+            if (count > maximumTransformedIrNodes)
+            {
+                error = $"the transformed IR exceeds {maximumTransformedIrNodes} nodes.";
+                return false;
+            }
+            if (!IsInSource(value.SourceSpan, sourceLength))
+            {
+                error = "a transformed IR value has an out-of-document source span.";
+                return false;
+            }
+
+            if (value is XamlIrObject objectValue)
+            {
+                if (objectValue.Operations.IsDefault)
+                {
+                    error = "a transformed IR object has a default operation array.";
+                    return false;
+                }
+                foreach (var operation in objectValue.Operations)
+                {
+                    if (operation == null ||
+                        operation.Values.IsDefault ||
+                        !IsInSource(operation.SourceSpan, sourceLength))
+                    {
+                        error = "a transformed IR operation is null, incomplete, or out of source.";
+                        return false;
+                    }
+                    foreach (var child in operation.Values)
+                    {
+                        if (child == null)
+                        {
+                            error = "a transformed IR operation contains a null value.";
+                            return false;
+                        }
+                        stack.Add(child);
+                    }
+                }
+            }
+            else if (value is XamlIrBinding binding)
+            {
+                stack.Add(binding.Extension);
+            }
+            else if (value is XamlIrCompiledBinding compiledBinding)
+            {
+                stack.Add(compiledBinding.Extension);
+            }
+        }
+        error = null;
+        return true;
+    }
+
+    private static bool TryCreateIssueDiagnostic(
+        XamlConstructionProgram program,
+        RoslynXamlValidationIssue? issue,
+        out Diagnostic? diagnostic)
+    {
+        diagnostic = null;
+        if (issue == null ||
+            !IsInSource(
+                issue.SourceSpan,
+                program.BoundDocument.Infoset.SourceText.Length))
+            return false;
+        diagnostic = XamlDiagnostics.Create(
+            issue.Id,
+            issue.Severity,
+            issue.Message,
+            program.BoundDocument.Infoset.Path,
+            program.BoundDocument.Infoset.SourceText,
+            issue.SourceSpan,
+            issue.SpecificationSection);
+        return true;
+    }
+
+    private static bool IsInSource(Microsoft.CodeAnalysis.Text.TextSpan span, int sourceLength) =>
+        span.Start >= 0 && span.End <= sourceLength;
+
+    private static Diagnostic CreateProgramHostDiagnostic(
+        XamlConstructionProgram program,
+        string id,
+        string message) =>
+        XamlDiagnostics.Create(
+            id,
+            DiagnosticSeverity.Error,
+            message,
+            program.BoundDocument.Infoset.Path,
+            program.BoundDocument.Infoset.SourceText,
+            program.Root?.SourceSpan ?? default,
+            "EXT-004");
+
+    private static XamlConstructionProgram AppendProgramDiagnostic(
+        XamlConstructionProgram program,
+        Diagnostic diagnostic)
+    {
+        var diagnostics = ImmutableArray.CreateBuilder<Diagnostic>(
+            program.Diagnostics.Length + 1);
+        diagnostics.AddRange(program.Diagnostics);
+        diagnostics.Add(diagnostic);
+        return new XamlConstructionProgram(
+            program.BoundDocument,
+            program.Root,
+            diagnostics.ToImmutable(),
+            program.ResourceGraph);
+    }
+
     private static void Validate(IRoslynXamlExtension extension)
     {
         if (string.IsNullOrWhiteSpace(extension.Id))
@@ -253,7 +506,8 @@ public sealed class RoslynXamlExtensionHost
                 nameof(extension));
         if ((extension.Capabilities &
              ~(RoslynXamlExtensionCapabilities.MarkupExtensionExpression |
-               RoslynXamlExtensionCapabilities.BoundDocumentValidation)) != 0)
+               RoslynXamlExtensionCapabilities.BoundDocumentValidation |
+               RoslynXamlExtensionCapabilities.ConstructionProgramTransform)) != 0)
             throw new ArgumentException(
                 $"Roslyn XAML extension '{extension.Id}' declares unsupported capabilities.",
                 nameof(extension));
@@ -271,11 +525,19 @@ public sealed class RoslynXamlExtensionHost
                 $"Roslyn XAML extension '{extension.Id}' declares bound-document validation " +
                 "capability without implementing its contract.",
                 nameof(extension));
+        if ((extension.Capabilities &
+             RoslynXamlExtensionCapabilities.ConstructionProgramTransform) != 0 &&
+            extension is not IRoslynXamlConstructionProgramTransformExtension)
+            throw new ArgumentException(
+                $"Roslyn XAML extension '{extension.Id}' declares construction-program " +
+                "transform capability without implementing its contract.",
+                nameof(extension));
     }
 
     private sealed class RegisteredExtension :
         IRoslynXamlMarkupExtensionExpressionExtension,
-        IRoslynXamlBoundDocumentValidatorExtension
+        IRoslynXamlBoundDocumentValidatorExtension,
+        IRoslynXamlConstructionProgramTransformExtension
     {
         private readonly IRoslynXamlExtension _extension;
 
@@ -307,5 +569,10 @@ public sealed class RoslynXamlExtensionHost
             RoslynXamlBoundDocumentValidationContext context) =>
             ((IRoslynXamlBoundDocumentValidatorExtension)_extension)
                 .Validate(context);
+
+        public RoslynXamlConstructionTransformResult Transform(
+            RoslynXamlConstructionTransformContext context) =>
+            ((IRoslynXamlConstructionProgramTransformExtension)_extension)
+                .Transform(context);
     }
 }

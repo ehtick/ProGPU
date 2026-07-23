@@ -234,6 +234,13 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
         if (options == null) throw new ArgumentNullException(nameof(options));
         cancellationToken.ThrowIfCancellationRequested();
 
+        program = _extensions.ApplyConstructionProgramTransforms(
+            new RoslynXamlConstructionTransformContext(
+                program,
+                framework.Id,
+                options.ResourceUri,
+                options.Strict,
+                cancellationToken));
         var document = program.BoundDocument.Infoset.Syntax;
         var diagnostics = new List<Diagnostic>(program.Diagnostics);
         var sources = new List<XamlGeneratedSource>();
