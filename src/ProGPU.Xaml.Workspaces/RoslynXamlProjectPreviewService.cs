@@ -47,7 +47,9 @@ public sealed class RoslynXamlProjectPreview
         string? qualifiedTypeName,
         string? materializationError,
         string resourceUri,
-        XamlResourceDependencySlice resourceDependencies)
+        XamlResourceDependencySlice resourceDependencies,
+        IReadOnlyList<RoslynXamlProjectDocumentCompilation>
+            projectDocuments)
     {
         Project = project;
         Document = document;
@@ -59,6 +61,7 @@ public sealed class RoslynXamlProjectPreview
         MaterializationError = materializationError;
         ResourceUri = resourceUri;
         ResourceDependencies = resourceDependencies;
+        ProjectDocuments = projectDocuments;
     }
 
     /// <summary>The immutable project snapshot, including any supplied editor text.</summary>
@@ -72,10 +75,32 @@ public sealed class RoslynXamlProjectPreview
     public string? MaterializationError { get; }
     public string ResourceUri { get; }
     public XamlResourceDependencySlice ResourceDependencies { get; }
+    public IReadOnlyList<RoslynXamlProjectDocumentCompilation>
+        ProjectDocuments { get; }
     public bool CanMaterialize =>
         QualifiedTypeName != null &&
         MaterializationError == null &&
         Artifact?.Success == true;
+}
+
+public sealed class RoslynXamlProjectDocumentCompilation
+{
+    internal RoslynXamlProjectDocumentCompilation(
+        TextDocument document,
+        string resourceUri,
+        XamlResourceDependencySlice resourceDependencies,
+        XamlCompilationResult compilationResult)
+    {
+        Document = document;
+        ResourceUri = resourceUri;
+        ResourceDependencies = resourceDependencies;
+        CompilationResult = compilationResult;
+    }
+
+    public TextDocument Document { get; }
+    public string ResourceUri { get; }
+    public XamlResourceDependencySlice ResourceDependencies { get; }
+    public XamlCompilationResult CompilationResult { get; }
 }
 
 /// <summary>
@@ -158,12 +183,17 @@ public sealed class RoslynXamlProjectPreviewService
             previewHost.Compilation,
             framework);
 
-        var manifests = new List<XamlResourceDocumentManifest>();
-        string? targetResourceUri = null;
-        foreach (var candidate in project.AdditionalDocuments)
+        var preparedDocuments = new List<PreparedDocument>();
+        foreach (var candidate in project.AdditionalDocuments
+                     .OrderBy(
+                         item => GetLogicalPath(
+                             item,
+                             options.LogicalPathProvider),
+                         StringComparer.Ordinal))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!IsXamlDocument(candidate, framework))
+            if (candidate.Id != xamlDocumentId &&
+                !IsXamlDocument(candidate, framework))
                 continue;
 
             var candidateInspection =
@@ -188,9 +218,12 @@ public sealed class RoslynXamlProjectPreviewService
                         logicalPath,
                         requestedCompilerOptions.Strict,
                         cancellationToken);
-                manifests.Add(semantic.Manifest);
-                if (candidate.Id == xamlDocumentId)
-                    targetResourceUri = semantic.ResourceUri;
+                preparedDocuments.Add(
+                    new PreparedDocument(
+                        candidate,
+                        candidateInspection,
+                        semantic.Manifest,
+                        semantic.ResourceUri));
             }
             catch (OperationCanceledException)
             {
@@ -200,54 +233,113 @@ public sealed class RoslynXamlProjectPreviewService
             {
                 // Match the incremental-generator boundary: resource discovery remains
                 // available from the canonical infoset when semantic enrichment fails.
-                manifests.Add(
-                    new XamlResourceDocumentManifestBuilder().Build(
-                        candidateInspection.Infoset,
+                preparedDocuments.Add(
+                    new PreparedDocument(
+                        candidate,
+                        candidateInspection,
+                        new XamlResourceDocumentManifestBuilder().Build(
+                            candidateInspection.Infoset,
+                            logicalPath),
                         logicalPath));
-                if (candidate.Id == xamlDocumentId)
-                    targetResourceUri = logicalPath;
             }
         }
 
-        var resourceDependencies =
-            new XamlResourceProjectIndex(manifests)
-                .GetDependencySlice(targetInspection.Infoset.Path);
-        var compilerOptions = new XamlCompilerOptions
+        var resourceIndex = new XamlResourceProjectIndex(
+            preparedDocuments.Select(
+                static item => item.Manifest));
+        var projectDocuments =
+            new List<RoslynXamlProjectDocumentCompilation>(
+                preparedDocuments.Count);
+        var allSources = new List<XamlGeneratedSource>();
+        var allDiagnostics = new List<Diagnostic>();
+        RoslynXamlCompilationInspection? compilationInspection =
+            null;
+        XamlResourceDependencySlice? targetDependencies = null;
+        string? targetResourceUri = null;
+        foreach (var prepared in preparedDocuments)
         {
-            Framework = framework.Id,
-            ResourceUri =
-                targetResourceUri ??
-                requestedCompilerOptions.ResourceUri ??
-                GetLogicalPath(document, options.LogicalPathProvider),
-            ResourceDependencies = resourceDependencies,
-            Strict = requestedCompilerOptions.Strict,
-            EmitHotReloadHooks =
-                requestedCompilerOptions.EmitHotReloadHooks,
-            EmitSourceComments =
-                requestedCompilerOptions.EmitSourceComments,
-            StaticResourceForwardReferenceMode =
-                requestedCompilerOptions.StaticResourceForwardReferenceMode
-        };
-        var compilationInspection =
-            new RoslynXamlCompilationInspectionService().Inspect(
-                targetInspection,
-                previewTypeSystem,
-                framework,
-                new RoslynXamlCompilationInspectionOptions
-                {
-                    CompilerOptions = compilerOptions,
-                    MaximumProjectionEntries =
-                        requestedOptions.MaximumProjectionEntries,
-                    MaximumPreviewLength =
-                        requestedOptions.MaximumPreviewLength
-                },
-                cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            var dependencies = resourceIndex.GetDependencySlice(
+                prepared.Inspection.Infoset.Path);
+            var isTarget =
+                prepared.Document.Id == xamlDocumentId;
+            var compilerOptions = CreateCompilerOptions(
+                framework.Id,
+                isTarget &&
+                requestedCompilerOptions.ResourceUri != null
+                    ? requestedCompilerOptions.ResourceUri
+                    : prepared.ResourceUri,
+                dependencies,
+                requestedCompilerOptions);
+            XamlCompilationResult result;
+            if (isTarget)
+            {
+                compilationInspection =
+                    new RoslynXamlCompilationInspectionService()
+                        .Inspect(
+                            prepared.Inspection,
+                            previewTypeSystem,
+                            framework,
+                            new RoslynXamlCompilationInspectionOptions
+                            {
+                                CompilerOptions =
+                                    compilerOptions,
+                                MaximumProjectionEntries =
+                                    requestedOptions
+                                        .MaximumProjectionEntries,
+                                MaximumPreviewLength =
+                                    requestedOptions
+                                        .MaximumPreviewLength
+                            },
+                            cancellationToken);
+                result =
+                    compilationInspection.CompilationResult;
+                targetDependencies = dependencies;
+                targetResourceUri =
+                    compilerOptions.ResourceUri;
+            }
+            else
+            {
+                result = new CSharpXamlEmitter().Emit(
+                    prepared.Inspection.Infoset,
+                    previewTypeSystem,
+                    framework,
+                    compilerOptions,
+                    cancellationToken);
+            }
+
+            allSources.AddRange(result.Sources);
+            allDiagnostics.AddRange(result.Diagnostics);
+            projectDocuments.Add(
+                new RoslynXamlProjectDocumentCompilation(
+                    prepared.Document,
+                    compilerOptions.ResourceUri!,
+                    dependencies,
+                    result));
+        }
+
+        if (compilationInspection == null ||
+            targetDependencies == null ||
+            targetResourceUri == null)
+        {
+            throw new InvalidOperationException(
+                "The target XAML document was not prepared for project preview.");
+        }
+
+        var projectCompilation = new XamlCompilationResult(
+            compilationInspection.CompilationResult.Syntax,
+            allSources,
+            allDiagnostics,
+            compilationInspection.CompilationResult
+                .BuildMetadata,
+            compilationInspection.CompilationResult.WasSkipped,
+            compilationInspection.Program);
         var artifact =
             options.EmitArtifact &&
             previewHost.CanMaterialize
                 ? new RoslynXamlPreviewArtifactCompiler().Compile(
                     previewHost.Compilation,
-                    compilationInspection.CompilationResult,
+                    projectCompilation,
                     cancellationToken)
                 : null;
         return new RoslynXamlProjectPreview(
@@ -259,8 +351,9 @@ public sealed class RoslynXamlProjectPreviewService
             artifact,
             previewHost.QualifiedTypeName,
             previewHost.MaterializationError,
-            compilerOptions.ResourceUri!,
-            resourceDependencies);
+            targetResourceUri,
+            targetDependencies,
+            projectDocuments);
     }
 
     private static XamlDocumentInspection Inspect(
@@ -307,5 +400,44 @@ public sealed class RoslynXamlProjectPreviewService
         return string.Join("/", document.Folders) +
                "/" +
                document.Name;
+    }
+
+    private static XamlCompilerOptions CreateCompilerOptions(
+        string framework,
+        string resourceUri,
+        XamlResourceDependencySlice resourceDependencies,
+        XamlCompilerOptions requested) =>
+        new XamlCompilerOptions
+        {
+            Framework = framework,
+            ResourceUri = resourceUri,
+            ResourceDependencies = resourceDependencies,
+            Strict = requested.Strict,
+            EmitHotReloadHooks =
+                requested.EmitHotReloadHooks,
+            EmitSourceComments =
+                requested.EmitSourceComments,
+            StaticResourceForwardReferenceMode =
+                requested.StaticResourceForwardReferenceMode
+        };
+
+    private sealed class PreparedDocument
+    {
+        public PreparedDocument(
+            TextDocument document,
+            XamlDocumentInspection inspection,
+            XamlResourceDocumentManifest manifest,
+            string resourceUri)
+        {
+            Document = document;
+            Inspection = inspection;
+            Manifest = manifest;
+            ResourceUri = resourceUri;
+        }
+
+        public TextDocument Document { get; }
+        public XamlDocumentInspection Inspection { get; }
+        public XamlResourceDocumentManifest Manifest { get; }
+        public string ResourceUri { get; }
     }
 }

@@ -12080,6 +12080,19 @@ public partial class MainPage : Microsoft.UI.Xaml.Controls.Page
 }
 #endif
 """;
+        const string siblingCodeBehind = """
+#if PROJECT_PREVIEW
+namespace Demo;
+
+public partial class SecondaryPage : Microsoft.UI.Xaml.Controls.Page
+{
+    public SecondaryPage()
+    {
+        InitializeComponent();
+    }
+}
+#endif
+""";
         const string savedXaml = """
 <Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -12092,6 +12105,13 @@ public partial class MainPage : Microsoft.UI.Xaml.Controls.Page
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
       x:Class="Demo.MainPage">
   <TextBlock Text="Unsaved editor snapshot" />
+</Page>
+""";
+        const string siblingXaml = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.SecondaryPage">
+  <TextBlock Text="Sibling generated member" />
 </Page>
 """;
         using var workspace = new AdhocWorkspace();
@@ -12111,6 +12131,8 @@ public partial class MainPage : Microsoft.UI.Xaml.Controls.Page
             DocumentId.CreateNewId(projectId);
         var codeBehindDocumentId =
             DocumentId.CreateNewId(projectId);
+        var siblingCodeBehindDocumentId =
+            DocumentId.CreateNewId(projectId);
         var solution = workspace.CurrentSolution
             .AddProject(projectInfo)
             .AddMetadataReferences(projectId, PlatformReferences())
@@ -12121,13 +12143,24 @@ public partial class MainPage : Microsoft.UI.Xaml.Controls.Page
             .AddDocument(
                 codeBehindDocumentId,
                 "MainPage.cs",
-                SourceText.From(codeBehind));
+                SourceText.From(codeBehind))
+            .AddDocument(
+                siblingCodeBehindDocumentId,
+                "SecondaryPage.cs",
+                SourceText.From(siblingCodeBehind));
         var xamlDocumentId = DocumentId.CreateNewId(projectId);
+        var siblingXamlDocumentId =
+            DocumentId.CreateNewId(projectId);
         solution = solution.AddAdditionalDocument(
             xamlDocumentId,
             "MainPage.xaml",
             SourceText.From(savedXaml),
-            folders: new[] { "Pages" });
+            folders: new[] { "Pages" })
+            .AddAdditionalDocument(
+                siblingXamlDocumentId,
+                "SecondaryPage.xaml",
+                SourceText.From(siblingXaml),
+                folders: new[] { "Pages" });
         var project = solution.GetProject(projectId)!;
 
         var preview =
@@ -12159,6 +12192,11 @@ public partial class MainPage : Microsoft.UI.Xaml.Controls.Page
                 Array.Empty<string>()));
         Assert.Equal("Demo.MainPage", preview.QualifiedTypeName);
         Assert.True(preview.Artifact!.Success);
+        Assert.Equal(2, preview.ProjectDocuments.Count);
+        Assert.All(
+            preview.ProjectDocuments,
+            item => Assert.Single(
+                item.CompilationResult.Sources));
         Assert.NotNull(
             preview.HostCompilation.GetTypeByMetadataName(
                 "Demo.MainPage"));

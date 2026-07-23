@@ -11,6 +11,7 @@ using ProGPU.Xaml.Resources;
 using ProGPU.Xaml.Schema;
 using ProGPU.Xaml.Syntax;
 using ProGPU.Xaml.Tooling;
+using ProGPU.Xaml.Workspaces;
 using System.Text.Json;
 
 namespace ProGPU.Xaml.Cli;
@@ -33,6 +34,7 @@ internal static class Program
                 "corpus" => CorpusCommand(args),
                 "inspect" => await InspectCommandAsync(args),
                 "compile" => await CompileCommandAsync(args),
+                "preview" => await PreviewCommandAsync(args),
                 "project" => await ProjectCommandAsync(args),
                 _ => UnknownCommand(args[0])
             };
@@ -240,6 +242,113 @@ internal static class Program
         return CompileFiles(compilation, files, output, HasOption(args, "--json"), GetProfile(args), projectDirectory);
     }
 
+    private static async Task<int> PreviewCommandAsync(string[] args)
+    {
+        if (args.Length < 4 ||
+            !TryGetOption(args, "--project", out var projectPath))
+        {
+            return MissingArgument(
+                "preview requires <file> --project <project.csproj> [--output <assembly.dll>]");
+        }
+
+        var file = Path.GetFullPath(args[1]);
+        projectPath = Path.GetFullPath(projectPath!);
+        var projectDirectory = Path.GetDirectoryName(projectPath)!;
+        var output = TryGetOption(args, "--output", out var outputValue)
+            ? Path.GetFullPath(outputValue!)
+            : Path.Combine(
+                projectDirectory,
+                "obj",
+                "ProGPU.Xaml.Cli",
+                Path.GetFileNameWithoutExtension(file) +
+                ".preview.dll");
+        var project = await OpenProjectAsync(projectPath);
+        project = EnsureAdditionalDocument(
+            project,
+            file,
+            out var documentId);
+        var profile = GetProfile(args);
+        var preview =
+            await new RoslynXamlProjectPreviewService().CompileAsync(
+                project,
+                documentId,
+                profile,
+                new RoslynXamlProjectPreviewOptions
+                {
+                    InspectionOptions =
+                        new RoslynXamlCompilationInspectionOptions
+                        {
+                            CompilerOptions =
+                                new XamlCompilerOptions
+                                {
+                                    Framework = profile.Id,
+                                    Strict = true
+                                }
+                        },
+                    LogicalPathProvider = document =>
+                        GetProjectLogicalPath(
+                            projectDirectory,
+                            document)
+                });
+        IReadOnlyList<Diagnostic> diagnostics =
+            preview.Artifact != null
+                ? preview.Artifact.Diagnostics
+                : preview.CompilationInspection.CompilationResult
+                    .Diagnostics;
+        var errors = diagnostics.Any(
+            static diagnostic =>
+                diagnostic.Severity ==
+                DiagnosticSeverity.Error);
+        var committed =
+            !errors &&
+            preview.CanMaterialize;
+        var reportedDiagnostics = diagnostics
+            .Where(
+                static diagnostic =>
+                    diagnostic.Severity !=
+                    DiagnosticSeverity.Hidden)
+            .ToArray();
+        if (committed)
+        {
+            WriteFileTransactionally(
+                output,
+                preview.Artifact!.PeImage.AsSpan());
+        }
+
+        if (HasOption(args, "--json"))
+        {
+            WriteJson(new
+            {
+                command = "preview",
+                framework = profile.Id,
+                path = file,
+                preview.ResourceUri,
+                preview.QualifiedTypeName,
+                preview.MaterializationError,
+                compiledDocumentCount =
+                    preview.ProjectDocuments.Count,
+                output,
+                committed,
+                diagnostics =
+                    ProjectDiagnostics(reportedDiagnostics)
+            });
+        }
+        else
+        {
+            PrintDiagnostics(reportedDiagnostics);
+            if (preview.MaterializationError != null)
+                Console.Error.WriteLine(
+                    "PGXAMLCLI0003: " +
+                    preview.MaterializationError);
+            Console.WriteLine(
+                committed
+                    ? $"Compiled project-context preview '{preview.QualifiedTypeName}' to {output}."
+                    : "Project-context preview was not committed.");
+        }
+
+        return committed ? 0 : 1;
+    }
+
     private static int CompileFiles(
         Compilation compilation,
         IReadOnlyList<string> files,
@@ -428,6 +537,95 @@ internal static class Program
             if (Directory.Exists(staging)) Directory.Delete(staging, recursive: true);
             if (Directory.Exists(backup)) Directory.Delete(backup, recursive: true);
         }
+    }
+
+    private static void WriteFileTransactionally(
+        string path,
+        ReadOnlySpan<byte> content)
+    {
+        var fullPath = Path.GetFullPath(path);
+        var directory = Path.GetDirectoryName(fullPath) ??
+            throw new InvalidOperationException(
+                "The preview output must have a parent directory.");
+        Directory.CreateDirectory(directory);
+        var temporaryPath =
+            fullPath +
+            ".tmp." +
+            Guid.NewGuid().ToString(
+                "N",
+                System.Globalization.CultureInfo.InvariantCulture);
+        try
+        {
+            File.WriteAllBytes(temporaryPath, content);
+            File.Move(temporaryPath, fullPath, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+                File.Delete(temporaryPath);
+        }
+    }
+
+    private static Project EnsureAdditionalDocument(
+        Project project,
+        string file,
+        out DocumentId documentId)
+    {
+        var existing = project.AdditionalDocuments.FirstOrDefault(
+            document =>
+                document.FilePath != null &&
+                string.Equals(
+                    Path.GetFullPath(document.FilePath),
+                    file,
+                    StringComparison.OrdinalIgnoreCase));
+        if (existing != null)
+        {
+            documentId = existing.Id;
+            return project;
+        }
+
+        documentId = DocumentId.CreateNewId(project.Id);
+        var projectDirectory =
+            Path.GetDirectoryName(project.FilePath ?? string.Empty);
+        var relative = projectDirectory == null
+            ? Path.GetFileName(file)
+            : Path.GetRelativePath(projectDirectory, file);
+        var segments = relative
+            .Replace('\\', '/')
+            .Split(
+                '/',
+                StringSplitOptions.RemoveEmptyEntries);
+        var folders = segments.Length < 2
+            ? Array.Empty<string>()
+            : segments.Take(segments.Length - 1).ToArray();
+        var solution = project.Solution.AddAdditionalDocument(
+            documentId,
+            Path.GetFileName(file),
+            SourceText.From(File.ReadAllText(file)),
+            folders,
+            file);
+        return solution.GetProject(project.Id) ??
+            throw new InvalidOperationException(
+                "The project snapshot could not include the requested XAML file.");
+    }
+
+    private static string GetProjectLogicalPath(
+        string projectDirectory,
+        TextDocument document)
+    {
+        if (document.FilePath != null)
+        {
+            return Path.GetRelativePath(
+                    projectDirectory,
+                    document.FilePath)
+                .Replace('\\', '/');
+        }
+
+        return document.Folders.Count == 0
+            ? document.Name
+            : string.Join("/", document.Folders) +
+              "/" +
+              document.Name;
     }
 
     private static async Task<Project> OpenProjectAsync(string projectPath)
@@ -632,6 +830,7 @@ internal static class Program
         Console.WriteLine("  progpu-xaml corpus <file-or-directory> [--json]");
         Console.WriteLine("  progpu-xaml inspect <file> --project <project.csproj> [--framework <id>] [--json]");
         Console.WriteLine("  progpu-xaml compile <file> --project <project.csproj> [--framework <id>] [--output <directory>] [--json]");
+        Console.WriteLine("  progpu-xaml preview <file> --project <project.csproj> [--framework <id>] [--output <assembly.dll>] [--json]");
         Console.WriteLine("  progpu-xaml project <project.csproj> [--framework <id>] [--output <directory>] [--json]");
     }
 }

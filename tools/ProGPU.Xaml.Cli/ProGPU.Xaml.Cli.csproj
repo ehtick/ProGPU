@@ -19,5 +19,6 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\ProGPU.Xaml\ProGPU.Xaml.csproj" />
     <ProjectReference Include="..\..\src\ProGPU.Xaml.Roslyn\ProGPU.Xaml.Roslyn.csproj" />
+    <ProjectReference Include="..\..\src\ProGPU.Xaml.Workspaces\ProGPU.Xaml.Workspaces.csproj" />
   </ItemGroup>
 </Project>
