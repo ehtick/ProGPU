@@ -39,6 +39,7 @@ public sealed class XamlSemanticBinder
     private XamlTypeInfo? _activeCompiledBindingSourceType;
     private XamlCompiledBindingSourceKind _activeCompiledBindingSourceKind;
     private XamlTypeInfo? _activeLexicalDataType;
+    private Dictionary<ulong, XamlTypeInfo> _elementNameBindingSourceTypes = null!;
 
     public XamlBoundDocument Bind(
         XamlInfosetDocument document,
@@ -59,6 +60,7 @@ public sealed class XamlSemanticBinder
         _activeCompiledBindingSourceType = _rootClassType;
         _activeCompiledBindingSourceKind = XamlCompiledBindingSourceKind.Root;
         _activeLexicalDataType = null;
+        _elementNameBindingSourceTypes = new Dictionary<ulong, XamlTypeInfo>();
 
         XamlBoundObject? root = null;
         if (document.Root != null && typeSystem is IXamlSymbolShapeConflictProvider conflictProvider)
@@ -67,6 +69,7 @@ public sealed class XamlSemanticBinder
         {
             root = BindObject(document.Root);
             ValidateDocumentSemantics(root);
+            root = RewriteElementNameBindings(root);
         }
 
         var diagnostics = ImmutableArray.CreateBuilder<Diagnostic>(document.Diagnostics.Length + _diagnostics.Count);
@@ -884,15 +887,22 @@ public sealed class XamlSemanticBinder
 
     private XamlBoundValue BindBinding(
         XamlBoundObject extension,
-        XamlTypeInfo? targetObjectType)
+        XamlTypeInfo? targetObjectType,
+        XamlTypeInfo? resolvedSourceType = null,
+        XamlBindingSourceKind? resolvedSourceKind = null)
     {
         var path = GetBindingText(extension, "Path") ??
                    GetBindingPositionalText(extension) ??
                    string.Empty;
         path = path.Trim();
-        var source = ResolveBindingSource(
-            extension,
-            targetObjectType);
+        var source = resolvedSourceType != null &&
+                     resolvedSourceKind != null
+            ? (
+                Type: (XamlTypeInfo?)resolvedSourceType,
+                Kind: resolvedSourceKind.Value)
+            : ResolveBindingSource(
+                extension,
+                targetObjectType);
         var sourceType = source.Type;
         var syntax = path.Length == 0 || path == "."
             ? null
@@ -1951,10 +1961,25 @@ public sealed class XamlSemanticBinder
         return null;
     }
 
-    private bool IsAccessibleFromGeneratedClass(ISymbol symbol) =>
-        _rootClassType != null &&
-        (_typeSystem as IXamlSymbolAccessibilityService)?
-            .IsAccessibleWithin(symbol, _rootClassType.Symbol) != false;
+    private bool IsAccessibleFromGeneratedClass(ISymbol symbol)
+    {
+        if (_rootClassType != null)
+        {
+            return (_typeSystem as IXamlSymbolAccessibilityService)?
+                .IsAccessibleWithin(symbol, _rootClassType.Symbol) != false;
+        }
+
+        for (ISymbol? current = symbol;
+             current != null;
+             current = current.ContainingType)
+        {
+            if (current.DeclaredAccessibility is not (
+                Accessibility.Public or
+                Accessibility.NotApplicable))
+                return false;
+        }
+        return true;
+    }
 
     private static ImmutableArray<XamlBoundValue>.Builder ExpandAttributedListText(
         XamlBoundMemberReference member,
@@ -3205,13 +3230,83 @@ public sealed class XamlSemanticBinder
         }
     }
 
+    private XamlBoundObject RewriteElementNameBindings(
+        XamlBoundObject value)
+    {
+        var members = ImmutableArray.CreateBuilder<XamlBoundMember>(
+            value.Members.Length);
+        var changed = false;
+        foreach (var member in value.Members)
+        {
+            var values = ImmutableArray.CreateBuilder<XamlBoundValue>(
+                member.Values.Length);
+            var memberChanged = false;
+            foreach (var child in member.Values)
+            {
+                XamlBoundValue rewritten = child;
+                if (child is XamlBoundBinding binding &&
+                    _elementNameBindingSourceTypes.TryGetValue(
+                        binding.StableId,
+                        out var sourceType))
+                {
+                    rewritten = BindBinding(
+                        binding.Extension,
+                        targetObjectType: null,
+                        resolvedSourceType: sourceType,
+                        resolvedSourceKind:
+                            XamlBindingSourceKind.ElementName);
+                }
+                else if (child is XamlBoundObject childObject)
+                {
+                    rewritten = RewriteElementNameBindings(childObject);
+                }
+
+                memberChanged |= !ReferenceEquals(rewritten, child);
+                values.Add(rewritten);
+            }
+
+            if (memberChanged)
+            {
+                members.Add(new XamlBoundMember(
+                    member.Member,
+                    member.Origin,
+                    values.ToImmutable(),
+                    member.SourceSpan,
+                    member.StableId));
+                changed = true;
+            }
+            else
+            {
+                members.Add(member);
+            }
+        }
+
+        return changed
+            ? new XamlBoundObject(
+                value.Type,
+                members.ToImmutable(),
+                value.IsRetrieved,
+                value.IsMarkupExtension,
+                value.SourceSpan,
+                value.StableId)
+            : value;
+    }
+
     private void ValidateDocumentSemantics(XamlBoundObject root)
     {
         var names = new Dictionary<string, XamlBoundObject>(StringComparer.Ordinal);
         var references = new List<NameReferenceUse>();
+        var elementBindings = new List<ElementNameBindingUse>();
         var hasClass = HasDirective(root, "Class");
-        ValidateObjectSemantics(root, parentMember: null, hasClass, names, references);
+        ValidateObjectSemantics(
+            root,
+            parentMember: null,
+            hasClass,
+            names,
+            references,
+            elementBindings);
         ResolveNameReferences(names, references);
+        ResolveElementNameBindings(names, elementBindings);
     }
 
     private void ResolveNameReferences(
@@ -3234,12 +3329,28 @@ public sealed class XamlSemanticBinder
         }
     }
 
+    private void ResolveElementNameBindings(
+        Dictionary<string, XamlBoundObject> names,
+        List<ElementNameBindingUse> bindings)
+    {
+        foreach (var use in bindings)
+        {
+            if (!names.TryGetValue(use.Name, out var target) ||
+                target.Type.Symbol == null)
+                continue;
+
+            _elementNameBindingSourceTypes[use.Binding.StableId] =
+                target.Type.Symbol;
+        }
+    }
+
     private void ValidateObjectSemantics(
         XamlBoundObject value,
         XamlBoundMemberReference? parentMember,
         bool rootHasClass,
         Dictionary<string, XamlBoundObject> names,
-        List<NameReferenceUse> references)
+        List<NameReferenceUse> references,
+        List<ElementNameBindingUse> elementBindings)
     {
         var ownsNestedNameScope =
             parentMember != null &&
@@ -3250,6 +3361,9 @@ public sealed class XamlSemanticBinder
         var activeReferences = ownsNestedNameScope
             ? new List<NameReferenceUse>()
             : references;
+        var activeElementBindings = ownsNestedNameScope
+            ? new List<ElementNameBindingUse>()
+            : elementBindings;
 
         if (string.Equals(value.Type.RequestedName.NamespaceUri, XamlNamespaces.Language2006, StringComparison.Ordinal) &&
             (string.Equals(value.Type.RequestedName.LocalName, "Reference", StringComparison.Ordinal) ||
@@ -3299,14 +3413,35 @@ public sealed class XamlSemanticBinder
                     objectName ??= FirstText(member);
             }
 
+            foreach (var binding in member.Values.OfType<XamlBoundBinding>())
+            {
+                if (TryGetUnambiguousElementName(binding, out var elementName))
+                {
+                    activeElementBindings.Add(
+                        new ElementNameBindingUse(
+                            binding,
+                            elementName));
+                }
+            }
+
             if (StartsNestedNameScope(member))
             {
                 var nestedNames = new Dictionary<string, XamlBoundObject>(StringComparer.Ordinal);
                 var nestedReferences = new List<NameReferenceUse>();
+                var nestedElementBindings = new List<ElementNameBindingUse>();
                 foreach (var child in member.Values)
                     if (child is XamlBoundObject childObject)
-                        ValidateObjectSemantics(childObject, member.Member, rootHasClass, nestedNames, nestedReferences);
+                        ValidateObjectSemantics(
+                            childObject,
+                            member.Member,
+                            rootHasClass,
+                            nestedNames,
+                            nestedReferences,
+                            nestedElementBindings);
                 ResolveNameReferences(nestedNames, nestedReferences);
+                ResolveElementNameBindings(
+                    nestedNames,
+                    nestedElementBindings);
             }
             else
             {
@@ -3317,7 +3452,8 @@ public sealed class XamlSemanticBinder
                             member.Member,
                             rootHasClass,
                             activeNames,
-                            activeReferences);
+                            activeReferences,
+                            activeElementBindings);
             }
         }
 
@@ -3339,7 +3475,29 @@ public sealed class XamlSemanticBinder
             }
         }
         if (ownsNestedNameScope)
+        {
             ResolveNameReferences(activeNames, activeReferences);
+            ResolveElementNameBindings(
+                activeNames,
+                activeElementBindings);
+        }
+    }
+
+    private static bool TryGetUnambiguousElementName(
+        XamlBoundBinding binding,
+        out string elementName)
+    {
+        elementName = string.Empty;
+        if (FindBindingMember(binding.Extension, "Source") != null ||
+            FindBindingMember(binding.Extension, "RelativeSource") != null)
+            return false;
+        var member = FindBindingMember(binding.Extension, "ElementName");
+        var text = member?.Values.OfType<XamlBoundText>()
+            .Select(static value => value.Text.Trim())
+            .FirstOrDefault(static value => value.Length != 0);
+        if (text == null) return false;
+        elementName = text;
+        return true;
     }
 
     private static bool StartsNestedNameScope(XamlBoundMember member)
@@ -3379,6 +3537,20 @@ public sealed class XamlSemanticBinder
         }
         public XamlBoundNameReferenceValue Reference { get; }
         public XamlTypeInfo? TargetType { get; }
+    }
+
+    private readonly struct ElementNameBindingUse
+    {
+        public ElementNameBindingUse(
+            XamlBoundBinding binding,
+            string name)
+        {
+            Binding = binding;
+            Name = name;
+        }
+
+        public XamlBoundBinding Binding { get; }
+        public string Name { get; }
     }
 
     private void ValidateDictionaryItems(XamlBoundObject owner, XamlBoundMember member)

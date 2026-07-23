@@ -33,6 +33,15 @@
                    Text="{Binding Path=Title, Source={x:Static local:XamlCompilerBindingSources.Current}}" />
 
         <TextBlock Margin="0,16,0,0"
+                   Text="Ordinary Binding with a namescope-resolved ElementName source" />
+        <TextBlock x:Name="NamedElementSource"
+                   Margin="0,6,0,0"
+                   Text="Named element source" />
+        <TextBlock x:Name="ElementNameText"
+                   Margin="0,4,0,0"
+                   Text="{Binding Path=Text, ElementName=NamedElementSource}" />
+
+        <TextBlock Margin="0,16,0,0"
                    Text="Ordinary Binding with generated IList&lt;T&gt; indexer plan" />
         <TextBox x:Name="OrdinaryIndexerText"
                  Margin="0,6,0,0"

@@ -1233,7 +1233,9 @@ public sealed class WinUiXamlProfile : IRoslynXamlFrameworkProfile, IRoslynXamlC
             statement = SyntaxFactory.ExpressionStatement(
                 SyntaxFactory.InvocationExpression(setBinding)
                     .WithArgumentList(bindingArguments));
-            usesDeferredLifetime = context != null;
+            usesDeferredLifetime =
+                context != null ||
+                deferredLifetimeOwner != null;
             return true;
         }
 
@@ -1355,7 +1357,9 @@ public sealed class WinUiXamlProfile : IRoslynXamlFrameworkProfile, IRoslynXamlC
         statement = SyntaxFactory.ExpressionStatement(
             SyntaxFactory.InvocationExpression(setBinding)
                 .WithArgumentList(arguments));
-        usesDeferredLifetime = context != null;
+        usesDeferredLifetime =
+            context != null ||
+            deferredLifetimeOwner != null;
         return true;
     }
 

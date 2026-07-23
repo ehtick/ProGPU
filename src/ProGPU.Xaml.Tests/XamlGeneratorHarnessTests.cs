@@ -763,6 +763,14 @@ namespace Microsoft.UI.Xaml.Markup {
   public sealed class ContentPropertyAttribute : System.Attribute {
     public string? Name { get; set; }
   }
+  public interface IXamlTemplateLifetime : System.IDisposable {
+    void Initialize();
+  }
+  public static class XamlTemplateFactory {
+    public static void AttachLifetime(
+      Microsoft.UI.Xaml.FrameworkElement root,
+      IXamlTemplateLifetime lifetime) { }
+  }
 }
 namespace Microsoft.UI.Xaml.HotReload {
   public interface IHotReloadable { void Reload(HotReloadContext context); }
@@ -787,12 +795,21 @@ namespace Microsoft.UI.Xaml.Data {
     public UpdateSourceTrigger UpdateSourceTrigger { get; set; }
   }
   public static class BindingOperations {
+    private sealed class TestLifetime :
+        Microsoft.UI.Xaml.Markup.IXamlTemplateLifetime {
+      public void Initialize() { }
+      public void Dispose() { }
+    }
+    public static Microsoft.UI.Xaml.Markup.IXamlTemplateLifetime BeginBindings() =>
+      new TestLifetime();
     public static object SetBinding(
       Microsoft.UI.Xaml.DependencyObject target,
       string targetPropertyName,
       Binding binding,
       object? context = null,
-      object? lookupRoot = null) => new object();
+      object? lookupRoot = null,
+      Microsoft.UI.Xaml.Markup.IXamlTemplateLifetime? lifetime = null) =>
+      new object();
   }
 }
 namespace Microsoft.UI.Xaml.Controls {
@@ -843,8 +860,11 @@ namespace Demo { public partial class MainPage : Microsoft.UI.Xaml.Controls.Page
             candidate => candidate.Expression.ToString().EndsWith(
                 "BindingOperations.SetBinding",
                 StringComparison.Ordinal));
-        Assert.Equal(5, invocation.ArgumentList.Arguments.Count);
+        Assert.Equal(6, invocation.ArgumentList.Arguments.Count);
         Assert.Equal("this", invocation.ArgumentList.Arguments[4].Expression.ToString());
+        Assert.Equal(
+            "__xamlBindingLifetime",
+            invocation.ArgumentList.Arguments[5].Expression.ToString());
     }
 
     [Fact]

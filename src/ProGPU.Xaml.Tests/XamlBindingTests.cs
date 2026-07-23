@@ -4748,9 +4748,12 @@ namespace DesignerDemo {
             candidate => candidate.Expression.ToString().EndsWith(
                 "BindingOperations.SetBinding",
                 StringComparison.Ordinal));
-        Assert.Equal(5, invocation.ArgumentList.Arguments.Count);
+        Assert.Equal(6, invocation.ArgumentList.Arguments.Count);
         Assert.Equal("\"Text\"", invocation.ArgumentList.Arguments[1].Expression.ToString());
         Assert.Equal("this", invocation.ArgumentList.Arguments[4].Expression.ToString());
+        Assert.Equal(
+            "__xamlBindingLifetime",
+            invocation.ArgumentList.Arguments[5].Expression.ToString());
         var creation = Assert.IsType<ObjectCreationExpressionSyntax>(
             invocation.ArgumentList.Arguments[2].Expression);
         Assert.Equal(
@@ -6058,9 +6061,15 @@ namespace Demo {
         Assert.Equal(
             "Length",
             Assert.Single(bindings[3].Accessors).Member.Name);
-        Assert.Equal(XamlBindingSourceKind.Unknown, bindings[4].SourceKind);
-        Assert.Null(bindings[4].SourceType);
-        Assert.Empty(bindings[4].Accessors);
+        Assert.Equal(
+            XamlBindingSourceKind.ElementName,
+            bindings[4].SourceKind);
+        Assert.Equal(
+            "Demo.BindingTarget",
+            bindings[4].SourceType!.MetadataName);
+        Assert.Equal(
+            "Name",
+            Assert.Single(bindings[4].Accessors).Member.Name);
 
         var program = new XamlConstructionLowerer().Lower(bound);
         Assert.Equal(
@@ -6082,8 +6091,8 @@ namespace Demo {
                 "global::Microsoft.UI.Xaml.Data.BindingMemberAccessorRegistry.Register",
                 StringComparison.Ordinal))
             .ToArray();
-        Assert.Equal(4, registrations.Length);
-        Assert.DoesNotContain(
+        Assert.Equal(5, registrations.Length);
+        Assert.Contains(
             registrations,
             registration =>
                 registration.ArgumentList.Arguments[0].ToString() == "\"Name\"");
@@ -6260,6 +6269,77 @@ namespace Demo {
         Assert.Contains(
             readOnly.Diagnostics,
             diagnostic => diagnostic.Id == "PGXAML2132");
+    }
+
+    [Fact]
+    public void OrdinaryBindingElementNameUsesForwardNamescopeTypeWithoutScopeLeakage()
+    {
+        const string additions = """
+namespace Microsoft.UI.Xaml {
+  public class DataTemplate : FrameworkTemplate { }
+}
+namespace Demo {
+  public sealed class BindingTarget : Microsoft.UI.Xaml.FrameworkElement {
+    public static readonly Microsoft.UI.Xaml.DependencyProperty ValueProperty = new();
+    public string? Value { get; set; }
+  }
+}
+""";
+        const string xaml = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:local="using:Demo"
+      x:Class="Demo.MainPage">
+  <StackPanel>
+    <local:BindingTarget Value="{Binding Path=Value, ElementName=Later}" />
+    <local:BindingTarget x:Name="Later" Value="forward" />
+    <DataTemplate>
+      <local:BindingTarget Value="{Binding Path=Value, ElementName=Later}" />
+    </DataTemplate>
+  </StackPanel>
+</Page>
+""";
+        var compilation = CreateCompilation().AddSyntaxTrees(
+            CSharpSyntaxTree.ParseText(additions));
+        var profile = new WinUiXamlProfile();
+        var bound = new XamlSemanticBinder().Bind(
+            Convert(xaml),
+            new RoslynXamlTypeSystem(compilation, profile));
+
+        Assert.False(bound.HasErrors, string.Join(Environment.NewLine, bound.Diagnostics));
+        var bindings = DescendantValues(bound.Root)
+            .OfType<XamlBoundBinding>()
+            .ToArray();
+        Assert.Equal(2, bindings.Length);
+        Assert.Equal(XamlBindingSourceKind.ElementName, bindings[0].SourceKind);
+        Assert.Equal(
+            "Demo.BindingTarget",
+            bindings[0].SourceType!.MetadataName);
+        Assert.Equal(
+            "Value",
+            Assert.Single(bindings[0].Accessors).Member.Name);
+        Assert.Equal(XamlBindingSourceKind.Unknown, bindings[1].SourceKind);
+        Assert.Null(bindings[1].SourceType);
+        Assert.Empty(bindings[1].Accessors);
+
+        var emitted = new CSharpXamlEmitter().Emit(
+            bound.Infoset,
+            new RoslynXamlTypeSystem(compilation, profile),
+            profile,
+            new XamlCompilerOptions());
+        Assert.DoesNotContain(
+            emitted.Diagnostics,
+            diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        var tree = Assert.Single(emitted.Sources).GeneratedSyntaxTree!;
+        Assert.Single(
+            tree.GetRoot().DescendantNodes()
+                .OfType<InvocationExpressionSyntax>(),
+            invocation => invocation.Expression.ToString().StartsWith(
+                "global::Microsoft.UI.Xaml.Data.BindingMemberAccessorRegistry.Register",
+                StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            compilation.AddSyntaxTrees(tree).GetDiagnostics(),
+            diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
     }
 
     [Fact]

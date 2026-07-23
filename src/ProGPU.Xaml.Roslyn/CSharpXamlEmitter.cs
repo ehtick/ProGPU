@@ -399,7 +399,7 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
             new SortedDictionary<string, StatementSyntax>(StringComparer.Ordinal);
         private readonly ExpressionSyntax? _contextExpression;
         private readonly XamlTypeInfo? _contextType;
-        private readonly ExpressionSyntax? _deferredLifetimeOwnerExpression;
+        private ExpressionSyntax? _deferredLifetimeOwnerExpression;
         private readonly ExpressionSyntax? _compiledBindingOwnerExpression;
         private ExpressionSyntax _lookupRootExpression = null!;
         private bool _hasDeferredLifetimeRegistrations;
@@ -444,6 +444,21 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
         public void EmitExistingRoot(XamlIrObject root, ExpressionSyntax expression)
         {
             _lookupRootExpression = expression;
+            RoslynXamlDeferredMarkupExtensionLifecycleSyntax? rootMarkupLifecycle = null;
+            var rootMarkupLifecycleProfile =
+                _framework as IRoslynXamlDeferredMarkupExtensionLifecycleProfile;
+            if (_isClassBacked &&
+                _deferredLifetimeOwnerExpression == null &&
+                rootMarkupLifecycleProfile != null &&
+                rootMarkupLifecycleProfile.TryCreateDeferredMarkupExtensionLifecycle(
+                    expression,
+                    "__xamlBindingLifetime",
+                    out var createdRootMarkupLifecycle))
+            {
+                rootMarkupLifecycle = createdRootMarkupLifecycle;
+                _deferredLifetimeOwnerExpression =
+                    rootMarkupLifecycle.RegistrationOwner;
+            }
             ClassModifiers = ParseAccessibility(
                 GetDirectiveText(root, XamlNamespaces.Language2006, "ClassModifier"),
                 root.SourceSpan,
@@ -452,6 +467,31 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
             EmitOperations(root, expression, isRoot: true);
             foreach (var action in _pendingNameReferenceActions) action();
             Statements.AddRange(_pendingFieldAssignments);
+            if (_hasDeferredLifetimeRegistrations)
+            {
+                if (rootMarkupLifecycle == null ||
+                    rootMarkupLifecycleProfile == null ||
+                    !rootMarkupLifecycleProfile
+                        .TryCreateDeferredMarkupExtensionFinalization(
+                            rootMarkupLifecycle.RegistrationOwner,
+                            expression,
+                            out var finalization))
+                {
+                    AddError(
+                        "PGXAML3047",
+                        $"Profile '{_framework.Id}' cannot finalize class-backed " +
+                        "markup-extension lifetime ownership.",
+                        root.SourceSpan,
+                        "EXT-004");
+                }
+                else
+                {
+                    Statements.InsertRange(
+                        0,
+                        rootMarkupLifecycle.PrepareStatements);
+                    Statements.AddRange(finalization);
+                }
+            }
             if (_hasCompiledBindings &&
                 _framework is IRoslynXamlCompiledBindingLifecycleProfile lifecycle)
             {

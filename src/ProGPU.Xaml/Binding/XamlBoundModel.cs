@@ -368,7 +368,8 @@ public enum XamlBindingSourceKind
     LexicalDataType,
     ExplicitValue,
     ExplicitStaticMember,
-    RelativeSelf
+    RelativeSelf,
+    ElementName
 }
 
 /// <summary>

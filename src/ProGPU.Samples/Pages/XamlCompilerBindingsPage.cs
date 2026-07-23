@@ -42,6 +42,14 @@ public partial class XamlCompilerBindingsPage : Page
 
     public string? StaticSourceTextValue => StaticSourceText.Text;
 
+    public string? ElementNameTextValue => ElementNameText.Text;
+
+    public string? NamedElementSourceValue
+    {
+        get => NamedElementSource.Text;
+        set => NamedElementSource.Text = value ?? string.Empty;
+    }
+
     public string? OrdinaryIndexerTextValue
     {
         get => OrdinaryIndexerText.Text;
