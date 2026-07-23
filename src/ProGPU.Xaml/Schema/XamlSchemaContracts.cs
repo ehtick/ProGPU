@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Microsoft.CodeAnalysis;
 using ProGPU.Xaml.Diagnostics;
+using ProGPU.Xaml.Lowering;
 using ProGPU.Xaml.Parsing;
 using ProGPU.Xaml.Syntax;
 
@@ -621,13 +622,15 @@ public sealed class XamlCompilationResult
         IReadOnlyList<XamlGeneratedSource> sources,
         IReadOnlyList<Diagnostic> diagnostics,
         XamlDocumentBuildMetadata? buildMetadata = null,
-        bool wasSkipped = false)
+        bool wasSkipped = false,
+        XamlConstructionProgram? program = null)
     {
         Syntax = syntax;
         Sources = sources;
         Diagnostics = diagnostics;
         BuildMetadata = buildMetadata;
         WasSkipped = wasSkipped;
+        Program = program;
     }
 
     public XamlDocumentSyntax Syntax { get; }
@@ -635,6 +638,11 @@ public sealed class XamlCompilationResult
     public IReadOnlyList<Diagnostic> Diagnostics { get; }
     public XamlDocumentBuildMetadata? BuildMetadata { get; }
     public bool WasSkipped { get; }
+    /// <summary>
+    /// The accepted transformed construction program used to produce <see cref="Sources"/>.
+    /// It is absent only when compilation stops before lowering or is explicitly skipped.
+    /// </summary>
+    public XamlConstructionProgram? Program { get; }
 }
 
 public interface IXamlCodeEmitter

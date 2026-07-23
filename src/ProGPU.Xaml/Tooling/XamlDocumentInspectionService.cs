@@ -20,23 +20,34 @@ public enum XamlInspectionEntryKind
     InfosetObject,
     InfosetMember,
     InfosetText,
+    BoundObject,
+    BoundMember,
+    BoundValue,
+    ResourceScope,
+    ResourceDefinition,
+    ResourceReference,
+    IrObject,
+    IrOperation,
+    IrValue,
+    GeneratedSource,
     Diagnostic
 }
 
 public sealed class XamlInspectionEntry
 {
-    internal XamlInspectionEntry(
+    public XamlInspectionEntry(
         XamlInspectionEntryKind kind,
         int depth,
         string name,
         string value,
         TextSpan sourceSpan,
-        ulong stableId = 0)
+        ulong? stableId = null)
     {
+        if (depth < 0) throw new ArgumentOutOfRangeException(nameof(depth));
         Kind = kind;
         Depth = depth;
-        Name = name;
-        Value = value;
+        Name = name ?? throw new ArgumentNullException(nameof(name));
+        Value = value ?? throw new ArgumentNullException(nameof(value));
         SourceSpan = sourceSpan;
         StableId = stableId;
     }
@@ -46,18 +57,23 @@ public sealed class XamlInspectionEntry
     public string Name { get; }
     public string Value { get; }
     public TextSpan SourceSpan { get; }
-    public ulong StableId { get; }
-    public bool HasStableId =>
-        Kind != XamlInspectionEntryKind.Token &&
-        Kind != XamlInspectionEntryKind.Diagnostic;
+    public ulong? StableId { get; }
+    public bool HasStableId => StableId.HasValue;
 }
 
 public sealed class XamlInspectionProjection
 {
-    internal XamlInspectionProjection(
+    public XamlInspectionProjection(
         ImmutableArray<XamlInspectionEntry> entries,
         int totalEntryCount)
     {
+        if (entries.IsDefault) throw new ArgumentException(
+            "Inspection entries must be initialized.",
+            nameof(entries));
+        if (totalEntryCount < entries.Length)
+            throw new ArgumentOutOfRangeException(
+                nameof(totalEntryCount),
+                "The total entry count cannot be smaller than the visible entry count.");
         Entries = entries;
         TotalEntryCount = totalEntryCount;
     }
@@ -444,7 +460,7 @@ public sealed class XamlDocumentInspectionService
         string name,
         string value,
         TextSpan sourceSpan,
-        ulong stableId = 0)
+        ulong? stableId = null)
     {
         if (builder.Count < maximumEntries)
             builder.Add(new XamlInspectionEntry(
@@ -459,19 +475,74 @@ public sealed class XamlDocumentInspectionService
     private static string Preview(
         SourceText source,
         TextSpan span,
+        int maximumLength) =>
+        XamlInspectionText.CreatePreview(source, span, maximumLength);
+
+    private static string Preview(string value, int maximumLength) =>
+        XamlInspectionText.CreatePreview(value, maximumLength);
+
+    private static void ValidateLimit(int value, int maximum, string parameterName)
+    {
+        if (value <= 0 || value > maximum)
+            throw new ArgumentOutOfRangeException(
+                parameterName,
+                $"The value must be between 1 and {maximum}.");
+    }
+
+    private readonly struct SyntaxFrame
+    {
+        public SyntaxFrame(XamlSyntaxNode node, int depth)
+        {
+            Node = node;
+            Depth = depth;
+        }
+
+        public XamlSyntaxNode Node { get; }
+        public int Depth { get; }
+    }
+
+    private readonly struct InfosetFrame
+    {
+        public InfosetFrame(XamlInfosetValue value, int depth)
+        {
+            Value = value;
+            Depth = depth;
+        }
+
+        public XamlInfosetValue Value { get; }
+        public int Depth { get; }
+    }
+}
+
+public static class XamlInspectionText
+{
+    public static string CreatePreview(
+        SourceText source,
+        TextSpan span,
         int maximumLength)
     {
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        if (span.Start < 0 || span.End > source.Length)
+            throw new ArgumentOutOfRangeException(nameof(span));
+        ValidateMaximumLength(maximumLength);
         var length = Math.Min(span.Length, maximumLength);
         var value = length == 0
             ? string.Empty
             : source.ToString(new TextSpan(span.Start, length));
-        return Preview(value, maximumLength, span.Length > length);
+        return CreatePreviewCore(value, maximumLength, span.Length > length);
     }
 
-    private static string Preview(string value, int maximumLength) =>
-        Preview(value, maximumLength, value.Length > maximumLength);
+    public static string CreatePreview(string value, int maximumLength)
+    {
+        if (value == null) throw new ArgumentNullException(nameof(value));
+        ValidateMaximumLength(maximumLength);
+        return CreatePreviewCore(
+            value,
+            maximumLength,
+            value.Length > maximumLength);
+    }
 
-    private static string Preview(
+    private static string CreatePreviewCore(
         string value,
         int maximumLength,
         bool forceEllipsis)
@@ -514,35 +585,14 @@ public sealed class XamlDocumentInspectionService
         return builder.ToString();
     }
 
-    private static void ValidateLimit(int value, int maximum, string parameterName)
+    private static void ValidateMaximumLength(int maximumLength)
     {
-        if (value <= 0 || value > maximum)
+        if (maximumLength <= 0 ||
+            maximumLength >
+            XamlDocumentInspectionOptions.MaximumSupportedPreviewLength)
             throw new ArgumentOutOfRangeException(
-                parameterName,
-                $"The value must be between 1 and {maximum}.");
-    }
-
-    private readonly struct SyntaxFrame
-    {
-        public SyntaxFrame(XamlSyntaxNode node, int depth)
-        {
-            Node = node;
-            Depth = depth;
-        }
-
-        public XamlSyntaxNode Node { get; }
-        public int Depth { get; }
-    }
-
-    private readonly struct InfosetFrame
-    {
-        public InfosetFrame(XamlInfosetValue value, int depth)
-        {
-            Value = value;
-            Depth = depth;
-        }
-
-        public XamlInfosetValue Value { get; }
-        public int Depth { get; }
+                nameof(maximumLength),
+                $"The value must be between 1 and " +
+                $"{XamlDocumentInspectionOptions.MaximumSupportedPreviewLength}.");
     }
 }

@@ -13,6 +13,7 @@ using ProGPU.Xaml.Resources;
 using ProGPU.Xaml.Schema;
 using ProGPU.Xaml.Serialization;
 using ProGPU.Xaml.Syntax;
+using ProGPU.Xaml.Tooling;
 using Xunit;
 
 namespace ProGPU.Xaml.Tests;
@@ -11777,6 +11778,102 @@ namespace Demo {
                 lookupRoot,
                 resourceKey,
                 out expression);
+    }
+
+    [Fact]
+    public void CompilationInspectionProjectsTheExactEmittedProgram()
+    {
+        const string xaml = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.MainPage">
+  <StackPanel>
+    <TextBlock Text="Hello" />
+  </StackPanel>
+</Page>
+""";
+        var sourceInspection = new XamlDocumentInspectionService().Inspect(
+            SourceText.From(xaml),
+            "MainPage.xaml");
+        var profile = new WinUiXamlProfile();
+        var inspection = new RoslynXamlCompilationInspectionService().Inspect(
+            sourceInspection,
+            new RoslynXamlTypeSystem(CreateCompilation(), profile),
+            profile,
+            new RoslynXamlCompilationInspectionOptions
+            {
+                CompilerOptions = new XamlCompilerOptions
+                {
+                    Framework = profile.Id,
+                    ResourceUri = "Pages/MainPage.xaml",
+                    Strict = true
+                }
+            });
+
+        Assert.NotNull(inspection.Program);
+        Assert.Same(
+            inspection.CompilationResult.Program,
+            inspection.Program);
+        Assert.Same(
+            inspection.Program!.BoundDocument,
+            inspection.Program.ResourceGraph!.Document);
+        Assert.Contains(
+            inspection.Bound.Entries,
+            entry => entry.Kind == XamlInspectionEntryKind.BoundObject &&
+                     entry.Name == "Page" &&
+                     entry.Value == "Microsoft.UI.Xaml.Controls.Page");
+        Assert.Contains(
+            inspection.Ir.Entries,
+            entry => entry.Kind == XamlInspectionEntryKind.IrOperation &&
+                     entry.Name == XamlIrOperationKind.SetMember.ToString() &&
+                     entry.Value == "Text");
+        var generated = Assert.Single(
+            inspection.CompilationResult.Sources);
+        Assert.NotNull(generated.GeneratedSyntaxTree);
+        Assert.Contains(
+            inspection.GeneratedSources.Entries,
+            entry => entry.Kind == XamlInspectionEntryKind.GeneratedSource &&
+                     entry.Name == generated.HintName);
+        Assert.DoesNotContain(
+            inspection.CompilationResult.Diagnostics,
+            diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+    }
+
+    [Fact]
+    public void CompilationInspectionBoundsVisibleGraphWithoutChangingProgram()
+    {
+        const string xaml = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.MainPage">
+  <StackPanel><TextBlock Text="Hello" /></StackPanel>
+</Page>
+""";
+        var sourceInspection = new XamlDocumentInspectionService().Inspect(
+            SourceText.From(xaml),
+            "MainPage.xaml");
+        var profile = new WinUiXamlProfile();
+        var inspection = new RoslynXamlCompilationInspectionService().Inspect(
+            sourceInspection,
+            new RoslynXamlTypeSystem(CreateCompilation(), profile),
+            profile,
+            new RoslynXamlCompilationInspectionOptions
+            {
+                CompilerOptions = new XamlCompilerOptions
+                {
+                    Framework = profile.Id,
+                    ResourceUri = "Pages/MainPage.xaml",
+                    Strict = true
+                },
+                MaximumProjectionEntries = 1,
+                MaximumPreviewLength = 8
+            });
+
+        Assert.NotNull(inspection.Program);
+        Assert.Single(inspection.Bound.Entries);
+        Assert.True(inspection.Bound.IsTruncated);
+        Assert.Single(inspection.Ir.Entries);
+        Assert.True(inspection.Ir.IsTruncated);
     }
 
     private static CSharpCompilation CreateCompilation() => CSharpCompilation.Create(

@@ -10,6 +10,7 @@ using ProGPU.Xaml.Roslyn;
 using ProGPU.Xaml.Resources;
 using ProGPU.Xaml.Schema;
 using ProGPU.Xaml.Syntax;
+using ProGPU.Xaml.Tooling;
 using System.Text.Json;
 
 namespace ProGPU.Xaml.Cli;
@@ -129,22 +130,37 @@ internal static class Program
             throw new InvalidOperationException("Roslyn did not produce a compilation for " + projectPath + ".");
         compilation = RoslynXamlHostCompilation.WithoutGeneratedXamlTrees(
             compilation);
-        var syntax = ParseFile(file);
-        var infoset = new XamlInfosetConverter().Convert(syntax);
+        var sourceInspection = new XamlDocumentInspectionService().Inspect(
+            SourceText.From(File.ReadAllText(file)),
+            file,
+            new XamlDocumentInspectionOptions
+            {
+                ParseOptions = new XamlParseOptions
+                {
+                    Mode = XamlParseMode.Strict
+                },
+                InfosetOptions = new XamlInfosetConversionOptions
+                {
+                    Mode = XamlParseMode.Strict
+                }
+            });
         var profile = GetProfile(args);
         var typeSystem = new RoslynXamlTypeSystem(compilation, profile);
-        var semantic = new RoslynXamlSemanticManifestCompiler().Compile(
-            infoset,
+        var inspection = new RoslynXamlCompilationInspectionService().Inspect(
+            sourceInspection,
             typeSystem,
             profile,
-            file,
-            strict: true);
-        var resourceGraph = new XamlResourceGraphBuilder().Build(
-            semantic.BoundDocument);
-        var program = new XamlConstructionLowerer().Lower(
-            semantic.BoundDocument,
-            resourceGraph);
-        var diagnostics = program.Diagnostics
+            new RoslynXamlCompilationInspectionOptions
+            {
+                CompilerOptions = new XamlCompilerOptions
+                {
+                    Framework = profile.Id,
+                    ResourceUri = file,
+                    Strict = true
+                }
+            });
+        var program = inspection.Program;
+        var diagnostics = inspection.CompilationResult.Diagnostics
             .GroupBy(static diagnostic => diagnostic.ToString(), StringComparer.Ordinal)
             .Select(static group => group.First())
             .ToArray();
@@ -152,11 +168,25 @@ internal static class Program
         {
             command = "inspect",
             path = file,
-            syntax = new { root = syntax.Root?.QualifiedName, elements = CountObjects(syntax.Root), tokens = syntax.SyntaxTree.Tokens.Length },
-            infoset = DescribeInfoset(infoset.Root),
-            bound = DescribeBound(semantic.BoundDocument.Root),
-            resources = DescribeResources(resourceGraph),
-            ir = DescribeIr(program.Root),
+            syntax = new
+            {
+                root = sourceInspection.SyntaxTree.GetRoot()?.QualifiedName,
+                elements = sourceInspection.Statistics.SyntaxObjects,
+                tokens = sourceInspection.Statistics.Tokens
+            },
+            infoset = DescribeInfoset(sourceInspection.Infoset.Root),
+            bound = DescribeBound(program?.BoundDocument.Root),
+            resources = program?.ResourceGraph == null
+                ? null
+                : DescribeResources(program.ResourceGraph),
+            ir = DescribeIr(program?.Root),
+            generated = inspection.CompilationResult.Sources.Select(
+                static source => new
+                {
+                    source.HintName,
+                    characters = source.Source.Length,
+                    hasRoslynSyntaxTree = source.GeneratedSyntaxTree != null
+                }).ToArray(),
             diagnostics = ProjectDiagnostics(diagnostics)
         };
         if (HasOption(args, "--json")) WriteJson(report);

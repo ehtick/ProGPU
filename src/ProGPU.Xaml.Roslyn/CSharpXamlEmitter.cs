@@ -285,7 +285,8 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
                 compositionDocument,
                 Array.Empty<XamlGeneratedSource>(),
                 compositionDiagnostics,
-                buildMetadata);
+                buildMetadata,
+                program: program);
         }
 
         program = extensions!.ApplyConstructionProgramTransforms(
@@ -301,7 +302,12 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
         if (program.Root == null || program.Root.Type.Symbol == null ||
             (options.Strict && ContainsErrors(diagnostics)))
         {
-            return new XamlCompilationResult(document, sources, diagnostics, buildMetadata);
+            return new XamlCompilationResult(
+                document,
+                sources,
+                diagnostics,
+                buildMetadata,
+                program: program);
         }
 
         var className = GetDirectiveText(program.Root, XamlNamespaces.Language2006, "Class");
@@ -326,7 +332,12 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
         {
             diagnostics.Add(CreateError(document, "PGXAML3001",
                 $"x:Class '{className}' is not a valid C# type name.", program.Root.SourceSpan, "6.3.1.6"));
-            return new XamlCompilationResult(document, sources, diagnostics, buildMetadata);
+            return new XamlCompilationResult(
+                document,
+                sources,
+                diagnostics,
+                buildMetadata,
+                program: program);
         }
 
         var context = new EmitContext(
@@ -353,7 +364,12 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
             unit.ToFullString(),
             generatedTree,
             unformattedTree));
-        return new XamlCompilationResult(document, sources, diagnostics, buildMetadata);
+        return new XamlCompilationResult(
+            document,
+            sources,
+            diagnostics,
+            buildMetadata,
+            program: program);
     }
 
     private XamlCompilationResult EmitCompiledResource(
@@ -373,14 +389,24 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
             diagnostics.Add(CreateError(document, "PGXAML3005",
                 "A classless compiled XAML root must currently be a dictionary. Add x:Class or use a framework resource dictionary root.",
                 root.SourceSpan, "6.1.1.1"));
-            return new XamlCompilationResult(document, sources, diagnostics, buildMetadata);
+            return new XamlCompilationResult(
+                document,
+                sources,
+                diagnostics,
+                buildMetadata,
+                program: program);
         }
         if (!root.Type.Symbol.IsDefaultConstructible)
         {
             diagnostics.Add(CreateError(document, "PGXAML3006",
                 $"Classless dictionary '{root.Type.Symbol.MetadataName}' must be default constructible.",
                 root.SourceSpan, "6.2.2.3"));
-            return new XamlCompilationResult(document, sources, diagnostics, buildMetadata);
+            return new XamlCompilationResult(
+                document,
+                sources,
+                diagnostics,
+                buildMetadata,
+                program: program);
         }
 
         var artifact = CreateCompiledResourceArtifact(options.ResourceUri ?? document.Path);
@@ -400,7 +426,12 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
             diagnostics.Add(CreateError(document, "PGXAML5003",
                 $"Profile '{framework.Id}' does not provide compiled-resource registration.",
                 root.SourceSpan, "EXT-003"));
-            return new XamlCompilationResult(document, sources, diagnostics, buildMetadata);
+            return new XamlCompilationResult(
+                document,
+                sources,
+                diagnostics,
+                buildMetadata,
+                program: program);
         }
 
         var unformattedUnit = BuildResourceCompilationUnit(root.Type.Symbol, artifact, context, registration)
@@ -420,7 +451,12 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
             generatedTree,
             unformattedTree,
             artifact));
-        return new XamlCompilationResult(document, sources, diagnostics, buildMetadata);
+        return new XamlCompilationResult(
+            document,
+            sources,
+            diagnostics,
+            buildMetadata,
+            program: program);
     }
 
     private bool TryComposeExtensionHost(
