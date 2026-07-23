@@ -80,6 +80,73 @@ public class SamplePagesTests : IDisposable
         AppState.GenerateLogItems();
     }
 
+    [Fact]
+    public async Task Test_XamlPlayground_LivePreviewRequiresPermissionAndPublishesAcceptedProgram()
+    {
+        var root = Assert.IsType<Microsoft.UI.Xaml.Controls.StackPanel>(
+            XamlPlaygroundPage.Create());
+        var pivot = Assert.Single(root.Children.OfType<Pivot>());
+        var livePreviewItem = Assert.Single(
+            pivot.Items,
+            item => Equals(item.Header, "Live Preview"));
+        var generatedItem = Assert.Single(
+            pivot.Items,
+            item => Equals(item.Header, "Generated C#"));
+        var generated = Assert.IsType<TextBox>(
+            generatedItem.Content);
+        var panel = Assert.IsType<Microsoft.UI.Xaml.Controls.StackPanel>(
+            livePreviewItem.Content);
+        var status = Assert.IsType<TextBlock>(panel.Children[0]);
+        var permission = Assert.IsType<Button>(panel.Children[1]);
+        var previewHost = Assert.IsType<ContentControl>(
+            panel.Children[2]);
+
+        Assert.Contains("disabled", status.Text);
+        Assert.NotNull(previewHost.Content);
+
+        var onClick = typeof(Button).GetMethod(
+            "OnClick",
+            System.Reflection.BindingFlags.NonPublic |
+            System.Reflection.BindingFlags.Instance);
+        Assert.NotNull(onClick);
+        onClick.Invoke(permission, null);
+
+        for (var attempt = 0;
+             attempt < 400 &&
+             !status.Text.Contains(
+                 "Preview updated",
+                 StringComparison.Ordinal) &&
+             !status.Text.Contains(
+                 "failed",
+                 StringComparison.OrdinalIgnoreCase);
+             attempt++)
+        {
+            Microsoft.UI.Xaml.UIThread.RunPending();
+            await Task.Delay(25);
+        }
+
+        var inspectionStatus = root.Children
+            .OfType<TextBlock>()
+            .Last();
+        Assert.True(
+            status.Text.Contains(
+                "Preview updated",
+                StringComparison.Ordinal),
+            "Preview status: " + status.Text +
+            Environment.NewLine +
+            "Inspection status: " + inspectionStatus.Text +
+            Environment.NewLine +
+            "Generated:" + Environment.NewLine +
+            generated.Text);
+        Assert.Equal(
+            "ProGPU.Samples.Playground.Document",
+            Assert.IsAssignableFrom<FrameworkElement>(
+                previewHost.Content).GetType().FullName);
+
+        onClick.Invoke(permission, null);
+        Assert.Contains("disabled", status.Text);
+    }
+
     private void RunPageTest(
         FrameworkElement page,
         string pageName,
