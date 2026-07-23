@@ -645,7 +645,8 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
             _cancellationToken = cancellationToken;
             Options = options;
             _diagnostics = diagnostics;
-            _checksum = ToHex(program.BoundDocument.Infoset.SourceText.GetChecksum());
+            _checksum = RoslynXamlSourceChecksum.ComputeHex(
+                program.BoundDocument.Infoset.SourceText);
             _isClassBacked = isClassBacked;
             _contextExpression = contextExpression;
             _contextType = contextType;
@@ -2380,14 +2381,6 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
             }
             return hash;
         }
-    }
-
-    private static string ToHex(ImmutableArray<byte> checksum)
-    {
-        if (checksum.IsDefaultOrEmpty) return string.Empty;
-        var builder = new StringBuilder(checksum.Length * 2);
-        foreach (var value in checksum) builder.Append(value.ToString("x2", CultureInfo.InvariantCulture));
-        return builder.ToString();
     }
 
     private static ExpressionStatementSyntax Assignment(ExpressionSyntax left, ExpressionSyntax right) =>

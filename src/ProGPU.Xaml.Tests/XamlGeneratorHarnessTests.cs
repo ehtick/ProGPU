@@ -2726,7 +2726,10 @@ namespace Demo {
         public InMemoryAdditionalText(string path, string text)
         {
             Path = path;
-            _text = SourceText.From(text, Encoding.UTF8);
+            _text = SourceText.From(
+                text,
+                Encoding.UTF8,
+                SourceHashAlgorithm.Sha256);
         }
         public override string Path { get; }
         public override SourceText GetText(CancellationToken cancellationToken = default) => _text;

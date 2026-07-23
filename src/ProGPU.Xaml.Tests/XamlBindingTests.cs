@@ -3,6 +3,7 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 using System.Collections.Immutable;
+using System.Text;
 using ProGPU.Xaml.Binding;
 using ProGPU.Xaml.Infoset;
 using ProGPU.Xaml.Lowering;
@@ -9438,6 +9439,27 @@ namespace Demo {
         Assert.Same(
             filtered,
             RoslynXamlHostCompilation.WithoutGeneratedXamlTrees(filtered));
+    }
+
+    [Fact]
+    public void GeneratedIdentityChecksumIgnoresHostSourceHashAlgorithm()
+    {
+        const string source = "<Page Title=\"café\" />";
+        var sha1Source = SourceText.From(
+            source,
+            Encoding.UTF8,
+            SourceHashAlgorithm.Sha1);
+        var sha256Source = SourceText.From(
+            source,
+            Encoding.Unicode,
+            SourceHashAlgorithm.Sha256);
+
+        Assert.Equal(
+            RoslynXamlSourceChecksum.ComputeHex(sha1Source),
+            RoslynXamlSourceChecksum.ComputeHex(sha256Source));
+        Assert.Equal(
+            64,
+            RoslynXamlSourceChecksum.ComputeHex(sha1Source).Length);
     }
 
     [Fact]

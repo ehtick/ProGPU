@@ -110,7 +110,8 @@ public sealed class XamlReverseProjectionService
             .Where(static entry => entry.Kind == XamlProjectionKind.Literal)
             .GroupBy(static entry => ProjectionKey(entry), StringComparer.Ordinal)
             .ToDictionary(static group => group.Key, static group => group.ToArray(), StringComparer.Ordinal);
-        var checksum = ToHex(xamlTree.GetText().GetChecksum());
+        var checksum = RoslynXamlSourceChecksum.ComputeHex(
+            xamlTree.GetText());
         var serializationMembers = serializationPlans == null
             ? null
             : BuildSerializationMemberIndex(serializationPlans);
@@ -317,10 +318,4 @@ public sealed class XamlReverseProjectionService
         XamlProjectionEntry entry,
         string message) => new XamlReverseProjectionConflict(kind, entry.StableNodeId, message);
 
-    private static string ToHex(ImmutableArray<byte> bytes)
-    {
-        var builder = new StringBuilder(bytes.Length * 2);
-        foreach (var value in bytes) builder.Append(value.ToString("x2", CultureInfo.InvariantCulture));
-        return builder.ToString();
-    }
 }
