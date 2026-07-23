@@ -642,6 +642,9 @@ public sealed class BindingRuntimeTests
         ProGPU.Samples.XamlCompilerBindingSources.Current.Title =
             "Static source update";
         Assert.Equal("Static source update", page.StaticSourceTextValue);
+        Assert.Equal("Resource source item", page.ResourceSourceTextValue);
+        page.ResourceBindingSourceTitle = "Resource source update";
+        Assert.Equal("Resource source update", page.ResourceSourceTextValue);
         Assert.Equal("Named element source", page.ElementNameTextValue);
         page.NamedElementSourceValue = "Named element update";
         Assert.Equal("Named element update", page.ElementNameTextValue);

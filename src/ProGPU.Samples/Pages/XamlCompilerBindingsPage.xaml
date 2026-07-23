@@ -20,6 +20,9 @@
                            Text="{Binding Path=Caption,
                                           RelativeSource={RelativeSource TemplatedParent}}" />
             </ControlTemplate>
+            <local:XamlCompilerBindingItem
+                x:Key="ResourceBindingSource"
+                Title="Resource source item" />
         </ResourceDictionary>
     </Page.Resources>
     <StackPanel Margin="24" Orientation="Vertical">
@@ -37,6 +40,13 @@
         <TextBlock x:Name="StaticSourceText"
                    Margin="0,6,0,0"
                    Text="{Binding Path=Title, Source={x:Static local:XamlCompilerBindingSources.Current}}" />
+
+        <TextBlock Margin="0,16,0,0"
+                   Text="Ordinary Binding with a resource-graph-resolved source" />
+        <TextBlock x:Name="ResourceSourceText"
+                   Margin="0,6,0,0"
+                   Text="{Binding Path=Title,
+                                  Source={StaticResource ResourceBindingSource}}" />
 
         <TextBlock Margin="0,16,0,0"
                    Text="Ordinary Binding with a namescope-resolved ElementName source" />

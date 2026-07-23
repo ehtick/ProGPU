@@ -42,6 +42,14 @@ public partial class XamlCompilerBindingsPage : Page
 
     public string? StaticSourceTextValue => StaticSourceText.Text;
 
+    public string? ResourceSourceTextValue => ResourceSourceText.Text;
+
+    public string ResourceBindingSourceTitle
+    {
+        get => ((XamlCompilerBindingItem)Resources["ResourceBindingSource"]).Title;
+        set => ((XamlCompilerBindingItem)Resources["ResourceBindingSource"]).Title = value;
+    }
+
     public string? ElementNameTextValue => ElementNameText.Text;
 
     public string? NamedElementSourceValue
@@ -143,6 +151,10 @@ public sealed class XamlCompilerTemplateHost : Control
 public sealed class XamlCompilerBindingItem : INotifyPropertyChanged
 {
     private string _title;
+
+    public XamlCompilerBindingItem() : this(string.Empty)
+    {
+    }
 
     public XamlCompilerBindingItem(string title) => _title = title;
 
