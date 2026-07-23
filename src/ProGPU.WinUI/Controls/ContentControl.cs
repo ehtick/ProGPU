@@ -7,12 +7,57 @@ using System;
 using System.Numerics;
 using ProGPU.Layout;
 using ProGPU.Scene;
+using Microsoft.UI.Xaml.Media.Animation;
 
 namespace Microsoft.UI.Xaml.Controls;
 
 [ContentProperty(Name = "Content")]
 public class ContentControl : Control
 {
+    private FrameworkElement? _contentTemplateRoot;
+    private FrameworkElement? _presentedContent;
+
+    public static readonly DependencyProperty ContentTemplateProperty =
+        DependencyProperty.Register(
+            nameof(ContentTemplate),
+            typeof(DataTemplate),
+            typeof(ContentControl),
+            new PropertyMetadata(null, OnPresentationPropertyChanged) { AffectsMeasure = true, AffectsArrange = true, AffectsRender = true });
+
+    public static readonly DependencyProperty ContentTemplateSelectorProperty =
+        DependencyProperty.Register(
+            nameof(ContentTemplateSelector),
+            typeof(DataTemplateSelector),
+            typeof(ContentControl),
+            new PropertyMetadata(null, OnPresentationPropertyChanged) { AffectsMeasure = true, AffectsArrange = true, AffectsRender = true });
+
+    public static readonly DependencyProperty ContentTransitionsProperty =
+        DependencyProperty.Register(
+            nameof(ContentTransitions),
+            typeof(TransitionCollection),
+            typeof(ContentControl),
+            new PropertyMetadata(null) { AffectsRender = true });
+
+    public DataTemplate? ContentTemplate
+    {
+        get => GetValue(ContentTemplateProperty) as DataTemplate;
+        set => SetValue(ContentTemplateProperty, value);
+    }
+
+    public DataTemplateSelector? ContentTemplateSelector
+    {
+        get => GetValue(ContentTemplateSelectorProperty) as DataTemplateSelector;
+        set => SetValue(ContentTemplateSelectorProperty, value);
+    }
+
+    public TransitionCollection? ContentTransitions
+    {
+        get => GetValue(ContentTransitionsProperty) as TransitionCollection;
+        set => SetValue(ContentTransitionsProperty, value);
+    }
+
+    public FrameworkElement? ContentTemplateRoot => _contentTemplateRoot;
+
     public static readonly DependencyProperty ContentProperty =
         DependencyProperty.Register(
             "Content",
@@ -32,26 +77,47 @@ public class ContentControl : Control
         control.OnContentChanged(e.OldValue, e.NewValue);
     }
 
+    private static void OnPresentationPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var control = (ContentControl)d;
+        control.OnContentChanged(control.Content, control.Content);
+    }
+
     protected virtual void OnContentChanged(object? oldValue, object? newValue)
     {
-        if (oldValue is FrameworkElement oldFe)
+        XamlTemplateFactory.ReleaseSubtree(_presentedContent);
+        if (_presentedContent != null)
+            RemoveChild(_presentedContent);
+
+        _presentedContent = null;
+        _contentTemplateRoot = null;
+
+        var selectedTemplate = ContentTemplateSelector?.SelectTemplate(newValue, this) ?? ContentTemplate;
+        if (selectedTemplate != null)
         {
-            RemoveChild(oldFe);
+            _contentTemplateRoot = XamlTemplateFactory.Build(selectedTemplate, newValue);
+            _presentedContent = _contentTemplateRoot;
+            if (_presentedContent != null)
+            {
+                _presentedContent.DataContext = newValue;
+                AddChild(_presentedContent);
+            }
         }
-        
-        if (newValue != null)
+        else if (newValue != null)
         {
             if (newValue is FrameworkElement newFe)
             {
-                AddChild(newFe);
+                _presentedContent = newFe;
             }
             else
             {
                 // Auto-wrap non-FrameworkElement content in a RichTextBlock
                 var tb = new RichTextBlock { TextWrapping = TextWrapping.NoWrap };
                 tb.Inlines.Add(new Run { Text = newValue.ToString() ?? string.Empty });
-                AddChild(tb);
+                _presentedContent = tb;
             }
+
+            AddChild(_presentedContent);
         }
         
         Invalidate();
@@ -62,12 +128,7 @@ public class ContentControl : Control
     {
         get
         {
-            if (Content is FrameworkElement fe) return fe;
-            foreach (var child in Children)
-            {
-                if (child is FrameworkElement childFe) return childFe;
-            }
-            return null;
+            return _presentedContent;
         }
     }
 

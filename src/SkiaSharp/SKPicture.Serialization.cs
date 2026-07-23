@@ -527,7 +527,8 @@ internal static class PictureArchive
                 WriteVector4(writer, crossHatch.Color);
                 break;
             case ThemeResourceBrush theme:
-                WriteString(writer, theme.ResourceKey);
+                WriteString(writer, theme.ResourceKey as string ?? throw new NotSupportedException(
+                    $"Picture serialization supports string theme-resource keys; key type '{theme.ResourceKey.GetType().FullName}' is not serializable."));
                 break;
             case BackdropMaterialBrush backdrop:
                 writer.Write((int)backdrop.Kind);

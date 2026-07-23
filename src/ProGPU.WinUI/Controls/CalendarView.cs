@@ -11,8 +11,63 @@ using ProGPU.Vector;
 
 namespace Microsoft.UI.Xaml.Controls;
 
+public enum CalendarViewDisplayMode
+{
+    Month = 0,
+    Year = 1,
+    Decade = 2
+}
+
 public class CalendarView : Control
 {
+    private static readonly DateTimeOffset DefaultMinDate = DateTimeOffset.Now.AddYears(-100);
+    private static readonly DateTimeOffset DefaultMaxDate = DateTimeOffset.Now.AddYears(100);
+
+    public static readonly DependencyProperty MinDateProperty =
+        DependencyProperty.Register(
+            nameof(MinDate), typeof(DateTimeOffset), typeof(CalendarView),
+            new PropertyMetadata(DefaultMinDate, OnDateRangeChanged) { AffectsRender = true });
+
+    public static readonly DependencyProperty MaxDateProperty =
+        DependencyProperty.Register(
+            nameof(MaxDate), typeof(DateTimeOffset), typeof(CalendarView),
+            new PropertyMetadata(DefaultMaxDate, OnDateRangeChanged) { AffectsRender = true });
+
+    public static readonly DependencyProperty CalendarIdentifierProperty =
+        DependencyProperty.Register(
+            nameof(CalendarIdentifier), typeof(string), typeof(CalendarView),
+            new PropertyMetadata("GregorianCalendar") { AffectsMeasure = true, AffectsRender = true });
+
+    public static readonly DependencyProperty DayOfWeekFormatProperty =
+        DependencyProperty.Register(
+            nameof(DayOfWeekFormat), typeof(string), typeof(CalendarView),
+            new PropertyMetadata("{dayofweek.abbreviated(2)}") { AffectsMeasure = true, AffectsRender = true });
+
+    public static readonly DependencyProperty FirstDayOfWeekProperty =
+        DependencyProperty.Register(
+            nameof(FirstDayOfWeek), typeof(DayOfWeek), typeof(CalendarView),
+            new PropertyMetadata(DayOfWeek.Sunday) { AffectsMeasure = true, AffectsRender = true });
+
+    public static readonly DependencyProperty DisplayModeProperty =
+        DependencyProperty.Register(
+            nameof(DisplayMode), typeof(CalendarViewDisplayMode), typeof(CalendarView),
+            new PropertyMetadata(CalendarViewDisplayMode.Month) { AffectsMeasure = true, AffectsRender = true });
+
+    public static readonly DependencyProperty IsTodayHighlightedProperty =
+        DependencyProperty.Register(
+            nameof(IsTodayHighlighted), typeof(bool), typeof(CalendarView),
+            new PropertyMetadata(true) { AffectsRender = true });
+
+    public static readonly DependencyProperty IsOutOfScopeEnabledProperty =
+        DependencyProperty.Register(
+            nameof(IsOutOfScopeEnabled), typeof(bool), typeof(CalendarView),
+            new PropertyMetadata(true) { AffectsRender = true });
+
+    public static readonly DependencyProperty IsGroupLabelVisibleProperty =
+        DependencyProperty.Register(
+            nameof(IsGroupLabelVisible), typeof(bool), typeof(CalendarView),
+            new PropertyMetadata(false) { AffectsMeasure = true, AffectsRender = true });
+
     private DateTime _displayDate = DateTime.Today;
     private DateTime? _selectedDate = DateTime.Today;
     private int _hoveredDayIndex = -1; // Index in 0..41 grid
@@ -23,10 +78,78 @@ public class CalendarView : Control
     private bool _isPrevHovered;
     private bool _isNextHovered;
 
+    public DateTimeOffset MinDate
+    {
+        get => (DateTimeOffset)(GetValue(MinDateProperty) ?? DefaultMinDate);
+        set
+        {
+            if (value > MaxDate)
+                throw new ArgumentOutOfRangeException(nameof(value), value, "MinDate cannot be later than MaxDate.");
+            SetValue(MinDateProperty, value);
+        }
+    }
+
+    public DateTimeOffset MaxDate
+    {
+        get => (DateTimeOffset)(GetValue(MaxDateProperty) ?? DefaultMaxDate);
+        set
+        {
+            if (value < MinDate)
+                throw new ArgumentOutOfRangeException(nameof(value), value, "MaxDate cannot be earlier than MinDate.");
+            SetValue(MaxDateProperty, value);
+        }
+    }
+
+    public string CalendarIdentifier
+    {
+        get => GetValue(CalendarIdentifierProperty) as string ?? "GregorianCalendar";
+        set => SetValue(CalendarIdentifierProperty, value ?? "GregorianCalendar");
+    }
+
+    public string DayOfWeekFormat
+    {
+        get => GetValue(DayOfWeekFormatProperty) as string ?? "{dayofweek.abbreviated(2)}";
+        set => SetValue(DayOfWeekFormatProperty, value ?? string.Empty);
+    }
+
+    public DayOfWeek FirstDayOfWeek
+    {
+        get => (DayOfWeek)(GetValue(FirstDayOfWeekProperty) ?? DayOfWeek.Sunday);
+        set => SetValue(FirstDayOfWeekProperty, value);
+    }
+
+    public CalendarViewDisplayMode DisplayMode
+    {
+        get => (CalendarViewDisplayMode)(GetValue(DisplayModeProperty) ?? CalendarViewDisplayMode.Month);
+        set => SetValue(DisplayModeProperty, value);
+    }
+
+    public bool IsTodayHighlighted
+    {
+        get => (bool)(GetValue(IsTodayHighlightedProperty) ?? true);
+        set => SetValue(IsTodayHighlightedProperty, value);
+    }
+
+    public bool IsOutOfScopeEnabled
+    {
+        get => (bool)(GetValue(IsOutOfScopeEnabledProperty) ?? true);
+        set => SetValue(IsOutOfScopeEnabledProperty, value);
+    }
+
+    public bool IsGroupLabelVisible
+    {
+        get => (bool)(GetValue(IsGroupLabelVisibleProperty) ?? false);
+        set => SetValue(IsGroupLabelVisibleProperty, value);
+    }
+
     public DateTime DisplayDate
     {
         get => _displayDate;
-        set { _displayDate = value; Invalidate(); }
+        set
+        {
+            _displayDate = ClampToDateRange(value);
+            Invalidate();
+        }
     }
 
     public DateTime? SelectedDate
@@ -36,11 +159,10 @@ public class CalendarView : Control
         {
             if (_selectedDate != value)
             {
-                _selectedDate = value;
-                if (value.HasValue)
-                {
-                    _displayDate = value.Value;
-                }
+                var clampedValue = value.HasValue ? ClampToDateRange(value.Value) : (DateTime?)null;
+                _selectedDate = clampedValue;
+                if (clampedValue.HasValue)
+                    _displayDate = clampedValue.Value;
                 Invalidate();
                 SelectedDatesChanged?.Invoke(this, EventArgs.Empty);
             }
@@ -48,6 +170,23 @@ public class CalendarView : Control
     }
 
     public event EventHandler? SelectedDatesChanged;
+
+    private static void OnDateRangeChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs args)
+    {
+        _ = args;
+        var calendar = (CalendarView)dependencyObject;
+        calendar._displayDate = calendar.ClampToDateRange(calendar._displayDate);
+        if (calendar._selectedDate.HasValue)
+            calendar._selectedDate = calendar.ClampToDateRange(calendar._selectedDate.Value);
+        calendar.Invalidate();
+    }
+
+    private DateTime ClampToDateRange(DateTime value)
+    {
+        var minimum = MinDate.LocalDateTime;
+        var maximum = MaxDate.LocalDateTime;
+        return value < minimum ? minimum : value > maximum ? maximum : value;
+    }
 
     public CalendarView()
     {
@@ -165,6 +304,10 @@ public class CalendarView : Control
             if (dayRects[i].Contains(localPos))
             {
                 var targetDate = GetDateForIndex(i);
+                if (targetDate < MinDate.LocalDateTime || targetDate > MaxDate.LocalDateTime)
+                    break;
+                if (!IsOutOfScopeEnabled && targetDate.Month != _displayDate.Month)
+                    break;
                 SelectedDate = targetDate;
                 e.Handled = true;
                 break;
@@ -182,10 +325,7 @@ public class CalendarView : Control
     private DateTime GetDateForIndex(int index)
     {
         var firstOfMonth = new DateTime(_displayDate.Year, _displayDate.Month, 1);
-        int dayOfWeekOffset = (int)firstOfMonth.DayOfWeek; // 0 for Sunday
-        
-        // Days backward to start grid from Sunday
-        int daysBack = dayOfWeekOffset; 
+        int daysBack = ((int)firstOfMonth.DayOfWeek - (int)FirstDayOfWeek + 7) % 7;
         return firstOfMonth.AddDays(index - daysBack);
     }
 
@@ -204,7 +344,7 @@ public class CalendarView : Control
             Background ?? ThemeManager.GetBrush("CardBackground"), 
             new Pen(BorderBrush ?? ThemeManager.GetBrush("ControlBorder"), BorderThickness.Left), 
             rect, 
-            CornerRadius
+            CornerRadius.RenderingRadius
         );
 
         // 2. Render month navigation header bar
@@ -244,15 +384,18 @@ public class CalendarView : Control
         DrawNavigationChevron(context, arrowPen, physicalNextRect, pointsRight: !isRtl);
 
         // 3. Render day-of-week header column names
-        string[] daysOfWeek = { "Su", "Mo", "Tu", "We", "Th", "Fr", "Sa" };
         float cellW, cellH;
         var dayRects = GetDayRects(out cellW, out cellH);
         
         for (int i = 0; i < 7; i++)
         {
+            var day = (DayOfWeek)(((int)FirstDayOfWeek + i) % 7);
+            var dayName = System.Globalization.CultureInfo.CurrentCulture.DateTimeFormat.GetAbbreviatedDayName(day);
+            if (dayName.Length > 2 && DayOfWeekFormat.Contains("abbreviated(2)", StringComparison.Ordinal))
+                dayName = dayName[..2];
             Rect physicalCell = LogicalToPhysical(dayRects[i]);
             float headerX = physicalCell.X + (physicalCell.Width - 14f) / 2f;
-            context.DrawText(daysOfWeek[i], font, 11f, ThemeManager.GetBrush("TextSecondary"), new Vector2(headerX, 48f));
+            context.DrawText(dayName, font, 11f, ThemeManager.GetBrush("TextSecondary"), new Vector2(headerX, 48f));
         }
 
         // Horizontal separator line under day names (1px thin rectangle)
@@ -287,7 +430,7 @@ public class CalendarView : Control
                 var pen = new Pen(ThemeManager.GetBrush("ControlBorderHover"), 1f);
                 context.DrawRoundedRectangle(fill, pen, cellHighlightRect, 4f);
             }
-            else if (isToday)
+            else if (isToday && IsTodayHighlighted)
             {
                 // Accent border for today
                 var pen = new Pen(ThemeManager.GetBrush("SystemAccentColor"), 1f);
@@ -300,7 +443,7 @@ public class CalendarView : Control
             {
                 textBrush = ThemeManager.GetBrush("CardBackground", ElementTheme.Light);
             }
-            else if (isCurrentMonth)
+            else if (isCurrentMonth || !IsOutOfScopeEnabled)
             {
                 textBrush = ThemeManager.GetBrush("TextPrimary");
             }

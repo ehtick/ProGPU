@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Documents;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using System;
 using System.Numerics;
 using ProGPU.Layout;
@@ -29,6 +30,23 @@ public enum ZoomMode
     Enabled
 }
 
+public enum ScrollBarVisibility
+{
+    Disabled = 0,
+    Auto = 1,
+    Hidden = 2,
+    Visible = 3
+}
+
+public enum SnapPointsType
+{
+    None = 0,
+    Optional = 1,
+    Mandatory = 2,
+    OptionalSingle = 3,
+    MandatorySingle = 4
+}
+
 public sealed class ScrollViewerViewChangingEventArgs : EventArgs
 {
     public bool IsInertial { get; internal init; }
@@ -45,6 +63,63 @@ public sealed class ScrollViewerViewChangedEventArgs : EventArgs
 [ContentProperty(Name = "Content")]
 public class ScrollViewer : ContentControl
 {
+    public static readonly DependencyProperty HorizontalScrollBarVisibilityProperty = DependencyProperty.RegisterAttached(
+        nameof(HorizontalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(ScrollViewer),
+        new PropertyMetadata(ScrollBarVisibility.Disabled));
+
+    public static readonly DependencyProperty VerticalScrollBarVisibilityProperty = DependencyProperty.RegisterAttached(
+        nameof(VerticalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(ScrollViewer),
+        new PropertyMetadata(ScrollBarVisibility.Visible));
+
+    public static readonly DependencyProperty HorizontalScrollModeProperty = DependencyProperty.RegisterAttached(
+        nameof(HorizontalScrollMode), typeof(ScrollMode), typeof(ScrollViewer), new PropertyMetadata(ScrollMode.Auto));
+
+    public static readonly DependencyProperty VerticalScrollModeProperty = DependencyProperty.RegisterAttached(
+        nameof(VerticalScrollMode), typeof(ScrollMode), typeof(ScrollViewer), new PropertyMetadata(ScrollMode.Auto));
+
+    public static readonly DependencyProperty IsHorizontalRailEnabledProperty = DependencyProperty.RegisterAttached(
+        nameof(IsHorizontalRailEnabled), typeof(bool), typeof(ScrollViewer), new PropertyMetadata(true));
+
+    public static readonly DependencyProperty IsVerticalRailEnabledProperty = DependencyProperty.RegisterAttached(
+        nameof(IsVerticalRailEnabled), typeof(bool), typeof(ScrollViewer), new PropertyMetadata(true));
+
+    public static readonly DependencyProperty IsHorizontalScrollChainingEnabledProperty = DependencyProperty.RegisterAttached(
+        nameof(IsHorizontalScrollChainingEnabled), typeof(bool), typeof(ScrollViewer), new PropertyMetadata(true));
+
+    public static readonly DependencyProperty IsVerticalScrollChainingEnabledProperty = DependencyProperty.RegisterAttached(
+        nameof(IsVerticalScrollChainingEnabled), typeof(bool), typeof(ScrollViewer), new PropertyMetadata(true));
+
+    public static readonly DependencyProperty IsDeferredScrollingEnabledProperty = DependencyProperty.RegisterAttached(
+        "IsDeferredScrollingEnabled", typeof(bool), typeof(ScrollViewer), new PropertyMetadata(false));
+
+    public static readonly DependencyProperty BringIntoViewOnFocusChangeProperty = DependencyProperty.RegisterAttached(
+        "BringIntoViewOnFocusChange", typeof(bool), typeof(ScrollViewer), new PropertyMetadata(true));
+
+    public static readonly DependencyProperty IsZoomChainingEnabledProperty = DependencyProperty.RegisterAttached(
+        nameof(IsZoomChainingEnabled), typeof(bool), typeof(ScrollViewer), new PropertyMetadata(true));
+
+    public static readonly DependencyProperty IsZoomInertiaEnabledProperty = DependencyProperty.RegisterAttached(
+        nameof(IsZoomInertiaEnabled), typeof(bool), typeof(ScrollViewer), new PropertyMetadata(true));
+
+    public static readonly DependencyProperty IsScrollInertiaEnabledProperty = DependencyProperty.RegisterAttached(
+        nameof(IsScrollInertiaEnabled), typeof(bool), typeof(ScrollViewer), new PropertyMetadata(true));
+
+    public static readonly DependencyProperty HorizontalSnapPointsTypeProperty = DependencyProperty.Register(
+        nameof(HorizontalSnapPointsType), typeof(SnapPointsType), typeof(ScrollViewer),
+        new PropertyMetadata(SnapPointsType.None));
+
+    public static readonly DependencyProperty VerticalSnapPointsTypeProperty = DependencyProperty.Register(
+        nameof(VerticalSnapPointsType), typeof(SnapPointsType), typeof(ScrollViewer),
+        new PropertyMetadata(SnapPointsType.None));
+
+    public static readonly DependencyProperty HorizontalSnapPointsAlignmentProperty = DependencyProperty.Register(
+        nameof(HorizontalSnapPointsAlignment), typeof(SnapPointsAlignment), typeof(ScrollViewer),
+        new PropertyMetadata(SnapPointsAlignment.Near));
+
+    public static readonly DependencyProperty VerticalSnapPointsAlignmentProperty = DependencyProperty.Register(
+        nameof(VerticalSnapPointsAlignment), typeof(SnapPointsAlignment), typeof(ScrollViewer),
+        new PropertyMetadata(SnapPointsAlignment.Near));
+
     private float _verticalOffset;
     private float _horizontalOffset;
     
@@ -145,8 +220,173 @@ public class ScrollViewer : ContentControl
 
     public float ContentHeight => (Content?.DesiredSize.Y ?? Size.Y) * ZoomFactor;
     public float ContentWidth => (Content?.DesiredSize.X ?? Size.X) * ZoomFactor;
-    public ScrollMode HorizontalScrollMode { get; set; } = ScrollMode.Auto;
-    public ScrollMode VerticalScrollMode { get; set; } = ScrollMode.Auto;
+    public ScrollMode HorizontalScrollMode
+    {
+        get => GetHorizontalScrollMode(this);
+        set => SetHorizontalScrollMode(this, value);
+    }
+
+    public ScrollMode VerticalScrollMode
+    {
+        get => GetVerticalScrollMode(this);
+        set => SetVerticalScrollMode(this, value);
+    }
+
+    public ScrollBarVisibility HorizontalScrollBarVisibility
+    {
+        get => GetHorizontalScrollBarVisibility(this);
+        set => SetHorizontalScrollBarVisibility(this, value);
+    }
+
+    public ScrollBarVisibility VerticalScrollBarVisibility
+    {
+        get => GetVerticalScrollBarVisibility(this);
+        set => SetVerticalScrollBarVisibility(this, value);
+    }
+
+    public bool IsHorizontalRailEnabled
+    {
+        get => GetIsHorizontalRailEnabled(this);
+        set => SetIsHorizontalRailEnabled(this, value);
+    }
+
+    public bool IsVerticalRailEnabled
+    {
+        get => GetIsVerticalRailEnabled(this);
+        set => SetIsVerticalRailEnabled(this, value);
+    }
+
+    public bool IsHorizontalScrollChainingEnabled
+    {
+        get => GetIsHorizontalScrollChainingEnabled(this);
+        set => SetIsHorizontalScrollChainingEnabled(this, value);
+    }
+
+    public bool IsVerticalScrollChainingEnabled
+    {
+        get => GetIsVerticalScrollChainingEnabled(this);
+        set => SetIsVerticalScrollChainingEnabled(this, value);
+    }
+
+    public bool IsZoomChainingEnabled
+    {
+        get => GetIsZoomChainingEnabled(this);
+        set => SetIsZoomChainingEnabled(this, value);
+    }
+
+    public bool IsZoomInertiaEnabled
+    {
+        get => GetIsZoomInertiaEnabled(this);
+        set => SetIsZoomInertiaEnabled(this, value);
+    }
+
+    public bool IsScrollInertiaEnabled
+    {
+        get => GetIsScrollInertiaEnabled(this);
+        set => SetIsScrollInertiaEnabled(this, value);
+    }
+
+    public SnapPointsType HorizontalSnapPointsType
+    {
+        get => (SnapPointsType)(GetValue(HorizontalSnapPointsTypeProperty) ?? SnapPointsType.None);
+        set => SetValue(HorizontalSnapPointsTypeProperty, value);
+    }
+
+    public SnapPointsType VerticalSnapPointsType
+    {
+        get => (SnapPointsType)(GetValue(VerticalSnapPointsTypeProperty) ?? SnapPointsType.None);
+        set => SetValue(VerticalSnapPointsTypeProperty, value);
+    }
+
+    public SnapPointsAlignment HorizontalSnapPointsAlignment
+    {
+        get => (SnapPointsAlignment)(GetValue(HorizontalSnapPointsAlignmentProperty) ?? SnapPointsAlignment.Near);
+        set => SetValue(HorizontalSnapPointsAlignmentProperty, value);
+    }
+
+    public SnapPointsAlignment VerticalSnapPointsAlignment
+    {
+        get => (SnapPointsAlignment)(GetValue(VerticalSnapPointsAlignmentProperty) ?? SnapPointsAlignment.Near);
+        set => SetValue(VerticalSnapPointsAlignmentProperty, value);
+    }
+
+    public static ScrollBarVisibility GetHorizontalScrollBarVisibility(DependencyObject element) =>
+        (ScrollBarVisibility)(element.GetValue(HorizontalScrollBarVisibilityProperty) ?? ScrollBarVisibility.Disabled);
+
+    public static void SetHorizontalScrollBarVisibility(DependencyObject element, ScrollBarVisibility value) =>
+        element.SetValue(HorizontalScrollBarVisibilityProperty, value);
+
+    public static ScrollBarVisibility GetVerticalScrollBarVisibility(DependencyObject element) =>
+        (ScrollBarVisibility)(element.GetValue(VerticalScrollBarVisibilityProperty) ?? ScrollBarVisibility.Visible);
+
+    public static void SetVerticalScrollBarVisibility(DependencyObject element, ScrollBarVisibility value) =>
+        element.SetValue(VerticalScrollBarVisibilityProperty, value);
+
+    public static ScrollMode GetHorizontalScrollMode(DependencyObject element) =>
+        (ScrollMode)(element.GetValue(HorizontalScrollModeProperty) ?? ScrollMode.Auto);
+
+    public static void SetHorizontalScrollMode(DependencyObject element, ScrollMode value) =>
+        element.SetValue(HorizontalScrollModeProperty, value);
+
+    public static ScrollMode GetVerticalScrollMode(DependencyObject element) =>
+        (ScrollMode)(element.GetValue(VerticalScrollModeProperty) ?? ScrollMode.Auto);
+
+    public static void SetVerticalScrollMode(DependencyObject element, ScrollMode value) =>
+        element.SetValue(VerticalScrollModeProperty, value);
+
+    public static bool GetIsHorizontalRailEnabled(DependencyObject element) =>
+        (bool)(element.GetValue(IsHorizontalRailEnabledProperty) ?? true);
+
+    public static void SetIsHorizontalRailEnabled(DependencyObject element, bool value) =>
+        element.SetValue(IsHorizontalRailEnabledProperty, value);
+
+    public static bool GetIsVerticalRailEnabled(DependencyObject element) =>
+        (bool)(element.GetValue(IsVerticalRailEnabledProperty) ?? true);
+
+    public static void SetIsVerticalRailEnabled(DependencyObject element, bool value) =>
+        element.SetValue(IsVerticalRailEnabledProperty, value);
+
+    public static bool GetIsHorizontalScrollChainingEnabled(DependencyObject element) =>
+        (bool)(element.GetValue(IsHorizontalScrollChainingEnabledProperty) ?? true);
+
+    public static void SetIsHorizontalScrollChainingEnabled(DependencyObject element, bool value) =>
+        element.SetValue(IsHorizontalScrollChainingEnabledProperty, value);
+
+    public static bool GetIsVerticalScrollChainingEnabled(DependencyObject element) =>
+        (bool)(element.GetValue(IsVerticalScrollChainingEnabledProperty) ?? true);
+
+    public static void SetIsVerticalScrollChainingEnabled(DependencyObject element, bool value) =>
+        element.SetValue(IsVerticalScrollChainingEnabledProperty, value);
+
+    public static bool GetIsDeferredScrollingEnabled(DependencyObject element) =>
+        (bool)(element.GetValue(IsDeferredScrollingEnabledProperty) ?? false);
+
+    public static void SetIsDeferredScrollingEnabled(DependencyObject element, bool value) =>
+        element.SetValue(IsDeferredScrollingEnabledProperty, value);
+
+    public static bool GetBringIntoViewOnFocusChange(DependencyObject element) =>
+        (bool)(element.GetValue(BringIntoViewOnFocusChangeProperty) ?? true);
+
+    public static void SetBringIntoViewOnFocusChange(DependencyObject element, bool value) =>
+        element.SetValue(BringIntoViewOnFocusChangeProperty, value);
+
+    public static bool GetIsZoomChainingEnabled(DependencyObject element) =>
+        (bool)(element.GetValue(IsZoomChainingEnabledProperty) ?? true);
+
+    public static void SetIsZoomChainingEnabled(DependencyObject element, bool value) =>
+        element.SetValue(IsZoomChainingEnabledProperty, value);
+
+    public static bool GetIsZoomInertiaEnabled(DependencyObject element) =>
+        (bool)(element.GetValue(IsZoomInertiaEnabledProperty) ?? true);
+
+    public static void SetIsZoomInertiaEnabled(DependencyObject element, bool value) =>
+        element.SetValue(IsZoomInertiaEnabledProperty, value);
+
+    public static bool GetIsScrollInertiaEnabled(DependencyObject element) =>
+        (bool)(element.GetValue(IsScrollInertiaEnabledProperty) ?? true);
+
+    public static void SetIsScrollInertiaEnabled(DependencyObject element, bool value) =>
+        element.SetValue(IsScrollInertiaEnabledProperty, value);
     public ZoomMode ZoomMode { get; set; } = ZoomMode.Disabled;
     public float MinZoomFactor { get; set; } = 0.1f;
     public float MaxZoomFactor { get; set; } = 10f;
@@ -243,7 +483,10 @@ public class ScrollViewer : ContentControl
 
     public override void OnManipulationCompleted(ManipulationCompletedRoutedEventArgs e)
     {
-        if (e.IsInertial) _inertiaVelocity = -(Vector2)e.Velocities.Linear;
+        if (e.IsInertial && IsScrollInertiaEnabled)
+            _inertiaVelocity = -(Vector2)e.Velocities.Linear;
+        else
+            _inertiaVelocity = Vector2.Zero;
         RaiseViewChanged(isIntermediate: false);
         base.OnManipulationCompleted(e);
     }

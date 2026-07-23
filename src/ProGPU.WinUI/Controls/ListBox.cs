@@ -1,5 +1,6 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using System;
 using System.Collections.Generic;
 using System.Numerics;
@@ -28,9 +29,9 @@ public class ListBox : Selector
     public void AddItem(ListBoxItem item)
     {
         Items.Add(item);
-        if (ItemsPanel != null)
+        if (ItemsHost != null)
         {
-            ItemsPanel.Children.Add(item);
+            ItemsHost.Children.Add(item);
             item.Selected += (s, e) => { SelectedItem = item; };
         }
         InvalidateMeasure();
@@ -41,9 +42,9 @@ public class ListBox : Selector
     {
         SelectedItem = null;
         Items.Clear();
-        if (ItemsPanel != null)
+        if (ItemsHost != null)
         {
-            ItemsPanel.Children.Clear();
+            ItemsHost.Children.Clear();
         }
         InvalidateMeasure();
         Invalidate();

@@ -5,6 +5,11 @@ using System;
 using System.Numerics;
 using ProGPU.Vector;
 using ProGPU.Scene;
+using VectorPen = ProGPU.Vector.Pen;
+using VectorPenLineCap = ProGPU.Vector.PenLineCap;
+using VectorPenLineJoin = ProGPU.Vector.PenLineJoin;
+using XamlPenLineCap = Microsoft.UI.Xaml.Media.PenLineCap;
+using XamlPenLineJoin = Microsoft.UI.Xaml.Media.PenLineJoin;
 
 namespace Microsoft.UI.Xaml.Shapes;
 
@@ -47,6 +52,39 @@ public abstract class Shape : FrameworkElement
     {
         get => (float)(GetValue(StrokeThicknessProperty) ?? 1f);
         set => SetValue(StrokeThicknessProperty, value);
+    }
+
+    public static readonly DependencyProperty StrokeStartLineCapProperty =
+        DependencyProperty.Register(
+            nameof(StrokeStartLineCap), typeof(XamlPenLineCap), typeof(Shape),
+            new PropertyMetadata(XamlPenLineCap.Flat) { AffectsRender = true });
+
+    public XamlPenLineCap StrokeStartLineCap
+    {
+        get => (XamlPenLineCap)(GetValue(StrokeStartLineCapProperty) ?? XamlPenLineCap.Flat);
+        set => SetValue(StrokeStartLineCapProperty, value);
+    }
+
+    public static readonly DependencyProperty StrokeEndLineCapProperty =
+        DependencyProperty.Register(
+            nameof(StrokeEndLineCap), typeof(XamlPenLineCap), typeof(Shape),
+            new PropertyMetadata(XamlPenLineCap.Flat) { AffectsRender = true });
+
+    public XamlPenLineCap StrokeEndLineCap
+    {
+        get => (XamlPenLineCap)(GetValue(StrokeEndLineCapProperty) ?? XamlPenLineCap.Flat);
+        set => SetValue(StrokeEndLineCapProperty, value);
+    }
+
+    public static readonly DependencyProperty StrokeLineJoinProperty =
+        DependencyProperty.Register(
+            nameof(StrokeLineJoin), typeof(XamlPenLineJoin), typeof(Shape),
+            new PropertyMetadata(XamlPenLineJoin.Miter) { AffectsRender = true });
+
+    public XamlPenLineJoin StrokeLineJoin
+    {
+        get => (XamlPenLineJoin)(GetValue(StrokeLineJoinProperty) ?? XamlPenLineJoin.Miter);
+        set => SetValue(StrokeLineJoinProperty, value);
     }
 
     public static readonly DependencyProperty StretchProperty =
@@ -104,10 +142,15 @@ public abstract class Shape : FrameworkElement
             ? Matrix4x4.CreateScale(-1f, 1f, 1f) * Matrix4x4.CreateTranslation(Size.X, 0f, 0f)
             : Matrix4x4.Identity;
 
-        Pen? pen = null;
+        VectorPen? pen = null;
         if (Stroke != null && StrokeThickness > 0f)
         {
-            pen = new Pen(Stroke, StrokeThickness);
+            pen = new VectorPen(
+                Stroke,
+                StrokeThickness,
+                (VectorPenLineJoin)(int)StrokeLineJoin,
+                startLineCap: (VectorPenLineCap)(int)StrokeStartLineCap,
+                endLineCap: (VectorPenLineCap)(int)StrokeEndLineCap);
         }
 
         // Fit defining geometry stretch factor if Stretch is not None

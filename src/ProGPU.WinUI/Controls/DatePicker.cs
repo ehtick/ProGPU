@@ -128,7 +128,7 @@ public class DatePicker : Control
         var borderBrush = GetCurrentBorderBrush() ?? ThemeManager.GetBrush("ControlBorder");
         var borderPen = new Pen(borderBrush, BorderThickness.Left > 0 ? BorderThickness.Left : 1f);
             
-        context.DrawRoundedRectangle(bg, borderPen, rect, CornerRadius);
+        context.DrawRoundedRectangle(bg, borderPen, rect, CornerRadius.RenderingRadius);
 
         // 2. Render selected date label or placeholder text
         string dateText = SelectedDate.HasValue 

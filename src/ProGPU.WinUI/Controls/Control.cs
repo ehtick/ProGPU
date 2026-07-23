@@ -8,17 +8,118 @@ using System.Numerics;
 using ProGPU.Layout;
 using ProGPU.Vector;
 using ProGPU.Scene;
+using Microsoft.UI.Xaml.Media;
+using Windows.UI.Text;
 
 namespace Microsoft.UI.Xaml.Controls;
 
 public class Control : FrameworkElement, ITemplatedControl
 {
+    public static readonly DependencyProperty IsTemplateFocusTargetProperty = DependencyProperty.RegisterAttached(
+        "IsTemplateFocusTarget", typeof(bool), typeof(Control), new PropertyMetadata(false));
+
+    public static bool GetIsTemplateFocusTarget(FrameworkElement element) =>
+        (bool)(element.GetValue(IsTemplateFocusTargetProperty) ?? false);
+
+    public static void SetIsTemplateFocusTarget(FrameworkElement element, bool value) =>
+        element.SetValue(IsTemplateFocusTargetProperty, value);
+
+    public static readonly DependencyProperty IsTemplateKeyTipTargetProperty =
+        DependencyProperty.RegisterAttached(
+            "IsTemplateKeyTipTarget", typeof(bool), typeof(Control), new PropertyMetadata(false));
+
+    public static bool GetIsTemplateKeyTipTarget(DependencyObject element) =>
+        (bool)(element.GetValue(IsTemplateKeyTipTargetProperty) ?? false);
+
+    public static void SetIsTemplateKeyTipTarget(DependencyObject element, bool value) =>
+        element.SetValue(IsTemplateKeyTipTargetProperty, value);
+
+    public static readonly DependencyProperty TabNavigationProperty = DependencyProperty.Register(
+        nameof(TabNavigation), typeof(KeyboardNavigationMode), typeof(Control),
+        new PropertyMetadata(KeyboardNavigationMode.Local));
+
+    public static readonly DependencyProperty IsFocusEngagementEnabledProperty =
+        DependencyProperty.Register(
+            nameof(IsFocusEngagementEnabled), typeof(bool), typeof(Control),
+            new PropertyMetadata(false));
+
+    public static readonly DependencyProperty ElementSoundModeProperty = DependencyProperty.Register(
+        nameof(ElementSoundMode), typeof(ElementSoundMode), typeof(Control),
+        new PropertyMetadata(ElementSoundMode.Default));
+
+    public KeyboardNavigationMode TabNavigation
+    {
+        get => (KeyboardNavigationMode)(GetValue(TabNavigationProperty) ?? KeyboardNavigationMode.Local);
+        set => SetValue(TabNavigationProperty, value);
+    }
+
+    public bool IsFocusEngagementEnabled
+    {
+        get => (bool)(GetValue(IsFocusEngagementEnabledProperty) ?? false);
+        set => SetValue(IsFocusEngagementEnabledProperty, value);
+    }
+
+    public ElementSoundMode ElementSoundMode
+    {
+        get => (ElementSoundMode)(GetValue(ElementSoundModeProperty) ?? ElementSoundMode.Default);
+        set => SetValue(ElementSoundModeProperty, value);
+    }
+
+    public static readonly DependencyProperty FontFamilyProperty =
+        DependencyProperty.Register(
+            nameof(FontFamily),
+            typeof(FontFamily),
+            typeof(Control),
+            new PropertyMetadata(FontFamily.XamlAutoFontFamily) { AffectsMeasure = true, AffectsRender = true });
+
+    public FontFamily FontFamily
+    {
+        get => (FontFamily)(GetValue(FontFamilyProperty) ?? FontFamily.XamlAutoFontFamily);
+        set => SetValue(FontFamilyProperty, value);
+    }
+
+    public static readonly DependencyProperty FontWeightProperty =
+        DependencyProperty.Register(
+            nameof(FontWeight),
+            typeof(FontWeight),
+            typeof(Control),
+            new PropertyMetadata(Microsoft.UI.Text.FontWeights.Normal) { AffectsMeasure = true, AffectsRender = true });
+
+    public FontWeight FontWeight
+    {
+        get => (FontWeight)(GetValue(FontWeightProperty) ?? Microsoft.UI.Text.FontWeights.Normal);
+        set => SetValue(FontWeightProperty, value);
+    }
+
+    public static readonly DependencyProperty FontSizeProperty =
+        DependencyProperty.Register(
+            nameof(FontSize),
+            typeof(double),
+            typeof(Control),
+            new PropertyMetadata(14d) { AffectsMeasure = true, AffectsRender = true });
+
+    public double FontSize
+    {
+        get => (double)(GetValue(FontSizeProperty) ?? 14d);
+        set => SetValue(FontSizeProperty, value);
+    }
+
     public static readonly Microsoft.UI.Xaml.DependencyProperty BackgroundProperty =
         Microsoft.UI.Xaml.DependencyProperty.Register(
             "Background",
             typeof(Brush),
             typeof(Control),
             new Microsoft.UI.Xaml.PropertyMetadata(null) { AffectsRender = true });
+
+    public static readonly Microsoft.UI.Xaml.DependencyProperty BackgroundSizingProperty =
+        Microsoft.UI.Xaml.DependencyProperty.Register(
+            nameof(BackgroundSizing),
+            typeof(BackgroundSizing),
+            typeof(Control),
+            new Microsoft.UI.Xaml.PropertyMetadata(BackgroundSizing.InnerBorderEdge)
+            {
+                AffectsRender = true
+            });
 
     public static readonly Microsoft.UI.Xaml.DependencyProperty ForegroundProperty =
         Microsoft.UI.Xaml.DependencyProperty.Register(
@@ -44,9 +145,9 @@ public class Control : FrameworkElement, ITemplatedControl
     public static readonly Microsoft.UI.Xaml.DependencyProperty CornerRadiusProperty =
         Microsoft.UI.Xaml.DependencyProperty.Register(
             "CornerRadius",
-            typeof(float),
+            typeof(CornerRadius),
             typeof(Control),
-            new Microsoft.UI.Xaml.PropertyMetadata(0f) { AffectsRender = true });
+            new Microsoft.UI.Xaml.PropertyMetadata(default(CornerRadius)) { AffectsRender = true });
 
     public static readonly Microsoft.UI.Xaml.DependencyProperty TemplateProperty =
         Microsoft.UI.Xaml.DependencyProperty.Register(
@@ -75,6 +176,14 @@ public class Control : FrameworkElement, ITemplatedControl
         set => SetValue(BackgroundProperty, value);
     }
 
+    public BackgroundSizing BackgroundSizing
+    {
+        get => (BackgroundSizing)(
+            GetValue(BackgroundSizingProperty) ??
+            BackgroundSizing.InnerBorderEdge);
+        set => SetValue(BackgroundSizingProperty, value);
+    }
+
     public Brush? Foreground
     {
         get => GetValue(ForegroundProperty) as Brush;
@@ -93,9 +202,9 @@ public class Control : FrameworkElement, ITemplatedControl
         set => SetValue(BorderThicknessProperty, value);
     }
 
-    public float CornerRadius
+    public CornerRadius CornerRadius
     {
-        get => (float)(GetValue(CornerRadiusProperty) ?? 0f);
+        get => (CornerRadius)(GetValue(CornerRadiusProperty) ?? default(CornerRadius));
         set => SetValue(CornerRadiusProperty, value);
     }
 
@@ -153,7 +262,8 @@ public class Control : FrameworkElement, ITemplatedControl
     internal bool IsFocusedVisualStateActive => IsFocused &&
         (InputSystem.IsKeyboardFocusActive || this is ITextInputClient);
 
-    internal bool IsKeyboardFocusVisualVisible => IsFocused && InputSystem.IsKeyboardFocusActive;
+    internal bool IsKeyboardFocusVisualVisible =>
+        IsFocused && InputSystem.IsKeyboardFocusActive && UseSystemFocusVisuals;
 
     private bool _isTabStop = true;
     public bool IsTabStop
@@ -166,13 +276,19 @@ public class Control : FrameworkElement, ITemplatedControl
     {
         if (_templateRoot != null)
         {
+            Microsoft.UI.Xaml.Data.BindingOperations.ClearBindingsForContext(this);
+            TemplateBinding.ClearBindingsForSource(this);
+            Microsoft.UI.Xaml.Markup.XamlTemplateFactory.ReleaseSubtree(_templateRoot);
             RemoveChild(_templateRoot);
             _templateRoot = null;
         }
 
-        if (Template != null)
+        var generatedTemplateRoot = Microsoft.UI.Xaml.Markup.XamlTemplateFactory.Build(Template, this);
+        if (generatedTemplateRoot == null && Template?.Factory is { } templateFactory)
+            generatedTemplateRoot = templateFactory(this);
+        if (generatedTemplateRoot != null)
         {
-            _templateRoot = Template.Factory(this);
+            _templateRoot = generatedTemplateRoot;
             if (_templateRoot != null)
             {
                 AddChild(_templateRoot);
@@ -181,6 +297,7 @@ public class Control : FrameworkElement, ITemplatedControl
                 ResolveContentPresenters(_templateRoot);
 
                 OnApplyTemplate();
+                OnVisualStateChanged();
                 InvalidateMeasure();
                 return true;
             }
@@ -385,15 +502,29 @@ public class Control : FrameworkElement, ITemplatedControl
 
     public virtual void OnVisualStateChanged()
     {
+        string stateName = !IsEnabled
+            ? "Disabled"
+            : IsPointerPressed && IsPointerOver
+                ? "Pressed"
+                : IsPointerOver
+                    ? "PointerOver"
+                    : "Normal";
+        VisualStateManager.GoToState(this, stateName, useTransitions: true);
         OnPropertyChanged(nameof(Background));
         OnPropertyChanged(nameof(Foreground));
         OnPropertyChanged(nameof(BorderBrush));
         Invalidate();
     }
 
+    protected override void OnIsEnabledChanged(bool enabled)
+    {
+        base.OnIsEnabledChanged(enabled);
+        OnVisualStateChanged();
+    }
+
     public override void OnPointerPressed(PointerRoutedEventArgs e)
     {
-        if (IsEnabled)
+        if (IsEnabled && AllowFocusOnInteraction)
         {
             // Also acquire focus if we are hit-test visible, enabled, and IsTabStop
             if (IsHitTestVisible && IsTabStop)
@@ -412,7 +543,15 @@ public class Control : FrameworkElement, ITemplatedControl
         if (IsKeyboardFocusVisualVisible)
         {
             var accentColor = ThemeManager.GetBrush("SystemAccentColor");
-            context.DrawRectangle(null, new Pen(accentColor, 1.5f), new Rect(-2f, -2f, Size.X + 4f, Size.Y + 4f));
+            var margin = FocusVisualMargin;
+            context.DrawRectangle(
+                null,
+                new Pen(accentColor, 1.5f),
+                new Rect(
+                    -2f - margin.Left,
+                    -2f - margin.Top,
+                    Size.X + 4f + margin.Horizontal,
+                    Size.Y + 4f + margin.Vertical));
         }
     }
 }

@@ -38,7 +38,7 @@ public class UniformVirtualizingGridPanel : VirtualizingPanel
     // Viewport binding properties (automatically hooks into ItemsControl if available)
     public Func<Visual>? CreateVisualFactory
     {
-        get => ItemsControlOwner != null ? ItemsControlOwner.ItemTemplate : _createVisualFactory;
+        get => ItemsControlOwner != null ? ItemsControlOwner.ItemVisualFactory : _createVisualFactory;
         set => _createVisualFactory = value;
     }
 

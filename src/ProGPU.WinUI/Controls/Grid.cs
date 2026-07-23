@@ -9,11 +9,50 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using ProGPU.Layout;
 using ProGPU.Scene;
+using ProGPU.Vector;
 
 namespace Microsoft.UI.Xaml.Controls;
 
 public class Grid : Panel
 {
+    public static readonly DependencyProperty BorderBrushProperty = DependencyProperty.Register(
+        nameof(BorderBrush), typeof(Brush), typeof(Grid), new PropertyMetadata(null) { AffectsRender = true });
+    public Brush? BorderBrush
+    {
+        get => GetValue(BorderBrushProperty) as Brush;
+        set => SetValue(BorderBrushProperty, value);
+    }
+
+    public static readonly DependencyProperty BorderThicknessProperty = DependencyProperty.Register(
+        nameof(BorderThickness), typeof(Thickness), typeof(Grid),
+        new PropertyMetadata(default(Thickness)) { AffectsMeasure = true, AffectsArrange = true, AffectsRender = true });
+    public Thickness BorderThickness
+    {
+        get => (Thickness)(GetValue(BorderThicknessProperty) ?? default(Thickness));
+        set => SetValue(BorderThicknessProperty, value);
+    }
+
+    public static readonly DependencyProperty CornerRadiusProperty = DependencyProperty.Register(
+        nameof(CornerRadius), typeof(CornerRadius), typeof(Grid),
+        new PropertyMetadata(default(CornerRadius)) { AffectsRender = true });
+    public CornerRadius CornerRadius
+    {
+        get => (CornerRadius)(GetValue(CornerRadiusProperty) ?? default(CornerRadius));
+        set => SetValue(CornerRadiusProperty, value);
+    }
+
+    public static readonly DependencyProperty BackgroundSizingProperty = DependencyProperty.Register(
+        nameof(BackgroundSizing), typeof(BackgroundSizing), typeof(Grid),
+        new PropertyMetadata(BackgroundSizing.InnerBorderEdge) { AffectsRender = true });
+    public BackgroundSizing BackgroundSizing
+    {
+        get => (BackgroundSizing)(GetValue(BackgroundSizingProperty) ?? BackgroundSizing.InnerBorderEdge);
+        set => SetValue(BackgroundSizingProperty, value);
+    }
+    private static readonly IReadOnlyList<ColumnDefinition> DefaultColumns =
+        new[] { new ColumnDefinition { Width = GridLength.Star() } };
+    private static readonly IReadOnlyList<RowDefinition> DefaultRows =
+        new[] { new RowDefinition { Height = GridLength.Star() } };
     internal float[]? _actualColWidths;
     internal float[]? _actualRowHeights;
 
@@ -39,6 +78,12 @@ public class Grid : Panel
             typeof(Grid),
             new PropertyMetadata(0, OnRowColumnChanged));
 
+    public static readonly DependencyProperty RowSpanProperty = DependencyProperty.RegisterAttached(
+        "RowSpan", typeof(int), typeof(Grid), new PropertyMetadata(1, OnRowColumnChanged));
+
+    public static readonly DependencyProperty ColumnSpanProperty = DependencyProperty.RegisterAttached(
+        "ColumnSpan", typeof(int), typeof(Grid), new PropertyMetadata(1, OnRowColumnChanged));
+
     private static void OnRowColumnChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is Visual child && child.Parent is Grid grid)
@@ -48,8 +93,8 @@ public class Grid : Panel
         }
     }
 
-    public List<GridLength> ColumnDefinitions { get; } = new();
-    public List<GridLength> RowDefinitions { get; } = new();
+    public ColumnDefinitionCollection ColumnDefinitions { get; } = new();
+    public RowDefinitionCollection RowDefinitions { get; } = new();
 
     public static void SetRow(Visual child, int row)
     {
@@ -113,6 +158,37 @@ public class Grid : Panel
         return 0;
     }
 
+    public static void SetRowSpan(Visual child, int value)
+    {
+        if (value < 1) throw new ArgumentOutOfRangeException(nameof(value));
+        if (child is DependencyObject d) d.SetValue(RowSpanProperty, value);
+    }
+
+    public static int GetRowSpan(Visual child) => child is DependencyObject d
+        ? (int)(d.GetValue(RowSpanProperty) ?? 1)
+        : 1;
+
+    public static void SetColumnSpan(Visual child, int value)
+    {
+        if (value < 1) throw new ArgumentOutOfRangeException(nameof(value));
+        if (child is DependencyObject d) d.SetValue(ColumnSpanProperty, value);
+    }
+
+    public static int GetColumnSpan(Visual child) => child is DependencyObject d
+        ? (int)(d.GetValue(ColumnSpanProperty) ?? 1)
+        : 1;
+
+    public override void OnRender(DrawingContext context)
+    {
+        var pen = BorderBrush is { } brush && BorderThickness.Left > 0f
+            ? new Pen(brush, BorderThickness.Left)
+            : null;
+        if (Background is not null || pen is not null)
+        {
+            context.DrawRoundedRectangle(Background, pen, new Rect(Vector2.Zero, Size), (float)CornerRadius.TopLeft);
+        }
+    }
+
     protected override Vector2 MeasureOverride(Vector2 availableSize)
     {
         int colCount = Math.Max(1, ColumnDefinitions.Count);
@@ -121,8 +197,8 @@ public class Grid : Panel
         float[] colWidths = new float[colCount];
         float[] rowHeights = new float[rowCount];
 
-        var cols = ColumnDefinitions.Count > 0 ? ColumnDefinitions : new List<GridLength> { GridLength.Star() };
-        var rows = RowDefinitions.Count > 0 ? RowDefinitions : new List<GridLength> { GridLength.Star() };
+        IReadOnlyList<ColumnDefinition> cols = ColumnDefinitions.Count > 0 ? ColumnDefinitions : DefaultColumns;
+        IReadOnlyList<RowDefinition> rows = RowDefinitions.Count > 0 ? RowDefinitions : DefaultRows;
 
         float remainingWidth = availableSize.X;
         float remainingHeight = availableSize.Y;
@@ -290,8 +366,8 @@ public class Grid : Panel
         int colCount = Math.Max(1, ColumnDefinitions.Count);
         int rowCount = Math.Max(1, RowDefinitions.Count);
 
-        var cols = ColumnDefinitions.Count > 0 ? ColumnDefinitions : new List<GridLength> { GridLength.Star() };
-        var rows = RowDefinitions.Count > 0 ? RowDefinitions : new List<GridLength> { GridLength.Star() };
+        IReadOnlyList<ColumnDefinition> cols = ColumnDefinitions.Count > 0 ? ColumnDefinitions : DefaultColumns;
+        IReadOnlyList<RowDefinition> rows = RowDefinitions.Count > 0 ? RowDefinitions : DefaultRows;
 
         float[] colWidths = new float[colCount];
         float[] rowHeights = new float[rowCount];

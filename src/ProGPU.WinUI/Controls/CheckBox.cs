@@ -8,28 +8,12 @@ using System.Numerics;
 using ProGPU.Layout;
 using ProGPU.Vector;
 using ProGPU.Scene;
+using Microsoft.UI.Xaml.Controls.Primitives;
 
 namespace Microsoft.UI.Xaml.Controls;
 
-public class CheckBox : ContentControl
+public class CheckBox : ToggleButton
 {
-    public static readonly DependencyProperty IsCheckedProperty =
-        DependencyProperty.Register(
-            "IsChecked",
-            typeof(bool),
-            typeof(CheckBox),
-            new PropertyMetadata(false, (d, e) => ((CheckBox)d).OnCheckedChanged()));
-
-    public bool IsChecked
-    {
-        get => (bool)(GetValue(IsCheckedProperty) ?? false);
-        set => SetValue(IsCheckedProperty, value);
-    }
-
-    public event EventHandler? Checked;
-    public event EventHandler? Unchecked;
-    public event EventHandler? CheckedChanged;
-
     public CheckBox()
     {
         var defaultStyle = ThemeManager.GetDefaultStyle(GetType());
@@ -37,28 +21,6 @@ public class CheckBox : ContentControl
         {
             SetDefaultStyle(defaultStyle);
         }
-    }
-
-    private void OnCheckedChanged()
-    {
-        CheckedChanged?.Invoke(this, EventArgs.Empty);
-        if (IsChecked)
-        {
-            Checked?.Invoke(this, EventArgs.Empty);
-        }
-        else
-        {
-            Unchecked?.Invoke(this, EventArgs.Empty);
-        }
-    }
-
-    public override void OnPointerReleased(PointerRoutedEventArgs e)
-    {
-        if (IsEnabled && IsPointerPressed && IsPointerOver)
-        {
-            IsChecked = !IsChecked;
-        }
-        base.OnPointerReleased(e);
     }
 
     protected override Vector2 MeasureOverride(Vector2 availableSize)

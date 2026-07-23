@@ -10,9 +10,9 @@ using System.Threading.Tasks;
 using ProGPU.Layout;
 using ProGPU.Scene;
 
-namespace Microsoft.UI.Xaml.Controls;
+namespace Microsoft.UI.Xaml.Controls.Primitives;
 
-public class RepeatButton : Button
+public class RepeatButton : ButtonBase
 {
     private int _delay = 250;
     private int _interval = 50;

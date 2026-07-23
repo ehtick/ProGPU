@@ -1,153 +1,205 @@
 using System;
 using System.Collections;
-using System.Collections.Generic;
 using System.Numerics;
+using Microsoft.UI.Xaml.Markup;
+using Microsoft.UI.Xaml.Media.Animation;
 using ProGPU.Layout;
 using ProGPU.Scene;
-using Microsoft.UI.Xaml;
 
 namespace Microsoft.UI.Xaml.Controls;
 
+[ContentProperty(Name = nameof(Items))]
 public class ItemsControl : Control
 {
     private IList? _indexedItemsSource;
+    private Panel? _itemsHost;
 
-    public static readonly DependencyProperty ItemsSourceProperty =
-        DependencyProperty.Register(
-            "ItemsSource",
-            typeof(IEnumerable),
-            typeof(ItemsControl),
-            new PropertyMetadata(null, OnItemsSourceChanged));
+    public static readonly DependencyProperty ItemsSourceProperty = DependencyProperty.Register(
+        nameof(ItemsSource), typeof(IEnumerable), typeof(ItemsControl),
+        new PropertyMetadata(null, OnItemsSourceChanged));
+
+    public static readonly DependencyProperty ItemTemplateProperty = DependencyProperty.Register(
+        nameof(ItemTemplate), typeof(DataTemplate), typeof(ItemsControl),
+        new PropertyMetadata(null) { AffectsMeasure = true, AffectsArrange = true, AffectsRender = true });
+
+    public static readonly DependencyProperty ItemTemplateSelectorProperty = DependencyProperty.Register(
+        nameof(ItemTemplateSelector), typeof(DataTemplateSelector), typeof(ItemsControl),
+        new PropertyMetadata(null) { AffectsMeasure = true, AffectsArrange = true, AffectsRender = true });
+
+    public static readonly DependencyProperty ItemsPanelProperty = DependencyProperty.Register(
+        nameof(ItemsPanel), typeof(ItemsPanelTemplate), typeof(ItemsControl),
+        new PropertyMetadata(null, OnItemsPanelTemplateChanged) { AffectsMeasure = true, AffectsArrange = true, AffectsRender = true });
+
+    public static readonly DependencyProperty DisplayMemberPathProperty = DependencyProperty.Register(
+        nameof(DisplayMemberPath), typeof(string), typeof(ItemsControl), new PropertyMetadata(string.Empty));
+
+    public static readonly DependencyProperty ItemContainerStyleProperty = DependencyProperty.Register(
+        nameof(ItemContainerStyle), typeof(Style), typeof(ItemsControl), new PropertyMetadata(null));
+
+    public static readonly DependencyProperty ItemContainerTransitionsProperty = DependencyProperty.Register(
+        nameof(ItemContainerTransitions), typeof(TransitionCollection), typeof(ItemsControl),
+        new PropertyMetadata(null) { AffectsRender = true });
+
+    public ItemsControl()
+    {
+        Items = new ItemCollection(this);
+        ItemsHost = new StackPanel();
+        ItemContainerTransitions = new TransitionCollection();
+
+        var defaultStyle = ThemeManager.GetDefaultStyle(GetType());
+        if (defaultStyle != null) Style = defaultStyle;
+    }
 
     public IEnumerable? ItemsSource
     {
-        get => (IEnumerable?)GetValue(ItemsSourceProperty);
+        get => GetValue(ItemsSourceProperty) as IEnumerable;
         set => SetValue(ItemsSourceProperty, value);
     }
 
-    public static readonly DependencyProperty ItemsPanelProperty =
-        DependencyProperty.Register(
-            "ItemsPanel",
-            typeof(Panel),
-            typeof(ItemsControl),
-            new PropertyMetadata(null, OnItemsPanelChanged));
-
-    public Panel? ItemsPanel
+    public DataTemplate? ItemTemplate
     {
-        get => (Panel?)GetValue(ItemsPanelProperty);
+        get => GetValue(ItemTemplateProperty) as DataTemplate;
+        set => SetValue(ItemTemplateProperty, value);
+    }
+
+    public DataTemplateSelector? ItemTemplateSelector
+    {
+        get => GetValue(ItemTemplateSelectorProperty) as DataTemplateSelector;
+        set => SetValue(ItemTemplateSelectorProperty, value);
+    }
+
+    public ItemsPanelTemplate? ItemsPanel
+    {
+        get => GetValue(ItemsPanelProperty) as ItemsPanelTemplate;
         set => SetValue(ItemsPanelProperty, value);
     }
 
-    // High-performance callback delegates matching WinUI templates
-    public Func<Visual>? ItemTemplate { get; set; }
-    public Action<Visual, object, int>? BindVisualCallback { get; set; }
+    public string DisplayMemberPath
+    {
+        get => GetValue(DisplayMemberPathProperty) as string ?? string.Empty;
+        set => SetValue(DisplayMemberPathProperty, value);
+    }
 
-    public List<object> Items { get; } = new();
+    public Style? ItemContainerStyle
+    {
+        get => GetValue(ItemContainerStyleProperty) as Style;
+        set => SetValue(ItemContainerStyleProperty, value);
+    }
+
+    public TransitionCollection ItemContainerTransitions
+    {
+        get => (TransitionCollection)GetValue(ItemContainerTransitionsProperty)!;
+        set => SetValue(ItemContainerTransitionsProperty, value);
+    }
+
+    public ItemCollection Items { get; }
+    public Panel? ItemsPanelRoot => _itemsHost;
+
+    /// <summary>
+    /// ProGPU's realized panel extension. WinUI's public <see cref="ItemsPanel"/> remains
+    /// an <see cref="ItemsPanelTemplate"/>; this member supplies a live optimized host.
+    /// </summary>
+    public Panel? ItemsHost
+    {
+        get => _itemsHost;
+        set
+        {
+            if (ReferenceEquals(_itemsHost, value)) return;
+            DetachItemsHost(_itemsHost);
+            _itemsHost = value;
+            AttachItemsHost(value);
+            RefreshItems();
+        }
+    }
+
+    /// <summary>ProGPU's allocation-bounded item-container factory.</summary>
+    public Func<Visual>? ItemVisualFactory { get; set; }
+
+    /// <summary>ProGPU's in-place realized-container binding callback.</summary>
+    public Action<Visual, object, int>? BindVisualCallback { get; set; }
 
     public int ItemCount => _indexedItemsSource?.Count ?? Items.Count;
 
     public object? GetItemAt(int index)
     {
-        if (index < 0 || index >= ItemCount)
-        {
-            return null;
-        }
-
+        if ((uint)index >= (uint)ItemCount) return null;
         return _indexedItemsSource != null ? _indexedItemsSource[index] : Items[index];
-    }
-
-    public ItemsControl()
-    {
-        // Default panel is a StackPanel
-        ItemsPanel = new StackPanel();
-
-        var defaultStyle = ThemeManager.GetDefaultStyle(GetType());
-        if (defaultStyle != null)
-        {
-            Style = defaultStyle;
-        }
     }
 
     protected override void OnApplyTemplate()
     {
         base.OnApplyTemplate();
+        AttachItemsHost(_itemsHost);
+    }
 
-        var scrollViewer = GetTemplateChild("ScrollViewer") as ScrollViewer;
-        if (scrollViewer != null && ItemsPanel != null)
+    internal void OnItemsCollectionChanged()
+    {
+        if (_indexedItemsSource != null) return;
+        RefreshItems();
+    }
+
+    private static void OnItemsSourceChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs args)
+    {
+        var control = (ItemsControl)dependencyObject;
+        control._indexedItemsSource = args.NewValue as IList;
+        control.Items.ReplaceWith(control._indexedItemsSource == null ? args.NewValue as IEnumerable : null);
+        control.RefreshItems();
+    }
+
+    private static void OnItemsPanelTemplateChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs args)
+    {
+        var control = (ItemsControl)dependencyObject;
+        if (args.NewValue is not ItemsPanelTemplate template) return;
+        if (Microsoft.UI.Xaml.Markup.XamlTemplateFactory.Build(template, control) is Panel panel)
+            control.ItemsHost = panel;
+    }
+
+    private void AttachItemsHost(Panel? panel)
+    {
+        if (panel == null) return;
+        if (HasTemplate && GetTemplateChild("ScrollViewer") is ScrollViewer scrollViewer)
         {
-            scrollViewer.Content = ItemsPanel;
+            if (!ReferenceEquals(scrollViewer.Content, panel)) scrollViewer.Content = panel;
+        }
+        else if (!ReferenceEquals(panel.Parent, this))
+        {
+            AddChild(panel);
         }
     }
 
-    private static void OnItemsSourceChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    private void DetachItemsHost(Panel? panel)
     {
-        var ic = (ItemsControl)d;
-        ic.Items.Clear();
-        ic._indexedItemsSource = e.NewValue as IList;
-        if (ic._indexedItemsSource == null && e.NewValue is IEnumerable enumerable)
+        if (panel == null) return;
+        if (HasTemplate && GetTemplateChild("ScrollViewer") is ScrollViewer scrollViewer)
         {
-            foreach (var item in enumerable)
-            {
-                ic.Items.Add(item);
-            }
+            if (ReferenceEquals(scrollViewer.Content, panel)) scrollViewer.Content = null;
         }
-        ic.RefreshItems();
-    }
-
-    private static void OnItemsPanelChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        var ic = (ItemsControl)d;
-        if (e.OldValue is Panel oldPanel)
+        else if (ReferenceEquals(panel.Parent, this))
         {
-            if (ic.HasTemplate)
-            {
-                var scrollViewer = ic.GetTemplateChild("ScrollViewer") as ScrollViewer;
-                if (scrollViewer != null && scrollViewer.Content == oldPanel)
-                {
-                    scrollViewer.Content = null;
-                }
-            }
-            else
-            {
-                ic.RemoveChild(oldPanel);
-            }
+            RemoveChild(panel);
         }
-        if (e.NewValue is Panel newPanel)
-        {
-            if (ic.HasTemplate)
-            {
-                var scrollViewer = ic.GetTemplateChild("ScrollViewer") as ScrollViewer;
-                if (scrollViewer != null)
-                {
-                    scrollViewer.Content = newPanel;
-                }
-            }
-            else
-            {
-                ic.AddChild(newPanel);
-            }
-        }
-        ic.RefreshItems();
+        Microsoft.UI.Xaml.Markup.XamlTemplateFactory.ReleaseSubtree(panel);
     }
 
     public void RefreshItems()
     {
-        if (ItemsPanel == null) return;
+        var panel = _itemsHost;
+        if (panel == null) return;
 
-        if (ItemsPanel is VirtualizingPanel vp)
+        if (panel is VirtualizingPanel virtualizingPanel)
         {
-            vp.ForceRebind();
+            virtualizingPanel.ForceRebind();
         }
         else
         {
-            ItemsPanel.Children.Clear();
-            if (ItemTemplate != null)
+            panel.Children.Clear();
+            if (ItemVisualFactory != null)
             {
                 for (var index = 0; index < ItemCount; index++)
                 {
-                    var container = ItemTemplate();
+                    var container = ItemVisualFactory();
                     BindVisualCallback?.Invoke(container, GetItemAt(index)!, index);
-                    ItemsPanel.Children.Add(container);
+                    panel.Children.Add(container);
                 }
             }
         }
@@ -157,28 +209,16 @@ public class ItemsControl : Control
 
     public void RefreshVisibleItems()
     {
-        if (ItemsPanel is VirtualizingPanel virtualizingPanel)
-        {
-            virtualizingPanel.RebindVisibleItems();
-        }
-        else
-        {
-            RefreshItems();
-        }
+        if (_itemsHost is VirtualizingPanel virtualizingPanel) virtualizingPanel.RebindVisibleItems();
+        else RefreshItems();
     }
 
     protected override Vector2 MeasureOverride(Vector2 availableSize)
     {
-        if (HasTemplate)
-        {
-            return base.MeasureOverride(availableSize);
-        }
-        if (ItemsPanel != null)
-        {
-            ItemsPanel.Measure(availableSize);
-            return ItemsPanel.DesiredSize;
-        }
-        return Vector2.Zero;
+        if (HasTemplate) return base.MeasureOverride(availableSize);
+        if (_itemsHost == null) return Vector2.Zero;
+        _itemsHost.Measure(availableSize);
+        return _itemsHost.DesiredSize;
     }
 
     protected override void ArrangeOverride(Rect arrangeRect)
@@ -188,9 +228,6 @@ public class ItemsControl : Control
             base.ArrangeOverride(arrangeRect);
             return;
         }
-        if (ItemsPanel != null)
-        {
-            ItemsPanel.Arrange(arrangeRect);
-        }
+        _itemsHost?.Arrange(arrangeRect);
     }
 }

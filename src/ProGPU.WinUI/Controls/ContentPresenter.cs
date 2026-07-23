@@ -8,12 +8,133 @@ using System.Numerics;
 using ProGPU.Layout;
 using ProGPU.Vector;
 using ProGPU.Scene;
+using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
+using Windows.UI.Text;
 
 namespace Microsoft.UI.Xaml.Controls;
 
+[ContentProperty(Name = nameof(Content))]
 public class ContentPresenter : FrameworkElement
 {
     private RichTextBlock? _generatedText;
+    public static readonly DependencyProperty ContentTemplateProperty =
+        DependencyProperty.Register(
+            nameof(ContentTemplate),
+            typeof(DataTemplate),
+            typeof(ContentPresenter),
+            new PropertyMetadata(null) { AffectsMeasure = true, AffectsArrange = true, AffectsRender = true });
+
+    public DataTemplate? ContentTemplate
+    {
+        get => GetValue(ContentTemplateProperty) as DataTemplate;
+        set => SetValue(ContentTemplateProperty, value);
+    }
+
+    public static readonly DependencyProperty ContentTransitionsProperty =
+        DependencyProperty.Register(
+            nameof(ContentTransitions),
+            typeof(TransitionCollection),
+            typeof(ContentPresenter),
+            new PropertyMetadata(null) { AffectsRender = true });
+
+    public TransitionCollection? ContentTransitions
+    {
+        get => GetValue(ContentTransitionsProperty) as TransitionCollection;
+        set => SetValue(ContentTransitionsProperty, value);
+    }
+
+    public static readonly DependencyProperty ForegroundProperty =
+        DependencyProperty.Register(
+            nameof(Foreground),
+            typeof(Brush),
+            typeof(ContentPresenter),
+            new PropertyMetadata(null, OnTypographyChanged) { AffectsRender = true });
+
+    public Brush? Foreground
+    {
+        get => GetValue(ForegroundProperty) as Brush;
+        set => SetValue(ForegroundProperty, value);
+    }
+
+    public static readonly DependencyProperty FontFamilyProperty =
+        DependencyProperty.Register(
+            nameof(FontFamily),
+            typeof(FontFamily),
+            typeof(ContentPresenter),
+            new PropertyMetadata(FontFamily.XamlAutoFontFamily, OnTypographyChanged) { AffectsMeasure = true, AffectsRender = true });
+
+    public FontFamily FontFamily
+    {
+        get => (FontFamily)(GetValue(FontFamilyProperty) ?? FontFamily.XamlAutoFontFamily);
+        set => SetValue(FontFamilyProperty, value);
+    }
+
+    public static readonly DependencyProperty FontWeightProperty =
+        DependencyProperty.Register(
+            nameof(FontWeight),
+            typeof(FontWeight),
+            typeof(ContentPresenter),
+            new PropertyMetadata(Microsoft.UI.Text.FontWeights.Normal, OnTypographyChanged) { AffectsMeasure = true, AffectsRender = true });
+
+    public FontWeight FontWeight
+    {
+        get => (FontWeight)(GetValue(FontWeightProperty) ?? Microsoft.UI.Text.FontWeights.Normal);
+        set => SetValue(FontWeightProperty, value);
+    }
+
+    public static readonly DependencyProperty FontSizeProperty = DependencyProperty.Register(
+        nameof(FontSize), typeof(double), typeof(ContentPresenter),
+        new PropertyMetadata(14d, OnTypographyChanged) { AffectsMeasure = true, AffectsRender = true });
+
+    public double FontSize
+    {
+        get => (double)(GetValue(FontSizeProperty) ?? 14d);
+        set => SetValue(FontSizeProperty, value);
+    }
+
+    public static readonly DependencyProperty MaxLinesProperty =
+        DependencyProperty.Register(
+            nameof(MaxLines),
+            typeof(int),
+            typeof(ContentPresenter),
+            new PropertyMetadata(0, OnGeneratedTextLayoutChanged)
+            {
+                AffectsMeasure = true,
+                AffectsArrange = true,
+                AffectsRender = true
+            });
+
+    public int MaxLines
+    {
+        get => (int)(GetValue(MaxLinesProperty) ?? 0);
+        set
+        {
+            if (value < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), value, "MaxLines cannot be negative.");
+            }
+            SetValue(MaxLinesProperty, value);
+        }
+    }
+
+    public static readonly DependencyProperty OpticalMarginAlignmentProperty =
+        DependencyProperty.Register(
+            nameof(OpticalMarginAlignment),
+            typeof(OpticalMarginAlignment),
+            typeof(ContentPresenter),
+            new PropertyMetadata(OpticalMarginAlignment.None, OnGeneratedTextLayoutChanged)
+            {
+                AffectsMeasure = true,
+                AffectsRender = true
+            });
+
+    public OpticalMarginAlignment OpticalMarginAlignment
+    {
+        get => (OpticalMarginAlignment)(GetValue(OpticalMarginAlignmentProperty) ?? OpticalMarginAlignment.None);
+        set => SetValue(OpticalMarginAlignmentProperty, value);
+    }
+
     public static readonly DependencyProperty BackgroundProperty =
         DependencyProperty.Register(
             "Background",
@@ -56,14 +177,26 @@ public class ContentPresenter : FrameworkElement
     public static readonly DependencyProperty CornerRadiusProperty =
         DependencyProperty.Register(
             "CornerRadius",
-            typeof(float),
+            typeof(CornerRadius),
             typeof(ContentPresenter),
-            new PropertyMetadata(0f) { AffectsRender = true });
+            new PropertyMetadata(default(CornerRadius)) { AffectsRender = true });
 
-    public float CornerRadius
+    public CornerRadius CornerRadius
     {
-        get => (float)(GetValue(CornerRadiusProperty) ?? 0f);
+        get => (CornerRadius)(GetValue(CornerRadiusProperty) ?? default(CornerRadius));
         set => SetValue(CornerRadiusProperty, value);
+    }
+
+    public static readonly DependencyProperty BackgroundSizingProperty = DependencyProperty.Register(
+        nameof(BackgroundSizing),
+        typeof(BackgroundSizing),
+        typeof(ContentPresenter),
+        new PropertyMetadata(BackgroundSizing.InnerBorderEdge) { AffectsRender = true });
+
+    public BackgroundSizing BackgroundSizing
+    {
+        get => (BackgroundSizing)(GetValue(BackgroundSizingProperty) ?? BackgroundSizing.InnerBorderEdge);
+        set => SetValue(BackgroundSizingProperty, value);
     }
 
     public static readonly DependencyProperty ContentProperty =
@@ -106,7 +239,16 @@ public class ContentPresenter : FrameworkElement
             else
             {
                 // Auto-wrap non-FrameworkElement content in a RichTextBlock
-                _generatedText = new RichTextBlock { TextWrapping = TextWrapping };
+                _generatedText = new RichTextBlock
+                {
+                    TextWrapping = TextWrapping,
+                    FontFamily = FontFamily,
+                    FontWeight = FontWeight,
+                    FontSize = (float)FontSize,
+                    Foreground = Foreground,
+                    MaxLines = MaxLines,
+                    OpticalMarginAlignment = OpticalMarginAlignment
+                };
                 _generatedText.Inlines.Add(new Run { Text = newValue.ToString() ?? string.Empty });
                 AddChild(_generatedText);
             }
@@ -133,6 +275,31 @@ public class ContentPresenter : FrameworkElement
         {
             presenter._generatedText.TextWrapping = (TextWrapping)(e.NewValue ?? TextWrapping.NoWrap);
         }
+    }
+
+    private static void OnTypographyChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs args)
+    {
+        var presenter = (ContentPresenter)dependencyObject;
+        if (presenter._generatedText == null) return;
+        presenter._generatedText.FontFamily = presenter.FontFamily;
+        presenter._generatedText.FontWeight = presenter.FontWeight;
+        presenter._generatedText.FontSize = (float)presenter.FontSize;
+        presenter._generatedText.Foreground = presenter.Foreground;
+    }
+
+    private static void OnGeneratedTextLayoutChanged(
+        DependencyObject dependencyObject,
+        DependencyPropertyChangedEventArgs args)
+    {
+        _ = args;
+        var presenter = (ContentPresenter)dependencyObject;
+        if (presenter._generatedText == null)
+        {
+            return;
+        }
+
+        presenter._generatedText.MaxLines = presenter.MaxLines;
+        presenter._generatedText.OpticalMarginAlignment = presenter.OpticalMarginAlignment;
     }
 
     public static readonly DependencyProperty HorizontalContentAlignmentProperty =
@@ -266,7 +433,7 @@ public class ContentPresenter : FrameworkElement
         if (Background != null || (BorderBrush != null && BorderThickness.Left > 0))
         {
             var pen = BorderBrush != null && BorderThickness.Left > 0 ? new Pen(BorderBrush, BorderThickness.Left) : null;
-            context.DrawRoundedRectangle(Background, pen, new Rect(Vector2.Zero, Size), CornerRadius);
+            context.DrawRoundedRectangle(Background, pen, new Rect(Vector2.Zero, Size), (float)CornerRadius.TopLeft);
         }
         base.OnRender(context);
     }

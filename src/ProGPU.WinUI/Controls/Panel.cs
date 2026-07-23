@@ -6,12 +6,41 @@ using Microsoft.UI.Xaml.Documents;
 using System;
 using System.Collections.Generic;
 using ProGPU.Scene;
+using ProGPU.Layout;
+using ProGPU.Vector;
+using System.Numerics;
 
 namespace Microsoft.UI.Xaml.Controls;
 
 [ContentProperty(Name = "Children")]
 public class Panel : FrameworkElement
 {
+    public static readonly DependencyProperty BackgroundProperty =
+        DependencyProperty.Register(
+            nameof(Background),
+            typeof(Brush),
+            typeof(Panel),
+            new PropertyMetadata(null) { AffectsRender = true });
+
+    public Brush? Background
+    {
+        get => GetValue(BackgroundProperty) as Brush;
+        set => SetValue(BackgroundProperty, value);
+    }
+
+    public static readonly DependencyProperty BackgroundTransitionProperty =
+        DependencyProperty.Register(
+            nameof(BackgroundTransition),
+            typeof(BrushTransition),
+            typeof(Panel),
+            new PropertyMetadata(null));
+
+    public BrushTransition? BackgroundTransition
+    {
+        get => GetValue(BackgroundTransitionProperty) as BrushTransition;
+        set => SetValue(BackgroundTransitionProperty, value);
+    }
+
     private PanelChildrenCollection? _childrenCollection;
     public new PanelChildrenCollection Children => _childrenCollection ??= new PanelChildrenCollection(this);
 
@@ -30,6 +59,16 @@ public class Panel : FrameworkElement
     public new void ClearChildren()
     {
         base.ClearChildren();
+    }
+
+    public override void OnRender(DrawingContext context)
+    {
+        if (Background is { } background)
+        {
+            context.DrawRectangle(background, null, new Rect(Vector2.Zero, Size));
+        }
+
+        base.OnRender(context);
     }
 }
 

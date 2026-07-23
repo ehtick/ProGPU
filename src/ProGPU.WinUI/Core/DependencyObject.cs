@@ -125,6 +125,53 @@ public class DependencyProperty
         return null;
     }
 
+    internal static DependencyProperty? LookupRegisteredOwner(string ownerTypeName, string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerTypeName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        DependencyProperty? match = null;
+        lock (RegisteredProperties)
+        {
+            foreach (var property in RegisteredProperties)
+            {
+                if (!string.Equals(property.Name, name, StringComparison.Ordinal))
+                    continue;
+                if (!string.Equals(property.OwnerType.Name, ownerTypeName, StringComparison.Ordinal) &&
+                    !string.Equals(property.OwnerType.FullName, ownerTypeName, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (match != null && !ReferenceEquals(match, property))
+                    return null;
+                match = property;
+            }
+        }
+
+        return match;
+    }
+
+    internal static DependencyProperty? LookupUniqueRegisteredProperty(string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        DependencyProperty? match = null;
+        lock (RegisteredProperties)
+        {
+            foreach (var property in RegisteredProperties)
+            {
+                if (!string.Equals(property.Name, name, StringComparison.Ordinal))
+                    continue;
+                if (match != null && !ReferenceEquals(match, property))
+                    return null;
+                match = property;
+            }
+        }
+
+        return match;
+    }
+
     public static IReadOnlyList<DependencyProperty> GetRegisteredProperties(Type ownerType)
     {
         ArgumentNullException.ThrowIfNull(ownerType);
@@ -427,31 +474,52 @@ public class DependencyObject : ProGPU.Layout.LayoutNode
         for (int i = 0; i < len; i++)
         {
             bool hasThemeResource = false;
+            var property = DependencyProperty.GetPropertyByIndex(i);
             
             if (i < _localThemeResources.Length && _localThemeResources[i] is ThemeResource localTr)
             {
-                _localValues[i] = ThemeManager.GetResource(localTr.ResourceKey, activeTheme, activeFamily);
+                var resolved = XamlResourceResolver.ResolveTheme(
+                    localTr.LookupRoot,
+                    this,
+                    localTr.ResourceKey,
+                    activeTheme,
+                    activeFamily);
+                _localValues[i] = property == null
+                    ? resolved
+                    : XamlValueConverter.ConvertTo(property.PropertyType, resolved);
                 hasThemeResource = true;
             }
             if (i < _styleThemeResources.Length && _styleThemeResources[i] is ThemeResource styleTr)
             {
-                _styleValues[i] = ThemeManager.GetResource(styleTr.ResourceKey, activeTheme, activeFamily);
+                var resolved = XamlResourceResolver.ResolveTheme(
+                    styleTr.LookupRoot,
+                    this,
+                    styleTr.ResourceKey,
+                    activeTheme,
+                    activeFamily);
+                _styleValues[i] = property == null
+                    ? resolved
+                    : XamlValueConverter.ConvertTo(property.PropertyType, resolved);
                 hasThemeResource = true;
             }
             if (i < _defaultStyleThemeResources.Length && _defaultStyleThemeResources[i] is ThemeResource defaultStyleTr)
             {
-                _defaultStyleValues[i] = ThemeManager.GetResource(defaultStyleTr.ResourceKey, activeTheme, activeFamily);
+                var resolved = XamlResourceResolver.ResolveTheme(
+                    defaultStyleTr.LookupRoot,
+                    this,
+                    defaultStyleTr.ResourceKey,
+                    activeTheme,
+                    activeFamily);
+                _defaultStyleValues[i] = property == null
+                    ? resolved
+                    : XamlValueConverter.ConvertTo(property.PropertyType, resolved);
                 hasThemeResource = true;
             }
             
-            if (hasThemeResource)
+            if (hasThemeResource && property != null)
             {
-                var dp = DependencyProperty.GetPropertyByIndex(i);
-                if (dp != null)
-                {
-                    object? oldValue = _effectiveValues[i] ?? dp.Metadata?.DefaultValue;
-                    UpdateEffectiveValue(dp, i, oldValue);
-                }
+                object? oldValue = _effectiveValues[i] ?? property.Metadata?.DefaultValue;
+                UpdateEffectiveValue(property, i, oldValue);
             }
         }
     }
@@ -498,15 +566,15 @@ public class DependencyObject : ProGPU.Layout.LayoutNode
         if (value is ThemeResource themeResource)
         {
             _localThemeResources[idx] = themeResource;
-            var resolved = ThemeManager.GetResource(themeResource.ResourceKey, (this is FrameworkElement fe) ? fe.ActualTheme : ThemeManager.CurrentTheme, (this is FrameworkElement feFam) ? feFam.ActualThemeFamily : ThemeManager.CurrentThemeFamily);
-            _localValues[idx] = resolved;
+            var resolved = XamlResourceResolver.ResolveTheme(themeResource.LookupRoot, this, themeResource.ResourceKey, (this is FrameworkElement fe) ? fe.ActualTheme : ThemeManager.CurrentTheme, (this is FrameworkElement feFam) ? feFam.ActualThemeFamily : ThemeManager.CurrentThemeFamily);
+            _localValues[idx] = XamlValueConverter.ConvertTo(dp.PropertyType, resolved);
         }
         else if (value is ProGPU.Vector.ThemeResourceBrush trBrush)
         {
-            var tr = new ThemeResource(trBrush.ResourceKey);
+            var tr = new ThemeResource(trBrush.LookupRoot, trBrush.ResourceKey);
             _localThemeResources[idx] = tr;
-            var resolved = ThemeManager.GetResource(tr.ResourceKey, (this is FrameworkElement fe) ? fe.ActualTheme : ThemeManager.CurrentTheme, (this is FrameworkElement feFam) ? feFam.ActualThemeFamily : ThemeManager.CurrentThemeFamily);
-            _localValues[idx] = resolved;
+            var resolved = XamlResourceResolver.ResolveTheme(tr.LookupRoot, this, tr.ResourceKey, (this is FrameworkElement fe) ? fe.ActualTheme : ThemeManager.CurrentTheme, (this is FrameworkElement feFam) ? feFam.ActualThemeFamily : ThemeManager.CurrentThemeFamily);
+            _localValues[idx] = XamlValueConverter.ConvertTo(dp.PropertyType, resolved);
         }
         else
         {
@@ -538,15 +606,15 @@ public class DependencyObject : ProGPU.Layout.LayoutNode
         if (value is ThemeResource themeResource)
         {
             _styleThemeResources[idx] = themeResource;
-            var resolved = ThemeManager.GetResource(themeResource.ResourceKey, (this is FrameworkElement fe) ? fe.ActualTheme : ThemeManager.CurrentTheme, (this is FrameworkElement feFam) ? feFam.ActualThemeFamily : ThemeManager.CurrentThemeFamily);
-            _styleValues[idx] = resolved;
+            var resolved = XamlResourceResolver.ResolveTheme(themeResource.LookupRoot, this, themeResource.ResourceKey, (this is FrameworkElement fe) ? fe.ActualTheme : ThemeManager.CurrentTheme, (this is FrameworkElement feFam) ? feFam.ActualThemeFamily : ThemeManager.CurrentThemeFamily);
+            _styleValues[idx] = XamlValueConverter.ConvertTo(dp.PropertyType, resolved);
         }
         else if (value is ProGPU.Vector.ThemeResourceBrush trBrush)
         {
-            var tr = new ThemeResource(trBrush.ResourceKey);
+            var tr = new ThemeResource(trBrush.LookupRoot, trBrush.ResourceKey);
             _styleThemeResources[idx] = tr;
-            var resolved = ThemeManager.GetResource(tr.ResourceKey, (this is FrameworkElement fe) ? fe.ActualTheme : ThemeManager.CurrentTheme, (this is FrameworkElement feFam) ? feFam.ActualThemeFamily : ThemeManager.CurrentThemeFamily);
-            _styleValues[idx] = resolved;
+            var resolved = XamlResourceResolver.ResolveTheme(tr.LookupRoot, this, tr.ResourceKey, (this is FrameworkElement fe) ? fe.ActualTheme : ThemeManager.CurrentTheme, (this is FrameworkElement feFam) ? feFam.ActualThemeFamily : ThemeManager.CurrentThemeFamily);
+            _styleValues[idx] = XamlValueConverter.ConvertTo(dp.PropertyType, resolved);
         }
         else
         {
@@ -584,15 +652,15 @@ public class DependencyObject : ProGPU.Layout.LayoutNode
         if (value is ThemeResource themeResource)
         {
             _defaultStyleThemeResources[idx] = themeResource;
-            var resolved = ThemeManager.GetResource(themeResource.ResourceKey, (this is FrameworkElement fe) ? fe.ActualTheme : ThemeManager.CurrentTheme, (this is FrameworkElement feFam) ? feFam.ActualThemeFamily : ThemeManager.CurrentThemeFamily);
-            _defaultStyleValues[idx] = resolved;
+            var resolved = XamlResourceResolver.ResolveTheme(themeResource.LookupRoot, this, themeResource.ResourceKey, (this is FrameworkElement fe) ? fe.ActualTheme : ThemeManager.CurrentTheme, (this is FrameworkElement feFam) ? feFam.ActualThemeFamily : ThemeManager.CurrentThemeFamily);
+            _defaultStyleValues[idx] = XamlValueConverter.ConvertTo(dp.PropertyType, resolved);
         }
         else if (value is ProGPU.Vector.ThemeResourceBrush trBrush)
         {
-            var tr = new ThemeResource(trBrush.ResourceKey);
+            var tr = new ThemeResource(trBrush.LookupRoot, trBrush.ResourceKey);
             _defaultStyleThemeResources[idx] = tr;
-            var resolved = ThemeManager.GetResource(tr.ResourceKey, (this is FrameworkElement fe) ? fe.ActualTheme : ThemeManager.CurrentTheme, (this is FrameworkElement feFam) ? feFam.ActualThemeFamily : ThemeManager.CurrentThemeFamily);
-            _defaultStyleValues[idx] = resolved;
+            var resolved = XamlResourceResolver.ResolveTheme(tr.LookupRoot, this, tr.ResourceKey, (this is FrameworkElement fe) ? fe.ActualTheme : ThemeManager.CurrentTheme, (this is FrameworkElement feFam) ? feFam.ActualThemeFamily : ThemeManager.CurrentThemeFamily);
+            _defaultStyleValues[idx] = XamlValueConverter.ConvertTo(dp.PropertyType, resolved);
         }
         else
         {
@@ -667,6 +735,17 @@ public class DependencyObject : ProGPU.Layout.LayoutNode
         return idx < _localValues.Length && (_localValues[idx] != null || _localThemeResources[idx] != null);
     }
 
+    internal object? GetLocalXamlValue(DependencyProperty dp)
+    {
+        int idx = dp.Index;
+        if (idx >= _localValues.Length)
+            return null;
+        return _localThemeResources[idx] ?? _localValues[idx];
+    }
+
+    internal object? GetLocalOrEffectiveXamlValue(DependencyProperty dp) =>
+        IsPropertySetLocally(dp) ? GetLocalXamlValue(dp) : GetValue(dp);
+
     public bool IsPropertySetInStyle(DependencyProperty dp)
     {
         int idx = dp.Index;
@@ -688,30 +767,45 @@ public class DependencyObject : ProGPU.Layout.LayoutNode
     }
 
     private long _nextToken = 1;
-    private Dictionary<DependencyProperty, List<(long Token, Action<DependencyObject, DependencyPropertyChangedEventArgs> Callback)>>? _propertyChangedCallbacks;
+    private Dictionary<DependencyProperty, (long Token, Action<DependencyObject, DependencyPropertyChangedEventArgs> Callback)[]>? _propertyChangedCallbacks;
 
     public long RegisterPropertyChangedCallback(DependencyProperty dp, Action<DependencyObject, DependencyPropertyChangedEventArgs> callback)
     {
-        _propertyChangedCallbacks ??= new Dictionary<DependencyProperty, List<(long, Action<DependencyObject, DependencyPropertyChangedEventArgs>)>>();
-        if (!_propertyChangedCallbacks.TryGetValue(dp, out var list))
-        {
-            list = new List<(long, Action<DependencyObject, DependencyPropertyChangedEventArgs>)>();
-            _propertyChangedCallbacks[dp] = list;
-        }
+        ArgumentNullException.ThrowIfNull(dp);
+        ArgumentNullException.ThrowIfNull(callback);
+        _propertyChangedCallbacks ??=
+            new Dictionary<DependencyProperty, (long, Action<DependencyObject, DependencyPropertyChangedEventArgs>)[]>();
         long token = _nextToken++;
-        list.Add((token, callback));
+        if (!_propertyChangedCallbacks.TryGetValue(dp, out var callbacks))
+            callbacks = Array.Empty<(long, Action<DependencyObject, DependencyPropertyChangedEventArgs>)>();
+        var updated = new (long, Action<DependencyObject, DependencyPropertyChangedEventArgs>)[callbacks.Length + 1];
+        Array.Copy(callbacks, updated, callbacks.Length);
+        updated[^1] = (token, callback);
+        _propertyChangedCallbacks[dp] = updated;
         return token;
     }
 
     public void UnregisterPropertyChangedCallback(DependencyProperty dp, long token)
     {
-        if (_propertyChangedCallbacks != null && _propertyChangedCallbacks.TryGetValue(dp, out var list))
+        if (_propertyChangedCallbacks != null &&
+            _propertyChangedCallbacks.TryGetValue(dp, out var callbacks))
         {
-            for (int i = 0; i < list.Count; i++)
+            for (int i = 0; i < callbacks.Length; i++)
             {
-                if (list[i].Token == token)
+                if (callbacks[i].Token == token)
                 {
-                    list.RemoveAt(i);
+                    if (callbacks.Length == 1)
+                    {
+                        _propertyChangedCallbacks.Remove(dp);
+                        break;
+                    }
+                    var updated =
+                        new (long, Action<DependencyObject, DependencyPropertyChangedEventArgs>)[callbacks.Length - 1];
+                    if (i > 0)
+                        Array.Copy(callbacks, 0, updated, 0, i);
+                    if (i < callbacks.Length - 1)
+                        Array.Copy(callbacks, i + 1, updated, i, callbacks.Length - i - 1);
+                    _propertyChangedCallbacks[dp] = updated;
                     break;
                 }
             }
@@ -743,7 +837,7 @@ public class DependencyObject : ProGPU.Layout.LayoutNode
 
         if (_propertyChangedCallbacks != null && _propertyChangedCallbacks.TryGetValue(dp, out var callbacks))
         {
-            for (int i = 0; i < callbacks.Count; i++)
+            for (int i = 0; i < callbacks.Length; i++)
             {
                 callbacks[i].Callback(this, args);
             }

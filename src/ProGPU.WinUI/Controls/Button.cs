@@ -8,13 +8,21 @@ using System.Numerics;
 using ProGPU.Layout;
 using ProGPU.Vector;
 using ProGPU.Scene;
+using Microsoft.UI.Xaml.Controls.Primitives;
 
 namespace Microsoft.UI.Xaml.Controls;
 
 [ContentProperty(Name = "Content")]
-public class Button : ContentControl
+public class Button : ButtonBase
 {
-    public event EventHandler? Click;
+    public static readonly DependencyProperty FlyoutProperty = DependencyProperty.Register(
+        nameof(Flyout), typeof(FlyoutBase), typeof(Button), new PropertyMetadata(null));
+
+    public FlyoutBase? Flyout
+    {
+        get => GetValue(FlyoutProperty) as FlyoutBase;
+        set => SetValue(FlyoutProperty, value);
+    }
 
     public Button()
     {
@@ -23,15 +31,6 @@ public class Button : ContentControl
         {
             SetDefaultStyle(defaultStyle);
         }
-    }
-
-    public override void OnPointerReleased(PointerRoutedEventArgs e)
-    {
-        if (IsEnabled && IsPointerPressed && IsPointerOver)
-        {
-            OnClick();
-        }
-        base.OnPointerReleased(e);
     }
 
     protected override Vector2 MeasureOverride(Vector2 availableSize)
@@ -49,19 +48,9 @@ public class Button : ContentControl
         base.OnRender(context);
     }
 
-    public override void OnKeyDown(KeyRoutedEventArgs e)
+    protected override void OnClick()
     {
-        if (IsEnabled && (e.Key == Silk.NET.Input.Key.Space || e.Key == Silk.NET.Input.Key.Enter))
-        {
-            OnClick();
-            e.Handled = true;
-            return;
-        }
-        base.OnKeyDown(e);
-    }
-
-    protected virtual void OnClick()
-    {
-        Click?.Invoke(this, EventArgs.Empty);
+        base.OnClick();
+        Flyout?.ShowAt(this);
     }
 }

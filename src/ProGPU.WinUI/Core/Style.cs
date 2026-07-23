@@ -8,14 +8,16 @@ using System.Collections.Generic;
 
 namespace Microsoft.UI.Xaml;
 
-public class Style
+[ContentProperty(Name = nameof(Setters))]
+public class Style : DependencyObject
 {
-    public Type TargetType { get; set; }
+    public Type? TargetType { get; set; }
+    public Style? BasedOn { get; set; }
+    public bool IsSealed { get; private set; }
     public List<Setter> Setters { get; } = new();
 
     public Style()
     {
-        TargetType = typeof(FrameworkElement);
     }
 
     public Style(Type targetType)
@@ -28,11 +30,14 @@ public class Style
         Setters.Clear();
         Setters.AddRange(setters);
     }
+
+    internal void Seal() => IsSealed = true;
 }
 
 public class Setter
 {
     public string Property { get; set; } = string.Empty;
+    public TargetPropertyPath? Target { get; set; }
     public object? Value { get; set; }
 
     public Setter()

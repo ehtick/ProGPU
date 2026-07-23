@@ -394,9 +394,14 @@ public static class HotReloadManager
         {
             if (element is IHotReloadable reloadable)
             {
+                HotReloadStateSnapshot? state = null;
                 try
                 {
+                    state = HotReloadStateSnapshot.Capture(element, Report);
+                    state.ReleaseFocusBeforeReplacement();
                     reloadable.Reload(context);
+                    state.RestoreImmediate(element, Report);
+                    UIThread.Post(() => state.RestoreDeferred(element, Report));
                     element.InvalidateMeasure();
                     element.InvalidateArrange();
                     element.Invalidate();
@@ -404,6 +409,8 @@ public static class HotReloadManager
                 }
                 catch (Exception exception)
                 {
+                    state?.RestoreImmediate(element, Report);
+                    state?.RestoreDeferred(element, Report);
                     counters.Failed++;
                     Report(new HotReloadDiagnostic(
                         HotReloadDiagnosticSeverity.Error,

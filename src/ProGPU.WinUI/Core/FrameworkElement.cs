@@ -427,11 +427,15 @@ public partial class FrameworkElement
         }
     }
 
-    private object? _toolTip;
     public object? ToolTip
     {
-        get => _toolTip;
-        set { if (_toolTip != value) { _toolTip = value; OnPropertyChanged(); } }
+        get => Microsoft.UI.Xaml.Controls.ToolTipService.GetToolTip(this);
+        set
+        {
+            if (Equals(ToolTip, value)) return;
+            Microsoft.UI.Xaml.Controls.ToolTipService.SetToolTip(this, value);
+            OnPropertyChanged();
+        }
     }
 
     private Style? _style;
@@ -459,107 +463,6 @@ public partial class FrameworkElement
         ApplyStyle();
     }
 
-    private object? ConvertValue(Type targetType, object? value)
-    {
-        if (value == null) return null;
-
-        var valType = value.GetType();
-        if (targetType.IsAssignableFrom(valType))
-        {
-            return value;
-        }
-
-
-
-        // 1. Enum conversion
-        if (targetType.IsEnum && value is string strEnum)
-        {
-            return Enum.Parse(targetType, strEnum, true);
-        }
-
-        // 2. Boolean conversion
-        if (targetType == typeof(bool) && value is string strBool)
-        {
-            return bool.Parse(strBool);
-        }
-
-        // 3. Thickness conversion
-        if (targetType == typeof(Thickness))
-        {
-            if (value is float fVal) return new Thickness(fVal);
-            if (value is double dVal) return new Thickness((float)dVal);
-            if (value is int iVal) return new Thickness(iVal);
-            if (value is string strThick)
-            {
-                var parts = strThick.Split(new[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length == 1 && float.TryParse(parts[0], out float uniform))
-                    return new Thickness(uniform);
-                if (parts.Length == 2 && float.TryParse(parts[0], out float h) && float.TryParse(parts[1], out float v))
-                    return new Thickness(h, v);
-                if (parts.Length == 4 && float.TryParse(parts[0], out float l) && float.TryParse(parts[1], out float t) && float.TryParse(parts[2], out float r) && float.TryParse(parts[3], out float b))
-                    return new Thickness(l, t, r, b);
-            }
-        }
-
-        // 4. CornerRadius conversion (which is defined as a float in ProGPU)
-        if (targetType == typeof(float) && value is string strFloat)
-        {
-            if (float.TryParse(strFloat, out float parsedFloat))
-            {
-                return parsedFloat;
-            }
-        }
-
-        // 5. Brush conversion
-        if (targetType == typeof(ProGPU.Vector.Brush) && value is string strBrush)
-        {
-            if (strBrush.Equals("Transparent", StringComparison.OrdinalIgnoreCase))
-            {
-                return new ProGPU.Vector.SolidColorBrush(new Vector4(0f, 0f, 0f, 0f));
-            }
-            if (strBrush.StartsWith("#"))
-            {
-                var hex = strBrush.Substring(1);
-                if (hex.Length == 6) hex = "FF" + hex;
-                if (hex.Length == 8)
-                {
-                    uint rgba = Convert.ToUInt32(hex, 16);
-                    float a = ((rgba >> 24) & 0xFF) / 255.0f;
-                    float r = ((rgba >> 16) & 0xFF) / 255.0f;
-                    float g = ((rgba >> 8) & 0xFF) / 255.0f;
-                    float b = (rgba & 0xFF) / 255.0f;
-                    return new ProGPU.Vector.SolidColorBrush(new Vector4(r, g, b, a));
-                }
-            }
-        }
-
-        // 6. Vector4 color conversion
-        if (targetType == typeof(Vector4) && value is string strColor)
-        {
-            if (strColor.StartsWith("#"))
-            {
-                var hex = strColor.Substring(1);
-                if (hex.Length == 6) hex = "FF" + hex;
-                if (hex.Length == 8)
-                {
-                    uint rgba = Convert.ToUInt32(hex, 16);
-                    float a = ((rgba >> 24) & 0xFF) / 255.0f;
-                    float r = ((rgba >> 16) & 0xFF) / 255.0f;
-                    float g = ((rgba >> 8) & 0xFF) / 255.0f;
-                    float b = (rgba & 0xFF) / 255.0f;
-                    return new Vector4(r, g, b, a);
-                }
-            }
-        }
-
-        // 7. Numeric standard conversions
-        if (targetType == typeof(float)) return Convert.ToSingle(value);
-        if (targetType == typeof(double)) return Convert.ToDouble(value);
-        if (targetType == typeof(int)) return Convert.ToInt32(value);
-
-        return Convert.ChangeType(value, targetType);
-    }
-
     protected override void OnThemeChanged()
     {
         base.OnThemeChanged();
@@ -578,34 +481,45 @@ public partial class FrameworkElement
     {
         ClearStyleValues();
         if (_style == null) return;
-        if (!_style.TargetType.IsAssignableFrom(GetType())) return;
-
-        foreach (var setter in _style.Setters)
+        var orderedStyles = new Stack<Style>();
+        var visitedStyles = new HashSet<Style>(ReferenceEqualityComparer.Instance);
+        for (var current = _style; current != null; current = current.BasedOn)
         {
-            if (string.IsNullOrEmpty(setter.Property)) continue;
+            if (!visitedStyles.Add(current)) break;
+            orderedStyles.Push(current);
+        }
 
-            var dp = DependencyProperty.Lookup(GetType(), setter.Property);
-            if (dp != null)
+        while (orderedStyles.Count != 0)
+        {
+            var style = orderedStyles.Pop();
+            if (style.TargetType is not { } targetType || !targetType.IsAssignableFrom(GetType())) continue;
+            foreach (var setter in style.Setters)
             {
-                var val = setter.Value;
-                if (val is StaticResourceRef staticRef)
-                {
-                    val = new ThemeResource(staticRef.ResourceKey);
-                }
+                if (string.IsNullOrEmpty(setter.Property)) continue;
 
-                if (val is ThemeResource themeResource)
+                var dp = DependencyProperty.Lookup(GetType(), setter.Property);
+                if (dp != null)
                 {
-                    SetStyleValue(dp, themeResource);
+                    var val = setter.Value;
+                    if (val is StaticResourceRef staticRef)
+                    {
+                        val = new ThemeResource(staticRef.ResourceKey);
+                    }
+
+                    if (val is ThemeResource themeResource)
+                    {
+                        SetStyleValue(dp, themeResource);
+                    }
+                    else
+                    {
+                        var converted = XamlValueConverter.ConvertTo(dp.PropertyType, val);
+                        SetStyleValue(dp, converted);
+                    }
                 }
                 else
                 {
-                    var converted = ConvertValue(dp.PropertyType, val);
-                    SetStyleValue(dp, converted);
+                    System.Diagnostics.Debug.WriteLine($"Unsupported style setter '{setter.Property}' on {GetType().Name}: no dependency property is registered.");
                 }
-            }
-            else
-            {
-                System.Diagnostics.Debug.WriteLine($"Unsupported style setter '{setter.Property}' on {GetType().Name}: no dependency property is registered.");
             }
         }
     }
@@ -738,6 +652,54 @@ public partial class FrameworkElement
     {
         get => (float)(GetValue(HeightProperty) ?? float.NaN);
         set => SetValue(HeightProperty, value);
+    }
+
+    public static readonly DependencyProperty MinWidthProperty = DependencyProperty.Register(
+        nameof(MinWidth), typeof(float), typeof(FrameworkElement),
+        new PropertyMetadata(0f, static (d, e) =>
+            ((FrameworkElement)d).MinimumWidthConstraint = (float)(e.NewValue ?? 0f))
+        { AffectsMeasure = true, AffectsArrange = true });
+
+    public float MinWidth
+    {
+        get => (float)(GetValue(MinWidthProperty) ?? 0f);
+        set => SetValue(MinWidthProperty, Math.Max(0f, value));
+    }
+
+    public static readonly DependencyProperty MinHeightProperty = DependencyProperty.Register(
+        nameof(MinHeight), typeof(float), typeof(FrameworkElement),
+        new PropertyMetadata(0f, static (d, e) =>
+            ((FrameworkElement)d).MinimumHeightConstraint = (float)(e.NewValue ?? 0f))
+        { AffectsMeasure = true, AffectsArrange = true });
+
+    public float MinHeight
+    {
+        get => (float)(GetValue(MinHeightProperty) ?? 0f);
+        set => SetValue(MinHeightProperty, Math.Max(0f, value));
+    }
+
+    public static readonly DependencyProperty MaxWidthProperty = DependencyProperty.Register(
+        nameof(MaxWidth), typeof(float), typeof(FrameworkElement),
+        new PropertyMetadata(float.PositiveInfinity, static (d, e) =>
+            ((FrameworkElement)d).MaximumWidthConstraint = (float)(e.NewValue ?? float.PositiveInfinity))
+        { AffectsMeasure = true, AffectsArrange = true });
+
+    public float MaxWidth
+    {
+        get => (float)(GetValue(MaxWidthProperty) ?? float.PositiveInfinity);
+        set => SetValue(MaxWidthProperty, Math.Max(0f, value));
+    }
+
+    public static readonly DependencyProperty MaxHeightProperty = DependencyProperty.Register(
+        nameof(MaxHeight), typeof(float), typeof(FrameworkElement),
+        new PropertyMetadata(float.PositiveInfinity, static (d, e) =>
+            ((FrameworkElement)d).MaximumHeightConstraint = (float)(e.NewValue ?? float.PositiveInfinity))
+        { AffectsMeasure = true, AffectsArrange = true });
+
+    public float MaxHeight
+    {
+        get => (float)(GetValue(MaxHeightProperty) ?? float.PositiveInfinity);
+        set => SetValue(MaxHeightProperty, Math.Max(0f, value));
     }
 
     // Routed Events

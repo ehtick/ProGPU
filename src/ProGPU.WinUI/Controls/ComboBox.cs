@@ -3,8 +3,9 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Documents;
+using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Data;
 using System;
-using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.Numerics;
 using Silk.NET.Input;
@@ -15,64 +16,192 @@ using Microsoft.UI.Input;
 
 namespace Microsoft.UI.Xaml.Controls;
 
-public class ComboBox : Control
+public enum ComboBoxSelectionChangedTrigger
 {
-    private bool _isDropDownOpen;
-    private ComboBoxItem? _selectedItem;
-    private string _placeholderText = "Select item...";
+    Committed,
+    Always
+}
+
+public class ComboBox : Selector
+{
     private float _fontSize = 14f;
     private Border? _dropDownPopup;
     private uint _pendingTouchPointerId;
     public Border? DropDownPopup => _dropDownPopup;
 
-    public ObservableCollection<ComboBoxItem> Items { get; }
+    public static readonly DependencyProperty IsDropDownOpenProperty = Register(
+        nameof(IsDropDownOpen),
+        typeof(bool),
+        false,
+        static (dependencyObject, _) => ((ComboBox)dependencyObject).OnDropDownStateChanged());
+
+    public static readonly DependencyProperty IsEditableProperty = Register(
+        nameof(IsEditable),
+        typeof(bool),
+        false);
+
+    public static readonly DependencyProperty MaxDropDownHeightProperty = Register(
+        nameof(MaxDropDownHeight),
+        typeof(double),
+        double.PositiveInfinity);
+
+    public static readonly DependencyProperty HeaderProperty = Register(
+        nameof(Header),
+        typeof(object),
+        null);
+
+    public static readonly DependencyProperty HeaderTemplateProperty = Register(
+        nameof(HeaderTemplate),
+        typeof(DataTemplate),
+        null);
+
+    public static readonly DependencyProperty PlaceholderTextProperty = Register(
+        nameof(PlaceholderText),
+        typeof(string),
+        string.Empty);
+
+    public static readonly DependencyProperty LightDismissOverlayModeProperty = Register(
+        nameof(LightDismissOverlayMode),
+        typeof(LightDismissOverlayMode),
+        LightDismissOverlayMode.Auto);
+
+    public static readonly DependencyProperty IsTextSearchEnabledProperty = Register(
+        nameof(IsTextSearchEnabled),
+        typeof(bool),
+        true);
+
+    public static readonly DependencyProperty SelectionChangedTriggerProperty = Register(
+        nameof(SelectionChangedTrigger),
+        typeof(ComboBoxSelectionChangedTrigger),
+        ComboBoxSelectionChangedTrigger.Committed);
+
+    public static readonly DependencyProperty PlaceholderForegroundProperty = Register(
+        nameof(PlaceholderForeground),
+        typeof(Brush),
+        null);
+
+    public static readonly DependencyProperty TextProperty = Register(
+        nameof(Text),
+        typeof(string),
+        string.Empty);
+
+    public static readonly DependencyProperty TextBoxStyleProperty = Register(
+        nameof(TextBoxStyle),
+        typeof(Style),
+        null);
+
+    public static readonly DependencyProperty DescriptionProperty = Register(
+        nameof(Description),
+        typeof(object),
+        null);
+
+    public static readonly DependencyProperty HeaderPlacementProperty = Register(
+        nameof(HeaderPlacement),
+        typeof(ControlHeaderPlacement),
+        ControlHeaderPlacement.Top);
+
+    public bool IsEditable
+    {
+        get => (bool)(GetValue(IsEditableProperty) ?? false);
+        set => SetValue(IsEditableProperty, value);
+    }
 
     public bool IsDropDownOpen
     {
         get
         {
             // If the popup is closed from the outside, keep state synced
-            if (_isDropDownOpen && _dropDownPopup != null && !PopupService.ActivePopups.Contains(_dropDownPopup))
+            var value = (bool)(GetValue(IsDropDownOpenProperty) ?? false);
+            if (value && _dropDownPopup != null && !PopupService.ActivePopups.Contains(_dropDownPopup))
             {
-                _isDropDownOpen = false;
+                SetValue(IsDropDownOpenProperty, false);
+                return false;
             }
-            return _isDropDownOpen;
+            return value;
         }
-        set
-        {
-            if (_isDropDownOpen != value)
-            {
-                if (value)
-                {
-                    DropDownOpening?.Invoke(this, EventArgs.Empty);
-                }
-                _isDropDownOpen = value;
-                UpdatePopupState();
-            }
-        }
+        set => SetValue(IsDropDownOpenProperty, value);
     }
 
-    public ComboBoxItem? SelectedItem
+    public double MaxDropDownHeight
     {
-        get => _selectedItem;
-        set
-        {
-            if (_selectedItem != value)
-            {
-                if (_selectedItem != null) _selectedItem.IsSelected = false;
-                _selectedItem = value;
-                if (_selectedItem != null) _selectedItem.IsSelected = true;
-                SelectionChanged?.Invoke(this, EventArgs.Empty);
-                Invalidate();
-            }
-        }
+        get => (double)(GetValue(MaxDropDownHeightProperty) ?? double.PositiveInfinity);
+        set => SetValue(MaxDropDownHeightProperty, value);
+    }
+
+    public object? Header
+    {
+        get => GetValue(HeaderProperty);
+        set => SetValue(HeaderProperty, value);
+    }
+
+    public DataTemplate? HeaderTemplate
+    {
+        get => GetValue(HeaderTemplateProperty) as DataTemplate;
+        set => SetValue(HeaderTemplateProperty, value);
     }
 
     public string PlaceholderText
     {
-        get => _placeholderText;
-        set { if (_placeholderText != value) { _placeholderText = value; Invalidate(); } }
+        get => GetValue(PlaceholderTextProperty) as string ?? string.Empty;
+        set => SetValue(PlaceholderTextProperty, value ?? string.Empty);
     }
+
+    public LightDismissOverlayMode LightDismissOverlayMode
+    {
+        get => (LightDismissOverlayMode)(GetValue(LightDismissOverlayModeProperty) ?? LightDismissOverlayMode.Auto);
+        set => SetValue(LightDismissOverlayModeProperty, value);
+    }
+
+    public bool IsTextSearchEnabled
+    {
+        get => (bool)(GetValue(IsTextSearchEnabledProperty) ?? true);
+        set => SetValue(IsTextSearchEnabledProperty, value);
+    }
+
+    public ComboBoxSelectionChangedTrigger SelectionChangedTrigger
+    {
+        get => (ComboBoxSelectionChangedTrigger)(
+            GetValue(SelectionChangedTriggerProperty) ??
+            ComboBoxSelectionChangedTrigger.Committed);
+        set => SetValue(SelectionChangedTriggerProperty, value);
+    }
+
+    public Brush? PlaceholderForeground
+    {
+        get => GetValue(PlaceholderForegroundProperty) as Brush;
+        set => SetValue(PlaceholderForegroundProperty, value);
+    }
+
+    public string Text
+    {
+        get => GetValue(TextProperty) as string ?? string.Empty;
+        set => SetValue(TextProperty, value ?? string.Empty);
+    }
+
+    public Style? TextBoxStyle
+    {
+        get => GetValue(TextBoxStyleProperty) as Style;
+        set => SetValue(TextBoxStyleProperty, value);
+    }
+
+    public object? Description
+    {
+        get => GetValue(DescriptionProperty);
+        set => SetValue(DescriptionProperty, value);
+    }
+
+    public ControlHeaderPlacement HeaderPlacement
+    {
+        get => (ControlHeaderPlacement)(
+            GetValue(HeaderPlacementProperty) ?? ControlHeaderPlacement.Top);
+        set => SetValue(HeaderPlacementProperty, value);
+    }
+
+    public bool IsSelectionBoxHighlighted => IsFocused;
+    public object? SelectionBoxItem =>
+        (SelectedItem as ComboBoxItem)?.Content ?? SelectedItem;
+    public DataTemplate? SelectionBoxItemTemplate => ItemTemplate;
+    public ComboBoxTemplateSettings TemplateSettings { get; } = new();
 
     protected override void OnPropertyChanged(Microsoft.UI.Xaml.DependencyProperty dp, object? oldValue, object? newValue)
     {
@@ -83,18 +212,26 @@ public class ComboBox : Control
         }
     }
 
-    public float FontSize
+    public new float FontSize
     {
         get => _fontSize;
         set { if (_fontSize != value) { _fontSize = value; Invalidate(); } }
     }
 
-    public event EventHandler? SelectionChanged;
+    public new event EventHandler? SelectionChanged;
     public event EventHandler? DropDownOpening;
+    public event EventHandler? DropDownOpened;
+    public event EventHandler? DropDownClosed;
+
+    static ComboBox()
+    {
+        BindingMemberAccessorRegistry.Register<ComboBox, ComboBoxTemplateSettings>(
+            nameof(TemplateSettings),
+            static source => source.TemplateSettings);
+    }
 
     public ComboBox()
     {
-        Items = new ObservableCollection<ComboBoxItem>();
         Items.CollectionChanged += OnItemsChanged;
         CornerRadius = 4f;
         Padding = new Thickness(10, 6, 32, 6); // Extra right padding for arrow
@@ -112,16 +249,18 @@ public class ComboBox : Control
     {
         if (e.NewItems != null)
         {
-            foreach (ComboBoxItem item in e.NewItems)
+            foreach (var value in e.NewItems)
             {
-                item.Selected += OnItemSelected;
+                if (value is ComboBoxItem item)
+                    item.Selected += OnItemSelected;
             }
         }
         if (e.OldItems != null)
         {
-            foreach (ComboBoxItem item in e.OldItems)
+            foreach (var value in e.OldItems)
             {
-                item.Selected -= OnItemSelected;
+                if (value is ComboBoxItem item)
+                    item.Selected -= OnItemSelected;
             }
         }
         if (IsDropDownOpen)
@@ -137,6 +276,29 @@ public class ComboBox : Control
             SelectedItem = item;
             IsDropDownOpen = false;
         }
+    }
+
+    protected override void OnSelectedItemChanged(object? oldValue, object? newValue)
+    {
+        if (oldValue is ComboBoxItem oldItem) oldItem.IsSelected = false;
+        if (newValue is ComboBoxItem newItem)
+        {
+            newItem.IsSelected = true;
+            if (!IsEditable) Text = newItem.Text;
+        }
+        base.OnSelectedItemChanged(oldValue, newValue);
+        SelectionChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void OnDropDownStateChanged()
+    {
+        if ((bool)(GetValue(IsDropDownOpenProperty) ?? false))
+            DropDownOpening?.Invoke(this, EventArgs.Empty);
+        UpdatePopupState();
+        if ((bool)(GetValue(IsDropDownOpenProperty) ?? false))
+            DropDownOpened?.Invoke(this, EventArgs.Empty);
+        else
+            DropDownClosed?.Invoke(this, EventArgs.Empty);
     }
 
     private Vector2 GetAbsolutePosition()
@@ -157,7 +319,7 @@ public class ComboBox : Control
 
     private void UpdatePopupState()
     {
-        if (_isDropDownOpen)
+        if ((bool)(GetValue(IsDropDownOpenProperty) ?? false))
         {
             if (_dropDownPopup == null)
             {
@@ -168,7 +330,7 @@ public class ComboBox : Control
                 };
                 foreach (var item in Items)
                 {
-                    stack.AddChild(item);
+                    if (item is FrameworkElement element) stack.AddChild(element);
                 }
 
                 var scrollViewer = new ScrollViewer
@@ -194,15 +356,22 @@ public class ComboBox : Control
                 stack.ClearChildren();
                 foreach (var item in Items)
                 {
-                    stack.AddChild(item);
+                    if (item is FrameworkElement element) stack.AddChild(element);
                 }
             }
 
             var absPos = GetAbsolutePosition();
             float mainH = HeightConstraint ?? 32f;
             _dropDownPopup.Width = Size.X;
-            _dropDownPopup.Height = Math.Min(300f, Items.Count * 32f + 2f);
+            var maximumHeight = double.IsPositiveInfinity(MaxDropDownHeight)
+                ? 300f
+                : Math.Min(300f, (float)Math.Max(0d, MaxDropDownHeight));
+            _dropDownPopup.Height = Math.Min(maximumHeight, Items.Count * 32f + 2f);
             _dropDownPopup.FlowDirection = FlowDirection;
+            TemplateSettings.Update(
+                Size.X,
+                _dropDownPopup.Height,
+                headerHeight: HeightConstraint ?? 32f);
 
             // Force theme synchronization right before showing the popup
             _dropDownPopup.NotifyThemeChanged();
@@ -338,6 +507,7 @@ public class ComboBox : Control
     {
         float w = WidthConstraint ?? Math.Max(120f, availableSize.X);
         float h = HeightConstraint ?? 32f;
+        TemplateSettings.Update(w, 0f, h);
         return new Vector2(w, h);
     }
 
@@ -375,7 +545,7 @@ public class ComboBox : Control
             Pen pen = new Pen(borderBrush ?? ThemeManager.GetBrush("ControlBorder"), BorderThickness.Left > 0 ? BorderThickness.Left : 1f);
 
             // Draw header background shape
-            context.DrawRoundedRectangle(bg, pen, headerRect, CornerRadius);
+            context.DrawRoundedRectangle(bg, pen, headerRect, CornerRadius.RenderingRadius);
         }
 
         // Draw active Selected Text or Placeholder Text
@@ -383,10 +553,11 @@ public class ComboBox : Control
         if (activeFont != null)
         {
             float textY = (headerH - FontSize) / 2f;
-            string textToDraw = SelectedItem != null ? SelectedItem.Text : PlaceholderText;
-            Brush textBrush = SelectedItem != null 
+            var selectedItem = SelectedItem as ComboBoxItem;
+            string textToDraw = selectedItem?.Text ?? PlaceholderText;
+            Brush textBrush = SelectedItem != null
                 ? (Foreground ?? ThemeManager.GetBrush("TextPrimary")) 
-                : ThemeManager.GetBrush("TextSecondary");
+                : (PlaceholderForeground ?? ThemeManager.GetBrush("TextSecondary"));
 
             Rect logicalTextBounds = new Rect(
                 Padding.Left,
@@ -449,4 +620,19 @@ public class ComboBox : Control
         context.DrawLine(pen, new Vector2(centerX - 3.5f, centerY - 1.5f), new Vector2(centerX, centerY + 2f));
         context.DrawLine(pen, new Vector2(centerX, centerY + 2f), new Vector2(centerX + 3.5f, centerY - 1.5f));
     }
+
+    private static DependencyProperty Register(
+        string name,
+        Type propertyType,
+        object? defaultValue,
+        PropertyChangedCallback? callback = null) =>
+        DependencyProperty.Register(
+            name,
+            propertyType,
+            typeof(ComboBox),
+            new PropertyMetadata(defaultValue, callback)
+            {
+                AffectsMeasure = true,
+                AffectsRender = true
+            });
 }

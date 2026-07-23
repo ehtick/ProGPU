@@ -133,7 +133,7 @@ public class Thumb : Control
         if (bg != null || (border != null && thickness.Left > 0f))
         {
             var pen = border != null && thickness.Left > 0f ? new Pen(border, thickness.Left) : null;
-            context.DrawRoundedRectangle(bg, pen, new Rect(Vector2.Zero, Size), CornerRadius);
+            context.DrawRoundedRectangle(bg, pen, new Rect(Vector2.Zero, Size), CornerRadius.RenderingRadius);
         }
 
         base.OnRender(context);

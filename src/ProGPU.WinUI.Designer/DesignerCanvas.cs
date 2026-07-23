@@ -34,7 +34,7 @@ public static class StandardDataFormats
 
 public class DesignerCanvas : Panel, IHitTestBackgroundProvider
 {
-    public Brush? Background { get; set; }
+    public new Brush? Background { get; set; }
     public bool HasHitTestBackground => Background != null;
     public Canvas DesignSurface { get; }
     public Canvas AdornerSurface { get; }
@@ -1227,8 +1227,9 @@ public class DesignerCanvas : Panel, IHitTestBackgroundProvider
         }
         else if (Background is ThemeResourceBrush themeBg)
         {
-            var brush = ThemeManager.GetBrush(themeBg.ResourceKey, ActualTheme);
-            context.DrawRectangle(brush, null, new Rect(0, 0, Size.X, Size.Y));
+            var brush = XamlResourceResolver.ResolveThemeBrush(themeBg, this, ActualTheme);
+            if (brush != null)
+                context.DrawRectangle(brush, null, new Rect(0, 0, Size.X, Size.Y));
         }
 
         base.OnRender(context);

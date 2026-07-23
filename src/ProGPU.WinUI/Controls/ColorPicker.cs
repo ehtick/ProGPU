@@ -129,7 +129,7 @@ public class ColorPicker : Control
             _isUpdating = true;
             try
             {
-                _hue = _hueSlider.Value;
+                _hue = (float)_hueSlider.Value;
                 UpdateColorFromHsv();
                 _spectrumPad.Invalidate();
                 _alphaSlider?.Invalidate();
@@ -150,7 +150,7 @@ public class ColorPicker : Control
             _isUpdating = true;
             try
             {
-                _alpha = _alphaSlider.Value;
+                _alpha = (float)_alphaSlider.Value;
                 UpdateColorFromHsv();
             }
             finally
@@ -593,7 +593,7 @@ public class ColorPicker : Control
             context.DrawRoundedRectangle(null, new Pen(ThemeManager.GetBrush("ControlBorder"), 1f), trackRect, 4f);
 
             // Thumb
-            float pct = Value / 360f;
+            float pct = (float)(Value / 360d);
             float thumbX = IsRightToLeftLayout
                 ? Size.X - 8f - pct * (Size.X - 16f)
                 : 8f + pct * (Size.X - 16f);
@@ -649,7 +649,7 @@ public class ColorPicker : Control
             context.DrawRoundedRectangle(null, new Pen(ThemeManager.GetBrush("ControlBorder"), 1f), trackRect, 4f);
 
             // Thumb
-            float pct = Value;
+            float pct = (float)Value;
             float thumbX = IsRightToLeftLayout
                 ? Size.X - 8f - pct * (Size.X - 16f)
                 : 8f + pct * (Size.X - 16f);

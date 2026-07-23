@@ -152,10 +152,10 @@ public class GridDragEditor : IPanelDragEditor
         for (int i = 0; i < grid.ColumnDefinitions.Count; i++)
         {
             var c = grid.ColumnDefinitions[i];
-            if (c.UnitType == GridUnitType.Absolute)
-                totalAbsoluteCol += c.Value;
-            else if (c.UnitType == GridUnitType.Star)
-                totalStarCol += c.Value;
+            if (c.Width.UnitType == GridUnitType.Absolute)
+                totalAbsoluteCol += c.Width.Value;
+            else if (c.Width.UnitType == GridUnitType.Star)
+                totalStarCol += c.Width.Value;
         }
         float remainingCol = Math.Max(0f, gridW - totalAbsoluteCol);
         for (int i = 0; i < colCount; i++)
@@ -167,10 +167,10 @@ public class GridDragEditor : IPanelDragEditor
             else
             {
                 var c = grid.ColumnDefinitions[i];
-                if (c.UnitType == GridUnitType.Absolute)
-                    colWidths[i] = c.Value;
-                else if (c.UnitType == GridUnitType.Star && totalStarCol > 0f)
-                    colWidths[i] = (c.Value / totalStarCol) * remainingCol;
+                if (c.Width.UnitType == GridUnitType.Absolute)
+                    colWidths[i] = c.Width.Value;
+                else if (c.Width.UnitType == GridUnitType.Star && totalStarCol > 0f)
+                    colWidths[i] = (c.Width.Value / totalStarCol) * remainingCol;
                 else
                     colWidths[i] = gridW / colCount;
             }
@@ -183,10 +183,10 @@ public class GridDragEditor : IPanelDragEditor
         for (int i = 0; i < grid.RowDefinitions.Count; i++)
         {
             var r = grid.RowDefinitions[i];
-            if (r.UnitType == GridUnitType.Absolute)
-                totalAbsoluteRow += r.Value;
-            else if (r.UnitType == GridUnitType.Star)
-                totalStarRow += r.Value;
+            if (r.Height.UnitType == GridUnitType.Absolute)
+                totalAbsoluteRow += r.Height.Value;
+            else if (r.Height.UnitType == GridUnitType.Star)
+                totalStarRow += r.Height.Value;
         }
         float remainingRow = Math.Max(0f, gridH - totalAbsoluteRow);
         for (int i = 0; i < rowCount; i++)
@@ -198,10 +198,10 @@ public class GridDragEditor : IPanelDragEditor
             else
             {
                 var r = grid.RowDefinitions[i];
-                if (r.UnitType == GridUnitType.Absolute)
-                    rowHeights[i] = r.Value;
-                else if (r.UnitType == GridUnitType.Star && totalStarRow > 0f)
-                    rowHeights[i] = (r.Value / totalStarRow) * remainingRow;
+                if (r.Height.UnitType == GridUnitType.Absolute)
+                    rowHeights[i] = r.Height.Value;
+                else if (r.Height.UnitType == GridUnitType.Star && totalStarRow > 0f)
+                    rowHeights[i] = (r.Height.Value / totalStarRow) * remainingRow;
                 else
                     rowHeights[i] = gridH / rowCount;
             }

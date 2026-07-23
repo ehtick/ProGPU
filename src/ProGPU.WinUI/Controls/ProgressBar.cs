@@ -8,41 +8,24 @@ using System.Numerics;
 using ProGPU.Layout;
 using ProGPU.Scene;
 using ProGPU.Vector;
+using Microsoft.UI.Xaml.Controls.Primitives;
 
 namespace Microsoft.UI.Xaml.Controls;
 
-public class ProgressBar : Control
+public class ProgressBar : RangeBase
 {
-    private float _minimum = 0f;
-    private float _maximum = 100f;
-    private float _value = 0f;
+    public static readonly DependencyProperty ShowPausedProperty =
+        DependencyProperty.Register(
+            nameof(ShowPaused), typeof(bool), typeof(ProgressBar),
+            new PropertyMetadata(false) { AffectsRender = true });
+
     private bool _isIndeterminate;
     private float _indeterminateOffset;
 
-    public float Minimum
+    public bool ShowPaused
     {
-        get => _minimum;
-        set { _minimum = value; Invalidate(); }
-    }
-
-    public float Maximum
-    {
-        get => _maximum;
-        set { _maximum = value; Invalidate(); }
-    }
-
-    public float Value
-    {
-        get => _value;
-        set
-        {
-            float clamped = Math.Clamp(value, _minimum, _maximum);
-            if (_value != clamped)
-            {
-                _value = clamped;
-                Invalidate();
-            }
-        }
+        get => (bool)(GetValue(ShowPausedProperty) ?? false);
+        set => SetValue(ShowPausedProperty, value);
     }
 
     public bool IsIndeterminate
@@ -64,6 +47,7 @@ public class ProgressBar : Control
 
     public ProgressBar()
     {
+        Maximum = 100d;
         Width = 200f;
         Height = 4f; // Clean, modern WinUI thin track
 
@@ -116,8 +100,8 @@ public class ProgressBar : Control
         else
         {
             // Determinate filled segment
-            float range = _maximum - _minimum;
-            float percent = range > 0f ? (_value - _minimum) / range : 0f;
+            double range = Maximum - Minimum;
+            float percent = range > 0d ? (float)((Value - Minimum) / range) : 0f;
             float fillWidth = Size.X * percent;
 
             if (fillWidth > 0f)
