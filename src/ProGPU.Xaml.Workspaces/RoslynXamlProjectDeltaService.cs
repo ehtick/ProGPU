@@ -37,6 +37,13 @@ public enum RoslynXamlReloadAction
     RetainLastGood
 }
 
+public enum RoslynXamlMetadataDeltaReason
+{
+    CompilationOptions,
+    MetadataReferences,
+    HostSyntaxTrees
+}
+
 public sealed class RoslynXamlStableIdentityDelta
 {
     internal RoslynXamlStableIdentityDelta(
@@ -111,6 +118,9 @@ public sealed class RoslynXamlProjectDeltaPlan
         bool targetDocumentChanged,
         bool targetDependencyChanged,
         bool metadataChanged,
+        ImmutableArray<
+            RoslynXamlMetadataDeltaReason>
+            metadataReasons,
         ImmutableArray<Diagnostic> diagnostics)
     {
         Previous = previous;
@@ -121,6 +131,7 @@ public sealed class RoslynXamlProjectDeltaPlan
         TargetDocumentChanged = targetDocumentChanged;
         TargetDependencyChanged = targetDependencyChanged;
         MetadataChanged = metadataChanged;
+        MetadataReasons = metadataReasons;
         Diagnostics = diagnostics;
     }
 
@@ -132,6 +143,9 @@ public sealed class RoslynXamlProjectDeltaPlan
     public bool TargetDocumentChanged { get; }
     public bool TargetDependencyChanged { get; }
     public bool MetadataChanged { get; }
+    public ImmutableArray<
+        RoslynXamlMetadataDeltaReason>
+        MetadataReasons { get; }
     public ImmutableArray<Diagnostic> Diagnostics { get; }
     public bool HasSemanticXamlChanges =>
         Documents.Any(
@@ -252,10 +266,13 @@ public sealed class RoslynXamlProjectDeltaService
         }
 
         var documents = deltas.ToImmutable();
-        var metadataChanged = !HostCompilationsEquivalent(
+        var metadataReasons =
+            GetMetadataDeltaReasons(
             previous.HostCompilation,
             current.HostCompilation,
             cancellationToken);
+        var metadataChanged =
+            metadataReasons.Length != 0;
         var semanticXamlChanged = documents.Any(
             static document =>
                 document.HasSemanticChange);
@@ -320,6 +337,7 @@ public sealed class RoslynXamlProjectDeltaService
             targetChanged,
             dependencyChanged,
             metadataChanged,
+            metadataReasons,
             diagnostics.ToImmutable());
     }
 
@@ -735,53 +753,136 @@ public sealed class RoslynXamlProjectDeltaService
         return false;
     }
 
-    private static bool HostCompilationsEquivalent(
+    private static ImmutableArray<
+        RoslynXamlMetadataDeltaReason>
+        GetMetadataDeltaReasons(
         CSharpCompilation previous,
         CSharpCompilation current,
         CancellationToken cancellationToken)
     {
-        if (!Equals(previous.Options, current.Options))
-            return false;
+        var reasons =
+            ImmutableArray.CreateBuilder<
+                RoslynXamlMetadataDeltaReason>();
+        if (!string.Equals(
+                CompilationOptionsShape(
+                    previous.Options),
+                CompilationOptionsShape(
+                    current.Options),
+                StringComparison.Ordinal))
+        {
+            reasons.Add(
+                RoslynXamlMetadataDeltaReason
+                    .CompilationOptions);
+        }
         if (!ReferencesEquivalent(
                 previous.References,
                 current.References))
-            return false;
-        var oldTrees = IndexHostTrees(previous);
-        var newTrees = IndexHostTrees(current);
-        if (oldTrees.Count != newTrees.Count ||
-            oldTrees.Keys.Except(
-                    newTrees.Keys,
-                    StringComparer.OrdinalIgnoreCase)
-                .Any())
-            return false;
-        foreach (var pair in oldTrees)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var currentTree = newTrees[pair.Key];
-            if (!Equals(
-                    pair.Value.Options,
-                    currentTree.Options) ||
-                !pair.Value.GetText(cancellationToken)
-                    .ContentEquals(
-                        currentTree.GetText(
-                            cancellationToken)))
-            {
-                return false;
-            }
+            reasons.Add(
+                RoslynXamlMetadataDeltaReason
+                    .MetadataReferences);
+        }
+        if (!HostTreeShapes(
+                previous,
+                cancellationToken)
+            .SequenceEqual(
+                HostTreeShapes(
+                    current,
+                    cancellationToken),
+                StringComparer.Ordinal))
+        {
+            reasons.Add(
+                RoslynXamlMetadataDeltaReason
+                    .HostSyntaxTrees);
         }
 
-        return true;
+        return reasons.ToImmutable();
     }
 
-    private static IReadOnlyDictionary<string, SyntaxTree>
-        IndexHostTrees(CSharpCompilation compilation)
+    private static string CompilationOptionsShape(
+        CSharpCompilationOptions options) =>
+        options.OutputKind +
+        "\0" +
+        options.ModuleName +
+        "\0" +
+        options.MainTypeName +
+        "\0" +
+        options.ScriptClassName +
+        "\0" +
+        string.Join(",", options.Usings) +
+        "\0" +
+        options.OptimizationLevel +
+        "\0" +
+        options.CheckOverflow +
+        "\0" +
+        options.AllowUnsafe +
+        "\0" +
+        options.Platform +
+        "\0" +
+        options.GeneralDiagnosticOption +
+        "\0" +
+        options.WarningLevel.ToString(
+            CultureInfo.InvariantCulture) +
+        "\0" +
+        string.Join(
+            ",",
+            options.SpecificDiagnosticOptions
+                .OrderBy(
+                    static pair => pair.Key,
+                    StringComparer.Ordinal)
+                .Select(
+                    static pair =>
+                        pair.Key +
+                        "=" +
+                        pair.Value)) +
+        "\0" +
+        options.ConcurrentBuild +
+        "\0" +
+        options.Deterministic +
+        "\0" +
+        options.MetadataImportOptions +
+        "\0" +
+        options.NullableContextOptions +
+        "\0" +
+        options.PublicSign +
+        "\0" +
+        options.CryptoKeyFile +
+        "\0" +
+        options.CryptoKeyContainer +
+        "\0" +
+        Convert.ToBase64String(
+            options.CryptoPublicKey.ToArray()) +
+        "\0" +
+        options.DelaySign +
+        "\0" +
+        options.ReportSuppressedDiagnostics +
+        "\0" +
+        options.MetadataReferenceResolver?
+            .GetType().FullName +
+        "\0" +
+        options.XmlReferenceResolver?
+            .GetType().FullName +
+        "\0" +
+        options.SourceReferenceResolver?
+            .GetType().FullName +
+        "\0" +
+        options.StrongNameProvider?
+            .GetType().FullName +
+        "\0" +
+        options.AssemblyIdentityComparer?
+            .GetType().FullName +
+        "\0" +
+        options.SyntaxTreeOptionsProvider?
+            .GetType().FullName;
+
+    private static string[] HostTreeShapes(
+        CSharpCompilation compilation,
+        CancellationToken cancellationToken)
     {
-        var result = new Dictionary<string, SyntaxTree>(
-            StringComparer.OrdinalIgnoreCase);
-        var ordinalByPath = new Dictionary<string, int>(
-            StringComparer.OrdinalIgnoreCase);
+        var result = new List<string>();
         foreach (var tree in compilation.SyntaxTrees)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (RoslynXamlHostCompilation
                     .IsGeneratedXamlTree(tree) ||
                 tree.FilePath?.EndsWith(
@@ -789,16 +890,56 @@ public sealed class RoslynXamlProjectDeltaService
                     StringComparison.OrdinalIgnoreCase) ==
                 true)
                 continue;
-            var path = tree.FilePath ?? string.Empty;
-            ordinalByPath.TryGetValue(
-                path,
-                out var ordinal);
-            ordinalByPath[path] = ordinal + 1;
-            result[path + "\0" + ordinal.ToString(
-                CultureInfo.InvariantCulture)] = tree;
+            result.Add(
+                NormalizeTreePath(tree.FilePath) +
+                "\0" +
+                ParseOptionsShape(tree.Options) +
+                "\0" +
+                RoslynXamlSourceChecksum.ComputeHex(
+                    tree.GetText(
+                        cancellationToken)));
         }
 
-        return result;
+        result.Sort(StringComparer.Ordinal);
+        return result.ToArray();
+    }
+
+    private static string NormalizeTreePath(
+        string? path) =>
+        (path ?? string.Empty)
+            .Replace('\\', '/');
+
+    private static string ParseOptionsShape(
+        ParseOptions options)
+    {
+        if (options is not CSharpParseOptions csharp)
+            return options.ToString();
+        return csharp.LanguageVersion +
+               "\0" +
+               csharp.SpecifiedLanguageVersion +
+               "\0" +
+               csharp.DocumentationMode +
+               "\0" +
+               csharp.Kind +
+               "\0" +
+               string.Join(
+                   ",",
+                   csharp.PreprocessorSymbolNames
+                       .OrderBy(
+                           static value => value,
+                           StringComparer.Ordinal)) +
+               "\0" +
+               string.Join(
+                   ",",
+                   csharp.Features
+                       .OrderBy(
+                           static pair => pair.Key,
+                           StringComparer.Ordinal)
+                       .Select(
+                           static pair =>
+                               pair.Key +
+                               "=" +
+                               pair.Value));
     }
 
     private static bool ReferencesEquivalent(

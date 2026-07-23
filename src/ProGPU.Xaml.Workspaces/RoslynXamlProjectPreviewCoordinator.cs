@@ -19,9 +19,9 @@ public enum RoslynXamlProjectCommitResult
 }
 
 /// <summary>
-/// An immutable, two-phase project-preview update. A host first applies the candidate
-/// or delta to its framework runtime, then commits this update as the next comparison
-/// baseline. Failed runtime publication therefore cannot advance compiler state.
+/// An immutable prepared project-preview update. A coordinator serializes runtime
+/// application and commits this update as the next comparison baseline only after
+/// publication succeeds.
 /// </summary>
 public sealed class RoslynXamlProjectPreviewUpdate
 {
@@ -213,8 +213,9 @@ public sealed class RoslynXamlProjectPreviewCoordinator
     /// <summary>
     /// Serializes the host publication and baseline commit. A stale, foreign, or invalid
     /// update is rejected before <paramref name="publishAsync"/> can mutate runtime state.
-    /// A false result, exception, or cancellation from publication leaves the baseline
-    /// unchanged.
+    /// A false result or exception leaves the baseline unchanged. Cancellation is observed
+    /// before publication; once the publisher reports success the matching compiler
+    /// baseline commits so runtime and compiler state cannot diverge.
     /// </summary>
     public async Task<RoslynXamlProjectCommitResult>
         ApplyAsync(
@@ -255,7 +256,6 @@ public sealed class RoslynXamlProjectPreviewCoordinator
                     .RejectedPublication;
             }
 
-            cancellationToken.ThrowIfCancellationRequested();
             lock (_gate)
                 return TryCommitCore(update);
         }

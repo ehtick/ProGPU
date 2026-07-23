@@ -12309,7 +12309,71 @@ namespace Demo {
                 .CoordinateMetadataAndReplaceTarget,
             metadataPlan.Action);
         Assert.True(metadataPlan.MetadataChanged);
+        Assert.Equal(
+            new[]
+            {
+                RoslynXamlMetadataDeltaReason
+                    .HostSyntaxTrees
+            },
+            metadataPlan.MetadataReasons);
         Assert.True(metadataPlan.CanApply);
+    }
+
+    [Fact]
+    public async Task ProjectDeltaTreatsEquivalentRoslynOptionsAsUnchanged()
+    {
+        const string target = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.MainPage">
+  <TextBlock Text="Stable" />
+</Page>
+""";
+        const string sibling = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.SecondaryPage">
+  <TextBlock Text="Sibling" />
+</Page>
+""";
+        using var fixture = CreatePreviewProject(
+            target,
+            sibling);
+        var baseline = await CompilePreviewAsync(
+            fixture.Project,
+            fixture.TargetXamlDocumentId);
+        var original = Assert.IsType<
+            CSharpCompilationOptions>(
+            fixture.Project.CompilationOptions);
+        var equivalent = original
+            .WithConcurrentBuild(
+                !original.ConcurrentBuild)
+            .WithConcurrentBuild(
+                original.ConcurrentBuild)
+            .WithDeterministic(
+                !original.Deterministic)
+            .WithDeterministic(
+                original.Deterministic);
+        Assert.NotSame(original, equivalent);
+        var reloaded = await CompilePreviewAsync(
+            fixture.Project
+                .WithCompilationOptions(equivalent),
+            fixture.TargetXamlDocumentId);
+
+        var plan =
+            new RoslynXamlProjectDeltaService()
+                .CreatePlan(
+                    baseline,
+                    reloaded);
+
+        Assert.Equal(
+            RoslynXamlProjectDeltaMode.None,
+            plan.Mode);
+        Assert.Equal(
+            RoslynXamlReloadAction.None,
+            plan.Action);
+        Assert.False(plan.MetadataChanged);
+        Assert.Empty(plan.MetadataReasons);
     }
 
     [Fact]
@@ -12625,6 +12689,36 @@ namespace Demo {
             coordinator.LastAccepted);
         Assert.Equal(4, coordinator.Generation);
 
+        var postPublicationCancellation =
+            new RoslynXamlProjectPreviewCoordinator(
+                new WinUiXamlProfile(),
+                options);
+        var cancelAfterPublish =
+            await postPublicationCancellation
+                .PrepareAsync(
+                    fixture.Project,
+                    fixture.TargetXamlDocumentId);
+        using var publicationCancellation =
+            new CancellationTokenSource();
+        Assert.Equal(
+            RoslynXamlProjectCommitResult.Accepted,
+            await postPublicationCancellation
+                .ApplyAsync(
+                    cancelAfterPublish,
+                    (_, _) =>
+                    {
+                        publicationCancellation.Cancel();
+                        return Task.FromResult(true);
+                    },
+                    publicationCancellation.Token));
+        Assert.Same(
+            cancelAfterPublish.Current,
+            postPublicationCancellation
+                .LastAccepted);
+        Assert.Equal(
+            1,
+            postPublicationCancellation.Generation);
+
         var foreign =
             new RoslynXamlProjectPreviewCoordinator(
                 new WinUiXamlProfile(),
@@ -12644,6 +12738,217 @@ namespace Demo {
                 fixture.TargetXamlDocumentId,
                 cancellationToken:
                     cancellation.Token));
+    }
+
+    [Fact]
+    public async Task ProjectWatchSessionDebouncesSupersededSnapshotsAndRetainsLastGoodState()
+    {
+        const string baselineXaml = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.MainPage">
+  <TextBlock Text="baseline" />
+</Page>
+""";
+        const string syntaxOnlyXaml = """
+
+<Page
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    x:Class="Demo.MainPage">
+    <TextBlock Text="baseline"/>
+</Page>
+
+""";
+        const string firstXaml = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.MainPage">
+  <TextBlock Text="first" />
+</Page>
+""";
+        const string secondXaml = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.MainPage">
+  <TextBlock Text="second" />
+</Page>
+""";
+        const string thirdXaml = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.MainPage">
+  <TextBlock Text="third" />
+</Page>
+""";
+        const string invalidXaml = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.MainPage">
+  <TextBlock MissingProperty="invalid" />
+</Page>
+""";
+        const string siblingXaml = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.SecondaryPage">
+  <TextBlock Text="sibling" />
+</Page>
+""";
+        using var fixture = CreatePreviewProject(
+            baselineXaml,
+            siblingXaml);
+        var coordinator =
+            new RoslynXamlProjectPreviewCoordinator(
+                new WinUiXamlProfile(),
+                new RoslynXamlProjectPreviewOptions
+                {
+                    InspectionOptions =
+                        new RoslynXamlCompilationInspectionOptions
+                        {
+                            CompilerOptions =
+                                new XamlCompilerOptions
+                                {
+                                    Strict = true
+                                }
+                        }
+                });
+        var publicationCount = 0;
+        var allowPublication = true;
+        using var watch =
+            new RoslynXamlProjectWatchSession(
+                coordinator,
+                (update, token) =>
+                {
+                    token.ThrowIfCancellationRequested();
+                    Assert.True(
+                        update.TryGetExecutableUpdate(
+                            out var image,
+                            out var typeName));
+                    Assert.NotEmpty(image);
+                    Assert.Equal(
+                        "Demo.MainPage",
+                        typeName);
+                    publicationCount++;
+                    return Task.FromResult(
+                        allowPublication);
+                },
+                TimeSpan.FromMilliseconds(75));
+
+        var initial = await watch.SubmitAsync(
+            fixture.Project,
+            fixture.TargetXamlDocumentId,
+            immediate: true);
+        Assert.Equal(
+            RoslynXamlProjectWatchStatus.Applied,
+            initial.Status);
+        Assert.Equal(1, publicationCount);
+        Assert.Equal(1, coordinator.Generation);
+
+        var syntaxOnly = await watch.SubmitAsync(
+            fixture.Project,
+            fixture.TargetXamlDocumentId,
+            SourceText.From(syntaxOnlyXaml),
+            immediate: true);
+        Assert.Equal(
+            RoslynXamlProjectWatchStatus
+                .AcceptedWithoutRuntimeChange,
+            syntaxOnly.Status);
+        Assert.Equal(1, publicationCount);
+        Assert.Equal(2, coordinator.Generation);
+
+        var firstProject = WithAdditionalDocumentText(
+            fixture.Project,
+            fixture.TargetXamlDocumentId,
+            firstXaml);
+        var secondProject = WithAdditionalDocumentText(
+            fixture.Project,
+            fixture.TargetXamlDocumentId,
+            secondXaml);
+        var supersededTask = watch.SubmitAsync(
+            firstProject,
+            fixture.TargetXamlDocumentId);
+        await Task.Delay(10);
+        var latestTask = watch.SubmitAsync(
+            secondProject,
+            fixture.TargetXamlDocumentId);
+        var superseded = await supersededTask;
+        var latest = await latestTask;
+        Assert.Equal(
+            RoslynXamlProjectWatchStatus.Superseded,
+            superseded.Status);
+        Assert.Equal(
+            RoslynXamlProjectWatchStatus.Applied,
+            latest.Status);
+        Assert.Equal(2, publicationCount);
+        Assert.Equal(3, coordinator.Generation);
+
+        var invalid = await watch.SubmitAsync(
+            WithAdditionalDocumentText(
+                secondProject,
+                fixture.TargetXamlDocumentId,
+                invalidXaml),
+            fixture.TargetXamlDocumentId,
+            immediate: true);
+        Assert.Equal(
+            RoslynXamlProjectWatchStatus.Rejected,
+            invalid.Status);
+        Assert.Equal(
+            RoslynXamlProjectCommitResult
+                .RejectedInvalidCandidate,
+            invalid.CommitResult);
+        Assert.Equal(2, publicationCount);
+        Assert.Equal(3, coordinator.Generation);
+
+        var thirdProject = WithAdditionalDocumentText(
+            secondProject,
+            fixture.TargetXamlDocumentId,
+            thirdXaml);
+        allowPublication = false;
+        var publicationFailed =
+            await watch.SubmitAsync(
+                thirdProject,
+                fixture.TargetXamlDocumentId,
+                immediate: true);
+        Assert.Equal(
+            RoslynXamlProjectWatchStatus.Rejected,
+            publicationFailed.Status);
+        Assert.Equal(
+            RoslynXamlProjectCommitResult
+                .RejectedPublication,
+            publicationFailed.CommitResult);
+        Assert.Equal(3, publicationCount);
+        Assert.Equal(3, coordinator.Generation);
+
+        allowPublication = true;
+        var recovered = await watch.SubmitAsync(
+            thirdProject,
+            fixture.TargetXamlDocumentId,
+            immediate: true);
+        Assert.Equal(
+            RoslynXamlProjectWatchStatus.Applied,
+            recovered.Status);
+        Assert.Equal(4, publicationCount);
+        Assert.Equal(4, coordinator.Generation);
+
+        using var canceled =
+            new CancellationTokenSource();
+        canceled.Cancel();
+        await Assert.ThrowsAsync<
+            OperationCanceledException>(
+            () => watch.SubmitAsync(
+                thirdProject,
+                fixture.TargetXamlDocumentId,
+                cancellationToken:
+                    canceled.Token));
+
+        var stoppedTask = watch.SubmitAsync(
+            thirdProject,
+            fixture.TargetXamlDocumentId);
+        watch.Dispose();
+        Assert.Equal(
+            RoslynXamlProjectWatchStatus.Stopped,
+            (await stoppedTask).Status);
     }
 
     private static Task<RoslynXamlProjectPreview>
