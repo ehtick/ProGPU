@@ -18,4 +18,8 @@
                       Version="$(ProGpuPackageVersion)"
                       PrivateAssets="all" />
   </ItemGroup>
+  <ItemGroup Condition="'$(ProGpuTestDuplicateXamlGeneratorFacade)' == 'true'">
+    <ProGpuXamlGeneratorFacade Include="@(ProGpuXamlGeneratorFacade)"
+                               PackageId="ProGPU.Xaml.SourceGenerator.DuplicateFixture" />
+  </ItemGroup>
 </Project>

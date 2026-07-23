@@ -69,4 +69,34 @@ if ! grep -Fq 'XamlResourceResolver.Resolve<object>' "${generated_source}"; then
   exit 1
 fi
 
+missing_facade_log="${consumer_root}/missing-facade.log"
+if "${dotnet}" build "${project}" \
+  --configuration "${configuration}" \
+  --no-restore \
+  "${common_properties[@]}" \
+  -p:ProGpuXamlFramework=Missing \
+  --verbosity minimal >"${missing_facade_log}" 2>&1; then
+  echo "The packaged build unexpectedly accepted a missing XAML generator facade." >&2
+  exit 1
+fi
+if ! grep -Fq "expected exactly one generator facade for framework 'Missing' but found 0" "${missing_facade_log}"; then
+  echo "The packaged build did not report deterministic missing-facade selection." >&2
+  exit 1
+fi
+
+duplicate_facade_log="${consumer_root}/duplicate-facade.log"
+if "${dotnet}" build "${project}" \
+  --configuration "${configuration}" \
+  --no-restore \
+  "${common_properties[@]}" \
+  -p:ProGpuTestDuplicateXamlGeneratorFacade=true \
+  --verbosity minimal >"${duplicate_facade_log}" 2>&1; then
+  echo "The packaged build unexpectedly accepted duplicate XAML generator facades." >&2
+  exit 1
+fi
+if ! grep -Fq "expected exactly one generator facade for framework 'WinUI' but found 2" "${duplicate_facade_log}"; then
+  echo "The packaged build did not report deterministic duplicate-facade selection." >&2
+  exit 1
+fi
+
 echo "Verified isolated ProGPU XAML package consumer for ${package_version}."
