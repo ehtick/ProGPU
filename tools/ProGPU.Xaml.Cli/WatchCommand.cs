@@ -380,7 +380,7 @@ internal static partial class Program
     {
         if (!MSBuildLocator.IsRegistered)
             MSBuildLocator.RegisterDefaults();
-        var workspace = MSBuildWorkspace.Create();
+        var workspace = CliMsBuildWorkspace.Create();
         workspace.LoadMetadataForReferencedProjects =
             true;
         workspace.RegisterWorkspaceFailedHandler(

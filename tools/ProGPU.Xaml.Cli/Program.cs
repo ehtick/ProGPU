@@ -641,7 +641,7 @@ internal static partial class Program
 
     private static async Task<Project> OpenProjectCoreAsync(string projectPath)
     {
-        var workspace = MSBuildWorkspace.Create();
+        var workspace = CliMsBuildWorkspace.Create();
         // The CLI consumes referenced assemblies for their Roslyn symbols; it does not edit
         // dependency projects. Prefer their built metadata so analyzer-only project graphs do
         // not become application project references in the standalone workspace.
