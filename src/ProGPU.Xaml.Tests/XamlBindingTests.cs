@@ -11876,6 +11876,75 @@ namespace Demo {
         Assert.True(inspection.Ir.IsTruncated);
     }
 
+    [Fact]
+    public void PreviewArtifactCompilesTheExactGeneratedRoslynTree()
+    {
+        const string xaml = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.MainPage">
+  <TextBlock Text="Preview" />
+</Page>
+""";
+        var sourceInspection = new XamlDocumentInspectionService().Inspect(
+            SourceText.From(xaml),
+            "MainPage.xaml");
+        var profile = new WinUiXamlProfile();
+        var hostCompilation = CreateCompilation();
+        var inspection = new RoslynXamlCompilationInspectionService().Inspect(
+            sourceInspection,
+            new RoslynXamlTypeSystem(hostCompilation, profile),
+            profile,
+            new RoslynXamlCompilationInspectionOptions
+            {
+                CompilerOptions = new XamlCompilerOptions
+                {
+                    Framework = profile.Id,
+                    ResourceUri = "Pages/MainPage.xaml",
+                    Strict = true
+                }
+            });
+
+        var artifact = new RoslynXamlPreviewArtifactCompiler().Compile(
+            hostCompilation,
+            inspection.CompilationResult);
+
+        Assert.True(artifact.Success);
+        Assert.True(artifact.PeImage.Length > 2);
+        Assert.Equal((byte)'M', artifact.PeImage[0]);
+        Assert.Equal((byte)'Z', artifact.PeImage[1]);
+        Assert.DoesNotContain(
+            artifact.Diagnostics,
+            diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+    }
+
+    [Fact]
+    public void PreviewArtifactRefusesToReparseGeneratedSourceText()
+    {
+        var sourceInspection = new XamlDocumentInspectionService().Inspect(
+            SourceText.From("<Root />"),
+            "Broken.xaml");
+        var result = new XamlCompilationResult(
+            sourceInspection.SyntaxTree.Document,
+            new[]
+            {
+                new XamlGeneratedSource(
+                    "Broken.g.cs",
+                    "class TextOnlyGeneratedSource { }")
+            },
+            Array.Empty<Diagnostic>());
+
+        var artifact = new RoslynXamlPreviewArtifactCompiler().Compile(
+            CreateCompilation(),
+            result);
+
+        Assert.False(artifact.Success);
+        Assert.Empty(artifact.PeImage);
+        Assert.Contains(
+            artifact.Diagnostics,
+            diagnostic => diagnostic.Id == "PGXAML8002");
+    }
+
     private static CSharpCompilation CreateCompilation() => CSharpCompilation.Create(
         "BindingHarness",
         new[] { CSharpSyntaxTree.ParseText(Framework) },
