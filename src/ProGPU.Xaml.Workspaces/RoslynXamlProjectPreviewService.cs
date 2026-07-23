@@ -87,17 +87,23 @@ public sealed class RoslynXamlProjectDocumentCompilation
 {
     internal RoslynXamlProjectDocumentCompilation(
         TextDocument document,
+        XamlDocumentInspection sourceInspection,
+        XamlResourceDocumentManifest resourceManifest,
         string resourceUri,
         XamlResourceDependencySlice resourceDependencies,
         XamlCompilationResult compilationResult)
     {
         Document = document;
+        SourceInspection = sourceInspection;
+        ResourceManifest = resourceManifest;
         ResourceUri = resourceUri;
         ResourceDependencies = resourceDependencies;
         CompilationResult = compilationResult;
     }
 
     public TextDocument Document { get; }
+    public XamlDocumentInspection SourceInspection { get; }
+    public XamlResourceDocumentManifest ResourceManifest { get; }
     public string ResourceUri { get; }
     public XamlResourceDependencySlice ResourceDependencies { get; }
     public XamlCompilationResult CompilationResult { get; }
@@ -313,6 +319,8 @@ public sealed class RoslynXamlProjectPreviewService
             projectDocuments.Add(
                 new RoslynXamlProjectDocumentCompilation(
                     prepared.Document,
+                    prepared.Inspection,
+                    prepared.Manifest,
                     compilerOptions.ResourceUri!,
                     dependencies,
                     result));

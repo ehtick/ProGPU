@@ -12067,32 +12067,6 @@ namespace Demo {
     [Fact]
     public async Task ProjectPreviewUsesImmutableWorkspaceContextAndUnsavedText()
     {
-        const string codeBehind = """
-#if PROJECT_PREVIEW
-namespace Demo;
-
-public partial class MainPage : Microsoft.UI.Xaml.Controls.Page
-{
-    public MainPage()
-    {
-        InitializeComponent();
-    }
-}
-#endif
-""";
-        const string siblingCodeBehind = """
-#if PROJECT_PREVIEW
-namespace Demo;
-
-public partial class SecondaryPage : Microsoft.UI.Xaml.Controls.Page
-{
-    public SecondaryPage()
-    {
-        InitializeComponent();
-    }
-}
-#endif
-""";
         const string savedXaml = """
 <Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -12114,59 +12088,15 @@ public partial class SecondaryPage : Microsoft.UI.Xaml.Controls.Page
   <TextBlock Text="Sibling generated member" />
 </Page>
 """;
-        using var workspace = new AdhocWorkspace();
-        var projectId = ProjectId.CreateNewId();
-        var projectInfo = ProjectInfo.Create(
-            projectId,
-            VersionStamp.Create(),
-            "PreviewProject",
-            "PreviewProject",
-            LanguageNames.CSharp,
-            compilationOptions: new CSharpCompilationOptions(
-                OutputKind.DynamicallyLinkedLibrary),
-            parseOptions: new CSharpParseOptions(
-                LanguageVersion.Preview,
-                preprocessorSymbols: new[] { "PROJECT_PREVIEW" }));
-        var frameworkDocumentId =
-            DocumentId.CreateNewId(projectId);
-        var codeBehindDocumentId =
-            DocumentId.CreateNewId(projectId);
-        var siblingCodeBehindDocumentId =
-            DocumentId.CreateNewId(projectId);
-        var solution = workspace.CurrentSolution
-            .AddProject(projectInfo)
-            .AddMetadataReferences(projectId, PlatformReferences())
-            .AddDocument(
-                frameworkDocumentId,
-                "Framework.cs",
-                SourceText.From(Framework))
-            .AddDocument(
-                codeBehindDocumentId,
-                "MainPage.cs",
-                SourceText.From(codeBehind))
-            .AddDocument(
-                siblingCodeBehindDocumentId,
-                "SecondaryPage.cs",
-                SourceText.From(siblingCodeBehind));
-        var xamlDocumentId = DocumentId.CreateNewId(projectId);
-        var siblingXamlDocumentId =
-            DocumentId.CreateNewId(projectId);
-        solution = solution.AddAdditionalDocument(
-            xamlDocumentId,
-            "MainPage.xaml",
-            SourceText.From(savedXaml),
-            folders: new[] { "Pages" })
-            .AddAdditionalDocument(
-                siblingXamlDocumentId,
-                "SecondaryPage.xaml",
-                SourceText.From(siblingXaml),
-                folders: new[] { "Pages" });
-        var project = solution.GetProject(projectId)!;
+        using var fixture = CreatePreviewProject(
+            savedXaml,
+            siblingXaml);
+        var project = fixture.Project;
 
         var preview =
             await new RoslynXamlProjectPreviewService().CompileAsync(
                 project,
-                xamlDocumentId,
+                fixture.TargetXamlDocumentId,
                 new WinUiXamlProfile(),
                 new RoslynXamlProjectPreviewOptions
                 {
@@ -12222,7 +12152,8 @@ public partial class SecondaryPage : Microsoft.UI.Xaml.Controls.Page
                 token.ValueText == "Unsaved editor snapshot");
         Assert.Equal(
             savedXaml,
-            (await project.GetAdditionalDocument(xamlDocumentId)!
+            (await project.GetAdditionalDocument(
+                    fixture.TargetXamlDocumentId)!
                 .GetTextAsync()).ToString());
         Assert.Equal(
             editedXaml,
@@ -12232,6 +12163,457 @@ public partial class SecondaryPage : Microsoft.UI.Xaml.Controls.Page
             preview.SourceInspection.Infoset.Path,
             preview.ResourceDependencies.DocumentPath,
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ProjectDeltaClassifiesSyntaxSemanticSiblingAndMetadataChanges()
+    {
+        const string target = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.MainPage">
+  <TextBlock Text="Before" />
+</Page>
+""";
+        const string syntaxOnlyTarget = """
+
+<Page
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    x:Class="Demo.MainPage">
+    <TextBlock Text="Before"/>
+</Page>
+
+""";
+        const string changedTarget = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.MainPage">
+  <TextBlock Text="After" />
+</Page>
+""";
+        const string sibling = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.SecondaryPage">
+  <TextBlock Text="Sibling before" />
+</Page>
+""";
+        const string changedSibling = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.SecondaryPage">
+  <TextBlock Text="Sibling after" />
+</Page>
+""";
+        using var fixture = CreatePreviewProject(
+            target,
+            sibling);
+        var baseline = await CompilePreviewAsync(
+            fixture.Project,
+            fixture.TargetXamlDocumentId);
+        var deltaService =
+            new RoslynXamlProjectDeltaService();
+
+        var syntaxOnly = await CompilePreviewAsync(
+            WithAdditionalDocumentText(
+                fixture.Project,
+                fixture.TargetXamlDocumentId,
+                syntaxOnlyTarget),
+            fixture.TargetXamlDocumentId);
+        var syntaxPlan = deltaService.CreatePlan(
+            baseline,
+            syntaxOnly);
+        Assert.Equal(
+            RoslynXamlProjectDeltaMode.None,
+            syntaxPlan.Mode);
+        Assert.Equal(
+            RoslynXamlReloadAction.None,
+            syntaxPlan.Action);
+        Assert.Equal(
+            RoslynXamlDocumentDeltaKind.SyntaxOnly,
+            Assert.Single(
+                syntaxPlan.Documents,
+                item =>
+                    item.ResourceUri ==
+                    "Pages/MainPage.xaml").Kind);
+
+        var changed = await CompilePreviewAsync(
+            WithAdditionalDocumentText(
+                fixture.Project,
+                fixture.TargetXamlDocumentId,
+                changedTarget),
+            fixture.TargetXamlDocumentId);
+        var changedPlan = deltaService.CreatePlan(
+            baseline,
+            changed);
+        Assert.Equal(
+            RoslynXamlProjectDeltaMode.XamlOnly,
+            changedPlan.Mode);
+        Assert.Equal(
+            RoslynXamlReloadAction.ReplaceTarget,
+            changedPlan.Action);
+        Assert.True(changedPlan.CanApply);
+        Assert.True(changedPlan.TargetDocumentChanged);
+        Assert.NotEmpty(
+            Assert.Single(
+                    changedPlan.Documents,
+                    item =>
+                        item.ResourceUri ==
+                        "Pages/MainPage.xaml")
+                .StableIdentities.Modified);
+
+        var siblingChanged = await CompilePreviewAsync(
+            WithAdditionalDocumentText(
+                fixture.Project,
+                fixture.SiblingXamlDocumentId,
+                changedSibling),
+            fixture.TargetXamlDocumentId);
+        var siblingPlan = deltaService.CreatePlan(
+            baseline,
+            siblingChanged);
+        Assert.Equal(
+            RoslynXamlProjectDeltaMode.XamlOnly,
+            siblingPlan.Mode);
+        Assert.Equal(
+            RoslynXamlReloadAction.None,
+            siblingPlan.Action);
+        Assert.False(siblingPlan.TargetDocumentChanged);
+        Assert.False(siblingPlan.TargetDependencyChanged);
+        Assert.True(siblingPlan.HasSemanticXamlChanges);
+
+        var code = fixture.Project.GetDocument(
+            fixture.TargetCodeDocumentId)!;
+        var codeText = await code.GetTextAsync();
+        var metadataProject = fixture.Project.Solution
+            .WithDocumentText(
+                code.Id,
+                codeText.WithChanges(
+                    new TextChange(
+                        new TextSpan(codeText.Length, 0),
+                        Environment.NewLine +
+                        "public sealed class MetadataMarker { }" +
+                        Environment.NewLine)))
+            .GetProject(fixture.Project.Id)!;
+        var metadataChanged = await CompilePreviewAsync(
+            metadataProject,
+            fixture.TargetXamlDocumentId);
+        var metadataPlan = deltaService.CreatePlan(
+            baseline,
+            metadataChanged);
+        Assert.Equal(
+            RoslynXamlProjectDeltaMode.MetadataOnly,
+            metadataPlan.Mode);
+        Assert.Equal(
+            RoslynXamlReloadAction
+                .CoordinateMetadataAndReplaceTarget,
+            metadataPlan.Action);
+        Assert.True(metadataPlan.MetadataChanged);
+        Assert.True(metadataPlan.CanApply);
+    }
+
+    [Fact]
+    public async Task ProjectDeltaRetainsLastGoodOnFailureAndPropagatesCancellation()
+    {
+        const string target = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.MainPage">
+  <TextBlock Text="Valid" />
+</Page>
+""";
+        const string sibling = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.SecondaryPage">
+  <TextBlock Text="Sibling" />
+</Page>
+""";
+        const string invalid = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.MainPage">
+  <TextBlock PropertyThatDoesNotExist="Invalid" />
+</Page>
+""";
+        using var fixture = CreatePreviewProject(
+            target,
+            sibling);
+        var baseline = await CompilePreviewAsync(
+            fixture.Project,
+            fixture.TargetXamlDocumentId);
+        var failed = await CompilePreviewAsync(
+            WithAdditionalDocumentText(
+                fixture.Project,
+                fixture.TargetXamlDocumentId,
+                invalid),
+            fixture.TargetXamlDocumentId);
+        Assert.False(failed.CanMaterialize);
+
+        var service =
+            new RoslynXamlProjectDeltaService();
+        var plan = service.CreatePlan(
+            baseline,
+            failed);
+
+        Assert.Equal(
+            RoslynXamlReloadAction.RetainLastGood,
+            plan.Action);
+        Assert.False(plan.CanApply);
+        Assert.Contains(
+            plan.Diagnostics,
+            diagnostic =>
+                diagnostic.Id == "PGXAML8003" &&
+                diagnostic.Severity ==
+                DiagnosticSeverity.Error);
+
+        using var cancellation =
+            new CancellationTokenSource();
+        cancellation.Cancel();
+        Assert.Throws<OperationCanceledException>(
+            () => service.CreatePlan(
+                baseline,
+                failed,
+                cancellation.Token));
+    }
+
+    [Fact]
+    public async Task ProjectDeltaReplacesTargetWhenImportedResourceProviderChanges()
+    {
+        const string target = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.MainPage">
+  <Page.Resources>
+    <ResourceDictionary>
+      <ResourceDictionary.MergedDictionaries>
+        <ResourceDictionary Source="../Themes/Strings.xaml" />
+      </ResourceDictionary.MergedDictionaries>
+    </ResourceDictionary>
+  </Page.Resources>
+  <TextBlock Text="{StaticResource Greeting}" />
+</Page>
+""";
+        const string sibling = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.SecondaryPage">
+  <TextBlock Text="Unrelated" />
+</Page>
+""";
+        const string provider = """
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <x:String x:Key="Greeting">Before</x:String>
+</ResourceDictionary>
+""";
+        const string changedProvider = """
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <x:String x:Key="Greeting">After</x:String>
+</ResourceDictionary>
+""";
+        using var fixture = CreatePreviewProject(
+            target,
+            sibling,
+            provider);
+        var baseline = await CompilePreviewAsync(
+            fixture.Project,
+            fixture.TargetXamlDocumentId);
+        var changed = await CompilePreviewAsync(
+            WithAdditionalDocumentText(
+                fixture.Project,
+                fixture.ProviderXamlDocumentId!,
+                changedProvider),
+            fixture.TargetXamlDocumentId);
+
+        var plan =
+            new RoslynXamlProjectDeltaService().CreatePlan(
+                baseline,
+                changed);
+
+        Assert.Equal(
+            RoslynXamlProjectDeltaMode.XamlOnly,
+            plan.Mode);
+        Assert.Equal(
+            RoslynXamlReloadAction.ReplaceTarget,
+            plan.Action);
+        Assert.False(plan.TargetDocumentChanged);
+        Assert.True(plan.TargetDependencyChanged);
+        Assert.True(plan.CanApply);
+        Assert.Equal(
+            RoslynXamlDocumentDeltaKind.Semantic,
+            Assert.Single(
+                plan.Documents,
+                document =>
+                    document.ResourceUri ==
+                    "Themes/Strings.xaml").Kind);
+    }
+
+    private static Task<RoslynXamlProjectPreview>
+        CompilePreviewAsync(
+            Project project,
+            DocumentId targetDocumentId) =>
+        new RoslynXamlProjectPreviewService().CompileAsync(
+            project,
+            targetDocumentId,
+            new WinUiXamlProfile(),
+            new RoslynXamlProjectPreviewOptions
+            {
+                InspectionOptions =
+                    new RoslynXamlCompilationInspectionOptions
+                    {
+                        CompilerOptions =
+                            new XamlCompilerOptions
+                            {
+                                Strict = true
+                            }
+                    }
+            });
+
+    private static Project WithAdditionalDocumentText(
+        Project project,
+        DocumentId documentId,
+        string text) =>
+        project.Solution
+            .WithAdditionalDocumentText(
+                documentId,
+                SourceText.From(text),
+                PreservationMode.PreserveIdentity)
+            .GetProject(project.Id)!;
+
+    private static PreviewProjectFixture CreatePreviewProject(
+        string targetXaml,
+        string siblingXaml,
+        string? providerXaml = null)
+    {
+        const string codeBehind = """
+#if PROJECT_PREVIEW
+namespace Demo;
+
+public partial class MainPage : Microsoft.UI.Xaml.Controls.Page
+{
+    public MainPage()
+    {
+        InitializeComponent();
+    }
+}
+#endif
+""";
+        const string siblingCodeBehind = """
+#if PROJECT_PREVIEW
+namespace Demo;
+
+public partial class SecondaryPage : Microsoft.UI.Xaml.Controls.Page
+{
+    public SecondaryPage()
+    {
+        InitializeComponent();
+    }
+}
+#endif
+""";
+        var workspace = new AdhocWorkspace();
+        var projectId = ProjectId.CreateNewId();
+        var projectInfo = ProjectInfo.Create(
+            projectId,
+            VersionStamp.Create(),
+            "PreviewProject",
+            "PreviewProject",
+            LanguageNames.CSharp,
+            compilationOptions:
+                new CSharpCompilationOptions(
+                    OutputKind.DynamicallyLinkedLibrary),
+            parseOptions:
+                new CSharpParseOptions(
+                    LanguageVersion.Preview,
+                    preprocessorSymbols:
+                        new[] { "PROJECT_PREVIEW" }));
+        var targetCodeDocumentId =
+            DocumentId.CreateNewId(projectId);
+        var targetXamlDocumentId =
+            DocumentId.CreateNewId(projectId);
+        var siblingXamlDocumentId =
+            DocumentId.CreateNewId(projectId);
+        var providerXamlDocumentId =
+            providerXaml == null
+                ? null
+                : DocumentId.CreateNewId(projectId);
+        var solution = workspace.CurrentSolution
+            .AddProject(projectInfo)
+            .AddMetadataReferences(
+                projectId,
+                PlatformReferences())
+            .AddDocument(
+                DocumentId.CreateNewId(projectId),
+                "Framework.cs",
+                SourceText.From(Framework))
+            .AddDocument(
+                targetCodeDocumentId,
+                "MainPage.cs",
+                SourceText.From(codeBehind))
+            .AddDocument(
+                DocumentId.CreateNewId(projectId),
+                "SecondaryPage.cs",
+                SourceText.From(siblingCodeBehind))
+            .AddAdditionalDocument(
+                targetXamlDocumentId,
+                "MainPage.xaml",
+                SourceText.From(targetXaml),
+                folders: new[] { "Pages" })
+            .AddAdditionalDocument(
+                siblingXamlDocumentId,
+                "SecondaryPage.xaml",
+                SourceText.From(siblingXaml),
+                folders: new[] { "Pages" });
+        if (providerXamlDocumentId != null)
+        {
+            solution = solution.AddAdditionalDocument(
+                providerXamlDocumentId,
+                "Strings.xaml",
+                SourceText.From(providerXaml!),
+                folders: new[] { "Themes" });
+        }
+        return new PreviewProjectFixture(
+            workspace,
+            solution.GetProject(projectId)!,
+            targetCodeDocumentId,
+            targetXamlDocumentId,
+            siblingXamlDocumentId,
+            providerXamlDocumentId);
+    }
+
+    private sealed class PreviewProjectFixture :
+        IDisposable
+    {
+        public PreviewProjectFixture(
+            AdhocWorkspace workspace,
+            Project project,
+            DocumentId targetCodeDocumentId,
+            DocumentId targetXamlDocumentId,
+            DocumentId siblingXamlDocumentId,
+            DocumentId? providerXamlDocumentId)
+        {
+            Workspace = workspace;
+            Project = project;
+            TargetCodeDocumentId =
+                targetCodeDocumentId;
+            TargetXamlDocumentId =
+                targetXamlDocumentId;
+            SiblingXamlDocumentId =
+                siblingXamlDocumentId;
+            ProviderXamlDocumentId =
+                providerXamlDocumentId;
+        }
+
+        public AdhocWorkspace Workspace { get; }
+        public Project Project { get; }
+        public DocumentId TargetCodeDocumentId { get; }
+        public DocumentId TargetXamlDocumentId { get; }
+        public DocumentId SiblingXamlDocumentId { get; }
+        public DocumentId? ProviderXamlDocumentId { get; }
+
+        public void Dispose() => Workspace.Dispose();
     }
 
     private static CSharpCompilation CreateCompilation() => CSharpCompilation.Create(
