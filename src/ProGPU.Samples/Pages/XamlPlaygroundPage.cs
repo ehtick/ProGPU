@@ -4,7 +4,6 @@ using System.Linq;
 using System.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -173,6 +172,14 @@ public static class XamlPlaygroundPage
                 : Render(compiled.Diagnostics);
             if (!previewEnabled)
                 return;
+            if (result.PreviewPreparationError != null)
+            {
+                previewStatus.Text =
+                    result.PreviewPreparationError +
+                    Environment.NewLine +
+                    "The last good preview tree was retained.";
+                return;
+            }
             if (result.PreviewArtifact == null)
             {
                 previewStatus.Text =
@@ -190,7 +197,7 @@ public static class XamlPlaygroundPage
 
             var update = previewSession.TryUpdate(
                 result.PreviewArtifact.PeImage.ToArray(),
-                "ProGPU.Samples.Playground.Document",
+                result.PreviewTypeName!,
                 replacement => previewHost.Content = replacement);
             previewStatus.Text = update.Message;
         }
@@ -336,9 +343,18 @@ public static class XamlPlaygroundPage
                 null);
 
         var profile = new WinUiXamlProfile();
+        var previewHost = new RoslynXamlPreviewHostFactory()
+            .Create(
+                compilationHost.Compilation,
+                inspection.Infoset,
+                new RoslynXamlTypeSystem(
+                    compilationHost.Compilation,
+                    profile));
         var compiled = new RoslynXamlCompilationInspectionService().Inspect(
             inspection,
-            new RoslynXamlTypeSystem(compilationHost.Compilation, profile),
+            new RoslynXamlTypeSystem(
+                previewHost.Compilation,
+                profile),
             profile,
             new RoslynXamlCompilationInspectionOptions
             {
@@ -350,9 +366,11 @@ public static class XamlPlaygroundPage
                 }
             },
             cancellationToken);
-        var artifact = includePreviewArtifact
+        var artifact =
+            includePreviewArtifact &&
+            previewHost.CanMaterialize
             ? new RoslynXamlPreviewArtifactCompiler().Compile(
-                compilationHost.Compilation,
+                previewHost.Compilation,
                 compiled.CompilationResult,
                 cancellationToken)
             : null;
@@ -360,7 +378,9 @@ public static class XamlPlaygroundPage
             inspection,
             compiled,
             null,
-            artifact);
+            artifact,
+            previewHost.QualifiedTypeName,
+            previewHost.MaterializationError);
     }
 
     private static TextBox CreateOutput(string text) => new TextBox
@@ -477,43 +497,17 @@ public static class XamlPlaygroundPage
                 if (File.Exists(path)) paths.Add(path);
             }
             AddAssemblyPath(paths, typeof(Page).Assembly.Location);
+            AddAssemblyPath(
+                paths,
+                typeof(XamlPlaygroundPage).Assembly.Location);
             if (paths.Count == 0)
                 return new PlaygroundCompilationHost(
                     null,
                     "this runtime does not expose trusted metadata reference paths.");
 
-            var documentType = SyntaxFactory.ClassDeclaration("Document")
-                .AddModifiers(
-                    SyntaxFactory.Token(SyntaxKind.PublicKeyword),
-                    SyntaxFactory.Token(SyntaxKind.PartialKeyword))
-                .WithBaseList(SyntaxFactory.BaseList(
-                    SyntaxFactory.SingletonSeparatedList<BaseTypeSyntax>(
-                        SyntaxFactory.SimpleBaseType(BuildName(
-                            "Microsoft",
-                            "UI",
-                            "Xaml",
-                            "Controls",
-                            "Page")))))
-                .AddMembers(
-                    SyntaxFactory.ConstructorDeclaration("Document")
-                        .AddModifiers(
-                            SyntaxFactory.Token(
-                                SyntaxKind.PublicKeyword))
-                        .WithBody(
-                            SyntaxFactory.Block(
-                                SyntaxFactory.ExpressionStatement(
-                                    SyntaxFactory.InvocationExpression(
-                                        SyntaxFactory.IdentifierName(
-                                            "InitializeComponent"))))));
-            var unit = SyntaxFactory.CompilationUnit().AddMembers(
-                SyntaxFactory.NamespaceDeclaration(BuildName(
-                        "ProGPU",
-                        "Samples",
-                        "Playground"))
-                    .AddMembers(documentType));
             var compilation = CSharpCompilation.Create(
                 "ProGPU.Xaml.Playground",
-                new[] { CSharpSyntaxTree.Create(unit) },
+                syntaxTrees: null,
                 paths.OrderBy(static path => path, StringComparer.Ordinal)
                     .Select(static path => MetadataReference.CreateFromFile(path)),
                 new CSharpCompilationOptions(
@@ -533,18 +527,6 @@ public static class XamlPlaygroundPage
     {
         if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
             paths.Add(path);
-    }
-
-    private static NameSyntax BuildName(
-        string first,
-        params string[] remaining)
-    {
-        NameSyntax result = SyntaxFactory.IdentifierName(first);
-        foreach (var part in remaining)
-            result = SyntaxFactory.QualifiedName(
-                result,
-                SyntaxFactory.IdentifierName(part));
-        return result;
     }
 
     private sealed class PlaygroundCompilationHost
@@ -567,17 +549,24 @@ public static class XamlPlaygroundPage
             XamlDocumentInspection source,
             RoslynXamlCompilationInspection? compilation,
             string? compilationError,
-            RoslynXamlPreviewArtifact? previewArtifact)
+            RoslynXamlPreviewArtifact? previewArtifact,
+            string? previewTypeName = null,
+            string? previewPreparationError = null)
         {
             Source = source;
             Compilation = compilation;
             CompilationError = compilationError;
             PreviewArtifact = previewArtifact;
+            PreviewTypeName = previewTypeName;
+            PreviewPreparationError =
+                previewPreparationError;
         }
 
         public XamlDocumentInspection Source { get; }
         public RoslynXamlCompilationInspection? Compilation { get; }
         public string? CompilationError { get; }
         public RoslynXamlPreviewArtifact? PreviewArtifact { get; }
+        public string? PreviewTypeName { get; }
+        public string? PreviewPreparationError { get; }
     }
 }

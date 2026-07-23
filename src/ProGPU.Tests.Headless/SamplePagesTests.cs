@@ -143,6 +143,31 @@ public class SamplePagesTests : IDisposable
             Assert.IsAssignableFrom<FrameworkElement>(
                 previewHost.Content).GetType().FullName);
 
+        var editor = root.Children
+            .OfType<TextBox>()
+            .First();
+        editor.Text = editor.Text.Replace(
+            "ProGPU.Samples.Playground.Document",
+            "ProGPU.Samples.Playground.EditedDocument",
+            StringComparison.Ordinal);
+        for (var attempt = 0;
+             attempt < 400 &&
+             !string.Equals(
+                 (previewHost.Content as FrameworkElement)?
+                    .GetType().FullName,
+                 "ProGPU.Samples.Playground.EditedDocument",
+                 StringComparison.Ordinal);
+             attempt++)
+        {
+            Microsoft.UI.Xaml.UIThread.RunPending();
+            await Task.Delay(25);
+        }
+
+        Assert.Equal(
+            "ProGPU.Samples.Playground.EditedDocument",
+            Assert.IsAssignableFrom<FrameworkElement>(
+                previewHost.Content).GetType().FullName);
+
         onClick.Invoke(permission, null);
         Assert.Contains("disabled", status.Text);
     }
