@@ -12,7 +12,7 @@ package_version="${PROGPU_PACKAGE_VERSION:-0.1.0-preview.25}"
 package_output="${PROGPU_PACKAGE_OUTPUT:-${repo_root}/artifacts/packages/${configuration}}"
 fixture="${repo_root}/eng/fixtures/xaml-package-consumer"
 
-for package_id in ProGPU.WinUI ProGPU.Xaml.SourceGenerator; do
+for package_id in ProGPU.WinUI ProGPU.Xaml.SourceGenerator ProGPU.Xaml.Cli; do
   package="${package_output}/${package_id}.${package_version}.nupkg"
   if [[ ! -f "${package}" ]]; then
     echo "Required XAML consumer package was not produced: ${package}" >&2
@@ -46,6 +46,14 @@ common_properties=(
   --no-build \
   --no-restore \
   "${common_properties[@]}"
+
+tool_root="${consumer_root}/tools"
+"${dotnet}" tool install ProGPU.Xaml.Cli \
+  --tool-path "${tool_root}" \
+  --version "${package_version}" \
+  --add-source "${package_output}" \
+  --verbosity minimal
+"${tool_root}/progpu-xaml" parse "${consumer_root}/MainPage.xaml"
 
 generated_source="$(find "${consumer_root}/obj/generated" -type f -name '*.g.cs' -print -quit)"
 if [[ -z "${generated_source}" ]]; then
