@@ -11965,6 +11965,104 @@ namespace Demo {
             diagnostic => diagnostic.Id == "PGXAML8002");
     }
 
+    [Fact]
+    public void PreviewHostSynthesizesAnEditedClassAndRootTypeAsRoslynSyntax()
+    {
+        const string xaml = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Playground.CustomCard">
+  <TextBlock Text="Dynamic class" />
+</Page>
+""";
+        var sourceInspection = new XamlDocumentInspectionService().Inspect(
+            SourceText.From(xaml),
+            "CustomCard.xaml");
+        var profile = new WinUiXamlProfile();
+        var baseCompilation = CreateCompilation();
+        var previewHost = new RoslynXamlPreviewHostFactory().Create(
+            baseCompilation,
+            sourceInspection.Infoset,
+            new RoslynXamlTypeSystem(
+                baseCompilation,
+                profile));
+
+        Assert.True(
+            previewHost.CanMaterialize,
+            previewHost.MaterializationError);
+        Assert.Equal(
+            "Playground.CustomCard",
+            previewHost.QualifiedTypeName);
+        var previewType =
+            previewHost.Compilation.GetTypeByMetadataName(
+                "Playground.CustomCard");
+        Assert.NotNull(previewType);
+        Assert.Equal(
+            "Microsoft.UI.Xaml.Controls.Page",
+            previewType!.BaseType!.ToDisplayString());
+        Assert.Contains(
+            previewType.InstanceConstructors,
+            constructor =>
+                constructor.DeclaredAccessibility ==
+                    Accessibility.Public &&
+                constructor.Parameters.Length == 0);
+
+        var compiled =
+            new RoslynXamlCompilationInspectionService().Inspect(
+                sourceInspection,
+                new RoslynXamlTypeSystem(
+                    previewHost.Compilation,
+                    profile),
+                profile,
+                new RoslynXamlCompilationInspectionOptions
+                {
+                    CompilerOptions = new XamlCompilerOptions
+                    {
+                        Framework = profile.Id,
+                        ResourceUri = "CustomCard.xaml",
+                        Strict = true
+                    }
+                });
+        var artifact =
+            new RoslynXamlPreviewArtifactCompiler().Compile(
+                previewHost.Compilation,
+                compiled.CompilationResult);
+
+        Assert.True(artifact.Success);
+        Assert.DoesNotContain(
+            artifact.Diagnostics,
+            diagnostic =>
+                diagnostic.Severity ==
+                DiagnosticSeverity.Error);
+    }
+
+    [Theory]
+    [InlineData("<Page xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" />")]
+    [InlineData("<Page xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\" x:Class=\"Invalid-Type\" />")]
+    public void PreviewHostDeclinesDocumentsThatCannotBeMaterialized(
+        string xaml)
+    {
+        var sourceInspection = new XamlDocumentInspectionService().Inspect(
+            SourceText.From(xaml),
+            "Unavailable.xaml");
+        var profile = new WinUiXamlProfile();
+        var compilation = CreateCompilation();
+
+        var previewHost = new RoslynXamlPreviewHostFactory().Create(
+            compilation,
+            sourceInspection.Infoset,
+            new RoslynXamlTypeSystem(
+                compilation,
+                profile));
+
+        Assert.False(previewHost.CanMaterialize);
+        Assert.Null(previewHost.QualifiedTypeName);
+        Assert.NotNull(previewHost.MaterializationError);
+        Assert.Same(
+            compilation,
+            previewHost.Compilation);
+    }
+
     private static CSharpCompilation CreateCompilation() => CSharpCompilation.Create(
         "BindingHarness",
         new[] { CSharpSyntaxTree.ParseText(Framework) },

@@ -6,7 +6,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace ProGPU.Xaml.Roslyn;
 
-internal static class RoslynTypeSyntaxFactory
+public static class RoslynTypeSyntaxFactory
 {
     public static TypeSyntax Create(ITypeSymbol symbol)
     {
