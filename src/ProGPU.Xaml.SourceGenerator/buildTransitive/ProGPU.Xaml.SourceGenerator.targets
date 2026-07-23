@@ -1,6 +1,24 @@
 <Project>
+  <Target Name="ProGpuXamlSelectGeneratorFacade"
+          BeforeTargets="CoreCompile"
+          Condition="'$(ProGpuXamlEnabled)' == 'true'">
+    <ItemGroup>
+      <_ProGpuXamlSelectedGeneratorFacade
+          Include="@(ProGpuXamlGeneratorFacade)"
+          Condition="'%(ProGpuXamlGeneratorFacade.Framework)' == '$(ProGpuXamlFramework)'" />
+      <Analyzer Remove="@(ProGpuXamlGeneratorFacade)" />
+      <Analyzer Include="@(_ProGpuXamlSelectedGeneratorFacade)" />
+    </ItemGroup>
+    <PropertyGroup>
+      <_ProGpuXamlSelectedGeneratorFacadeCount>@(_ProGpuXamlSelectedGeneratorFacade->Count())</_ProGpuXamlSelectedGeneratorFacadeCount>
+    </PropertyGroup>
+    <Error
+        Condition="'$(_ProGpuXamlSelectedGeneratorFacadeCount)' != '1'"
+        Text="ProGPU XAML compiler expected exactly one generator facade for framework '$(ProGpuXamlFramework)' but found $(_ProGpuXamlSelectedGeneratorFacadeCount). Registered facades: @(ProGpuXamlGeneratorFacade->'%(PackageId)=%(Framework)', ', ')." />
+  </Target>
   <Target Name="ProGpuXamlFilterAnalyzerDependencies"
-          BeforeTargets="CoreCompile">
+          BeforeTargets="CoreCompile"
+          DependsOnTargets="ProGpuXamlSelectGeneratorFacade">
     <ItemGroup>
       <Analyzer Remove="$(MSBuildThisFileDirectory)..\analyzers\dotnet\cs\ProGPU.Xaml.dll" />
       <Analyzer Remove="$(MSBuildThisFileDirectory)..\analyzers\dotnet\cs\ProGPU.Xaml.Roslyn.dll" />

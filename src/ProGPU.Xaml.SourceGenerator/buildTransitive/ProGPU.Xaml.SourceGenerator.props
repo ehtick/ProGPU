@@ -8,6 +8,10 @@
     <ProGpuXamlStaticResourceForwardReferenceMode Condition="'$(ProGpuXamlStaticResourceForwardReferenceMode)' == ''">Error</ProGpuXamlStaticResourceForwardReferenceMode>
   </PropertyGroup>
   <ItemGroup Condition="'$(ProGpuXamlEnabled)' == 'true'">
+    <ProGpuXamlGeneratorFacade
+        Include="$(MSBuildThisFileDirectory)..\analyzers\dotnet\cs\ProGPU.Xaml.SourceGenerator.dll"
+        Framework="WinUI"
+        PackageId="ProGPU.Xaml.SourceGenerator" />
     <ProGpuXaml Include="**\*.xaml;**\*.axaml"
                  Exclude="$(DefaultItemExcludes);$(DefaultExcludesInProjectFolder)"
                  ProGpuXamlLogicalPath="%(Identity)" />
