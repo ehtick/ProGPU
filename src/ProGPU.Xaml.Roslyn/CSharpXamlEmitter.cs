@@ -107,6 +107,25 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
                 "EXT-003");
             return new XamlCompilationResult(document, Array.Empty<XamlGeneratedSource>(), new[] { diagnostic });
         }
+        if (!TryComposeExtensionHost(
+                roslynFramework,
+                out var extensions,
+                out var extensionCompositionError))
+        {
+            var diagnostics = new List<Diagnostic>(infoset.Diagnostics)
+            {
+                CreateError(
+                    document,
+                    "PGXAML3054",
+                    extensionCompositionError!,
+                    infoset.Root?.SourceSpan ?? default,
+                    "EXT-004")
+            };
+            return new XamlCompilationResult(
+                document,
+                Array.Empty<XamlGeneratedSource>(),
+                diagnostics);
+        }
         XamlDocumentBuildMetadata? buildMetadata = null;
         if (typeSystem is IXamlBuildMetadataResolver buildMetadataResolver)
         {
@@ -167,7 +186,7 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
             new XamlSemanticBindingOptions { Strict = options.Strict },
             cancellationToken);
         resourceGraph = resourceGraph.WithDocument(bound);
-        var extensionDiagnostics = _extensions.ValidateBoundDocument(
+        var extensionDiagnostics = extensions.ValidateBoundDocument(
             new RoslynXamlBoundDocumentValidationContext(
                 bound,
                 resourceGraph,
@@ -195,6 +214,7 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
         return EmitProgramCore(
             program,
             roslynFramework,
+            extensions,
             options,
             buildMetadata,
             cancellationToken);
@@ -218,6 +238,7 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
         => EmitProgramCore(
             program,
             framework,
+            null,
             options,
             buildMetadata: null,
             cancellationToken);
@@ -225,6 +246,7 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
     private XamlCompilationResult EmitProgramCore(
         XamlConstructionProgram program,
         IRoslynXamlFrameworkProfile framework,
+        RoslynXamlExtensionHost? extensions,
         XamlCompilerOptions options,
         XamlDocumentBuildMetadata? buildMetadata,
         CancellationToken cancellationToken)
@@ -234,7 +256,30 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
         if (options == null) throw new ArgumentNullException(nameof(options));
         cancellationToken.ThrowIfCancellationRequested();
 
-        program = _extensions.ApplyConstructionProgramTransforms(
+        if (extensions == null &&
+            !TryComposeExtensionHost(
+                framework,
+                out extensions,
+                out var extensionCompositionError))
+        {
+            var compositionDocument = program.BoundDocument.Infoset.Syntax;
+            var compositionDiagnostics = new List<Diagnostic>(program.Diagnostics)
+            {
+                CreateError(
+                    compositionDocument,
+                    "PGXAML3054",
+                    extensionCompositionError!,
+                    program.Root?.SourceSpan ?? default,
+                    "EXT-004")
+            };
+            return new XamlCompilationResult(
+                compositionDocument,
+                Array.Empty<XamlGeneratedSource>(),
+                compositionDiagnostics,
+                buildMetadata);
+        }
+
+        program = extensions!.ApplyConstructionProgramTransforms(
             new RoslynXamlConstructionTransformContext(
                 program,
                 framework.Id,
@@ -256,6 +301,7 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
             return EmitCompiledResource(
                 program,
                 framework,
+                extensions,
                 options,
                 diagnostics,
                 buildMetadata,
@@ -277,7 +323,7 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
         var context = new EmitContext(
             program,
             framework,
-            _extensions,
+            extensions,
             options,
             diagnostics,
             cancellationToken: cancellationToken);
@@ -304,6 +350,7 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
     private XamlCompilationResult EmitCompiledResource(
         XamlConstructionProgram program,
         IRoslynXamlFrameworkProfile framework,
+        RoslynXamlExtensionHost extensions,
         XamlCompilerOptions options,
         List<Diagnostic> diagnostics,
         XamlDocumentBuildMetadata? buildMetadata,
@@ -331,7 +378,7 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
         var context = new EmitContext(
             program,
             framework,
-            _extensions,
+            extensions,
             options,
             diagnostics,
             isClassBacked: false,
@@ -365,6 +412,56 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
             unformattedTree,
             artifact));
         return new XamlCompilationResult(document, sources, diagnostics, buildMetadata);
+    }
+
+    private bool TryComposeExtensionHost(
+        IRoslynXamlFrameworkProfile framework,
+        out RoslynXamlExtensionHost extensions,
+        out string? error)
+    {
+        RoslynXamlExtensionHost? frameworkExtensions;
+        try
+        {
+            frameworkExtensions =
+                (framework as IRoslynXamlExtensionProvider)?.RoslynExtensionHost;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            extensions = RoslynXamlExtensionHost.Empty;
+            error =
+                $"Framework profile '{framework.Id}' failed to provide Roslyn XAML " +
+                $"extensions: {exception.Message}";
+            return false;
+        }
+
+        if (framework is IRoslynXamlExtensionProvider && frameworkExtensions == null)
+        {
+            extensions = RoslynXamlExtensionHost.Empty;
+            error =
+                $"Framework profile '{framework.Id}' returned a null Roslyn XAML extension host.";
+            return false;
+        }
+
+        try
+        {
+            extensions = frameworkExtensions == null
+                ? _extensions
+                : RoslynXamlExtensionHost.Compose(frameworkExtensions, _extensions);
+            error = null;
+            return true;
+        }
+        catch (ArgumentException exception)
+        {
+            extensions = RoslynXamlExtensionHost.Empty;
+            error =
+                $"Framework profile '{framework.Id}' contributed incompatible Roslyn XAML " +
+                $"extensions: {exception.Message}";
+            return false;
+        }
     }
 
     public static XamlCompiledResourceArtifact CreateCompiledResourceArtifact(string documentPath)

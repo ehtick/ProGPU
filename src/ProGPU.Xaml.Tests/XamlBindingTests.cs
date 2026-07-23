@@ -9639,6 +9639,107 @@ namespace Demo {
         Assert.Empty(bounded.Sources);
     }
 
+    [Fact]
+    public void FrameworkProfileExtensionsComposeWithHostExtensionsByGlobalPriority()
+    {
+        const string xaml = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.MainPage">
+  <Page.Content>
+    <TextBlock Text="Hello" />
+  </Page.Content>
+</Page>
+""";
+        var compilation = CreateCompilation();
+        var profileHost = RoslynXamlExtensionHost.Create(
+            new IRoslynXamlExtension[]
+            {
+                new TestConstructionTransform(
+                    "test.profile.transform",
+                    priority: 20,
+                    from: "Hello",
+                    to: "Profile")
+            });
+        var userHost = RoslynXamlExtensionHost.Create(
+            new IRoslynXamlExtension[]
+            {
+                new TestConstructionTransform(
+                    "test.user.transform",
+                    priority: 10,
+                    from: "Profile",
+                    to: "Final")
+            });
+        var profile = new ExtensionProvidingProfile(profileHost);
+
+        var result = new CSharpXamlEmitter(userHost).Emit(
+            Convert(xaml),
+            new RoslynXamlTypeSystem(compilation, profile),
+            profile,
+            new XamlCompilerOptions { Strict = true });
+
+        Assert.DoesNotContain(
+            result.Diagnostics,
+            diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        var tree = Assert.Single(result.Sources).GeneratedSyntaxTree!;
+        Assert.Contains(
+            tree.GetRoot().DescendantTokens(),
+            token => token.IsKind(SyntaxKind.StringLiteralToken) &&
+                     token.ValueText == "Final");
+        Assert.DoesNotContain(
+            tree.GetRoot().DescendantTokens(),
+            token => token.IsKind(SyntaxKind.StringLiteralToken) &&
+                     (token.ValueText == "Hello" || token.ValueText == "Profile"));
+        Assert.DoesNotContain(
+            compilation.AddSyntaxTrees(tree).GetDiagnostics(),
+            diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+    }
+
+    [Fact]
+    public void DuplicateFrameworkAndHostExtensionIdsProduceLocatedDiagnostic()
+    {
+        const string xaml = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.MainPage" />
+""";
+        var compilation = CreateCompilation();
+        var profileHost = RoslynXamlExtensionHost.Create(
+            new IRoslynXamlExtension[]
+            {
+                new TestConstructionTransform(
+                    "test.duplicate",
+                    priority: 20,
+                    from: "unused",
+                    to: "unused")
+            });
+        var userHost = RoslynXamlExtensionHost.Create(
+            new IRoslynXamlExtension[]
+            {
+                new TestConstructionTransform(
+                    "test.duplicate",
+                    priority: 10,
+                    from: "unused",
+                    to: "unused")
+            });
+        var profile = new ExtensionProvidingProfile(profileHost);
+
+        var result = new CSharpXamlEmitter(userHost).Emit(
+            ConvertAt("DuplicateExtensions.xaml", xaml),
+            new RoslynXamlTypeSystem(compilation, profile),
+            profile,
+            new XamlCompilerOptions());
+
+        var diagnostic = Assert.Single(
+            result.Diagnostics,
+            item => item.Id == "PGXAML3054");
+        Assert.Equal(
+            "DuplicateExtensions.xaml",
+            diagnostic.Location.GetLineSpan().Path);
+        Assert.Contains("test.duplicate", diagnostic.GetMessage());
+        Assert.Empty(result.Sources);
+    }
+
     private static XamlInfosetDocument Convert(string source)
         => ConvertAt("Binding.xaml", source);
 
@@ -11172,6 +11273,65 @@ namespace Demo {
             RoslynXamlExtensionCapabilities.ConstructionProgramTransform;
         public RoslynXamlExtensionConflictPolicy ConflictPolicy =>
             RoslynXamlExtensionConflictPolicy.Diagnose;
+    }
+
+    private sealed class ExtensionProvidingProfile :
+        IRoslynXamlFrameworkProfile,
+        IRoslynXamlExtensionProvider
+    {
+        private readonly WinUiXamlProfile _inner = new();
+
+        public ExtensionProvidingProfile(RoslynXamlExtensionHost extensions)
+        {
+            RoslynExtensionHost = extensions;
+        }
+
+        public string Id => _inner.Id;
+        public int ContractVersion => _inner.ContractVersion;
+        public XamlFrameworkCapabilities Capabilities => _inner.Capabilities;
+        public IReadOnlyList<string> FileExtensions => _inner.FileExtensions;
+        public RoslynXamlExtensionHost RoslynExtensionHost { get; }
+
+        public IReadOnlyList<string> GetClrNamespaceCandidates(
+            string xamlNamespaceUri) =>
+            _inner.GetClrNamespaceCandidates(xamlNamespaceUri);
+
+        public bool TryCreateLiteralExpression(
+            XamlTypeInfo targetType,
+            string text,
+            out ExpressionSyntax expression) =>
+            _inner.TryCreateLiteralExpression(targetType, text, out expression);
+
+        public bool TryCreateMarkupExtensionExpression(
+            XamlMarkupExtension extension,
+            XamlTypeInfo targetType,
+            out ExpressionSyntax expression) =>
+            _inner.TryCreateMarkupExtensionExpression(
+                extension,
+                targetType,
+                out expression);
+
+        public bool TryCreateMarkupExtensionExpression(
+            XamlIrObject extension,
+            XamlTypeInfo targetType,
+            out ExpressionSyntax expression) =>
+            _inner.TryCreateMarkupExtensionExpression(
+                extension,
+                targetType,
+                out expression);
+
+        public bool TryCreateResourceReferenceExpression(
+            XamlIrResourceReference reference,
+            XamlTypeInfo targetType,
+            ExpressionSyntax lookupRoot,
+            ExpressionSyntax resourceKey,
+            out ExpressionSyntax expression) =>
+            _inner.TryCreateResourceReferenceExpression(
+                reference,
+                targetType,
+                lookupRoot,
+                resourceKey,
+                out expression);
     }
 
     private static CSharpCompilation CreateCompilation() => CSharpCompilation.Create(

@@ -66,16 +66,47 @@ public sealed class RoslynXamlExtensionHost
             ordered.Add(new RegisteredExtension(extension));
         }
 
-        ordered.Sort(static (left, right) =>
-        {
-            var priority = right.Priority.CompareTo(left.Priority);
-            if (priority != 0) return priority;
-            var id = StringComparer.Ordinal.Compare(left.Id, right.Id);
-            return id != 0 ? id : right.Version.CompareTo(left.Version);
-        });
+        ordered.Sort(CompareExtensions);
         return new RoslynXamlExtensionHost(
             ordered.ToImmutableArray(),
             maximumTransformedIrNodes);
+    }
+
+    /// <summary>
+    /// Combines independently validated extension hosts using the same global deterministic
+    /// ordering as registration. Duplicate IDs are rejected and the strictest transformed-IR
+    /// node limit is retained.
+    /// </summary>
+    public static RoslynXamlExtensionHost Compose(
+        RoslynXamlExtensionHost first,
+        RoslynXamlExtensionHost second)
+    {
+        if (first == null) throw new ArgumentNullException(nameof(first));
+        if (second == null) throw new ArgumentNullException(nameof(second));
+        if (first._extensions.IsEmpty)
+            return second._maximumTransformedIrNodes <= first._maximumTransformedIrNodes
+                ? second
+                : new RoslynXamlExtensionHost(
+                    second._extensions,
+                    first._maximumTransformedIrNodes);
+        if (second._extensions.IsEmpty)
+            return first._maximumTransformedIrNodes <= second._maximumTransformedIrNodes
+                ? first
+                : new RoslynXamlExtensionHost(
+                    first._extensions,
+                    second._maximumTransformedIrNodes);
+
+        var combined = new List<IRoslynXamlExtension>(
+            first._extensions.Length + second._extensions.Length);
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        AddRegistered(first._extensions, combined, ids);
+        AddRegistered(second._extensions, combined, ids);
+        combined.Sort(CompareExtensions);
+        return new RoslynXamlExtensionHost(
+            combined.ToImmutableArray(),
+            Math.Min(
+                first._maximumTransformedIrNodes,
+                second._maximumTransformedIrNodes));
     }
 
     public RoslynXamlExtensionResolution ResolveMarkupExtensionExpression(
@@ -532,6 +563,30 @@ public sealed class RoslynXamlExtensionHost
                 $"Roslyn XAML extension '{extension.Id}' declares construction-program " +
                 "transform capability without implementing its contract.",
                 nameof(extension));
+    }
+
+    private static void AddRegistered(
+        ImmutableArray<IRoslynXamlExtension> source,
+        List<IRoslynXamlExtension> destination,
+        HashSet<string> ids)
+    {
+        foreach (var extension in source)
+        {
+            if (!ids.Add(extension.Id))
+                throw new ArgumentException(
+                    $"Roslyn XAML extension ID '{extension.Id}' is contributed by more than one host.");
+            destination.Add(extension);
+        }
+    }
+
+    private static int CompareExtensions(
+        IRoslynXamlExtension left,
+        IRoslynXamlExtension right)
+    {
+        var priority = right.Priority.CompareTo(left.Priority);
+        if (priority != 0) return priority;
+        var id = StringComparer.Ordinal.Compare(left.Id, right.Id);
+        return id != 0 ? id : right.Version.CompareTo(left.Version);
     }
 
     private sealed class RegisteredExtension :

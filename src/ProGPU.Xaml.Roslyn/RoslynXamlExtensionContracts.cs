@@ -27,6 +27,16 @@ public interface IRoslynXamlExtension
     RoslynXamlExtensionConflictPolicy ConflictPolicy { get; }
 }
 
+/// <summary>
+/// Optional contract implemented by a framework profile that contributes Roslyn compiler
+/// extensions as part of its package. The returned host must be immutable and may be shared
+/// across compilations.
+/// </summary>
+public interface IRoslynXamlExtensionProvider
+{
+    RoslynXamlExtensionHost RoslynExtensionHost { get; }
+}
+
 public sealed class RoslynXamlExtensionHostOptions
 {
     public int MaximumTransformedIrNodes { get; set; } =
