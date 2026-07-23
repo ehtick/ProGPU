@@ -346,6 +346,48 @@ public sealed class HotReloadTests : IDisposable
         }
     }
 
+    [Fact]
+    public void EmbeddedReloadUsesCanonicalStateTransferAndRetainsOldTreeOnFactoryFailure()
+    {
+        FrameworkElement content = new Grid();
+        var oldRoot = (Grid)content;
+        oldRoot.AddChild(new TextBox
+        {
+            Name = "editor",
+            Text = "preserved"
+        });
+
+        var replaced = HotReloadManager.ReloadElement(
+            oldRoot,
+            () =>
+            {
+                var replacement = new Grid();
+                replacement.AddChild(new TextBox
+                {
+                    Name = "editor",
+                    Text = "default"
+                });
+                return replacement;
+            },
+            replacement => content = replacement);
+
+        Assert.True(replaced);
+        var replacementRoot = Assert.IsType<Grid>(content);
+        Assert.NotSame(oldRoot, replacementRoot);
+        Assert.Equal(
+            "preserved",
+            Assert.IsType<TextBox>(
+                FindByName(replacementRoot, "editor")).Text);
+
+        replaced = HotReloadManager.ReloadElement(
+            replacementRoot,
+            () => throw new InvalidOperationException("activation failed"),
+            replacement => content = replacement);
+
+        Assert.False(replaced);
+        Assert.Same(replacementRoot, content);
+    }
+
     public void Dispose()
     {
         DrainDispatcher();
