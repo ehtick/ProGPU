@@ -4,6 +4,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.Text;
+using ProGPU.Xaml.Binding;
 using ProGPU.Xaml.SourceGeneration;
 using ProGPU.Xaml.Infoset;
 using ProGPU.Xaml.Parsing;
@@ -681,6 +682,75 @@ namespace Demo { public partial class MainPage : Microsoft.UI.Xaml.Controls.Page
         Assert.Contains(
             "Installed profiles: PackageProfile, Zeta",
             missingDiagnostic.GetMessage());
+    }
+
+    [Fact]
+    public void IncrementalGeneratorAppliesPackageProvidedBoundDocumentTransforms()
+    {
+        const string program = """
+namespace Microsoft.UI.Xaml.HotReload {
+  public interface IHotReloadable { void Reload(HotReloadContext context); }
+  public sealed class HotReloadContext { }
+}
+namespace Microsoft.UI.Xaml.Controls {
+  public class Page { public string? Title { get; set; } }
+}
+namespace Demo { public partial class MainPage : Microsoft.UI.Xaml.Controls.Page { } }
+""";
+        const string xaml = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.MainPage"
+      Title="Before" />
+""";
+        var host = RoslynXamlExtensionHost.Create(
+            new IRoslynXamlExtension[]
+            {
+                new GeneratorBoundTextTransform("Before", "After")
+            });
+        var registry = new XamlFrameworkProfileRegistry(
+            new IXamlFrameworkProfileFactory[]
+            {
+                new AliasProfileFactory("PackageProfile", host)
+            });
+        var compilation = CSharpCompilation.Create(
+            "PackageTransformGeneratorHarness",
+            new[] { CSharpSyntaxTree.ParseText(program) },
+            PlatformReferences(),
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var options = new GlobalAnalyzerConfigOptionsProvider(
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["build_property.ProGpuXamlFramework"] = "PackageProfile"
+            });
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(
+            ImmutableArray.Create(
+                new ProGpuXamlSourceGenerator(registry).AsSourceGenerator()),
+            ImmutableArray.Create<AdditionalText>(
+                new InMemoryAdditionalText("PackagePage.xaml", xaml)),
+            CSharpParseOptions.Default,
+            options);
+
+        driver = driver.RunGeneratorsAndUpdateCompilation(
+            compilation,
+            out var output,
+            out var generatorDiagnostics);
+
+        Assert.DoesNotContain(
+            generatorDiagnostics,
+            diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        Assert.DoesNotContain(
+            output.GetDiagnostics(),
+            diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        var generated = Assert.Single(
+            Assert.Single(driver.GetRunResult().Results).GeneratedSources);
+        var stringLiterals = generated.SyntaxTree.GetRoot()
+            .DescendantTokens()
+            .Where(token => token.IsKind(SyntaxKind.StringLiteralToken))
+            .Select(token => token.ValueText)
+            .ToArray();
+        Assert.Contains("After", stringLiterals);
+        Assert.DoesNotContain("Before", stringLiterals);
     }
 
     [Fact]
@@ -2479,26 +2549,38 @@ namespace Demo {
 
     private sealed class AliasProfileFactory : IXamlFrameworkProfileFactory
     {
-        public AliasProfileFactory(string id)
+        private readonly RoslynXamlExtensionHost _extensionHost;
+
+        public AliasProfileFactory(
+            string id,
+            RoslynXamlExtensionHost? extensionHost = null)
         {
             Id = id;
+            _extensionHost = extensionHost ?? RoslynXamlExtensionHost.Empty;
         }
 
         public string Id { get; }
         public int ContractVersion => XamlFrameworkContract.CurrentVersion;
-        public IRoslynXamlFrameworkProfile CreateProfile() => new AliasProfile(Id);
+        public IRoslynXamlFrameworkProfile CreateProfile() =>
+            new AliasProfile(Id, _extensionHost);
     }
 
-    private sealed class AliasProfile : IRoslynXamlFrameworkProfile
+    private sealed class AliasProfile :
+        IRoslynXamlFrameworkProfile,
+        IRoslynXamlExtensionProvider
     {
         private readonly WinUiXamlProfile _inner = new();
 
-        public AliasProfile(string id)
+        public AliasProfile(
+            string id,
+            RoslynXamlExtensionHost extensionHost)
         {
             Id = id;
+            RoslynExtensionHost = extensionHost;
         }
 
         public string Id { get; }
+        public RoslynXamlExtensionHost RoslynExtensionHost { get; }
         public int ContractVersion => _inner.ContractVersion;
         public XamlFrameworkCapabilities Capabilities => _inner.Capabilities;
         public IReadOnlyList<string> FileExtensions => _inner.FileExtensions;
@@ -2543,6 +2625,78 @@ namespace Demo {
                 lookupRoot,
                 resourceKey,
                 out expression);
+    }
+
+    private sealed class GeneratorBoundTextTransform :
+        IRoslynXamlBoundDocumentTransformExtension
+    {
+        private readonly string _from;
+        private readonly string _to;
+
+        public GeneratorBoundTextTransform(string from, string to)
+        {
+            _from = from;
+            _to = to;
+        }
+
+        public string Id => "tests.generator-bound-text-transform";
+        public int ContractVersion => RoslynXamlExtensionHost.CurrentContractVersion;
+        public int Version => 1;
+        public int Priority => 0;
+        public RoslynXamlExtensionCapabilities Capabilities =>
+            RoslynXamlExtensionCapabilities.BoundDocumentTransform;
+        public RoslynXamlExtensionConflictPolicy ConflictPolicy =>
+            RoslynXamlExtensionConflictPolicy.Diagnose;
+
+        public RoslynXamlBoundDocumentTransformResult Transform(
+            RoslynXamlBoundDocumentTransformContext context) =>
+            new(Rewrite(context.Document.Root));
+
+        private XamlBoundObject? Rewrite(XamlBoundObject? value)
+        {
+            if (value == null)
+                return null;
+            var members = ImmutableArray.CreateBuilder<XamlBoundMember>(
+                value.Members.Length);
+            foreach (var member in value.Members)
+            {
+                var values = ImmutableArray.CreateBuilder<XamlBoundValue>(
+                    member.Values.Length);
+                foreach (var child in member.Values)
+                    values.Add(Rewrite(child));
+                members.Add(new XamlBoundMember(
+                    member.Member,
+                    member.Origin,
+                    values.ToImmutable(),
+                    member.SourceSpan,
+                    member.StableId));
+            }
+            return new XamlBoundObject(
+                value.Type,
+                members.ToImmutable(),
+                value.IsRetrieved,
+                value.IsMarkupExtension,
+                value.SourceSpan,
+                value.StableId);
+        }
+
+        private XamlBoundValue Rewrite(XamlBoundValue value) =>
+            value switch
+            {
+                XamlBoundText text when string.Equals(
+                    text.Text,
+                    _from,
+                    StringComparison.Ordinal) =>
+                    new XamlBoundText(
+                        _to,
+                        text.IsCData,
+                        text.SourceSpan,
+                        text.StableId,
+                        text.TextSyntax,
+                        text.OriginalText),
+                XamlBoundObject child => Rewrite(child)!,
+                _ => value
+            };
     }
 
     private sealed class InMemoryAdditionalText : AdditionalText
