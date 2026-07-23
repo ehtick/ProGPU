@@ -19,8 +19,14 @@ The release workflow does not pack samples, tests, diagnostic tools, or framewor
 - `ProGPU.Layout`
 - `ProGPU.Virtualization`
 - `ProGPU.WinUI`
+- `ProGPU.WinUI.Themes.Fluent`
 - `ProGPU.WinUI.Charts`
 - `ProGPU.WinUI.Designer`
+- `ProGPU.Xaml`
+- `ProGPU.Xaml.Roslyn`
+- `ProGPU.Xaml.SourceGenerator`
+- `ProGPU.Xaml.Workspaces`
+- `ProGPU.Xaml.Cli`
 - `ProGPU.Avalonia`
 - `ProGPU.Uno`
 - `ProGPU.Dxf`
