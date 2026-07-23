@@ -16,7 +16,7 @@ using System.Text.Json;
 
 namespace ProGPU.Xaml.Cli;
 
-internal static class Program
+internal static partial class Program
 {
     public static async Task<int> Main(string[] args)
     {
@@ -35,6 +35,7 @@ internal static class Program
                 "inspect" => await InspectCommandAsync(args),
                 "compile" => await CompileCommandAsync(args),
                 "preview" => await PreviewCommandAsync(args),
+                "watch" => await WatchCommandAsync(args),
                 "project" => await ProjectCommandAsync(args),
                 _ => UnknownCommand(args[0])
             };
@@ -831,6 +832,7 @@ internal static class Program
         Console.WriteLine("  progpu-xaml inspect <file> --project <project.csproj> [--framework <id>] [--json]");
         Console.WriteLine("  progpu-xaml compile <file> --project <project.csproj> [--framework <id>] [--output <directory>] [--json]");
         Console.WriteLine("  progpu-xaml preview <file> --project <project.csproj> [--framework <id>] [--output <assembly.dll>] [--json]");
+        Console.WriteLine("  progpu-xaml watch <file> --project <project.csproj> [--framework <id>] [--output <assembly.dll>] [--debounce-ms <milliseconds>] [--stdin] [--max-updates <count>] [--json]");
         Console.WriteLine("  progpu-xaml project <project.csproj> [--framework <id>] [--output <directory>] [--json]");
     }
 }
