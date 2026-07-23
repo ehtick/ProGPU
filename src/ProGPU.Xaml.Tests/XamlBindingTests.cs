@@ -11890,7 +11890,27 @@ namespace Demo {
             SourceText.From(xaml),
             "MainPage.xaml");
         var profile = new WinUiXamlProfile();
-        var hostCompilation = CreateCompilation();
+        var constructor = SyntaxFactory.ConstructorDeclaration("MainPage")
+            .AddModifiers(
+                SyntaxFactory.Token(SyntaxKind.PublicKeyword))
+            .WithBody(
+                SyntaxFactory.Block(
+                    SyntaxFactory.ExpressionStatement(
+                        SyntaxFactory.InvocationExpression(
+                            SyntaxFactory.IdentifierName(
+                                "InitializeComponent")))));
+        var hostDeclaration = SyntaxFactory.CompilationUnit()
+            .AddMembers(
+                SyntaxFactory.NamespaceDeclaration(
+                        SyntaxFactory.IdentifierName("Demo"))
+                    .AddMembers(
+                        SyntaxFactory.ClassDeclaration("MainPage")
+                            .AddModifiers(
+                                SyntaxFactory.Token(
+                                    SyntaxKind.PartialKeyword))
+                            .AddMembers(constructor)));
+        var hostCompilation = CreateCompilation().AddSyntaxTrees(
+            CSharpSyntaxTree.Create(hostDeclaration));
         var inspection = new RoslynXamlCompilationInspectionService().Inspect(
             sourceInspection,
             new RoslynXamlTypeSystem(hostCompilation, profile),

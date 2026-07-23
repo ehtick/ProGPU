@@ -111,8 +111,11 @@ public sealed class RoslynXamlPreviewArtifactCompiler
 
         var existingTrees = new HashSet<SyntaxTree>(
             hostCompilation.SyntaxTrees);
+        var treesToAdd = generatedTrees
+            .Where(existingTrees.Add)
+            .ToArray();
         var compilation = hostCompilation.AddSyntaxTrees(
-            generatedTrees.Where(existingTrees.Add));
+            treesToAdd);
         using (var stream = new MemoryStream())
         {
             var emit = compilation.Emit(
