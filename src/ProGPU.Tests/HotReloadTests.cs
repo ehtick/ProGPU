@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.HotReload;
 using Microsoft.UI.Xaml.Input;
+using ProGPU.WinUI.Designer;
 using Xunit;
 
 namespace ProGPU.Tests;
@@ -388,6 +389,52 @@ public sealed class HotReloadTests : IDisposable
         Assert.Same(replacementRoot, content);
     }
 
+    [Fact]
+    public void LivePreviewSessionTransfersStateAndRetainsLastGoodAssembly()
+    {
+        Assert.True(WinUiXamlLivePreviewSession.IsRuntimeSupported);
+        var image = File.ReadAllBytes(
+            typeof(HotReloadTests).Assembly.Location);
+        FrameworkElement? published = null;
+        using var session = new WinUiXamlLivePreviewSession();
+
+        var first = session.TryUpdate(
+            image,
+            typeof(PreviewRoot).FullName!,
+            replacement => published = replacement);
+
+        Assert.True(first.Success, first.Message);
+        var firstRoot = Assert.IsAssignableFrom<FrameworkElement>(published);
+        var firstEditor = Assert.IsType<TextBox>(
+            FindByName(firstRoot, "editor"));
+        firstEditor.Text = "user value";
+
+        var second = session.TryUpdate(
+            image,
+            typeof(PreviewRoot).FullName!,
+            replacement => published = replacement);
+
+        Assert.True(second.Success, second.Message);
+        var secondRoot = Assert.IsAssignableFrom<FrameworkElement>(published);
+        Assert.NotSame(firstRoot, secondRoot);
+        Assert.Equal(
+            "user value",
+            Assert.IsType<TextBox>(
+                FindByName(secondRoot, "editor")).Text);
+
+        var failed = session.TryUpdate(
+            image,
+            "ProGPU.Tests.MissingPreviewRoot",
+            replacement => published = replacement);
+
+        Assert.False(failed.Success);
+        Assert.Same(secondRoot, published);
+        Assert.Same(secondRoot, session.CurrentRoot);
+
+        published = null;
+        session.Reset();
+    }
+
     public void Dispose()
     {
         DrainDispatcher();
@@ -439,6 +486,18 @@ public sealed class HotReloadTests : IDisposable
         public void RestoreHotReloadState(object? state)
         {
             CustomValue = Assert.IsType<int>(state);
+        }
+    }
+
+    public sealed class PreviewRoot : Grid
+    {
+        public PreviewRoot()
+        {
+            AddChild(new TextBox
+            {
+                Name = "editor",
+                Text = "default"
+            });
         }
     }
 
