@@ -4741,7 +4741,6 @@ namespace DesignerDemo {
         Assert.DoesNotContain(
             compilation.AddSyntaxTrees(tree).GetDiagnostics(),
             diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
-
     }
 
     [Fact]
@@ -4968,6 +4967,7 @@ namespace Microsoft.UI.Xaml.Data {
         Assert.DoesNotContain(
             compilation.AddSyntaxTrees(tree).GetDiagnostics(),
             diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+
     }
 
     [Fact]
@@ -5948,6 +5948,174 @@ namespace MetadataModel {
         Assert.Contains(
             staticMember.Diagnostics,
             diagnostic => diagnostic.Id == "PGXAML2131");
+    }
+
+    [Fact]
+    public void OrdinaryBindingSourceInferenceUsesExactRuntimeSelectorEvidence()
+    {
+        const string additions = """
+namespace Microsoft.UI.Xaml {
+  public class DataTemplate : FrameworkTemplate { }
+}
+namespace Demo {
+  public sealed class Item {
+    public string Name { get; set; } = "item";
+    public string Title { get; set; } = "title";
+  }
+  public sealed class Child {
+    public string Title { get; set; } = "child";
+  }
+  public static class BindingSources {
+    public static Item Current { get; } = new();
+    public static readonly Item Field = new();
+  }
+  public sealed class SelfTarget : Microsoft.UI.Xaml.FrameworkElement {
+    public static readonly Microsoft.UI.Xaml.DependencyProperty ValueProperty = new();
+    public Child Child { get; } = new();
+    public string? Value { get; set; }
+  }
+  public sealed class BindingTarget : Microsoft.UI.Xaml.FrameworkElement {
+    public static readonly Microsoft.UI.Xaml.DependencyProperty ValueProperty = new();
+    public string? Value { get; set; }
+  }
+}
+""";
+        const string xaml = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:local="using:Demo"
+      x:Class="Demo.MainPage">
+  <StackPanel>
+    <local:SelfTarget Value="{Binding Path=Child.Title,
+                                     RelativeSource={RelativeSource Self}}" />
+    <local:BindingTarget Value="{Binding Path=Title,
+                                        Source={x:Static local:BindingSources.Current}}" />
+    <local:BindingTarget Value="{Binding Path=Title,
+                                        Source={x:Static local:BindingSources.Field}}" />
+    <local:BindingTarget Value="{Binding Path=Length, Source=hello}" />
+    <DataTemplate x:DataType="local:Item">
+      <local:BindingTarget x:Name="NamedSource"
+                           Value="{Binding Path=Name, ElementName=NamedSource}" />
+    </DataTemplate>
+  </StackPanel>
+</Page>
+""";
+        var compilation = CreateCompilation().AddSyntaxTrees(
+            CSharpSyntaxTree.ParseText(additions));
+        var profile = new WinUiXamlProfile();
+        var typeSystem = new RoslynXamlTypeSystem(compilation, profile);
+        var bound = new XamlSemanticBinder().Bind(Convert(xaml), typeSystem);
+
+        Assert.False(bound.HasErrors, string.Join(Environment.NewLine, bound.Diagnostics));
+        var bindings = DescendantValues(bound.Root)
+            .OfType<XamlBoundBinding>()
+            .ToArray();
+        Assert.Equal(5, bindings.Length);
+        Assert.Equal(
+            XamlBindingSourceKind.RelativeSelf,
+            bindings[0].SourceKind);
+        Assert.Equal("Demo.SelfTarget", bindings[0].SourceType!.MetadataName);
+        Assert.Equal(
+            new[] { "Child", "Title" },
+            bindings[0].Accessors.Select(accessor => accessor.Member.Name));
+        Assert.Equal(
+            XamlBindingSourceKind.ExplicitStaticMember,
+            bindings[1].SourceKind);
+        Assert.Equal("Demo.Item", bindings[1].SourceType!.MetadataName);
+        Assert.Equal(
+            "Title",
+            Assert.Single(bindings[1].Accessors).Member.Name);
+        Assert.Equal(
+            XamlBindingSourceKind.ExplicitStaticMember,
+            bindings[2].SourceKind);
+        Assert.Equal("Demo.Item", bindings[2].SourceType!.MetadataName);
+        Assert.Equal(
+            "Title",
+            Assert.Single(bindings[2].Accessors).Member.Name);
+        Assert.Equal(XamlBindingSourceKind.ExplicitValue, bindings[3].SourceKind);
+        Assert.Equal("System.String", bindings[3].SourceType!.MetadataName);
+        Assert.Equal(
+            "Length",
+            Assert.Single(bindings[3].Accessors).Member.Name);
+        Assert.Equal(XamlBindingSourceKind.Unknown, bindings[4].SourceKind);
+        Assert.Null(bindings[4].SourceType);
+        Assert.Empty(bindings[4].Accessors);
+
+        var program = new XamlConstructionLowerer().Lower(bound);
+        Assert.Equal(
+            5,
+            DescendantIrValues(program.Root).OfType<XamlIrBinding>().Count());
+
+        var emitted = new CSharpXamlEmitter().Emit(
+            Convert(xaml),
+            new RoslynXamlTypeSystem(compilation, profile),
+            profile,
+            new XamlCompilerOptions());
+        Assert.DoesNotContain(
+            emitted.Diagnostics,
+            diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        var tree = Assert.Single(emitted.Sources).GeneratedSyntaxTree!;
+        var registrations = tree.GetRoot().DescendantNodes()
+            .OfType<InvocationExpressionSyntax>()
+            .Where(invocation => invocation.Expression.ToString().StartsWith(
+                "global::Microsoft.UI.Xaml.Data.BindingMemberAccessorRegistry.Register",
+                StringComparison.Ordinal))
+            .ToArray();
+        Assert.Equal(4, registrations.Length);
+        Assert.DoesNotContain(
+            registrations,
+            registration =>
+                registration.ArgumentList.Arguments[0].ToString() == "\"Name\"");
+        var bindingCreations = tree.GetRoot().DescendantNodes()
+            .OfType<ObjectCreationExpressionSyntax>()
+            .Where(creation => creation.Type.ToString().EndsWith(
+                "Microsoft.UI.Xaml.Data.Binding",
+                StringComparison.Ordinal))
+            .ToArray();
+        Assert.Contains(
+            bindingCreations,
+            creation => creation.Initializer!.Expressions
+                .OfType<AssignmentExpressionSyntax>()
+                .Any(assignment =>
+                    assignment.Left.ToString() == "Source" &&
+                    assignment.Right.ToString() ==
+                    "global::Demo.BindingSources.Current"));
+        Assert.Contains(
+            bindingCreations,
+            creation => creation.Initializer!.Expressions
+                .OfType<AssignmentExpressionSyntax>()
+                .Any(assignment =>
+                    assignment.Left.ToString() == "Source" &&
+                    assignment.Right.ToString() ==
+                    "global::Demo.BindingSources.Field"));
+        Assert.Contains(
+            bindingCreations,
+            creation => creation.Initializer!.Expressions
+                .OfType<AssignmentExpressionSyntax>()
+                .Any(assignment =>
+                    assignment.Left.ToString() == "RelativeSource" &&
+                    assignment.Right.ToString().Contains(
+                        "RelativeSourceMode.Self",
+                        StringComparison.Ordinal)));
+        Assert.DoesNotContain(
+            compilation.AddSyntaxTrees(tree).GetDiagnostics(),
+            diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+
+        var conflictingSelectors = new XamlSemanticBinder().Bind(
+            Convert(xaml.Replace(
+                "Path=Name, ElementName=NamedSource",
+                "Path=Length, Source=hello, ElementName=NamedSource",
+                StringComparison.Ordinal)),
+            typeSystem,
+            new XamlSemanticBindingOptions { Strict = false });
+        var conflictingBinding = DescendantValues(conflictingSelectors.Root)
+            .OfType<XamlBoundBinding>()
+            .Last();
+        Assert.Equal(
+            XamlBindingSourceKind.Unknown,
+            conflictingBinding.SourceKind);
+        Assert.Null(conflictingBinding.SourceType);
+        Assert.Empty(conflictingBinding.Accessors);
     }
 
     [Fact]

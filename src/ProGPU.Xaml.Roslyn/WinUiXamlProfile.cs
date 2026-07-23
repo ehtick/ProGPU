@@ -2238,20 +2238,9 @@ public sealed class WinUiXamlProfile : IRoslynXamlFrameworkProfile, IRoslynXamlC
 
         if (string.Equals(name, "Static", StringComparison.Ordinal) ||
             string.Equals(name, "StaticExtension", StringComparison.Ordinal))
-        {
-            var staticValue = extension.Operations.SelectMany(static operation => operation.Values)
-                .OfType<XamlIrStaticMember>()
-                .FirstOrDefault();
-            var member = staticValue?.Value.Member;
-            if (member?.ContainingType != null)
-            {
-                expression = SyntaxFactory.MemberAccessExpression(
-                    SyntaxKind.SimpleMemberAccessExpression,
-                    (ExpressionSyntax)RoslynTypeSyntaxFactory.Create(member.ContainingType),
-                    SyntaxFactory.IdentifierName(EscapeIdentifier(member.Name)));
-                return true;
-            }
-        }
+            return TryCreateStaticMemberExpression(
+                extension,
+                out expression);
 
         var key = GetFirstTextArgument(extension);
         if (key != null && (string.Equals(name, "ThemeResource", StringComparison.Ordinal) ||
@@ -2377,6 +2366,18 @@ public sealed class WinUiXamlProfile : IRoslynXamlFrameworkProfile, IRoslynXamlC
             expression = StringLiteral(text.Text);
             return true;
         }
+        if (value is XamlIrObject staticExtension &&
+            (string.Equals(
+                 staticExtension.Type.RequestedName.LocalName,
+                 "Static",
+                 StringComparison.Ordinal) ||
+             string.Equals(
+                 staticExtension.Type.RequestedName.LocalName,
+                 "StaticExtension",
+                 StringComparison.Ordinal)))
+            return TryCreateStaticMemberExpression(
+                staticExtension,
+                out expression);
         if (value is XamlIrObject nested &&
             (string.Equals(nested.Type.RequestedName.LocalName, "RelativeSource", StringComparison.Ordinal) ||
              string.Equals(nested.Type.RequestedName.LocalName, "RelativeSourceExtension", StringComparison.Ordinal)))
@@ -2406,6 +2407,31 @@ public sealed class WinUiXamlProfile : IRoslynXamlFrameworkProfile, IRoslynXamlC
             return true;
         }
         expression = SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression);
+        return false;
+    }
+
+    private static bool TryCreateStaticMemberExpression(
+        XamlIrObject extension,
+        out ExpressionSyntax expression)
+    {
+        var staticValue = extension.Operations
+            .SelectMany(static operation => operation.Values)
+            .OfType<XamlIrStaticMember>()
+            .FirstOrDefault();
+        var member = staticValue?.Value.Member;
+        if (member?.ContainingType != null)
+        {
+            expression = SyntaxFactory.MemberAccessExpression(
+                SyntaxKind.SimpleMemberAccessExpression,
+                (ExpressionSyntax)RoslynTypeSyntaxFactory.Create(
+                    member.ContainingType),
+                SyntaxFactory.IdentifierName(
+                    EscapeIdentifier(member.Name)));
+            return true;
+        }
+
+        expression = SyntaxFactory.LiteralExpression(
+            SyntaxKind.NullLiteralExpression);
         return false;
     }
 

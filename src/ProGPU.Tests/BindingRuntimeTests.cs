@@ -542,6 +542,8 @@ public sealed class BindingRuntimeTests
     [Fact]
     public void GeneratedBindingsSampleMaterializesTwoIndependentTrackedTemplates()
     {
+        ProGPU.Samples.XamlCompilerBindingSources.Current.Title =
+            "Static source item";
         var page = new ProGPU.Samples.XamlCompilerBindingsPage();
         var firstRoot = Assert.IsType<StackPanel>(
             page.FirstMaterializedTemplate);
@@ -555,6 +557,12 @@ public sealed class BindingRuntimeTests
             page.SecondCompiledTemplateText);
         var secondOrdinary = Assert.IsType<TextBlock>(
             page.SecondOrdinaryTemplateText);
+
+        Assert.Equal("SelfSourceText", page.SelfSourceTextValue);
+        Assert.Equal("Static source item", page.StaticSourceTextValue);
+        ProGPU.Samples.XamlCompilerBindingSources.Current.Title =
+            "Static source update";
+        Assert.Equal("Static source update", page.StaticSourceTextValue);
 
         Assert.NotSame(firstRoot, secondRoot);
         Assert.Equal(page.Items[0].Title, firstCompiled.Text);

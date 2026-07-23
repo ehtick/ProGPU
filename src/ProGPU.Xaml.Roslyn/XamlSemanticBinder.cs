@@ -675,7 +675,9 @@ public sealed class XamlSemanticBinder
                 var boundObject = BindObject(childObject);
                 values.Add(boundObject.Type.Symbol?.ExpressionRole switch
                 {
-                    XamlExpressionRole.Binding => BindBinding(boundObject),
+                    XamlExpressionRole.Binding => BindBinding(
+                        boundObject,
+                        parentType.Symbol),
                     XamlExpressionRole.CompiledBinding => BindCompiledBinding(
                         boundObject,
                         memberReference,
@@ -880,13 +882,18 @@ public sealed class XamlSemanticBinder
             value.StableId);
     }
 
-    private XamlBoundValue BindBinding(XamlBoundObject extension)
+    private XamlBoundValue BindBinding(
+        XamlBoundObject extension,
+        XamlTypeInfo? targetObjectType)
     {
         var path = GetBindingText(extension, "Path") ??
                    GetBindingPositionalText(extension) ??
                    string.Empty;
         path = path.Trim();
-        var sourceType = _activeLexicalDataType;
+        var source = ResolveBindingSource(
+            extension,
+            targetObjectType);
+        var sourceType = source.Type;
         var syntax = path.Length == 0 || path == "."
             ? null
             : _bindingPathParser.Parse(path);
@@ -895,6 +902,7 @@ public sealed class XamlSemanticBinder
             return new XamlBoundBinding(
                 extension,
                 sourceType,
+                source.Kind,
                 path,
                 syntax,
                 ImmutableArray<XamlBindingMemberAccessor>.Empty,
@@ -914,6 +922,7 @@ public sealed class XamlSemanticBinder
             return new XamlBoundBinding(
                 extension,
                 sourceType,
+                source.Kind,
                 path,
                 syntax,
                 ImmutableArray<XamlBindingMemberAccessor>.Empty,
@@ -964,12 +973,117 @@ public sealed class XamlSemanticBinder
         return new XamlBoundBinding(
             extension,
             sourceType,
+            source.Kind,
             path,
             syntax,
             accessors.ToImmutable(),
             extension.SourceSpan,
             extension.StableId);
     }
+
+    private (XamlTypeInfo? Type, XamlBindingSourceKind Kind)
+        ResolveBindingSource(
+            XamlBoundObject extension,
+            XamlTypeInfo? targetObjectType)
+    {
+        var sourceMember = FindBindingMember(extension, "Source");
+        var relativeSourceMember = FindBindingMember(
+            extension,
+            "RelativeSource");
+        var elementNameMember = FindBindingMember(extension, "ElementName");
+        var hasElementName =
+            elementNameMember?.Values.OfType<XamlBoundText>()
+                .Any(value => !string.IsNullOrWhiteSpace(value.Text)) == true;
+        var selectorCount =
+            (sourceMember == null ? 0 : 1) +
+            (relativeSourceMember == null ? 0 : 1) +
+            (hasElementName ? 1 : 0);
+        if (selectorCount > 1)
+            return (null, XamlBindingSourceKind.Unknown);
+
+        if (sourceMember != null)
+        {
+            var staticValue = FindValue<XamlBoundStaticMemberValue>(
+                sourceMember.Values);
+            var staticType = staticValue?.Member switch
+            {
+                IFieldSymbol field => field.Type,
+                IPropertySymbol property => property.Type,
+                _ => null
+            };
+            if (staticType != null &&
+                _typeSystem is IXamlSymbolTypeResolver symbolTypes &&
+                symbolTypes.ResolveSymbolType(staticType) is { } staticSource)
+            {
+                return (
+                    staticSource,
+                    XamlBindingSourceKind.ExplicitStaticMember);
+            }
+
+            var sourceObject = sourceMember.Values
+                .OfType<XamlBoundObject>()
+                .FirstOrDefault(value => !value.IsMarkupExtension);
+            if (sourceObject?.Type.Symbol != null)
+            {
+                return (
+                    sourceObject.Type.Symbol,
+                    XamlBindingSourceKind.ExplicitValue);
+            }
+
+            if (sourceMember.Values.OfType<XamlBoundText>().Any())
+            {
+                return (
+                    _typeSystem.ResolveType(
+                        XamlNamespaces.Language2006,
+                        "String"),
+                    XamlBindingSourceKind.ExplicitValue);
+            }
+
+            return (null, XamlBindingSourceKind.Unknown);
+        }
+
+        if (relativeSourceMember != null)
+        {
+            var relativeSource = relativeSourceMember.Values
+                .OfType<XamlBoundObject>()
+                .SingleOrDefault();
+            var mode = relativeSource == null
+                ? null
+                : GetBindingText(relativeSource, "Mode") ??
+                  GetBindingPositionalText(relativeSource);
+            if (string.Equals(
+                    mode?.Trim(),
+                    "Self",
+                    StringComparison.Ordinal) &&
+                targetObjectType is { } selfType)
+            {
+                return (
+                    selfType,
+                    XamlBindingSourceKind.RelativeSelf);
+            }
+
+            return (null, XamlBindingSourceKind.Unknown);
+        }
+
+        if (hasElementName)
+            return (null, XamlBindingSourceKind.Unknown);
+
+        return _activeLexicalDataType == null
+            ? (null, XamlBindingSourceKind.Unknown)
+            : (
+                _activeLexicalDataType,
+                XamlBindingSourceKind.LexicalDataType);
+    }
+
+    private static XamlBoundMember? FindBindingMember(
+        XamlBoundObject extension,
+        string memberName) =>
+        extension.Members.FirstOrDefault(member =>
+            string.Equals(
+                member.Member.Symbol?.Name ??
+                member.Member.RequestedName.LocalName,
+                memberName,
+                StringComparison.Ordinal));
 
     private XamlBoundValue BindCompiledBinding(
         XamlBoundObject extension,

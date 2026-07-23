@@ -343,6 +343,15 @@ public sealed class XamlBindingMemberAccessor
     public bool CanWrite { get; }
 }
 
+public enum XamlBindingSourceKind
+{
+    Unknown,
+    LexicalDataType,
+    ExplicitValue,
+    ExplicitStaticMember,
+    RelativeSelf
+}
+
 /// <summary>
 /// Canonical ordinary-binding operation. The original extension remains the runtime descriptor;
 /// optional accessor evidence is emitted only when a lexical or explicit source type is known.
@@ -352,6 +361,7 @@ public sealed class XamlBoundBinding : XamlBoundValue
     public XamlBoundBinding(
         XamlBoundObject extension,
         XamlTypeInfo? sourceType,
+        XamlBindingSourceKind sourceKind,
         string path,
         XamlBindingPathSyntax? pathSyntax,
         ImmutableArray<XamlBindingMemberAccessor> accessors,
@@ -361,6 +371,7 @@ public sealed class XamlBoundBinding : XamlBoundValue
     {
         Extension = extension ?? throw new ArgumentNullException(nameof(extension));
         SourceType = sourceType;
+        SourceKind = sourceKind;
         Path = path ?? string.Empty;
         PathSyntax = pathSyntax;
         Accessors = accessors.IsDefault
@@ -370,6 +381,7 @@ public sealed class XamlBoundBinding : XamlBoundValue
 
     public XamlBoundObject Extension { get; }
     public XamlTypeInfo? SourceType { get; }
+    public XamlBindingSourceKind SourceKind { get; }
     public string Path { get; }
     public XamlBindingPathSyntax? PathSyntax { get; }
     public ImmutableArray<XamlBindingMemberAccessor> Accessors { get; }

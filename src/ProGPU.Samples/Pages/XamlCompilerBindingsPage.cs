@@ -38,6 +38,10 @@ public partial class XamlCompilerBindingsPage : Page
     public TextBlock? SecondOrdinaryTemplateText =>
         GetTemplateText(SecondMaterializedTemplate, 1);
 
+    public string? SelfSourceTextValue => SelfSourceText.Text;
+
+    public string? StaticSourceTextValue => StaticSourceText.Text;
+
     public ObservableCollection<XamlCompilerBindingItem> Items { get; } =
         new() { new XamlCompilerBindingItem("Editable indexed item") };
 
@@ -85,6 +89,12 @@ public static class XamlCompilerBindingFormatter
 {
     public static string Format(string title, string suffix) =>
         title + suffix;
+}
+
+public static class XamlCompilerBindingSources
+{
+    public static XamlCompilerBindingItem Current { get; } =
+        new("Static source item");
 }
 
 public sealed class XamlCompilerBindingItem : INotifyPropertyChanged

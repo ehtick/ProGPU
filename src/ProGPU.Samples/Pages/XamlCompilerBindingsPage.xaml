@@ -21,7 +21,19 @@
         <TextBlock Margin="0,8,0,16"
                    Text="Every expression below is symbol-bound and emitted as Roslyn syntax." />
 
-        <TextBlock Text="Integer IList&lt;T&gt; indexer with collection and item tracking" />
+        <TextBlock Text="Ordinary Binding with typed RelativeSource Self" />
+        <TextBlock x:Name="SelfSourceText"
+                   Margin="0,6,0,0"
+                   Text="{Binding Path=Name, RelativeSource={RelativeSource Self}}" />
+
+        <TextBlock Margin="0,16,0,0"
+                   Text="Ordinary Binding with an exact x:Static source" />
+        <TextBlock x:Name="StaticSourceText"
+                   Margin="0,6,0,0"
+                   Text="{Binding Path=Title, Source={x:Static local:XamlCompilerBindingSources.Current}}" />
+
+        <TextBlock Margin="0,16,0,0"
+                   Text="Integer IList&lt;T&gt; indexer with collection and item tracking" />
         <TextBox Margin="0,6,0,4"
                  Text="{x:Bind Items[0].Title, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
         <TextBlock Text="{x:Bind Items[0].Title}" />
