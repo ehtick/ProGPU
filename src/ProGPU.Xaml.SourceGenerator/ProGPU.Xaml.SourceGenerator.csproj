@@ -23,6 +23,9 @@
     <None Include="$(OutputPath)$(AssemblyName).dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
     <None Include="$(OutputPath)ProGPU.Xaml.dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
     <None Include="$(OutputPath)ProGPU.Xaml.Roslyn.dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+    <None Include="$(OutputPath)$(AssemblyName).pdb" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+    <None Include="$(OutputPath)ProGPU.Xaml.pdb" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+    <None Include="$(OutputPath)ProGPU.Xaml.Roslyn.pdb" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
     <None Include="build\ProGPU.Xaml.SourceGenerator.props" Pack="true" PackagePath="build" />
     <None Include="buildTransitive\ProGPU.Xaml.SourceGenerator.props" Pack="true" PackagePath="buildTransitive" />
     <None Include="buildTransitive\ProGPU.Xaml.SourceGenerator.targets" Pack="true" PackagePath="buildTransitive" />

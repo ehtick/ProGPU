@@ -46,15 +46,21 @@ for index in "${!selected_package_ids[@]}"; do
     "${package_output}/${package_id}.${package_version}.nupkg" \
     "${package_output}/${package_id}.${package_version}.snupkg"
 
-  "${dotnet}" pack "${repo_root}/${project}" \
+  pack_arguments=(
     --configuration "${configuration}" \
     --output "${package_output}" \
     --verbosity minimal \
     -p:ContinuousIntegrationBuild=true \
-    -p:IncludeSymbols=true \
-    -p:SymbolPackageFormat=snupkg \
     -p:Version="${package_version}" \
     -p:PackageVersion="${package_version}"
+  )
+  if [[ "${package_id}" == "ProGPU.Xaml.SourceGenerator" ]]; then
+    pack_arguments+=(-p:IncludeSymbols=false)
+  else
+    pack_arguments+=(-p:IncludeSymbols=true -p:SymbolPackageFormat=snupkg)
+  fi
+
+  "${dotnet}" pack "${repo_root}/${project}" "${pack_arguments[@]}"
 
 done
 
@@ -62,5 +68,12 @@ PROGPU_PACKAGE_VERSION="${package_version}" \
 PROGPU_PACKAGE_OUTPUT="${package_output}" \
 PROGPU_PACKAGE_GROUP="${package_group}" \
   "${repo_root}/eng/progpu-verify-packages.sh"
+
+if [[ "${package_group}" == "portable" || "${package_group}" == "all" ]]; then
+  PROGPU_CONFIGURATION="${configuration}" \
+  PROGPU_PACKAGE_VERSION="${package_version}" \
+  PROGPU_PACKAGE_OUTPUT="${package_output}" \
+    "${repo_root}/eng/progpu-verify-xaml-package-consumer.sh"
+fi
 
 echo "ProGPU ${package_group} NuGet package build succeeded for ${package_version}."

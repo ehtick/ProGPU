@@ -1,6 +1,14 @@
 <Project>
+  <Target Name="ProGpuXamlFilterAnalyzerDependencies"
+          BeforeTargets="CoreCompile">
+    <ItemGroup>
+      <Analyzer Remove="$(MSBuildThisFileDirectory)..\analyzers\dotnet\cs\ProGPU.Xaml.dll" />
+      <Analyzer Remove="$(MSBuildThisFileDirectory)..\analyzers\dotnet\cs\ProGPU.Xaml.Roslyn.dll" />
+    </ItemGroup>
+  </Target>
   <Target Name="ProGpuXamlCompilerConfiguration"
           BeforeTargets="CoreCompile"
+          DependsOnTargets="ProGpuXamlFilterAnalyzerDependencies"
           Condition="'$(ProGpuXamlEnabled)' == 'true'">
     <Message Importance="Low"
              Text="ProGPU XAML compiler: framework=$(ProGpuXamlFramework), strict=$(ProGpuXamlStrict), inputs=@(ProGpuXaml->Count())." />

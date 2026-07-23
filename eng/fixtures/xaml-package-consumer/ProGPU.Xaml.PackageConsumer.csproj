@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <ProGpuPackageVersion Condition="'$(ProGpuPackageVersion)' == ''">0.1.0-preview.25</ProGpuPackageVersion>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <CompilerGeneratedFilesOutputPath>$(BaseIntermediateOutputPath)generated</CompilerGeneratedFilesOutputPath>
+    <ProGpuXamlEnabled>true</ProGpuXamlEnabled>
+    <ProGpuXamlFramework>WinUI</ProGpuXamlFramework>
+    <ProGpuXamlStrict>true</ProGpuXamlStrict>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="ProGPU.WinUI"
+                      Version="$(ProGpuPackageVersion)" />
+    <PackageReference Include="ProGPU.Xaml.SourceGenerator"
+                      Version="$(ProGpuPackageVersion)"
+                      PrivateAssets="all" />
+  </ItemGroup>
+</Project>
