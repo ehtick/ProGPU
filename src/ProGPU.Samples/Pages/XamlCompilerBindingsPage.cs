@@ -5,21 +5,12 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Data;
 
 namespace ProGPU.Samples;
 
 public partial class XamlCompilerBindingsPage : Page
 {
     private int _replacementNumber;
-
-    static XamlCompilerBindingsPage()
-    {
-        BindingMemberAccessorRegistry.Register<XamlCompilerBindingItem, string>(
-            nameof(XamlCompilerBindingItem.Title),
-            static item => item.Title,
-            static (item, title) => item.Title = title);
-    }
 
     public XamlCompilerBindingsPage()
     {

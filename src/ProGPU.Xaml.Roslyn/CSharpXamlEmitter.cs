@@ -306,7 +306,9 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
                 SyntaxFactory.Attribute(RoslynTypeSyntaxFactory.CreateGlobalName(
                     "System", "Runtime", "CompilerServices", "ModuleInitializer")))))
             .AddModifiers(SyntaxFactory.Token(SyntaxKind.InternalKeyword), SyntaxFactory.Token(SyntaxKind.StaticKeyword))
-            .WithBody(SyntaxFactory.Block(registration));
+            .WithBody(SyntaxFactory.Block(
+                context.BindingAccessorRegistrations.Concat(
+                    new[] { registration })));
         var declaration = SyntaxFactory.ClassDeclaration(artifact.FactoryTypeName)
             .AddModifiers(SyntaxFactory.Token(SyntaxKind.InternalKeyword), SyntaxFactory.Token(SyntaxKind.StaticKeyword))
             .AddMembers(build, populate, register);
@@ -323,6 +325,27 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
             context.Fields.Count + context.GeneratedMembers.Count + 2);
         members.AddRange(context.Fields);
         members.AddRange(context.GeneratedMembers);
+        if (context.BindingAccessorRegistrations.Count != 0)
+        {
+            members.Add(
+                SyntaxFactory.MethodDeclaration(
+                        SyntaxFactory.PredefinedType(
+                            SyntaxFactory.Token(SyntaxKind.VoidKeyword)),
+                        context.BindingAccessorRegistrationMethodName)
+                    .AddAttributeLists(
+                        SyntaxFactory.AttributeList(
+                            SyntaxFactory.SingletonSeparatedList(
+                                SyntaxFactory.Attribute(
+                                    RoslynTypeSyntaxFactory.CreateGlobalName(
+                                        "System", "Runtime", "CompilerServices",
+                                        "ModuleInitializer")))))
+                    .AddModifiers(
+                        SyntaxFactory.Token(SyntaxKind.InternalKeyword),
+                        SyntaxFactory.Token(SyntaxKind.StaticKeyword))
+                    .WithBody(
+                        SyntaxFactory.Block(
+                            context.BindingAccessorRegistrations)));
+        }
         members.Add(SyntaxFactory.MethodDeclaration(
                 SyntaxFactory.PredefinedType(SyntaxFactory.Token(SyntaxKind.VoidKeyword)),
                 SyntaxFactory.Identifier("InitializeComponent"))
@@ -372,6 +395,8 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
         private readonly List<StatementSyntax> _pendingFieldAssignments = new List<StatementSyntax>();
         private readonly List<Action> _pendingNameReferenceActions = new List<Action>();
         private readonly Dictionary<string, ExpressionSyntax> _nameExpressions = new Dictionary<string, ExpressionSyntax>(StringComparer.Ordinal);
+        private readonly SortedDictionary<string, StatementSyntax> _bindingAccessorRegistrations =
+            new SortedDictionary<string, StatementSyntax>(StringComparer.Ordinal);
         private readonly ExpressionSyntax? _contextExpression;
         private readonly XamlTypeInfo? _contextType;
         private readonly ExpressionSyntax? _deferredLifetimeOwnerExpression;
@@ -409,6 +434,10 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
         public List<FieldDeclarationSyntax> Fields { get; } = new List<FieldDeclarationSyntax>();
         public List<MemberDeclarationSyntax> GeneratedMembers { get; } =
             new List<MemberDeclarationSyntax>();
+        public IReadOnlyCollection<StatementSyntax> BindingAccessorRegistrations =>
+            _bindingAccessorRegistrations.Values;
+        public string BindingAccessorRegistrationMethodName =>
+            "__RegisterXamlBindingAccessors_" + _checksum;
         public bool CanReloadSafely { get; private set; }
         public SyntaxTokenList ClassModifiers { get; private set; }
 
@@ -1005,6 +1034,51 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
                                     "5.2.1.1");
                                 continue;
                             }
+                            if (value is XamlIrBinding binding)
+                            {
+                                if (_framework is IRoslynXamlMarkupExtensionAssignmentProfile ordinaryBindingAssignments &&
+                                    ordinaryBindingAssignments.TryCreateMarkupExtensionAssignment(
+                                        binding.Extension,
+                                        setMember,
+                                        ownerExpression,
+                                        _contextExpression,
+                                        _contextType,
+                                        _lookupRootExpression,
+                                        _deferredLifetimeOwnerExpression,
+                                        out var ordinaryBindingStatement,
+                                        out var bindingUsesDeferredLifetime))
+                                {
+                                    if (bindingUsesDeferredLifetime)
+                                        _hasDeferredLifetimeRegistrations = true;
+                                    RegisterBindingAccessors(binding);
+                                    AddStatement(
+                                        ordinaryBindingStatement,
+                                        operation.SourceSpan,
+                                        operation.StableId,
+                                        setMember.Symbol,
+                                        XamlProjectionKind.MemberAssignment);
+                                }
+                                else if (_framework is IRoslynXamlContextualMarkupExpressionProfile bindingValues &&
+                                         bindingValues.TryCreateMarkupExtensionExpression(
+                                             binding.Extension,
+                                             setMember.ValueType,
+                                             _lookupRootExpression,
+                                             out var bindingValue))
+                                {
+                                    RegisterBindingAccessors(binding);
+                                    EmitSet(ownerExpression, operation, bindingValue);
+                                }
+                                else
+                                {
+                                    AddError(
+                                        "PGXAML3049",
+                                        $"Profile '{_framework.Id}' cannot assign ordinary Binding to " +
+                                        $"'{setMember.DeclaringType.MetadataName}.{setMember.Name}'.",
+                                        operation.SourceSpan,
+                                        "EXT-004");
+                                }
+                                continue;
+                            }
                             if (value is XamlIrObject { Kind: XamlIrObjectKind.InvokeMarkupExtension } markupExtension &&
                                 _framework is IRoslynXamlMarkupExtensionAssignmentProfile markupAssignments &&
                                 markupAssignments.TryCreateMarkupExtensionAssignment(
@@ -1176,6 +1250,7 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
                 compiledBindingOwnerExpression: bindingLifecycle?.RegistrationOwner);
             var rootExpression = nested.EmitDeferredRoot(deferredRoot);
             if (rootExpression == null) return;
+            MergeBindingAccessorRegistrations(nested);
             var bodyStatements = new List<StatementSyntax>();
             if (nested._hasDeferredLifetimeRegistrations)
             {
@@ -1260,6 +1335,58 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
                 return;
             }
             AddStatement(assignment, operation.SourceSpan, operation.StableId, null, XamlProjectionKind.MemberAssignment);
+        }
+
+        private void RegisterBindingAccessors(XamlIrBinding binding)
+        {
+            if (binding.Binding.Accessors.IsEmpty)
+                return;
+            if (_framework is not IRoslynXamlBindingAccessorRegistrationProfile profile)
+            {
+                AddError(
+                    "PGXAML3048",
+                    $"Profile '{_framework.Id}' cannot publish typed ordinary-binding accessors.",
+                    binding.SourceSpan,
+                    "EXT-004");
+                return;
+            }
+            foreach (var accessor in binding.Binding.Accessors)
+            {
+                var key =
+                    accessor.SourceType.ToDisplayString(
+                        SymbolDisplayFormat.FullyQualifiedFormat) +
+                    "\0" +
+                    accessor.Member.MetadataName +
+                    "\0" +
+                    accessor.ValueType.ToDisplayString(
+                        SymbolDisplayFormat.FullyQualifiedFormat);
+                if (_bindingAccessorRegistrations.ContainsKey(key))
+                    continue;
+                if (!profile.TryCreateBindingAccessorRegistration(
+                        accessor,
+                        out var statement))
+                {
+                    AddError(
+                        "PGXAML3048",
+                        $"Profile '{_framework.Id}' rejected typed ordinary-binding accessor " +
+                        $"'{accessor.SourceType.ToDisplayString()}.{accessor.Member.Name}'.",
+                        binding.SourceSpan,
+                        "EXT-004");
+                    continue;
+                }
+                _bindingAccessorRegistrations.Add(key, statement);
+            }
+        }
+
+        private void MergeBindingAccessorRegistrations(EmitContext nested)
+        {
+            foreach (var registration in nested._bindingAccessorRegistrations)
+            {
+                if (!_bindingAccessorRegistrations.ContainsKey(registration.Key))
+                    _bindingAccessorRegistrations.Add(
+                        registration.Key,
+                        registration.Value);
+            }
         }
 
         private static XamlTypeInfo? FindTemplateTargetType(XamlIrObject template)

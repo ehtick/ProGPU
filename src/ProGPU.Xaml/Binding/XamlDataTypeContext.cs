@@ -176,6 +176,14 @@ public sealed class XamlDataTypeContextGraphBuilder
                         symbol?.DataTypeInheritance,
                         items,
                         contexts);
+                else if (child is XamlBoundBinding binding)
+                    VisitObject(
+                        binding.Extension,
+                        memberSources,
+                        lineage,
+                        symbol?.DataTypeInheritance,
+                        items,
+                        contexts);
                 else if (child is XamlBoundCompiledBinding compiled)
                     VisitObject(
                         compiled.Extension,

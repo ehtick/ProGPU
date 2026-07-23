@@ -105,6 +105,19 @@ public sealed class XamlIrCompiledBinding : XamlIrValue
     public XamlIrObject Extension { get; }
 }
 
+public sealed class XamlIrBinding : XamlIrValue
+{
+    public XamlIrBinding(XamlBoundBinding binding, XamlIrObject extension)
+        : base(binding?.SourceSpan ?? default, binding?.StableId ?? 0)
+    {
+        Binding = binding ?? throw new ArgumentNullException(nameof(binding));
+        Extension = extension ?? throw new ArgumentNullException(nameof(extension));
+    }
+
+    public XamlBoundBinding Binding { get; }
+    public XamlIrObject Extension { get; }
+}
+
 public sealed class XamlIrResourceReference : XamlIrValue
 {
     public XamlIrResourceReference(
@@ -288,6 +301,15 @@ public sealed class XamlConstructionLowerer
                         compiledBinding,
                         LowerObject(
                             compiledBinding.Extension,
+                            isRoot: false,
+                            allowTopDown: false,
+                            resourceReferences,
+                            resourceValueTypes,
+                            terminalResourceKeys)),
+                    XamlBoundBinding binding => new XamlIrBinding(
+                        binding,
+                        LowerObject(
+                            binding.Extension,
                             isRoot: false,
                             allowTopDown: false,
                             resourceReferences,
@@ -512,6 +534,8 @@ public sealed class XamlConstructionLowerer
             {
                 if (child is XamlBoundObject childObject)
                     IndexObjects(childObject, result);
+                else if (child is XamlBoundBinding binding)
+                    IndexObjects(binding.Extension, result);
                 else if (child is XamlBoundCompiledBinding compiled)
                     IndexObjects(compiled.Extension, result);
             }
@@ -541,7 +565,7 @@ public sealed class XamlConstructionLowerer
             case Schema.XamlMemberKind.Collection:
             case Schema.XamlMemberKind.Dictionary:
                 if (boundMember.Values.Length == 1 &&
-                    boundMember.Values[0] is XamlBoundObject { IsMarkupExtension: true })
+                    IsMarkupExtensionValue(boundMember.Values[0]))
                     return XamlIrOperationKind.SetMember;
                 if (boundMember.Values.Length == 1 && boundMember.Values[0] is XamlBoundObject { IsRetrieved: true })
                     return XamlIrOperationKind.RetrieveMember;
@@ -553,4 +577,9 @@ public sealed class XamlConstructionLowerer
             default: return member.Symbol.CanWrite ? XamlIrOperationKind.SetMember : XamlIrOperationKind.RetrieveMember;
         }
     }
+
+    private static bool IsMarkupExtensionValue(XamlBoundValue value) =>
+        value is XamlBoundObject { IsMarkupExtension: true } or
+            XamlBoundBinding or
+            XamlBoundCompiledBinding;
 }

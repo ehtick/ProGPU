@@ -6,6 +6,7 @@ using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using ProGPU.Xaml.Binding;
 using ProGPU.Xaml.Parsing;
 using ProGPU.Xaml.Lowering;
 using ProGPU.Xaml.Schema;
@@ -138,6 +139,17 @@ public interface IRoslynXamlDeferredMarkupExtensionLifecycleProfile
         ExpressionSyntax owner,
         ExpressionSyntax root,
         out ImmutableArray<StatementSyntax> statements);
+}
+
+/// <summary>
+/// Optional structured publication of canonical ordinary-binding CLR accessors. The compiler
+/// supplies exact Roslyn symbols; the framework profile owns only its runtime registry call.
+/// </summary>
+public interface IRoslynXamlBindingAccessorRegistrationProfile
+{
+    bool TryCreateBindingAccessorRegistration(
+        XamlBindingMemberAccessor accessor,
+        out StatementSyntax statement);
 }
 
 public sealed class RoslynXamlDeferredMarkupExtensionLifecycleSyntax
@@ -345,7 +357,7 @@ public interface IRoslynXamlMarkupExtensionReceiverProfile
         out StatementSyntax statement);
 }
 
-public sealed class WinUiXamlProfile : IRoslynXamlFrameworkProfile, IRoslynXamlContextualMarkupExpressionProfile, IRoslynXamlObjectExpressionProfile, IRoslynXamlCompiledResourceProfile, IRoslynXamlResourceAssignmentProfile, IRoslynXamlDeferredContentProfile, IRoslynXamlMarkupExtensionAssignmentProfile, IRoslynXamlDeferredMarkupExtensionLifecycleProfile, IRoslynXamlCompiledBindingAssignmentProfile, IRoslynXamlCompiledBindingLifecycleProfile, IRoslynXamlDeferredCompiledBindingLifecycleProfile, IRoslynXamlCompiledEventBindingProfile, IRoslynXamlMarkupExtensionInvocationProfile, IXamlSchemaMetadataProvider, IXamlSyntheticSchemaProvider, IXamlDialectDirectiveProvider, IXamlTextValuePolicy, IXamlDictionaryKeyDirectivePolicy, ProGPU.Xaml.Binding.IXamlCompiledBindingPolicy
+public sealed class WinUiXamlProfile : IRoslynXamlFrameworkProfile, IRoslynXamlContextualMarkupExpressionProfile, IRoslynXamlObjectExpressionProfile, IRoslynXamlCompiledResourceProfile, IRoslynXamlResourceAssignmentProfile, IRoslynXamlDeferredContentProfile, IRoslynXamlMarkupExtensionAssignmentProfile, IRoslynXamlDeferredMarkupExtensionLifecycleProfile, IRoslynXamlBindingAccessorRegistrationProfile, IRoslynXamlCompiledBindingAssignmentProfile, IRoslynXamlCompiledBindingLifecycleProfile, IRoslynXamlDeferredCompiledBindingLifecycleProfile, IRoslynXamlCompiledEventBindingProfile, IRoslynXamlMarkupExtensionInvocationProfile, IXamlSchemaMetadataProvider, IXamlSyntheticSchemaProvider, IXamlDialectDirectiveProvider, IXamlTextValuePolicy, IXamlDictionaryKeyDirectivePolicy, ProGPU.Xaml.Binding.IXamlCompiledBindingPolicy
 {
     private static readonly string[] Extensions = { ".xaml" };
     private static readonly string[] PresentationNamespaces =
@@ -458,7 +470,11 @@ public sealed class WinUiXamlProfile : IRoslynXamlFrameworkProfile, IRoslynXamlC
             resourceReferenceRole: XamlResourceReferenceRole.Static),
         Extension("ThemeResource", allowDefault: true, members: new[] { Member("ResourceKey", "System.Object") },
             resourceReferenceRole: XamlResourceReferenceRole.Dynamic),
-        Extension("Binding", allowDefault: true, members: BindingMembers()),
+        Extension(
+            "Binding",
+            allowDefault: true,
+            members: BindingMembers(),
+            expressionRole: XamlExpressionRole.Binding),
         new XamlSyntheticTypeDefinition(
             XamlNamespaces.Language2006,
             "Bind",
@@ -488,7 +504,8 @@ public sealed class WinUiXamlProfile : IRoslynXamlFrameworkProfile, IRoslynXamlC
         string name,
         bool allowDefault = false,
         IReadOnlyList<XamlSyntheticMemberDefinition>? members = null,
-        XamlResourceReferenceRole resourceReferenceRole = XamlResourceReferenceRole.None) => new(
+        XamlResourceReferenceRole resourceReferenceRole = XamlResourceReferenceRole.None,
+        XamlExpressionRole expressionRole = XamlExpressionRole.None) => new(
         XamlNamespaces.Presentation2006,
         name,
         isMarkupExtension: true,
@@ -497,7 +514,8 @@ public sealed class WinUiXamlProfile : IRoslynXamlFrameworkProfile, IRoslynXamlC
             ? new IReadOnlyList<string>[] { Array.Empty<string>(), new[] { "System.String" } }
             : new IReadOnlyList<string>[] { new[] { "System.String" } },
         members: members,
-        resourceReferenceRole: resourceReferenceRole);
+        resourceReferenceRole: resourceReferenceRole,
+        expressionRole: expressionRole);
 
     private static XamlSyntheticMemberDefinition Member(string name, string type = "System.Object") => new(name, type);
 
@@ -1264,6 +1282,76 @@ public sealed class WinUiXamlProfile : IRoslynXamlFrameworkProfile, IRoslynXamlC
                 IdentifierExpression(targetIdentifier),
                 typedContext,
                 IdentifierExpression(sourceIdentifier))));
+        return true;
+    }
+
+    public bool TryCreateBindingAccessorRegistration(
+        XamlBindingMemberAccessor accessor,
+        out StatementSyntax statement)
+    {
+        var source = SyntaxFactory.IdentifierName("source");
+        var value = SyntaxFactory.IdentifierName("value");
+        var member = SyntaxFactory.MemberAccessExpression(
+            SyntaxKind.SimpleMemberAccessExpression,
+            source,
+            SyntaxFactory.IdentifierName(EscapeIdentifier(accessor.Member.Name)));
+        var getter = SyntaxFactory.ParenthesizedLambdaExpression()
+            .WithModifiers(
+                SyntaxFactory.TokenList(
+                    SyntaxFactory.Token(SyntaxKind.StaticKeyword)))
+            .WithParameterList(
+                SyntaxFactory.ParameterList(
+                    SyntaxFactory.SingletonSeparatedList(
+                        SyntaxFactory.Parameter(
+                            SyntaxFactory.Identifier("source")))))
+            .WithExpressionBody(member);
+        ExpressionSyntax setter = SyntaxFactory.LiteralExpression(
+            SyntaxKind.NullLiteralExpression);
+        if (accessor.CanWrite)
+        {
+            setter = SyntaxFactory.ParenthesizedLambdaExpression()
+                .WithModifiers(
+                    SyntaxFactory.TokenList(
+                        SyntaxFactory.Token(SyntaxKind.StaticKeyword)))
+                .WithParameterList(
+                    SyntaxFactory.ParameterList(
+                        SyntaxFactory.SeparatedList(
+                            new[]
+                            {
+                                SyntaxFactory.Parameter(
+                                    SyntaxFactory.Identifier("source")),
+                                SyntaxFactory.Parameter(
+                                    SyntaxFactory.Identifier("value"))
+                            })))
+                .WithExpressionBody(
+                    SyntaxFactory.AssignmentExpression(
+                        SyntaxKind.SimpleAssignmentExpression,
+                        member,
+                        value));
+        }
+        var register = SyntaxFactory.MemberAccessExpression(
+            SyntaxKind.SimpleMemberAccessExpression,
+            (ExpressionSyntax)RoslynTypeSyntaxFactory.CreateGlobalName(
+                "Microsoft", "UI", "Xaml", "Data",
+                "BindingMemberAccessorRegistry"),
+            SyntaxFactory.GenericName("Register")
+                .WithTypeArgumentList(
+                    SyntaxFactory.TypeArgumentList(
+                        SyntaxFactory.SeparatedList(
+                            new[]
+                            {
+                                RoslynTypeSyntaxFactory.Create(
+                                    accessor.SourceType),
+                                RoslynTypeSyntaxFactory.Create(
+                                    accessor.ValueType)
+                            }))));
+        statement = SyntaxFactory.ExpressionStatement(
+            SyntaxFactory.InvocationExpression(register)
+                .WithArgumentList(
+                    Arguments(
+                        StringLiteral(accessor.Member.Name),
+                        getter,
+                        setter)));
         return true;
     }
 
@@ -2067,7 +2155,16 @@ public sealed class WinUiXamlProfile : IRoslynXamlFrameworkProfile, IRoslynXamlC
             return TryCreateRelativeSourceExpression(extension, out expression);
         if (string.Equals(name, "Binding", StringComparison.Ordinal) ||
             string.Equals(name, "BindingExtension", StringComparison.Ordinal))
-            return TryCreateBindingExpression(extension, lookupRoot, out expression);
+        {
+            if (CanStoreBindingDescriptor(targetType))
+                return TryCreateBindingExpression(
+                    extension,
+                    lookupRoot,
+                    out expression);
+            expression = SyntaxFactory.LiteralExpression(
+                SyntaxKind.NullLiteralExpression);
+            return false;
+        }
         if (string.Equals(name, "TemplateBinding", StringComparison.Ordinal) ||
             string.Equals(name, "TemplateBindingExtension", StringComparison.Ordinal))
         {
@@ -2172,6 +2269,21 @@ public sealed class WinUiXamlProfile : IRoslynXamlFrameworkProfile, IRoslynXamlC
 
         expression = SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression);
         return false;
+    }
+
+    private static bool CanStoreBindingDescriptor(XamlTypeInfo targetType)
+    {
+        if (targetType.Symbol.SpecialType == SpecialType.System_Object)
+            return true;
+        var metadataName = targetType.MetadataName;
+        return string.Equals(
+                   metadataName,
+                   "Microsoft.UI.Xaml.Data.Binding",
+                   StringComparison.Ordinal) ||
+               string.Equals(
+                   metadataName,
+                   "Microsoft.UI.Xaml.Data.BindingBase",
+                   StringComparison.Ordinal);
     }
 
     private static bool TryCreateBindingExpression(

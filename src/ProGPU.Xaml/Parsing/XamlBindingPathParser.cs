@@ -161,8 +161,8 @@ public sealed class XamlBindingPathSyntax
 }
 
 /// <summary>
-/// Allocation-bounded parser for the common compiled-binding expression language. The lexer is
-/// lossless and framework-neutral; semantic consumers receive immutable member and constant
+/// Allocation-bounded parser for the shared binding expression language. The lexer is lossless
+/// and framework-neutral; semantic consumers receive immutable member and constant
 /// indexer steps. Casts, attached members, and function calls share this syntax family rather
 /// than introducing framework parsers.
 /// </summary>

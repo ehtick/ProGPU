@@ -1116,6 +1116,12 @@ namespace Microsoft.UI.Xaml.Data {
     public string? Path { get; set; }
     public BindingMode Mode { get; set; }
   }
+  public static class BindingMemberAccessorRegistry {
+    public static void Register<TSource, TValue>(
+      string memberName,
+      System.Func<TSource, TValue> getter,
+      System.Action<TSource, TValue>? setter = null) { }
+  }
   public sealed class TestBindingLifetime :
       Microsoft.UI.Xaml.Markup.IXamlTemplateLifetime {
     public void Initialize() { }
@@ -1297,6 +1303,28 @@ namespace Demo {
         Assert.Equal(
             "__templateLifetime",
             ordinaryAttach.ArgumentList.Arguments[1].Expression.ToString());
+        var registration = Assert.Single(
+            root.DescendantNodes().OfType<
+                Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax>(),
+            invocation => invocation.Expression.ToString().StartsWith(
+                "global::Microsoft.UI.Xaml.Data.BindingMemberAccessorRegistry.Register",
+                StringComparison.Ordinal));
+        Assert.Contains(
+            "Register<global::Demo.Item, string>",
+            registration.Expression.ToString(),
+            StringComparison.Ordinal);
+        Assert.Equal("\"Title\"", registration.ArgumentList.Arguments[0].ToString());
+        var registrationMethod = Assert.Single(
+            root.DescendantNodes().OfType<
+                Microsoft.CodeAnalysis.CSharp.Syntax.MethodDeclarationSyntax>(),
+            method => method.Identifier.ValueText.StartsWith(
+                "__RegisterXamlBindingAccessors_",
+                StringComparison.Ordinal));
+        Assert.Contains(
+            registrationMethod.AttributeLists.SelectMany(list => list.Attributes),
+            attribute => attribute.Name.ToString().EndsWith(
+                "ModuleInitializer",
+                StringComparison.Ordinal));
         Assert.True(ordinaryBegin.SpanStart < ordinarySet.SpanStart);
         Assert.True(ordinarySet.SpanStart < ordinaryAttach.SpanStart);
         Assert.True(begin.SpanStart < setBinding.SpanStart);

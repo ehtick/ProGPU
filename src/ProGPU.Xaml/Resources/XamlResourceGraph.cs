@@ -371,6 +371,7 @@ public sealed class XamlResourceGraphBuilder
                 var childObject = child switch
                 {
                     XamlBoundObject direct => direct,
+                    XamlBoundBinding binding => binding.Extension,
                     XamlBoundCompiledBinding compiled => compiled.Extension,
                     _ => null
                 };

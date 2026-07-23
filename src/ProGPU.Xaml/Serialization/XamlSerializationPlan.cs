@@ -231,8 +231,19 @@ public sealed class XamlSerializationPlanner
                     : null,
                 member?.ValueSerializer ?? member?.ValueType.ValueSerializer));
 
-            foreach (var child in source.Values.OfType<XamlBoundObject>())
-                BuildObject(child, options, objects, graphIssues);
+            foreach (var child in source.Values)
+            {
+                var childObject = child switch
+                {
+                    XamlBoundObject direct => direct,
+                    XamlBoundBinding binding => binding.Extension,
+                    XamlBoundCompiledBinding compiledBinding =>
+                        compiledBinding.Extension,
+                    _ => null
+                };
+                if (childObject != null)
+                    BuildObject(childObject, options, objects, graphIssues);
+            }
         }
 
         var plan = new XamlObjectSerializationPlan(

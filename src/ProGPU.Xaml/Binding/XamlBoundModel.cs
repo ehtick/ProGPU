@@ -4,6 +4,7 @@ using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Text;
 using ProGPU.Xaml.Infoset;
+using ProGPU.Xaml.Parsing;
 using ProGPU.Xaml.Schema;
 using ProGPU.Xaml.Serialization;
 
@@ -315,6 +316,63 @@ public sealed class XamlCompiledBindingFunction
     public ImmutableArray<XamlCompiledBindingPathSegment> OwnerPathSegments { get; }
     public ImmutableArray<XamlCompiledBindingFunctionArgument> Arguments { get; }
     public bool IsStatic => Method.IsStatic;
+}
+
+/// <summary>
+/// One canonical CLR member required by a typed ordinary-binding path. Unlike compiled-binding
+/// executable segments, this descriptor authorizes publication into a framework accessor
+/// registry while ordinary binding retains its runtime path semantics.
+/// </summary>
+public sealed class XamlBindingMemberAccessor
+{
+    public XamlBindingMemberAccessor(
+        ISymbol member,
+        ITypeSymbol sourceType,
+        ITypeSymbol valueType,
+        bool canWrite)
+    {
+        Member = member ?? throw new ArgumentNullException(nameof(member));
+        SourceType = sourceType ?? throw new ArgumentNullException(nameof(sourceType));
+        ValueType = valueType ?? throw new ArgumentNullException(nameof(valueType));
+        CanWrite = canWrite;
+    }
+
+    public ISymbol Member { get; }
+    public ITypeSymbol SourceType { get; }
+    public ITypeSymbol ValueType { get; }
+    public bool CanWrite { get; }
+}
+
+/// <summary>
+/// Canonical ordinary-binding operation. The original extension remains the runtime descriptor;
+/// optional accessor evidence is emitted only when a lexical or explicit source type is known.
+/// </summary>
+public sealed class XamlBoundBinding : XamlBoundValue
+{
+    public XamlBoundBinding(
+        XamlBoundObject extension,
+        XamlTypeInfo? sourceType,
+        string path,
+        XamlBindingPathSyntax? pathSyntax,
+        ImmutableArray<XamlBindingMemberAccessor> accessors,
+        TextSpan sourceSpan,
+        ulong stableId)
+        : base(sourceSpan, stableId)
+    {
+        Extension = extension ?? throw new ArgumentNullException(nameof(extension));
+        SourceType = sourceType;
+        Path = path ?? string.Empty;
+        PathSyntax = pathSyntax;
+        Accessors = accessors.IsDefault
+            ? ImmutableArray<XamlBindingMemberAccessor>.Empty
+            : accessors;
+    }
+
+    public XamlBoundObject Extension { get; }
+    public XamlTypeInfo? SourceType { get; }
+    public string Path { get; }
+    public XamlBindingPathSyntax? PathSyntax { get; }
+    public ImmutableArray<XamlBindingMemberAccessor> Accessors { get; }
 }
 
 /// <summary>

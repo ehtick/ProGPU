@@ -164,6 +164,8 @@ public sealed class XamlAmbientContextGraphBuilder
                 SetContext(child.StableId, ownerContext, childBoundaries, contexts);
                 if (child is XamlBoundObject childObject)
                     VisitObject(childObject, ownerContext, childBoundaries, contexts);
+                else if (child is XamlBoundBinding binding)
+                    VisitObject(binding.Extension, ownerContext, childBoundaries, contexts);
                 else if (child is XamlBoundCompiledBinding compiled)
                     VisitObject(compiled.Extension, ownerContext, childBoundaries, contexts);
             }

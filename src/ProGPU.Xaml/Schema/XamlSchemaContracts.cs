@@ -26,7 +26,8 @@ public enum XamlMemberKind
 public enum XamlExpressionRole
 {
     None,
-    CompiledBinding
+    CompiledBinding,
+    Binding
 }
 
 public sealed class XamlEnumValueInfo

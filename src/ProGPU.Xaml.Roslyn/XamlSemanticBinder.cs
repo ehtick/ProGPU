@@ -38,6 +38,7 @@ public sealed class XamlSemanticBinder
     private XamlCompiledBindingMode _activeCompiledBindingMode;
     private XamlTypeInfo? _activeCompiledBindingSourceType;
     private XamlCompiledBindingSourceKind _activeCompiledBindingSourceKind;
+    private XamlTypeInfo? _activeLexicalDataType;
 
     public XamlBoundDocument Bind(
         XamlInfosetDocument document,
@@ -57,6 +58,7 @@ public sealed class XamlSemanticBinder
             XamlCompiledBindingMode.OneTime;
         _activeCompiledBindingSourceType = _rootClassType;
         _activeCompiledBindingSourceKind = XamlCompiledBindingSourceKind.Root;
+        _activeLexicalDataType = null;
 
         XamlBoundObject? root = null;
         if (document.Root != null && typeSystem is IXamlSymbolShapeConflictProvider conflictProvider)
@@ -124,6 +126,7 @@ public sealed class XamlSemanticBinder
         var previousMode = _activeCompiledBindingMode;
         var previousSourceType = _activeCompiledBindingSourceType;
         var previousSourceKind = _activeCompiledBindingSourceKind;
+        var previousDataType = _activeLexicalDataType;
         var policy = _typeSystem as IXamlCompiledBindingPolicy;
         if (!string.IsNullOrEmpty(policy?.DefaultCompiledBindingModeDirective))
         {
@@ -165,11 +168,12 @@ public sealed class XamlSemanticBinder
                 if (resolved == null)
                     Error(
                         "PGXAML2120",
-                        $"Compiled-binding data type '{text}' could not be resolved.",
+                        $"Binding data type '{text}' could not be resolved.",
                         directive!.SourceSpan,
                         "EXT-004");
                 else
                 {
+                    _activeLexicalDataType = resolved;
                     _activeCompiledBindingSourceType = resolved;
                     _activeCompiledBindingSourceKind =
                         XamlCompiledBindingSourceKind.Context;
@@ -185,6 +189,7 @@ public sealed class XamlSemanticBinder
             _activeCompiledBindingMode = previousMode;
             _activeCompiledBindingSourceType = previousSourceType;
             _activeCompiledBindingSourceKind = previousSourceKind;
+            _activeLexicalDataType = previousDataType;
         }
     }
 
@@ -668,12 +673,15 @@ public sealed class XamlSemanticBinder
             if (child is XamlInfosetObject childObject)
             {
                 var boundObject = BindObject(childObject);
-                values.Add(boundObject.Type.Symbol?.ExpressionRole == XamlExpressionRole.CompiledBinding
-                    ? BindCompiledBinding(
+                values.Add(boundObject.Type.Symbol?.ExpressionRole switch
+                {
+                    XamlExpressionRole.Binding => BindBinding(boundObject),
+                    XamlExpressionRole.CompiledBinding => BindCompiledBinding(
                         boundObject,
                         memberReference,
-                        childObject.NamespaceMappings)
-                    : boundObject);
+                        childObject.NamespaceMappings),
+                    _ => boundObject
+                });
             }
             else
             {
@@ -872,6 +880,97 @@ public sealed class XamlSemanticBinder
             value.StableId);
     }
 
+    private XamlBoundValue BindBinding(XamlBoundObject extension)
+    {
+        var path = GetBindingText(extension, "Path") ??
+                   GetBindingPositionalText(extension) ??
+                   string.Empty;
+        path = path.Trim();
+        var sourceType = _activeLexicalDataType;
+        var syntax = path.Length == 0 || path == "."
+            ? null
+            : _bindingPathParser.Parse(path);
+        if (sourceType == null || syntax == null)
+        {
+            return new XamlBoundBinding(
+                extension,
+                sourceType,
+                path,
+                syntax,
+                ImmutableArray<XamlBindingMemberAccessor>.Empty,
+                extension.SourceSpan,
+                extension.StableId);
+        }
+
+        if (syntax.HasErrors ||
+            syntax.Steps.Any(static step =>
+                step.Kind != XamlBindingPathStepKind.Member))
+        {
+            Error(
+                "PGXAML2130",
+                $"Typed ordinary-binding path '{path}' currently requires a dotted CLR member path.",
+                extension.SourceSpan,
+                "EXT-004");
+            return new XamlBoundBinding(
+                extension,
+                sourceType,
+                path,
+                syntax,
+                ImmutableArray<XamlBindingMemberAccessor>.Empty,
+                extension.SourceSpan,
+                extension.StableId);
+        }
+
+        var accessors = ImmutableArray.CreateBuilder<XamlBindingMemberAccessor>(
+            syntax.Steps.Length);
+        var currentType = sourceType.Symbol;
+        for (var index = 0; index < syntax.Steps.Length; index++)
+        {
+            var memberName = syntax.Steps[index].ValueToken.Text;
+            var member = ResolveCompiledBindingMember(currentType, memberName);
+            if (member == null)
+            {
+                Error(
+                    "PGXAML2131",
+                    $"Typed ordinary-binding member '{memberName}' was not found uniquely on " +
+                    $"'{currentType.ToDisplayString()}'.",
+                    extension.SourceSpan,
+                    "EXT-004");
+                break;
+            }
+
+            ITypeSymbol valueType;
+            bool canWrite;
+            if (member is IPropertySymbol property)
+            {
+                valueType = property.Type;
+                canWrite = property.SetMethod is { IsInitOnly: false } &&
+                           IsAccessibleFromGeneratedClass(property.SetMethod);
+            }
+            else
+            {
+                var field = (IFieldSymbol)member;
+                valueType = field.Type;
+                canWrite = !field.IsReadOnly && !field.IsConst;
+            }
+            accessors.Add(new XamlBindingMemberAccessor(
+                member,
+                currentType,
+                valueType,
+                canWrite));
+            currentType = valueType;
+        }
+
+        return new XamlBoundBinding(
+            extension,
+            sourceType,
+            path,
+            syntax,
+            accessors.ToImmutable(),
+            extension.SourceSpan,
+            extension.StableId);
+    }
+
     private XamlBoundValue BindCompiledBinding(
         XamlBoundObject extension,
         XamlBoundMemberReference targetMember,
@@ -892,8 +991,8 @@ public sealed class XamlSemanticBinder
                 targetMember,
                 namespaceMappings);
 
-        var path = GetCompiledBindingText(extension, "Path") ??
-                   GetCompiledBindingPositionalText(extension) ??
+        var path = GetBindingText(extension, "Path") ??
+                   GetBindingPositionalText(extension) ??
                    string.Empty;
         path = path.Trim();
         var syntax = path.Length == 0 ? null : _bindingPathParser.Parse(path);
@@ -1007,7 +1106,7 @@ public sealed class XamlSemanticBinder
         var mode = ParseCompiledBindingMode(extension);
         if (mode == XamlCompiledBindingMode.Default)
             mode = _activeCompiledBindingMode;
-        var bindBackName = GetCompiledBindingText(extension, "BindBack")?.Trim();
+        var bindBackName = GetBindingText(extension, "BindBack")?.Trim();
         var bindBack = string.IsNullOrEmpty(bindBackName)
             ? null
             : ResolveBindBackMethod(
@@ -1050,8 +1149,8 @@ public sealed class XamlSemanticBinder
         XamlBoundMemberReference targetMember,
         ImmutableArray<XamlNamespaceMapping> namespaceMappings)
     {
-        var path = GetCompiledBindingText(extension, "Path") ??
-                   GetCompiledBindingPositionalText(extension) ??
+        var path = GetBindingText(extension, "Path") ??
+                   GetBindingPositionalText(extension) ??
                    string.Empty;
         path = path.Trim();
         var syntax = _bindingPathParser.Parse(path);
@@ -1113,8 +1212,8 @@ public sealed class XamlSemanticBinder
                 extension.SourceSpan,
                 "EXT-004");
         }
-        if (GetCompiledBindingText(extension, "Mode") != null ||
-            GetCompiledBindingText(extension, "BindBack") != null)
+        if (GetBindingText(extension, "Mode") != null ||
+            GetBindingText(extension, "BindBack") != null)
         {
             Error(
                 "PGXAML2119",
@@ -1175,13 +1274,13 @@ public sealed class XamlSemanticBinder
         return candidate;
     }
 
-    private static string? GetCompiledBindingText(XamlBoundObject extension, string memberName) =>
+    private static string? GetBindingText(XamlBoundObject extension, string memberName) =>
         extension.Members.FirstOrDefault(member =>
                 string.Equals(member.Member.Symbol?.Name, memberName, StringComparison.Ordinal) ||
                 string.Equals(member.Member.RequestedName.LocalName, memberName, StringComparison.Ordinal))?
             .Values.OfType<XamlBoundText>().FirstOrDefault()?.Text;
 
-    private static string? GetCompiledBindingPositionalText(XamlBoundObject extension) =>
+    private static string? GetBindingPositionalText(XamlBoundObject extension) =>
         extension.Members.FirstOrDefault(member =>
                 member.Member.Kind == XamlBoundReferenceKind.Directive &&
                 string.Equals(
@@ -1192,7 +1291,7 @@ public sealed class XamlSemanticBinder
 
     private XamlCompiledBindingMode ParseCompiledBindingMode(XamlBoundObject extension)
     {
-        var text = GetCompiledBindingText(extension, "Mode")?.Trim();
+        var text = GetBindingText(extension, "Mode")?.Trim();
         if (string.IsNullOrEmpty(text)) return XamlCompiledBindingMode.Default;
         if (Enum.TryParse<XamlCompiledBindingMode>(text, ignoreCase: false, out var mode) &&
             mode != XamlCompiledBindingMode.Default)
@@ -1213,11 +1312,16 @@ public sealed class XamlSemanticBinder
         {
             foreach (var candidate in current.GetMembers(memberName))
             {
-                if (candidate is IPropertySymbol { IsIndexer: false, GetMethod: not null } property)
+                if (candidate is IPropertySymbol
+                    {
+                        IsStatic: false,
+                        IsIndexer: false,
+                        GetMethod: not null
+                    } property)
                 {
                     if (!IsAccessibleFromGeneratedClass(property.GetMethod)) continue;
                 }
-                else if (candidate is IFieldSymbol field)
+                else if (candidate is IFieldSymbol { IsStatic: false } field)
                 {
                     if (!IsAccessibleFromGeneratedClass(field)) continue;
                 }
