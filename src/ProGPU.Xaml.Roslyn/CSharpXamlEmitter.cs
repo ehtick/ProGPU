@@ -4,6 +4,7 @@ using System.Collections.Immutable;
 using System.Globalization;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -42,11 +43,20 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
         IXamlTypeSystem typeSystem,
         IXamlFrameworkProfile framework,
         XamlCompilerOptions options)
+        => Emit(document, typeSystem, framework, options, CancellationToken.None);
+
+    public XamlCompilationResult Emit(
+        XamlDocumentSyntax document,
+        IXamlTypeSystem typeSystem,
+        IXamlFrameworkProfile framework,
+        XamlCompilerOptions options,
+        CancellationToken cancellationToken)
     {
         if (document == null) throw new ArgumentNullException(nameof(document));
         if (typeSystem == null) throw new ArgumentNullException(nameof(typeSystem));
         if (framework == null) throw new ArgumentNullException(nameof(framework));
         if (options == null) throw new ArgumentNullException(nameof(options));
+        cancellationToken.ThrowIfCancellationRequested();
 
         if (framework is not IRoslynXamlFrameworkProfile roslynFramework)
         {
@@ -62,8 +72,9 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
         var mode = options.Strict ? XamlParseMode.Strict : XamlParseMode.Recovering;
         var infoset = new XamlInfosetConverter().Convert(
             document,
-            new XamlInfosetConversionOptions { Mode = mode });
-        return Emit(infoset, typeSystem, framework, options);
+            new XamlInfosetConversionOptions { Mode = mode },
+            cancellationToken);
+        return Emit(infoset, typeSystem, framework, options, cancellationToken);
     }
 
     public XamlCompilationResult Emit(
@@ -71,11 +82,20 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
         IXamlTypeSystem typeSystem,
         IXamlFrameworkProfile framework,
         XamlCompilerOptions options)
+        => Emit(infoset, typeSystem, framework, options, CancellationToken.None);
+
+    public XamlCompilationResult Emit(
+        XamlInfosetDocument infoset,
+        IXamlTypeSystem typeSystem,
+        IXamlFrameworkProfile framework,
+        XamlCompilerOptions options,
+        CancellationToken cancellationToken)
     {
         if (infoset == null) throw new ArgumentNullException(nameof(infoset));
         if (typeSystem == null) throw new ArgumentNullException(nameof(typeSystem));
         if (framework == null) throw new ArgumentNullException(nameof(framework));
         if (options == null) throw new ArgumentNullException(nameof(options));
+        cancellationToken.ThrowIfCancellationRequested();
         var document = infoset.Syntax;
         if (framework is not IRoslynXamlFrameworkProfile roslynFramework)
         {
@@ -131,37 +151,65 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
         var bound = binder.Bind(
             infoset,
             typeSystem,
-            new XamlSemanticBindingOptions { Strict = options.Strict });
+            new XamlSemanticBindingOptions { Strict = options.Strict },
+            cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         var resourceGraph = new XamlResourceGraphBuilder().Build(
             bound,
             options.ResourceDependencies,
             options.StaticResourceForwardReferenceMode ==
             XamlStaticResourceForwardReferenceMode.Reorder);
+        cancellationToken.ThrowIfCancellationRequested();
         bound = binder.EnrichResourceBindingSources(
             bound,
             resourceGraph,
             typeSystem,
-            new XamlSemanticBindingOptions { Strict = options.Strict });
+            new XamlSemanticBindingOptions { Strict = options.Strict },
+            cancellationToken);
         resourceGraph = resourceGraph.WithDocument(bound);
+        cancellationToken.ThrowIfCancellationRequested();
         var program = new XamlConstructionLowerer().Lower(bound, resourceGraph);
-        return EmitProgramCore(program, roslynFramework, options, buildMetadata);
+        return EmitProgramCore(
+            program,
+            roslynFramework,
+            options,
+            buildMetadata,
+            cancellationToken);
     }
 
     public XamlCompilationResult EmitProgram(
         XamlConstructionProgram program,
         IRoslynXamlFrameworkProfile framework,
         XamlCompilerOptions options)
-        => EmitProgramCore(program, framework, options, buildMetadata: null);
+        => EmitProgram(
+            program,
+            framework,
+            options,
+            CancellationToken.None);
+
+    public XamlCompilationResult EmitProgram(
+        XamlConstructionProgram program,
+        IRoslynXamlFrameworkProfile framework,
+        XamlCompilerOptions options,
+        CancellationToken cancellationToken)
+        => EmitProgramCore(
+            program,
+            framework,
+            options,
+            buildMetadata: null,
+            cancellationToken);
 
     private XamlCompilationResult EmitProgramCore(
         XamlConstructionProgram program,
         IRoslynXamlFrameworkProfile framework,
         XamlCompilerOptions options,
-        XamlDocumentBuildMetadata? buildMetadata)
+        XamlDocumentBuildMetadata? buildMetadata,
+        CancellationToken cancellationToken)
     {
         if (program == null) throw new ArgumentNullException(nameof(program));
         if (framework == null) throw new ArgumentNullException(nameof(framework));
         if (options == null) throw new ArgumentNullException(nameof(options));
+        cancellationToken.ThrowIfCancellationRequested();
 
         var document = program.BoundDocument.Infoset.Syntax;
         var diagnostics = new List<Diagnostic>(program.Diagnostics);
@@ -180,7 +228,8 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
                 framework,
                 options,
                 diagnostics,
-                buildMetadata);
+                buildMetadata,
+                cancellationToken);
         }
         className = !string.IsNullOrWhiteSpace(buildMetadata?.EffectiveClassName)
             ? buildMetadata!.EffectiveClassName!
@@ -195,7 +244,13 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
             return new XamlCompilationResult(document, sources, diagnostics, buildMetadata);
         }
 
-        var context = new EmitContext(program, framework, _extensions, options, diagnostics);
+        var context = new EmitContext(
+            program,
+            framework,
+            _extensions,
+            options,
+            diagnostics,
+            cancellationToken: cancellationToken);
         context.EmitExistingRoot(program.Root, SyntaxFactory.ThisExpression());
         var unformattedUnit = BuildCompilationUnit(namespaceName, typeName, context)
             .WithLeadingTrivia(
@@ -221,7 +276,8 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
         IRoslynXamlFrameworkProfile framework,
         XamlCompilerOptions options,
         List<Diagnostic> diagnostics,
-        XamlDocumentBuildMetadata? buildMetadata)
+        XamlDocumentBuildMetadata? buildMetadata,
+        CancellationToken cancellationToken)
     {
         var document = program.BoundDocument.Infoset.Syntax;
         var sources = new List<XamlGeneratedSource>();
@@ -248,7 +304,8 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
             _extensions,
             options,
             diagnostics,
-            isClassBacked: false);
+            isClassBacked: false,
+            cancellationToken: cancellationToken);
         context.EmitExistingRoot(root, SyntaxFactory.IdentifierName("target"));
         if ((framework.Capabilities & XamlFrameworkCapabilities.Resources) == 0 ||
             framework is not IRoslynXamlCompiledResourceProfile resourceFramework ||
@@ -415,6 +472,7 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
         private readonly XamlConstructionProgram _program;
         private readonly IRoslynXamlFrameworkProfile _framework;
         private readonly RoslynXamlExtensionHost _extensions;
+        private readonly CancellationToken _cancellationToken;
         private readonly List<Diagnostic> _diagnostics;
         private readonly string _checksum;
         private readonly bool _isClassBacked;
@@ -442,11 +500,13 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
             ExpressionSyntax? contextExpression = null,
             XamlTypeInfo? contextType = null,
             ExpressionSyntax? deferredLifetimeOwnerExpression = null,
-            ExpressionSyntax? compiledBindingOwnerExpression = null)
+            ExpressionSyntax? compiledBindingOwnerExpression = null,
+            CancellationToken cancellationToken = default)
         {
             _program = program;
             _framework = framework;
             _extensions = extensions;
+            _cancellationToken = cancellationToken;
             Options = options;
             _diagnostics = diagnostics;
             _checksum = ToHex(program.BoundDocument.Infoset.SourceText.GetChecksum());
@@ -652,7 +712,8 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
                         _lookupRootExpression,
                         targetObject,
                         targetMember,
-                        Options.ResourceUri));
+                        Options.ResourceUri,
+                        _cancellationToken));
                 if (extensionResolution.Kind == RoslynXamlExtensionResolutionKind.Handled)
                 {
                     return AnnotateExpression(
@@ -1387,7 +1448,8 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
                 contextExpression: templateContext,
                 contextType: contextType,
                 deferredLifetimeOwnerExpression: markupLifecycle?.RegistrationOwner,
-                compiledBindingOwnerExpression: bindingLifecycle?.RegistrationOwner);
+                compiledBindingOwnerExpression: bindingLifecycle?.RegistrationOwner,
+                cancellationToken: _cancellationToken);
             var rootExpression = nested.EmitDeferredRoot(deferredRoot);
             if (rootExpression == null) return;
             MergeBindingAccessorRegistrations(nested);

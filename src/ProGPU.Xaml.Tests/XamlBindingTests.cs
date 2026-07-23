@@ -9056,6 +9056,12 @@ namespace Demo {
             tree.GetRoot().DescendantTokens(),
             token => token.IsKind(SyntaxKind.StringLiteralToken) &&
                      token.ValueText == "plugin-result");
+        Assert.Contains(
+            XamlProjectionMap.Read(tree),
+            entry =>
+                entry.Kind == XamlProjectionKind.Construction &&
+                entry.GeneratedNode.AsNode() is LiteralExpressionSyntax literal &&
+                literal.Token.ValueText == "plugin-result");
         Assert.DoesNotContain(
             compilation.AddSyntaxTrees(tree).GetDiagnostics(),
             diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
@@ -9172,6 +9178,92 @@ namespace Demo {
             new XamlCompilerOptions());
 
         Assert.Contains(failure.Diagnostics, diagnostic => diagnostic.Id == "PGXAML3051");
+
+        var nullHost = RoslynXamlExtensionHost.Create(
+            new IRoslynXamlExtension[]
+            {
+                new TestMarkupExpressionExtension(
+                    "test.null",
+                    20,
+                    "unused",
+                    returnNull: true)
+            });
+        var nullResult = new CSharpXamlEmitter(nullHost).Emit(
+            Convert(xaml),
+            new RoslynXamlTypeSystem(compilation, profile),
+            profile,
+            new XamlCompilerOptions());
+
+        Assert.Contains(nullResult.Diagnostics, diagnostic => diagnostic.Id == "PGXAML3051");
+    }
+
+    [Fact]
+    public void RoslynExtensionHostPreservesFallbackAndPropagatesCancellation()
+    {
+        const string xaml = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:local="using:Demo"
+      x:Class="Demo.MainPage">
+  <TextBlock Text="{local:Upper Value=Customer.Name}" />
+</Page>
+""";
+        var compilation = CreateCompilation();
+        var profile = new WinUiXamlProfile();
+        var fallbackHost = RoslynXamlExtensionHost.Create(
+            new IRoslynXamlExtension[] { new NeverHandlingRoslynExtension() });
+
+        var fallback = new CSharpXamlEmitter(fallbackHost).Emit(
+            Convert(xaml),
+            new RoslynXamlTypeSystem(compilation, profile),
+            profile,
+            new XamlCompilerOptions());
+
+        Assert.DoesNotContain(
+            fallback.Diagnostics,
+            diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        Assert.DoesNotContain(
+            compilation.AddSyntaxTrees(Assert.Single(fallback.Sources).GeneratedSyntaxTree!)
+                .GetDiagnostics(),
+            diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+
+        using var cancellationSource = new CancellationTokenSource();
+        var observingHost = RoslynXamlExtensionHost.Create(
+            new IRoslynXamlExtension[]
+            {
+                new TestMarkupExpressionExtension(
+                    "test.observing",
+                    20,
+                    "observed",
+                    expectedCancellationToken: cancellationSource.Token)
+            });
+        var observed = new CSharpXamlEmitter(observingHost).Emit(
+            Convert(xaml),
+            new RoslynXamlTypeSystem(compilation, profile),
+            profile,
+            new XamlCompilerOptions(),
+            cancellationSource.Token);
+
+        Assert.DoesNotContain(
+            observed.Diagnostics,
+            diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+
+        var cancellationHost = RoslynXamlExtensionHost.Create(
+            new IRoslynXamlExtension[]
+            {
+                new TestMarkupExpressionExtension(
+                    "test.cancellation",
+                    20,
+                    "unused",
+                    cancelOnInvoke: true)
+            });
+
+        Assert.Throws<OperationCanceledException>(() =>
+            new CSharpXamlEmitter(cancellationHost).Emit(
+                Convert(xaml),
+                new RoslynXamlTypeSystem(compilation, profile),
+                profile,
+                new XamlCompilerOptions()));
     }
 
     [Fact]
@@ -10356,6 +10448,9 @@ namespace Demo {
     {
         private readonly string _emittedValue;
         private readonly bool _throwOnInvoke;
+        private readonly bool _returnNull;
+        private readonly bool _cancelOnInvoke;
+        private readonly CancellationToken? _expectedCancellationToken;
 
         public TestMarkupExpressionExtension(
             string id,
@@ -10364,6 +10459,9 @@ namespace Demo {
             RoslynXamlExtensionConflictPolicy conflictPolicy =
                 RoslynXamlExtensionConflictPolicy.Diagnose,
             bool throwOnInvoke = false,
+            bool returnNull = false,
+            bool cancelOnInvoke = false,
+            CancellationToken? expectedCancellationToken = null,
             int contractVersion = RoslynXamlExtensionHost.CurrentContractVersion)
         {
             Id = id;
@@ -10371,6 +10469,9 @@ namespace Demo {
             _emittedValue = emittedValue;
             ConflictPolicy = conflictPolicy;
             _throwOnInvoke = throwOnInvoke;
+            _returnNull = returnNull;
+            _cancelOnInvoke = cancelOnInvoke;
+            _expectedCancellationToken = expectedCancellationToken;
             ContractVersion = contractVersion;
         }
 
@@ -10387,6 +10488,9 @@ namespace Demo {
             out ExpressionSyntax expression)
         {
             context.CancellationToken.ThrowIfCancellationRequested();
+            if (_expectedCancellationToken is { } expected &&
+                context.CancellationToken != expected)
+                throw new InvalidOperationException("The emitter did not propagate its cancellation token.");
             if (!string.Equals(
                     context.Extension.Type.Symbol?.MetadataName,
                     "Demo.UpperExtension",
@@ -10398,10 +10502,38 @@ namespace Demo {
             }
             if (_throwOnInvoke)
                 throw new InvalidOperationException("Expected extension failure.");
+            if (_cancelOnInvoke)
+                throw new OperationCanceledException();
+            if (_returnNull)
+            {
+                expression = null!;
+                return true;
+            }
             expression = SyntaxFactory.LiteralExpression(
                 SyntaxKind.StringLiteralExpression,
                 SyntaxFactory.Literal(_emittedValue));
             return true;
+        }
+    }
+
+    private sealed class NeverHandlingRoslynExtension :
+        IRoslynXamlMarkupExtensionExpressionExtension
+    {
+        public string Id => "test.never";
+        public int ContractVersion => RoslynXamlExtensionHost.CurrentContractVersion;
+        public int Version => 1;
+        public int Priority => 100;
+        public RoslynXamlExtensionCapabilities Capabilities =>
+            RoslynXamlExtensionCapabilities.MarkupExtensionExpression;
+        public RoslynXamlExtensionConflictPolicy ConflictPolicy =>
+            RoslynXamlExtensionConflictPolicy.Diagnose;
+
+        public bool TryCreateExpression(
+            RoslynXamlMarkupExtensionExpressionContext context,
+            out ExpressionSyntax expression)
+        {
+            expression = null!;
+            return false;
         }
     }
 

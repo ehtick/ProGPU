@@ -176,7 +176,8 @@ public sealed class ProGpuXamlSourceGenerator : IIncrementalGenerator
                 EmitSourceComments = generatorOptions.EmitSourceComments,
                 StaticResourceForwardReferenceMode =
                     generatorOptions.StaticResourceForwardReferenceMode
-            });
+            },
+            context.CancellationToken);
 
         for (var index = 0; index < result.Diagnostics.Count; index++)
         {
