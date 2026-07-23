@@ -66,6 +66,7 @@ internal sealed class XamlLosslessLexer
         var isWhitespace = true;
         while (_position < _source.Length && _source[_position] != '<')
         {
+            PollCancellation();
             if (!char.IsWhiteSpace(_source[_position])) isWhitespace = false;
             _position++;
         }
@@ -81,14 +82,22 @@ internal sealed class XamlLosslessLexer
         else if (char.IsWhiteSpace(current))
         {
             var start = _position++;
-            while (_position < _source.Length && char.IsWhiteSpace(_source[_position])) _position++;
+            while (_position < _source.Length && char.IsWhiteSpace(_source[_position]))
+            {
+                PollCancellation();
+                _position++;
+            }
             Add(XamlTokenKind.Whitespace, start, _position - start);
         }
         else if (current == '\'' || current == '"') LexQuotedString(current);
         else if (IsNameStart(current))
         {
             var start = _position++;
-            while (_position < _source.Length && IsNameCharacter(_source[_position])) _position++;
+            while (_position < _source.Length && IsNameCharacter(_source[_position]))
+            {
+                PollCancellation();
+                _position++;
+            }
             Add(XamlTokenKind.Name, start, _position - start);
         }
         else
@@ -102,7 +111,11 @@ internal sealed class XamlLosslessLexer
     private void LexQuotedString(char quote)
     {
         var start = _position++;
-        while (_position < _source.Length && _source[_position] != quote) _position++;
+        while (_position < _source.Length && _source[_position] != quote)
+        {
+            PollCancellation();
+            _position++;
+        }
         if (_position < _source.Length) _position++;
         else AddDiagnostic("PGXAML1206", "Unterminated XML attribute value.", new TextSpan(start, _position - start), "8.6.1");
         Add(XamlTokenKind.StringLiteral, start, _position - start);
@@ -128,6 +141,7 @@ internal sealed class XamlLosslessLexer
         var quote = '\0';
         while (_position < _source.Length)
         {
+            PollCancellation();
             var current = _source[_position++];
             if (quote != '\0') { if (current == quote) quote = '\0'; }
             else if (current == '\'' || current == '"') quote = current;
@@ -141,6 +155,8 @@ internal sealed class XamlLosslessLexer
     {
         for (var index = start; index <= _source.Length - value.Length; index++)
         {
+            if ((index & 0x3fff) == 0)
+                _cancellationToken.ThrowIfCancellationRequested();
             var match = true;
             for (var offset = 0; offset < value.Length; offset++)
             {
@@ -169,6 +185,11 @@ internal sealed class XamlLosslessLexer
     }
 
     private void AddAndAdvance(XamlTokenKind kind, int length) { Add(kind, _position, length); _position += length; }
+    private void PollCancellation()
+    {
+        if ((_position & 0x3fff) == 0)
+            _cancellationToken.ThrowIfCancellationRequested();
+    }
     private void Add(XamlTokenKind kind, int start, int length)
     {
         if (length > _options.MaximumTokenLength)

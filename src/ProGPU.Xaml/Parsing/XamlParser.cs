@@ -20,7 +20,7 @@ public static class XamlParser
         CancellationToken cancellationToken = default)
     {
         if (text == null) throw new ArgumentNullException(nameof(text));
-        options ??= new XamlParseOptions();
+        options = XamlParseOptions.Snapshot(options ?? new XamlParseOptions());
         var lexed = new XamlLosslessLexer(text, path, options, cancellationToken).Lex();
         var parser = new StructureParser(text, path, lexed.Tokens, lexed.Diagnostics, options, cancellationToken);
         var tree = parser.Parse();
@@ -267,6 +267,8 @@ public static class XamlParser
             var builder = new StringBuilder(value.Length);
             for (var index = 0; index < value.Length; index++)
             {
+                if ((index & 0x0fff) == 0)
+                    _cancellationToken.ThrowIfCancellationRequested();
                 if (value[index] != '&') { builder.Append(value[index]); continue; }
                 var semicolon = value.IndexOf(';', index + 1);
                 if (semicolon < 0)
