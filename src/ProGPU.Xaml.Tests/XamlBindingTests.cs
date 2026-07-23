@@ -14,6 +14,7 @@ using ProGPU.Xaml.Schema;
 using ProGPU.Xaml.Serialization;
 using ProGPU.Xaml.Syntax;
 using ProGPU.Xaml.Tooling;
+using ProGPU.Xaml.Workspaces;
 using Xunit;
 
 namespace ProGPU.Xaml.Tests;
@@ -12061,6 +12062,138 @@ namespace Demo {
         Assert.Same(
             compilation,
             previewHost.Compilation);
+    }
+
+    [Fact]
+    public async Task ProjectPreviewUsesImmutableWorkspaceContextAndUnsavedText()
+    {
+        const string codeBehind = """
+#if PROJECT_PREVIEW
+namespace Demo;
+
+public partial class MainPage : Microsoft.UI.Xaml.Controls.Page
+{
+    public MainPage()
+    {
+        InitializeComponent();
+    }
+}
+#endif
+""";
+        const string savedXaml = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.MainPage">
+  <TextBlock Text="Saved" />
+</Page>
+""";
+        const string editedXaml = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="Demo.MainPage">
+  <TextBlock Text="Unsaved editor snapshot" />
+</Page>
+""";
+        using var workspace = new AdhocWorkspace();
+        var projectId = ProjectId.CreateNewId();
+        var projectInfo = ProjectInfo.Create(
+            projectId,
+            VersionStamp.Create(),
+            "PreviewProject",
+            "PreviewProject",
+            LanguageNames.CSharp,
+            compilationOptions: new CSharpCompilationOptions(
+                OutputKind.DynamicallyLinkedLibrary),
+            parseOptions: new CSharpParseOptions(
+                LanguageVersion.Preview,
+                preprocessorSymbols: new[] { "PROJECT_PREVIEW" }));
+        var frameworkDocumentId =
+            DocumentId.CreateNewId(projectId);
+        var codeBehindDocumentId =
+            DocumentId.CreateNewId(projectId);
+        var solution = workspace.CurrentSolution
+            .AddProject(projectInfo)
+            .AddMetadataReferences(projectId, PlatformReferences())
+            .AddDocument(
+                frameworkDocumentId,
+                "Framework.cs",
+                SourceText.From(Framework))
+            .AddDocument(
+                codeBehindDocumentId,
+                "MainPage.cs",
+                SourceText.From(codeBehind));
+        var xamlDocumentId = DocumentId.CreateNewId(projectId);
+        solution = solution.AddAdditionalDocument(
+            xamlDocumentId,
+            "MainPage.xaml",
+            SourceText.From(savedXaml),
+            folders: new[] { "Pages" });
+        var project = solution.GetProject(projectId)!;
+
+        var preview =
+            await new RoslynXamlProjectPreviewService().CompileAsync(
+                project,
+                xamlDocumentId,
+                new WinUiXamlProfile(),
+                new RoslynXamlProjectPreviewOptions
+                {
+                    EditedText = SourceText.From(editedXaml),
+                    InspectionOptions =
+                        new RoslynXamlCompilationInspectionOptions
+                        {
+                            CompilerOptions =
+                                new XamlCompilerOptions
+                                {
+                                    Strict = true
+                                }
+                        }
+                });
+
+        Assert.True(
+            preview.CanMaterialize,
+            preview.MaterializationError ??
+            string.Join(
+                Environment.NewLine,
+                preview.Artifact?.Diagnostics.Select(
+                    diagnostic => diagnostic.ToString()) ??
+                Array.Empty<string>()));
+        Assert.Equal("Demo.MainPage", preview.QualifiedTypeName);
+        Assert.True(preview.Artifact!.Success);
+        Assert.NotNull(
+            preview.HostCompilation.GetTypeByMetadataName(
+                "Demo.MainPage"));
+        var generatedParseOptions = Assert.IsType<CSharpParseOptions>(
+            preview.CompilationInspection.CompilationResult.Sources
+                .Single()
+                .GeneratedSyntaxTree!
+                .Options);
+        Assert.Equal(
+            LanguageVersion.Preview,
+            generatedParseOptions.LanguageVersion);
+        Assert.Contains(
+            "PROJECT_PREVIEW",
+            generatedParseOptions.PreprocessorSymbolNames);
+        Assert.Contains(
+            preview.CompilationInspection.CompilationResult.Sources
+                .Single()
+                .GeneratedSyntaxTree!
+                .GetRoot()
+                .DescendantTokens(),
+            token =>
+                token.IsKind(SyntaxKind.StringLiteralToken) &&
+                token.ValueText == "Unsaved editor snapshot");
+        Assert.Equal(
+            savedXaml,
+            (await project.GetAdditionalDocument(xamlDocumentId)!
+                .GetTextAsync()).ToString());
+        Assert.Equal(
+            editedXaml,
+            (await preview.Document.GetTextAsync()).ToString());
+        Assert.Equal("Pages/MainPage.xaml", preview.ResourceUri);
+        Assert.EndsWith(
+            preview.SourceInspection.Infoset.Path,
+            preview.ResourceDependencies.DocumentPath,
+            StringComparison.Ordinal);
     }
 
     private static CSharpCompilation CreateCompilation() => CSharpCompilation.Create(

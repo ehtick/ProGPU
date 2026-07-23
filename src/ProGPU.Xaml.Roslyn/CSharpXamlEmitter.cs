@@ -226,6 +226,9 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
             extensions,
             options,
             buildMetadata,
+            (typeSystem as IRoslynXamlParseOptionsProvider)?
+                .ParseOptions ??
+            CSharpParseOptions.Default,
             cancellationToken);
     }
 
@@ -250,6 +253,7 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
             null,
             options,
             buildMetadata: null,
+            CSharpParseOptions.Default,
             cancellationToken);
 
     private XamlCompilationResult EmitProgramCore(
@@ -258,6 +262,7 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
         RoslynXamlExtensionHost? extensions,
         XamlCompilerOptions options,
         XamlDocumentBuildMetadata? buildMetadata,
+        CSharpParseOptions parseOptions,
         CancellationToken cancellationToken)
     {
         if (program == null) throw new ArgumentNullException(nameof(program));
@@ -320,6 +325,7 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
                 options,
                 diagnostics,
                 buildMetadata,
+                parseOptions,
                 cancellationToken);
         }
         className = !string.IsNullOrWhiteSpace(buildMetadata?.EffectiveClassName)
@@ -357,8 +363,14 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
                     isActive: true)),
                 SyntaxFactory.EndOfLine(Environment.NewLine));
         var unit = unformattedUnit.NormalizeWhitespace();
-        var unformattedTree = CSharpSyntaxTree.Create(unformattedUnit, path: document.Path + ".g.cs");
-        var generatedTree = CSharpSyntaxTree.Create(unit, path: document.Path + ".g.cs");
+        var unformattedTree = CSharpSyntaxTree.Create(
+            unformattedUnit,
+            parseOptions,
+            document.Path + ".g.cs");
+        var generatedTree = CSharpSyntaxTree.Create(
+            unit,
+            parseOptions,
+            document.Path + ".g.cs");
         sources.Add(new XamlGeneratedSource(
             GetHintName(className, options.ResourceUri ?? document.Path),
             unit.ToFullString(),
@@ -379,6 +391,7 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
         XamlCompilerOptions options,
         List<Diagnostic> diagnostics,
         XamlDocumentBuildMetadata? buildMetadata,
+        CSharpParseOptions parseOptions,
         CancellationToken cancellationToken)
     {
         var document = program.BoundDocument.Infoset.Syntax;
@@ -443,8 +456,14 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
                     isActive: true)),
                 SyntaxFactory.EndOfLine(Environment.NewLine));
         var unit = unformattedUnit.NormalizeWhitespace();
-        var unformattedTree = CSharpSyntaxTree.Create(unformattedUnit, path: document.Path + ".g.cs");
-        var generatedTree = CSharpSyntaxTree.Create(unit, path: document.Path + ".g.cs");
+        var unformattedTree = CSharpSyntaxTree.Create(
+            unformattedUnit,
+            parseOptions,
+            document.Path + ".g.cs");
+        var generatedTree = CSharpSyntaxTree.Create(
+            unit,
+            parseOptions,
+            document.Path + ".g.cs");
         sources.Add(new XamlGeneratedSource(
             artifact.FactoryTypeName + ".ProGPU.Xaml.g.cs",
             unit.ToFullString(),

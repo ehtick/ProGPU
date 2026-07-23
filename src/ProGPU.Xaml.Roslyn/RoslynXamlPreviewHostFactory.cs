@@ -144,7 +144,8 @@ public sealed class RoslynXamlPreviewHostFactory
             .AddMembers(topLevel);
         var tree = CSharpSyntaxTree.Create(
             unit,
-            path: document.Path + ".PreviewHost.g.cs");
+            RoslynXamlSyntaxTreeOptions.From(baseCompilation),
+            document.Path + ".PreviewHost.g.cs");
         return new RoslynXamlPreviewHost(
             baseCompilation.AddSyntaxTrees(tree),
             className,

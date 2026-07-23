@@ -22,7 +22,8 @@ public sealed class RoslynXamlTypeSystem :
     IXamlSymbolConversionService,
     IXamlSymbolAccessibilityService,
     IXamlCompiledBindingPolicy,
-    IXamlDeferredContentContextTypePolicy
+    IXamlDeferredContentContextTypePolicy,
+    IRoslynXamlParseOptionsProvider
 {
     private static readonly SymbolDisplayFormat FullyQualifiedFormat =
         SymbolDisplayFormat.FullyQualifiedFormat.WithMiscellaneousOptions(
@@ -70,6 +71,11 @@ public sealed class RoslynXamlTypeSystem :
     public IReadOnlyDictionary<char, char> CompiledBindingPathBracketPairs =>
         (_profile as IXamlCompiledBindingPolicy)?.CompiledBindingPathBracketPairs ??
         EmptyCompiledBindingBracketPairs;
+
+    public CSharpParseOptions ParseOptions =>
+        _compilation is CSharpCompilation csharp
+            ? RoslynXamlSyntaxTreeOptions.From(csharp)
+            : CSharpParseOptions.Default;
 
     public bool TryGetDeferredContentContextType(
         XamlBoundObject owner,
