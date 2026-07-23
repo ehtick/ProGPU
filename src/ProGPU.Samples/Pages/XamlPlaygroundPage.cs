@@ -1,11 +1,9 @@
-using System.Linq;
-using Microsoft.CodeAnalysis;
+using System.Text;
 using Microsoft.CodeAnalysis.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using ProGPU.Xaml.Infoset;
 using ProGPU.Xaml.Parsing;
-using ProGPU.Xaml.Syntax;
+using ProGPU.Xaml.Tooling;
 
 namespace ProGPU.Samples;
 
@@ -27,77 +25,86 @@ public static class XamlPlaygroundPage
         root.Children.Add(new TextBlock
         {
             Margin = new Thickness(0, 6, 0, 12),
-            Text = "Edit source and inspect the same lossless syntax and schema-neutral infoset used by builds and the CLI."
+            Text = "Edit source and inspect bounded projections of the same lossless syntax and schema-neutral infoset used by builds and the CLI."
         });
         var editor = new TextBox
         {
             Text = InitialSource,
             AcceptsReturn = true,
-            Height = 280,
+            Height = 240,
             HorizontalAlignment = HorizontalAlignment.Stretch
         };
         var status = new TextBlock { Margin = new Thickness(0, 12, 0, 0), Text = "Ready." };
-        var pipeline = new TextBox
-        {
-            Margin = new Thickness(0, 8, 0, 0),
-            AcceptsReturn = true,
-            Height = 150,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            Text = "Syntax and infoset details will appear here."
-        };
+        var syntaxOutput = CreateOutput("Syntax details will appear here.");
+        var tokenOutput = CreateOutput("Lossless tokens will appear here.");
+        var infosetOutput = CreateOutput("Infoset details will appear here.");
+        var diagnosticsOutput = CreateOutput("Diagnostics will appear here.");
+        var views = new Pivot { Margin = new Thickness(0, 8, 0, 0), Height = 300 };
+        views.Items.Add(new PivotItem("Syntax", syntaxOutput));
+        views.Items.Add(new PivotItem("Tokens", tokenOutput));
+        views.Items.Add(new PivotItem("Infoset", infosetOutput));
+        views.Items.Add(new PivotItem("Diagnostics", diagnosticsOutput));
         var inspect = new Button { Margin = new Thickness(0, 12, 0, 0), Content = "Parse and inspect" };
         inspect.Click += (_, _) =>
         {
             var source = SourceText.From(editor.Text);
-            var tree = XamlParser.Parse(source, "Playground.xaml",
-                new XamlParseOptions { Mode = XamlParseMode.Recovering });
-            var errors = tree.GetDiagnostics().Count(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
-            var objects = tree.GetRoot() == null
-                ? 0
-                : 1 + tree.GetRoot()!.DescendantNodes().Count(node => node is XamlObjectSyntax);
-            var infoset = new XamlInfosetConverter().Convert(
-                tree.Document,
-                new XamlInfosetConversionOptions { Mode = XamlParseMode.Recovering });
-            var info = CountInfoset(infoset.Root);
-            status.Text = $"Root: {tree.GetRoot()?.QualifiedName ?? "<none>"}; tokens: {tree.Tokens.Length}; objects: {objects}; errors: {errors}.";
-            pipeline.Text =
-                $"syntax.root = {tree.GetRoot()?.QualifiedName ?? "<none>"}\n" +
-                $"infoset.root = {infoset.Root?.TypeName.ToString() ?? "<none>"}\n" +
-                $"infoset.objects = {info.Objects}\n" +
-                $"infoset.members = {info.Members}\n" +
-                $"infoset.textValues = {info.TextValues}\n" +
-                $"infoset.diagnostics = {infoset.Diagnostics.Length}";
+            var inspection = new XamlDocumentInspectionService().Inspect(
+                source,
+                "Playground.xaml",
+                new XamlDocumentInspectionOptions
+                {
+                    ParseOptions = new XamlParseOptions
+                    {
+                        Mode = XamlParseMode.Recovering
+                    }
+                });
+            var statistics = inspection.Statistics;
+            status.Text =
+                $"Root: {inspection.SyntaxTree.GetRoot()?.QualifiedName ?? "<none>"}; " +
+                $"tokens: {statistics.Tokens}; syntax objects: {statistics.SyntaxObjects}; " +
+                $"infoset objects: {statistics.InfosetObjects}; errors: {statistics.Errors}.";
+            syntaxOutput.Text = Render(inspection.Syntax);
+            tokenOutput.Text = Render(inspection.Tokens);
+            infosetOutput.Text = Render(inspection.InfosetProjection);
+            diagnosticsOutput.Text = inspection.Diagnostics.TotalEntryCount == 0
+                ? "No diagnostics."
+                : Render(inspection.Diagnostics);
         };
         root.Children.Add(editor);
         root.Children.Add(inspect);
         root.Children.Add(status);
-        root.Children.Add(pipeline);
+        root.Children.Add(views);
         return root;
     }
 
-    private static (int Objects, int Members, int TextValues) CountInfoset(XamlInfosetObject? root)
+    private static TextBox CreateOutput(string text) => new TextBox
     {
-        if (root == null) return default;
-        var objects = 1;
-        var members = root.Members.Length;
-        var textValues = 0;
-        foreach (var member in root.Members)
+        AcceptsReturn = true,
+        Height = 250,
+        HorizontalAlignment = HorizontalAlignment.Stretch,
+        Text = text
+    };
+
+    private static string Render(XamlInspectionProjection projection)
+    {
+        var builder = new StringBuilder();
+        foreach (var entry in projection.Entries)
         {
-            foreach (var value in member.Values)
-            {
-                if (value is XamlInfosetObject child)
-                {
-                    var nested = CountInfoset(child);
-                    objects += nested.Objects;
-                    members += nested.Members;
-                    textValues += nested.TextValues;
-                }
-                else if (value is XamlInfosetText)
-                {
-                    textValues++;
-                }
-            }
+            builder.Append(' ', entry.Depth * 2);
+            builder.Append(entry.Kind);
+            builder.Append(' ');
+            builder.Append(entry.Name);
+            if (entry.Value.Length != 0)
+                builder.Append(" = ").Append(entry.Value);
+            builder.Append(" [").Append(entry.SourceSpan.Start)
+                .Append("..").Append(entry.SourceSpan.End).Append(']');
+            if (entry.HasStableId)
+                builder.Append(" #").Append(entry.StableId.ToString("x16"));
+            builder.AppendLine();
         }
-        return (objects, members, textValues);
+        if (projection.IsTruncated)
+            builder.Append("… ").Append(projection.TotalEntryCount - projection.Entries.Length)
+                .AppendLine(" more entries omitted by the inspection bound.");
+        return builder.ToString();
     }
 }
