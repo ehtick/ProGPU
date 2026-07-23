@@ -18,6 +18,8 @@ public interface ICommandBarElement
 /// <summary>A command button with a label and an icon.</summary>
 public class AppBarButton : Button, ICommandBarElement
 {
+    public AppBarButtonTemplateSettings TemplateSettings { get; } = new();
+
     public static readonly DependencyProperty IconProperty = DependencyProperty.Register(
         nameof(Icon), typeof(IconElement), typeof(AppBarButton), new PropertyMetadata(null));
 
@@ -73,6 +75,8 @@ public class AppBarButton : Button, ICommandBarElement
 /// <summary>A toggleable app-bar command with a label and an icon.</summary>
 public class AppBarToggleButton : ToggleButton, ICommandBarElement
 {
+    public AppBarToggleButtonTemplateSettings TemplateSettings { get; } = new();
+
     public static readonly DependencyProperty IconProperty = DependencyProperty.Register(
         nameof(Icon), typeof(IconElement), typeof(AppBarToggleButton), new PropertyMetadata(null));
 

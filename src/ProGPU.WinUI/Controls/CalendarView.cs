@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Documents;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using System;
 using System.Numerics;
 using ProGPU.Layout;
@@ -20,6 +21,8 @@ public enum CalendarViewDisplayMode
 
 public class CalendarView : Control
 {
+    public CalendarViewTemplateSettings TemplateSettings { get; } = new();
+
     private static readonly DateTimeOffset DefaultMinDate = DateTimeOffset.Now.AddYears(-100);
     private static readonly DateTimeOffset DefaultMaxDate = DateTimeOffset.Now.AddYears(100);
 

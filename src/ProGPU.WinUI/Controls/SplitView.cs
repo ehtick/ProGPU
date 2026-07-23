@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Documents;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using System;
 using System.Numerics;
 using ProGPU.Layout;
@@ -38,6 +39,13 @@ public class SplitView : FrameworkElement
     private float _compactPaneLength = 60f;
     private PanePlacement _panePlacement = PanePlacement.Left;
     private SplitViewDisplayMode _displayMode = SplitViewDisplayMode.Inline;
+
+    public SplitView()
+    {
+        TemplateSettings.Update(_paneWidth, _compactPaneLength);
+    }
+
+    public SplitViewTemplateSettings TemplateSettings { get; } = new();
 
     public event EventHandler? PaneOpening;
     public event EventHandler? PaneOpened;
@@ -119,6 +127,7 @@ public class SplitView : FrameworkElement
             if (_paneWidth != value)
             {
                 _paneWidth = value;
+                TemplateSettings.Update(_paneWidth, _compactPaneLength);
                 Invalidate();
                 InvalidateMeasure();
             }
@@ -143,6 +152,7 @@ public class SplitView : FrameworkElement
             if (_compactPaneLength != value)
             {
                 _compactPaneLength = value;
+                TemplateSettings.Update(_paneWidth, _compactPaneLength);
                 Invalidate();
                 InvalidateMeasure();
             }

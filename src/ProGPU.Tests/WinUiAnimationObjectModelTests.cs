@@ -717,4 +717,47 @@ public sealed class WinUiAnimationObjectModelTests
         Assert.Equal("A", index.SelectedItem);
         Assert.Same(index, Assert.Single(zoom.Children));
     }
+
+    [Fact]
+    public void FluentTemplateSettingsExposeTypedCalculatedContracts()
+    {
+        Assert.IsType<AppBarTemplateSettings>(
+            new AppBar().TemplateSettings);
+        Assert.IsType<AppBarButtonTemplateSettings>(
+            new AppBarButton().TemplateSettings);
+        Assert.IsType<AppBarToggleButtonTemplateSettings>(
+            new AppBarToggleButton().TemplateSettings);
+        Assert.IsType<CalendarViewTemplateSettings>(
+            new CalendarView().TemplateSettings);
+        Assert.IsType<ToggleSwitchTemplateSettings>(
+            new ToggleSwitch().TemplateSettings);
+
+        var splitView = new SplitView
+        {
+            OpenPaneLength = 280,
+            CompactPaneLength = 48
+        };
+        var split = splitView.TemplateSettings;
+        Assert.Equal(280, split.OpenPaneLength);
+        Assert.Equal(-280, split.NegativeOpenPaneLength);
+        Assert.Equal(232, split.OpenPaneLengthMinusCompactLength);
+        Assert.Equal(
+            -232,
+            split.NegativeOpenPaneLengthMinusCompactLength);
+        Assert.Equal(280, split.OpenPaneGridLength.Value);
+        Assert.Equal(48, split.CompactPaneGridLength.Value);
+        Assert.Equal(
+            GridUnitType.Absolute,
+            split.OpenPaneGridLength.UnitType);
+
+        var command = new CommandBar().CommandBarTemplateSettings;
+        Assert.Equal(
+            Visibility.Visible,
+            command.EffectiveOverflowButtonVisibility);
+        Assert.Equal(default, command.OverflowContentClipRect);
+        Assert.Equal(0, command.OverflowContentHeight);
+        Assert.Equal(0, command.NegativeOverflowContentHeight);
+        Assert.Equal(0, command.OverflowContentHorizontalOffset);
+        Assert.Equal(0, command.OverflowContentMaxWidth);
+    }
 }

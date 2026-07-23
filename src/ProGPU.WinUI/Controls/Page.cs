@@ -1,9 +1,11 @@
 using Microsoft.UI.Xaml.Navigation;
+using Microsoft.UI.Xaml.Controls.Primitives;
 
 namespace Microsoft.UI.Xaml.Controls;
 
 public class AppBar : ContentControl
 {
+    public AppBarTemplateSettings TemplateSettings { get; } = new();
     public bool IsOpen { get; set; }
     public bool IsSticky { get; set; }
 }

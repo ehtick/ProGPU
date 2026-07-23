@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Documents;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using System;
 using System.Numerics;
 using ProGPU.Layout;
@@ -14,6 +15,8 @@ namespace Microsoft.UI.Xaml.Controls;
 [ContentProperty(Name = "Content")]
 public class ToggleSwitch : ContentControl
 {
+    public ToggleSwitchTemplateSettings TemplateSettings { get; } = new();
+
     public static readonly DependencyProperty IsOnProperty =
         DependencyProperty.Register(
             "IsOn",
