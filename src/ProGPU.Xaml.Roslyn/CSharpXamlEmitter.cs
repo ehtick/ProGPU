@@ -374,8 +374,10 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
         private readonly Dictionary<string, ExpressionSyntax> _nameExpressions = new Dictionary<string, ExpressionSyntax>(StringComparer.Ordinal);
         private readonly ExpressionSyntax? _contextExpression;
         private readonly XamlTypeInfo? _contextType;
+        private readonly ExpressionSyntax? _deferredLifetimeOwnerExpression;
         private readonly ExpressionSyntax? _compiledBindingOwnerExpression;
         private ExpressionSyntax _lookupRootExpression = null!;
+        private bool _hasDeferredLifetimeRegistrations;
         private bool _hasCompiledBindings;
         private int _nextObjectId;
 
@@ -387,6 +389,7 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
             bool isClassBacked = true,
             ExpressionSyntax? contextExpression = null,
             XamlTypeInfo? contextType = null,
+            ExpressionSyntax? deferredLifetimeOwnerExpression = null,
             ExpressionSyntax? compiledBindingOwnerExpression = null)
         {
             _program = program;
@@ -397,6 +400,7 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
             _isClassBacked = isClassBacked;
             _contextExpression = contextExpression;
             _contextType = contextType;
+            _deferredLifetimeOwnerExpression = deferredLifetimeOwnerExpression;
             _compiledBindingOwnerExpression = compiledBindingOwnerExpression;
         }
 
@@ -1010,8 +1014,12 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
                                     _contextExpression,
                                     _contextType,
                                     _lookupRootExpression,
-                                    out var markupAssignment))
+                                    _deferredLifetimeOwnerExpression,
+                                    out var markupAssignment,
+                                    out var usesDeferredLifetime))
                             {
+                                if (usesDeferredLifetime)
+                                    _hasDeferredLifetimeRegistrations = true;
                                 AddStatement(
                                     markupAssignment,
                                     operation.SourceSpan,
@@ -1132,6 +1140,18 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
             }
 
             var templateContext = SyntaxFactory.IdentifierName("__templateContext");
+            const string templateLifetimeIdentifier = "__templateLifetime";
+            RoslynXamlDeferredMarkupExtensionLifecycleSyntax? markupLifecycle = null;
+            var markupLifecycleProfile =
+                _framework as IRoslynXamlDeferredMarkupExtensionLifecycleProfile;
+            if (markupLifecycleProfile != null &&
+                markupLifecycleProfile.TryCreateDeferredMarkupExtensionLifecycle(
+                    templateContext,
+                    templateLifetimeIdentifier,
+                    out var createdMarkupLifecycle))
+            {
+                markupLifecycle = createdMarkupLifecycle;
+            }
             const string templateBindingsIdentifier = "__templateBindings";
             RoslynXamlDeferredCompiledBindingLifecycleSyntax? bindingLifecycle = null;
             var bindingLifecycleProfile =
@@ -1152,10 +1172,26 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
                 isClassBacked: false,
                 contextExpression: templateContext,
                 contextType: FindTemplateTargetType(owner),
+                deferredLifetimeOwnerExpression: markupLifecycle?.RegistrationOwner,
                 compiledBindingOwnerExpression: bindingLifecycle?.RegistrationOwner);
             var rootExpression = nested.EmitDeferredRoot(deferredRoot);
             if (rootExpression == null) return;
             var bodyStatements = new List<StatementSyntax>();
+            if (nested._hasDeferredLifetimeRegistrations)
+            {
+                if (markupLifecycle == null ||
+                    markupLifecycleProfile == null)
+                {
+                    AddError(
+                        "PGXAML3047",
+                        $"Profile '{_framework.Id}' does not provide per-instance lifecycle " +
+                        "lowering for markup-extension registrations inside deferred content.",
+                        operation.SourceSpan,
+                        "EXT-004");
+                    return;
+                }
+                bodyStatements.AddRange(markupLifecycle.PrepareStatements);
+            }
             if (nested._hasCompiledBindings)
             {
                 if (bindingLifecycle == null ||
@@ -1172,6 +1208,23 @@ public sealed class CSharpXamlEmitter : IXamlCodeEmitter
                 bodyStatements.AddRange(bindingLifecycle.PrepareStatements);
             }
             bodyStatements.AddRange(nested.Statements);
+            if (nested._hasDeferredLifetimeRegistrations)
+            {
+                if (!markupLifecycleProfile!.TryCreateDeferredMarkupExtensionFinalization(
+                        markupLifecycle!.RegistrationOwner,
+                        rootExpression,
+                        out var markupFinalization))
+                {
+                    AddError(
+                        "PGXAML3047",
+                        $"Profile '{_framework.Id}' rejected per-instance markup-extension " +
+                        "lifecycle finalization for deferred content.",
+                        operation.SourceSpan,
+                        "EXT-004");
+                    return;
+                }
+                bodyStatements.AddRange(markupFinalization);
+            }
             if (nested._hasCompiledBindings)
             {
                 if (!bindingLifecycleProfile!.TryCreateDeferredCompiledBindingFinalization(

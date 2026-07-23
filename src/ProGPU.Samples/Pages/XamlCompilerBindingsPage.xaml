@@ -8,8 +8,11 @@
         <ResourceDictionary>
             <DataTemplate x:Key="TrackedItemTemplate"
                           x:DataType="local:XamlCompilerBindingItem">
-                <TextBlock Margin="8,6"
-                           Text="{x:Bind Title, Mode=OneWay}" />
+                <StackPanel Margin="8,6">
+                    <TextBlock Text="{x:Bind Title, Mode=OneWay}" />
+                    <TextBlock Margin="0,2,0,0"
+                               Text="{Binding Path=Title, Mode=OneWay}" />
+                </StackPanel>
             </DataTemplate>
         </ResourceDictionary>
     </Page.Resources>
@@ -46,7 +49,7 @@
                    Text="{x:Bind local:XamlCompilerBindingFormatter.Format(Items[0].Title, ' static'), Mode=OneWay}" />
 
         <TextBlock Margin="0,16,0,0"
-                   Text="Two independently tracked DataTemplate instances over one item" />
+                   Text="Two independently tracked DataTemplate instances; each combines x:Bind and Binding" />
         <StackPanel Margin="0,6,0,0" Orientation="Horizontal">
             <ContentControl x:Name="FirstTemplateHost"
                             Content="{x:Bind Items[0]}"

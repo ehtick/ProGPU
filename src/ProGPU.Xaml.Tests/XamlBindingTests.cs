@@ -31,9 +31,11 @@ namespace Microsoft.UI.Xaml.Markup {
   }
   public class MarkupExtension { protected virtual object? ProvideValue() => null; protected virtual object? ProvideValue(Microsoft.UI.Xaml.IXamlServiceProvider serviceProvider) => ProvideValue(); internal object? Evaluate(Microsoft.UI.Xaml.IXamlServiceProvider? serviceProvider) => serviceProvider == null ? ProvideValue() : ProvideValue(serviceProvider); }
   public interface IAddChild { void AddChild(object value); }
+  public interface IXamlTemplateLifetime : System.IDisposable { void Initialize(); }
   public static class XamlTemplateFactory {
     public static void SetFactory(Microsoft.UI.Xaml.FrameworkTemplate template, System.Func<object?, Microsoft.UI.Xaml.FrameworkElement> factory) { }
     public static void AttachBindings(Microsoft.UI.Xaml.FrameworkElement root, object bindings) { }
+    public static void AttachLifetime(Microsoft.UI.Xaml.FrameworkElement root, IXamlTemplateLifetime lifetime) { }
   }
 }
 namespace Microsoft.Maui.Controls.Xaml {
@@ -208,12 +210,18 @@ namespace Microsoft.UI.Xaml.Data {
     public object? TargetNullValue { get; set; }
   }
   public static class BindingOperations {
+    private sealed class TestLifetime : Microsoft.UI.Xaml.Markup.IXamlTemplateLifetime {
+      public void Initialize() { }
+      public void Dispose() { }
+    }
+    public static Microsoft.UI.Xaml.Markup.IXamlTemplateLifetime BeginBindings() => new TestLifetime();
     public static object SetBinding(
       Microsoft.UI.Xaml.DependencyObject target,
       string targetPropertyName,
       Binding binding,
       object? context = null,
-      object? lookupRoot = null) => new object();
+      object? lookupRoot = null,
+      Microsoft.UI.Xaml.Markup.IXamlTemplateLifetime? lifetime = null) => new object();
   }
 }
 namespace Microsoft.UI.Xaml.Media {
@@ -5567,6 +5575,89 @@ namespace Microsoft.UI.Xaml.Data {
     }
 
     [Fact]
+    public void WinUiDataTemplateOrdinaryBindingOwnsOneMaterializationLifetime()
+    {
+        const string additions = """
+namespace Microsoft.UI.Xaml {
+  public class DataTemplate : FrameworkTemplate { }
+}
+namespace Demo {
+  public sealed class Item { public string Title { get; set; } = "Item"; }
+  public sealed class BindingTarget : Microsoft.UI.Xaml.FrameworkElement {
+    public static readonly Microsoft.UI.Xaml.DependencyProperty ValueProperty = new();
+    public string? Value { get; set; }
+  }
+}
+""";
+        const string xaml = """
+<Page xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:local="using:Demo"
+      x:Class="Demo.MainPage">
+  <DataTemplate x:DataType="local:Item">
+    <local:BindingTarget Value="{Binding Path=Title, Mode=OneWay}" />
+  </DataTemplate>
+</Page>
+""";
+        var compilation = CreateCompilation().AddSyntaxTrees(
+            CSharpSyntaxTree.ParseText(additions));
+        var profile = new WinUiXamlProfile();
+        var emitted = new CSharpXamlEmitter().Emit(
+            Convert(xaml),
+            new RoslynXamlTypeSystem(compilation, profile),
+            profile,
+            new XamlCompilerOptions());
+
+        Assert.DoesNotContain(
+            emitted.Diagnostics,
+            diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        var tree = Assert.Single(emitted.Sources).GeneratedSyntaxTree!;
+        var begin = Assert.Single(
+            tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>(),
+            invocation => string.Equals(
+                invocation.Expression.ToString(),
+                "global::Microsoft.UI.Xaml.Data.BindingOperations.BeginBindings",
+                StringComparison.Ordinal));
+        var setBinding = Assert.Single(
+            tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>(),
+            invocation => string.Equals(
+                invocation.Expression.ToString(),
+                "global::Microsoft.UI.Xaml.Data.BindingOperations.SetBinding",
+                StringComparison.Ordinal));
+        Assert.Equal(6, setBinding.ArgumentList.Arguments.Count);
+        Assert.Equal(
+            "__templateLifetime",
+            setBinding.ArgumentList.Arguments[5].Expression.ToString());
+        var attach = Assert.Single(
+            tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>(),
+            invocation => invocation.Expression.ToString().EndsWith(
+                "XamlTemplateFactory.AttachLifetime",
+                StringComparison.Ordinal));
+        Assert.Equal(
+            "__templateLifetime",
+            attach.ArgumentList.Arguments[1].Expression.ToString());
+        Assert.True(begin.SpanStart < setBinding.SpanStart);
+        Assert.True(setBinding.SpanStart < attach.SpanStart);
+        Assert.DoesNotContain(
+            tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>(),
+            invocation => invocation.Expression.ToString().EndsWith(
+                "XamlTemplateFactory.AttachBindings",
+                StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            compilation.AddSyntaxTrees(tree).GetDiagnostics(),
+            diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+
+        var unsupported = new CSharpXamlEmitter().Emit(
+            Convert(xaml),
+            new RoslynXamlTypeSystem(compilation, profile),
+            new MissingDeferredMarkupLifecycleProfile(),
+            new XamlCompilerOptions());
+        Assert.Contains(
+            unsupported.Diagnostics,
+            diagnostic => diagnostic.Id == "PGXAML3047");
+    }
+
+    [Fact]
     public void WinUiDataTemplateXDataTypeSuppliesTypedCompiledBindingContext()
     {
         const string additions = """
@@ -5625,7 +5716,10 @@ namespace Microsoft.UI.Xaml.Data {
       xmlns:local="using:Demo"
       x:Class="Demo.MainPage">
   <DataTemplate x:DataType="local:Item">
-    <local:BindingTarget Value="{x:Bind Title, Mode=OneWay}" />
+    <StackPanel>
+      <local:BindingTarget Value="{Binding Path=Title, Mode=OneWay}" />
+      <local:BindingTarget Value="{x:Bind Title, Mode=OneWay}" />
+    </StackPanel>
   </DataTemplate>
 </Page>
 """;
@@ -5681,6 +5775,31 @@ namespace Microsoft.UI.Xaml.Data {
         Assert.Equal(
             "__templateBindings",
             attach.ArgumentList.Arguments[1].Expression.ToString());
+        var ordinaryBegin = Assert.Single(
+            tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>(),
+            invocation => string.Equals(
+                invocation.Expression.ToString(),
+                "global::Microsoft.UI.Xaml.Data.BindingOperations.BeginBindings",
+                StringComparison.Ordinal));
+        var ordinarySet = Assert.Single(
+            tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>(),
+            invocation => string.Equals(
+                invocation.Expression.ToString(),
+                "global::Microsoft.UI.Xaml.Data.BindingOperations.SetBinding",
+                StringComparison.Ordinal));
+        var ordinaryAttach = Assert.Single(
+            tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>(),
+            invocation => invocation.Expression.ToString().EndsWith(
+                "XamlTemplateFactory.AttachLifetime",
+                StringComparison.Ordinal));
+        Assert.Equal(
+            "__templateLifetime",
+            ordinarySet.ArgumentList.Arguments[5].Expression.ToString());
+        Assert.Equal(
+            "__templateLifetime",
+            ordinaryAttach.ArgumentList.Arguments[1].Expression.ToString());
+        Assert.True(ordinaryBegin.SpanStart < ordinarySet.SpanStart);
+        Assert.True(ordinarySet.SpanStart < ordinaryAttach.SpanStart);
         Assert.True(begin.SpanStart < setBinding.SpanStart);
         Assert.True(setBinding.SpanStart < attach.SpanStart);
         Assert.DoesNotContain(
@@ -8800,6 +8919,92 @@ namespace Demo {
             value == null
                 ? SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression)
                 : StringLiteral(value);
+    }
+
+    private sealed class MissingDeferredMarkupLifecycleProfile :
+        IRoslynXamlFrameworkProfile,
+        IRoslynXamlDeferredContentProfile,
+        IRoslynXamlMarkupExtensionAssignmentProfile
+    {
+        private readonly WinUiXamlProfile _inner = new();
+
+        public string Id => "MissingDeferredMarkupLifecycle";
+        public int ContractVersion => _inner.ContractVersion;
+        public XamlFrameworkCapabilities Capabilities => _inner.Capabilities;
+        public IReadOnlyList<string> FileExtensions => _inner.FileExtensions;
+
+        public IReadOnlyList<string> GetClrNamespaceCandidates(
+            string xamlNamespaceUri) =>
+            _inner.GetClrNamespaceCandidates(xamlNamespaceUri);
+
+        public bool TryCreateLiteralExpression(
+            XamlTypeInfo targetType,
+            string text,
+            out ExpressionSyntax expression) =>
+            _inner.TryCreateLiteralExpression(targetType, text, out expression);
+
+        public bool TryCreateMarkupExtensionExpression(
+            XamlMarkupExtension extension,
+            XamlTypeInfo targetType,
+            out ExpressionSyntax expression) =>
+            _inner.TryCreateMarkupExtensionExpression(
+                extension,
+                targetType,
+                out expression);
+
+        public bool TryCreateMarkupExtensionExpression(
+            XamlIrObject extension,
+            XamlTypeInfo targetType,
+            out ExpressionSyntax expression) =>
+            _inner.TryCreateMarkupExtensionExpression(
+                extension,
+                targetType,
+                out expression);
+
+        public bool TryCreateResourceReferenceExpression(
+            XamlIrResourceReference reference,
+            XamlTypeInfo targetType,
+            ExpressionSyntax lookupRoot,
+            ExpressionSyntax resourceKey,
+            out ExpressionSyntax expression) =>
+            _inner.TryCreateResourceReferenceExpression(
+                reference,
+                targetType,
+                lookupRoot,
+                resourceKey,
+                out expression);
+
+        public bool TryCreateDeferredContentAssignment(
+            XamlMemberInfo member,
+            ExpressionSyntax receiver,
+            ParenthesizedLambdaExpressionSyntax factory,
+            out StatementSyntax statement) =>
+            _inner.TryCreateDeferredContentAssignment(
+                member,
+                receiver,
+                factory,
+                out statement);
+
+        public bool TryCreateMarkupExtensionAssignment(
+            XamlIrObject extension,
+            XamlMemberInfo member,
+            ExpressionSyntax receiver,
+            ExpressionSyntax? context,
+            XamlTypeInfo? contextType,
+            ExpressionSyntax lookupRoot,
+            ExpressionSyntax? deferredLifetimeOwner,
+            out StatementSyntax statement,
+            out bool usesDeferredLifetime) =>
+            _inner.TryCreateMarkupExtensionAssignment(
+                extension,
+                member,
+                receiver,
+                context,
+                contextType,
+                lookupRoot,
+                deferredLifetimeOwner,
+                out statement,
+                out usesDeferredLifetime);
     }
 
     private sealed class MissingDeferredBindingLifecycleProfile :

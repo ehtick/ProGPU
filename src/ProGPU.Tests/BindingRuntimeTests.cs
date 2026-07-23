@@ -389,32 +389,201 @@ public sealed class BindingRuntimeTests
     }
 
     [Fact]
+    public void DeferredOrdinaryBindingsOwnTrackingPerMaterializedRoot()
+    {
+        BindingMemberAccessorRegistry.Register<BindingChild, string?>(
+            nameof(BindingChild.Name),
+            static value => value.Name,
+            static (value, name) => value.Name = name);
+        var template = new DataTemplate();
+        XamlTemplateFactory.SetFactory(
+            template,
+            static context =>
+            {
+                var lifetime = BindingOperations.BeginBindings();
+                var root = new TextBlock();
+                var expression = BindingOperations.SetBinding(
+                    root,
+                    TextBlock.TextProperty,
+                    new Binding
+                    {
+                        Path = nameof(BindingChild.Name),
+                        Mode = BindingMode.OneWay
+                    },
+                    context,
+                    root,
+                    lifetime);
+                Assert.Equal(BindingExpressionStatus.Inactive, expression.Status);
+                XamlTemplateFactory.AttachLifetime(root, lifetime);
+                Assert.Equal(BindingExpressionStatus.Active, expression.Status);
+                return root;
+            });
+        var item = new BindingChild { Name = "initial" };
+
+        var first = Assert.IsType<TextBlock>(
+            XamlTemplateFactory.Build(template, item));
+        var second = Assert.IsType<TextBlock>(
+            XamlTemplateFactory.Build(template, item));
+
+        Assert.Equal("initial", first.Text);
+        Assert.Equal("initial", second.Text);
+        item.Name = "both";
+        Assert.Equal("both", first.Text);
+        Assert.Equal("both", second.Text);
+
+        XamlTemplateFactory.Release(first);
+        Assert.Null(BindingOperations.GetBindingExpression(
+            first,
+            TextBlock.TextProperty));
+        item.Name = "second-only";
+        Assert.Equal("both", first.Text);
+        Assert.Equal("second-only", second.Text);
+
+        second.FireUnloaded();
+        item.Name = "released";
+        Assert.Equal("second-only", second.Text);
+        Assert.Null(BindingOperations.GetBindingExpression(
+            second,
+            TextBlock.TextProperty));
+    }
+
+    [Fact]
+    public void MaterializedRootComposesOrdinaryAndCompiledBindingLifetimes()
+    {
+        BindingMemberAccessorRegistry.Register<BindingChild, string?>(
+            nameof(BindingChild.Name),
+            static value => value.Name);
+        var item = new BindingChild { Name = "initial" };
+        var root = new StackPanel();
+        var ordinaryTarget = new TextBlock();
+        var compiledTarget = new TextBlock();
+        root.Children.Add(ordinaryTarget);
+        root.Children.Add(compiledTarget);
+
+        var ordinaryLifetime = BindingOperations.BeginBindings();
+        var ordinaryExpression = BindingOperations.SetBinding(
+            ordinaryTarget,
+            TextBlock.TextProperty,
+            new Binding { Path = nameof(BindingChild.Name) },
+            item,
+            root,
+            ordinaryLifetime);
+        var compiledBindings = CompiledBindingOperations.BeginBindings();
+        CompiledBindingOperations.SetBinding(
+            compiledTarget,
+            TextBlock.TextProperty,
+            item,
+            new ICompiledBindingPathSegment[]
+            {
+                new CompiledBindingPathSegment<BindingChild, string?>(
+                    nameof(BindingChild.Name),
+                    static value => value.Name)
+            },
+            new CompiledBindingOptions { Mode = BindingMode.OneWay },
+            compiledBindings);
+
+        XamlTemplateFactory.AttachLifetime(root, ordinaryLifetime);
+        XamlTemplateFactory.AttachBindings(root, compiledBindings);
+        Assert.Equal(BindingExpressionStatus.Active, ordinaryExpression.Status);
+        Assert.Equal("initial", ordinaryTarget.Text);
+        Assert.Equal("initial", compiledTarget.Text);
+
+        item.Name = "both";
+        Assert.Equal("both", ordinaryTarget.Text);
+        Assert.Equal("both", compiledTarget.Text);
+
+        XamlTemplateFactory.Release(root);
+        item.Name = "released";
+        Assert.Equal("both", ordinaryTarget.Text);
+        Assert.Equal("both", compiledTarget.Text);
+        Assert.Null(BindingOperations.GetBindingExpression(
+            ordinaryTarget,
+            TextBlock.TextProperty));
+        Assert.Null(CompiledBindingOperations.GetBindingExpression(
+            compiledTarget,
+            TextBlock.TextProperty));
+    }
+
+    [Fact]
+    public void TemplateLifetimeInitializationFailureReleasesCompositeInReverseOrder()
+    {
+        var root = new StackPanel();
+        var events = new List<string>();
+        var first = new RecordingTemplateLifetime(
+            () => events.Add("initialize:first"),
+            () => events.Add("dispose:first"));
+        var second = new RecordingTemplateLifetime(
+            () =>
+            {
+                events.Add("initialize:second");
+                throw new InvalidOperationException("activation failed");
+            },
+            () => events.Add("dispose:second"));
+
+        XamlTemplateFactory.AttachLifetime(root, first);
+        var error = Assert.Throws<InvalidOperationException>(
+            () => XamlTemplateFactory.AttachLifetime(root, second));
+
+        Assert.Equal("activation failed", error.Message);
+        Assert.Equal(
+            new[]
+            {
+                "initialize:first",
+                "initialize:second",
+                "dispose:second",
+                "dispose:first"
+            },
+            events);
+        XamlTemplateFactory.Release(root);
+        Assert.Equal(1, first.DisposeCount);
+        Assert.Equal(1, second.DisposeCount);
+    }
+
+    [Fact]
     public void GeneratedBindingsSampleMaterializesTwoIndependentTrackedTemplates()
     {
         var page = new ProGPU.Samples.XamlCompilerBindingsPage();
-        var first = Assert.IsType<TextBlock>(
+        var firstRoot = Assert.IsType<StackPanel>(
             page.FirstMaterializedTemplate);
-        var second = Assert.IsType<TextBlock>(
+        var secondRoot = Assert.IsType<StackPanel>(
             page.SecondMaterializedTemplate);
+        var firstCompiled = Assert.IsType<TextBlock>(
+            page.FirstCompiledTemplateText);
+        var firstOrdinary = Assert.IsType<TextBlock>(
+            page.FirstOrdinaryTemplateText);
+        var secondCompiled = Assert.IsType<TextBlock>(
+            page.SecondCompiledTemplateText);
+        var secondOrdinary = Assert.IsType<TextBlock>(
+            page.SecondOrdinaryTemplateText);
 
-        Assert.NotSame(first, second);
-        Assert.Equal(page.Items[0].Title, first.Text);
-        Assert.Equal(page.Items[0].Title, second.Text);
+        Assert.NotSame(firstRoot, secondRoot);
+        Assert.Equal(page.Items[0].Title, firstCompiled.Text);
+        Assert.Equal(page.Items[0].Title, firstOrdinary.Text);
+        Assert.Equal(page.Items[0].Title, secondCompiled.Text);
+        Assert.Equal(page.Items[0].Title, secondOrdinary.Text);
 
         page.Items[0].Title = "shared update";
-        Assert.Equal("shared update", first.Text);
-        Assert.Equal("shared update", second.Text);
+        Assert.Equal("shared update", firstCompiled.Text);
+        Assert.Equal("shared update", firstOrdinary.Text);
+        Assert.Equal("shared update", secondCompiled.Text);
+        Assert.Equal("shared update", secondOrdinary.Text);
 
-        XamlTemplateFactory.Release(first);
+        XamlTemplateFactory.Release(firstRoot);
         page.Items[0].Title = "second instance only";
-        Assert.Equal("shared update", first.Text);
-        Assert.Equal("second instance only", second.Text);
+        Assert.Equal("shared update", firstCompiled.Text);
+        Assert.Equal("shared update", firstOrdinary.Text);
+        Assert.Equal("second instance only", secondCompiled.Text);
+        Assert.Equal("second instance only", secondOrdinary.Text);
 
         page.Content = new StackPanel();
         page.Items[0].Title = "detached subtree";
-        Assert.Equal("second instance only", second.Text);
+        Assert.Equal("second instance only", secondCompiled.Text);
+        Assert.Equal("second instance only", secondOrdinary.Text);
         Assert.Null(CompiledBindingOperations.GetBindingExpression(
-            second,
+            secondCompiled,
+            TextBlock.TextProperty));
+        Assert.Null(BindingOperations.GetBindingExpression(
+            secondOrdinary,
             TextBlock.TextProperty));
     }
 
@@ -633,6 +802,31 @@ public sealed class BindingRuntimeTests
         {
             get => GetValue(ValueProperty) as string;
             set => SetValue(ValueProperty, value);
+        }
+    }
+
+    private sealed class RecordingTemplateLifetime : IXamlTemplateLifetime
+    {
+        private readonly Action _initialize;
+        private readonly Action _dispose;
+
+        public RecordingTemplateLifetime(
+            Action initialize,
+            Action dispose)
+        {
+            _initialize = initialize;
+            _dispose = dispose;
+        }
+
+        public int DisposeCount { get; private set; }
+
+        public void Initialize() =>
+            _initialize();
+
+        public void Dispose()
+        {
+            DisposeCount++;
+            _dispose();
         }
     }
 

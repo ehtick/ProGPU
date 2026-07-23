@@ -5,12 +5,21 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Data;
 
 namespace ProGPU.Samples;
 
 public partial class XamlCompilerBindingsPage : Page
 {
     private int _replacementNumber;
+
+    static XamlCompilerBindingsPage()
+    {
+        BindingMemberAccessorRegistry.Register<XamlCompilerBindingItem, string>(
+            nameof(XamlCompilerBindingItem.Title),
+            static item => item.Title,
+            static (item, title) => item.Title = title);
+    }
 
     public XamlCompilerBindingsPage()
     {
@@ -20,11 +29,23 @@ public partial class XamlCompilerBindingsPage : Page
 
     public static FrameworkElement Create() => new XamlCompilerBindingsPage();
 
-    public TextBlock? FirstMaterializedTemplate =>
-        FirstTemplateHost.ContentTemplateRoot as TextBlock;
+    public StackPanel? FirstMaterializedTemplate =>
+        FirstTemplateHost.ContentTemplateRoot as StackPanel;
 
-    public TextBlock? SecondMaterializedTemplate =>
-        SecondTemplateHost.ContentTemplateRoot as TextBlock;
+    public StackPanel? SecondMaterializedTemplate =>
+        SecondTemplateHost.ContentTemplateRoot as StackPanel;
+
+    public TextBlock? FirstCompiledTemplateText =>
+        GetTemplateText(FirstMaterializedTemplate, 0);
+
+    public TextBlock? FirstOrdinaryTemplateText =>
+        GetTemplateText(FirstMaterializedTemplate, 1);
+
+    public TextBlock? SecondCompiledTemplateText =>
+        GetTemplateText(SecondMaterializedTemplate, 0);
+
+    public TextBlock? SecondOrdinaryTemplateText =>
+        GetTemplateText(SecondMaterializedTemplate, 1);
 
     public ObservableCollection<XamlCompilerBindingItem> Items { get; } =
         new() { new XamlCompilerBindingItem("Editable indexed item") };
@@ -58,6 +79,15 @@ public partial class XamlCompilerBindingsPage : Page
         BindingStatus.Text =
             "ObservableCollection replacement propagated through the generated indexer.";
     }
+
+    private static TextBlock? GetTemplateText(
+        StackPanel? root,
+        int index) =>
+        root != null &&
+        index >= 0 &&
+        index < root.Children.Count
+            ? root.Children[index] as TextBlock
+            : null;
 }
 
 public static class XamlCompilerBindingFormatter

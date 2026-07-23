@@ -1079,6 +1079,9 @@ namespace Microsoft.UI.Xaml.Markup {
   public sealed class ContentPropertyAttribute : System.Attribute {
     public string? Name { get; set; }
   }
+  public interface IXamlTemplateLifetime : System.IDisposable {
+    void Initialize();
+  }
   public static class XamlTemplateFactory {
     public static void SetFactory(
       Microsoft.UI.Xaml.FrameworkTemplate template,
@@ -1086,6 +1089,9 @@ namespace Microsoft.UI.Xaml.Markup {
     public static void AttachBindings(
       Microsoft.UI.Xaml.FrameworkElement root,
       Microsoft.UI.Xaml.Data.ICompiledBindings bindings) { }
+    public static void AttachLifetime(
+      Microsoft.UI.Xaml.FrameworkElement root,
+      IXamlTemplateLifetime lifetime) { }
   }
 }
 namespace Microsoft.UI.Xaml.HotReload {
@@ -1106,6 +1112,27 @@ namespace Microsoft.UI.Xaml {
 namespace Microsoft.UI.Xaml.Data {
   public enum BindingMode { OneWay, OneTime, TwoWay }
   public enum UpdateSourceTrigger { Default, PropertyChanged, Explicit, LostFocus }
+  public sealed class Binding {
+    public string? Path { get; set; }
+    public BindingMode Mode { get; set; }
+  }
+  public sealed class TestBindingLifetime :
+      Microsoft.UI.Xaml.Markup.IXamlTemplateLifetime {
+    public void Initialize() { }
+    public void Dispose() { }
+  }
+  public static class BindingOperations {
+    public static Microsoft.UI.Xaml.Markup.IXamlTemplateLifetime BeginBindings() =>
+      new TestBindingLifetime();
+    public static object SetBinding(
+      Microsoft.UI.Xaml.DependencyObject target,
+      string property,
+      Binding binding,
+      object? context,
+      object? root,
+      Microsoft.UI.Xaml.Markup.IXamlTemplateLifetime lifetime) =>
+      new object();
+  }
   public interface ICompiledBindingPathSegment { }
   public interface ICompiledBindings {
     void Initialize();
@@ -1152,6 +1179,10 @@ namespace Microsoft.UI.Xaml.Controls {
   public class Page : Microsoft.UI.Xaml.FrameworkElement {
     public object? Content { get; set; }
   }
+  [Microsoft.UI.Xaml.Markup.ContentProperty(Name="Children")]
+  public class StackPanel : Microsoft.UI.Xaml.FrameworkElement {
+    public System.Collections.Generic.List<object> Children { get; } = new();
+  }
 }
 namespace Demo {
   public partial class MainPage : Microsoft.UI.Xaml.Controls.Page { }
@@ -1170,7 +1201,10 @@ namespace Demo {
       xmlns:local="using:Demo"
       x:Class="Demo.MainPage">
   <DataTemplate x:DataType="local:Item">
-    <local:BindingTarget Value="{x:Bind Title, Mode=OneWay}" />
+    <StackPanel>
+      <local:BindingTarget Value="{Binding Path=Title, Mode=OneWay}" />
+      <local:BindingTarget Value="{x:Bind Title, Mode=OneWay}" />
+    </StackPanel>
   </DataTemplate>
 </Page>
 """;
@@ -1236,6 +1270,35 @@ namespace Demo {
         Assert.Equal(
             "__templateBindings",
             attach.ArgumentList.Arguments[1].Expression.ToString());
+        var ordinaryBegin = Assert.Single(
+            factory.DescendantNodes().OfType<
+                Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax>(),
+            invocation => string.Equals(
+                invocation.Expression.ToString(),
+                "global::Microsoft.UI.Xaml.Data.BindingOperations.BeginBindings",
+                StringComparison.Ordinal));
+        var ordinarySet = Assert.Single(
+            factory.DescendantNodes().OfType<
+                Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax>(),
+            invocation => string.Equals(
+                invocation.Expression.ToString(),
+                "global::Microsoft.UI.Xaml.Data.BindingOperations.SetBinding",
+                StringComparison.Ordinal));
+        var ordinaryAttach = Assert.Single(
+            factory.DescendantNodes().OfType<
+                Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax>(),
+            invocation => invocation.Expression.ToString().EndsWith(
+                "XamlTemplateFactory.AttachLifetime",
+                StringComparison.Ordinal));
+        Assert.Equal(6, ordinarySet.ArgumentList.Arguments.Count);
+        Assert.Equal(
+            "__templateLifetime",
+            ordinarySet.ArgumentList.Arguments[5].Expression.ToString());
+        Assert.Equal(
+            "__templateLifetime",
+            ordinaryAttach.ArgumentList.Arguments[1].Expression.ToString());
+        Assert.True(ordinaryBegin.SpanStart < ordinarySet.SpanStart);
+        Assert.True(ordinarySet.SpanStart < ordinaryAttach.SpanStart);
         Assert.True(begin.SpanStart < setBinding.SpanStart);
         Assert.True(setBinding.SpanStart < attach.SpanStart);
     }

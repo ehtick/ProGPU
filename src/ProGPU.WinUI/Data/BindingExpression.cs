@@ -119,6 +119,7 @@ public sealed class BindingExpression : IDisposable
     private readonly List<Action> _sourceUnsubscribe = new();
     private long _targetCallbackToken;
     private bool _updating;
+    private bool _initialized;
     private bool _disposed;
     private object? _leafSource;
     private DependencyProperty? _leafProperty;
@@ -130,7 +131,8 @@ public sealed class BindingExpression : IDisposable
         DependencyProperty targetProperty,
         Binding binding,
         object? context,
-        object? lookupRoot)
+        object? lookupRoot,
+        bool initialize = true)
     {
         _target = target;
         _targetProperty = targetProperty;
@@ -139,17 +141,26 @@ public sealed class BindingExpression : IDisposable
         _lookupRoot = lookupRoot;
         Status = BindingExpressionStatus.Inactive;
 
-        if (binding.Mode == BindingMode.TwoWay &&
-            binding.UpdateSourceTrigger is UpdateSourceTrigger.Default or
+        if (initialize)
+            Initialize();
+    }
+
+    internal void Initialize()
+    {
+        ThrowIfDisposed();
+        if (_initialized) return;
+        _initialized = true;
+        if (ParentBinding.Mode == BindingMode.TwoWay &&
+            ParentBinding.UpdateSourceTrigger is UpdateSourceTrigger.Default or
                 UpdateSourceTrigger.PropertyChanged)
         {
-            _targetCallbackToken = target.RegisterPropertyChangedCallback(
-                targetProperty,
+            _targetCallbackToken = _target.RegisterPropertyChangedCallback(
+                _targetProperty,
                 OnTargetPropertyChanged);
         }
-        else if (binding.Mode == BindingMode.TwoWay &&
-                 binding.UpdateSourceTrigger == UpdateSourceTrigger.LostFocus &&
-                 target is global::Microsoft.UI.Xaml.Controls.Control control)
+        else if (ParentBinding.Mode == BindingMode.TwoWay &&
+                 ParentBinding.UpdateSourceTrigger == UpdateSourceTrigger.LostFocus &&
+                 _target is global::Microsoft.UI.Xaml.Controls.Control control)
         {
             _focusCallbackToken = control.RegisterPropertyChangedCallback(
                 global::Microsoft.UI.Xaml.Controls.Control.IsFocusedProperty,
@@ -403,7 +414,7 @@ public sealed class BindingExpression : IDisposable
                         FrameworkElement.DataContextProperty,
                         token));
             }
-            return targetElement.DataContext;
+            return targetElement.DataContext ?? _context;
         }
         return _context;
     }

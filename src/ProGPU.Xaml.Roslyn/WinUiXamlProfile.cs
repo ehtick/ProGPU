@@ -117,7 +117,44 @@ public interface IRoslynXamlMarkupExtensionAssignmentProfile
         ExpressionSyntax? context,
         XamlTypeInfo? contextType,
         ExpressionSyntax lookupRoot,
-        out StatementSyntax statement);
+        ExpressionSyntax? deferredLifetimeOwner,
+        out StatementSyntax statement,
+        out bool usesDeferredLifetime);
+}
+
+/// <summary>
+/// Optional structured lifecycle shared by markup-extension assignments emitted inside one
+/// deferred-factory invocation. The compiler core owns aggregation and ordering; the framework
+/// profile owns creation and publication of its per-materialization registration owner.
+/// </summary>
+public interface IRoslynXamlDeferredMarkupExtensionLifecycleProfile
+{
+    bool TryCreateDeferredMarkupExtensionLifecycle(
+        ExpressionSyntax context,
+        string ownerIdentifier,
+        out RoslynXamlDeferredMarkupExtensionLifecycleSyntax lifecycle);
+
+    bool TryCreateDeferredMarkupExtensionFinalization(
+        ExpressionSyntax owner,
+        ExpressionSyntax root,
+        out ImmutableArray<StatementSyntax> statements);
+}
+
+public sealed class RoslynXamlDeferredMarkupExtensionLifecycleSyntax
+{
+    public RoslynXamlDeferredMarkupExtensionLifecycleSyntax(
+        ExpressionSyntax registrationOwner,
+        ImmutableArray<StatementSyntax> prepareStatements)
+    {
+        RegistrationOwner = registrationOwner ??
+            throw new ArgumentNullException(nameof(registrationOwner));
+        PrepareStatements = prepareStatements.IsDefault
+            ? ImmutableArray<StatementSyntax>.Empty
+            : prepareStatements;
+    }
+
+    public ExpressionSyntax RegistrationOwner { get; }
+    public ImmutableArray<StatementSyntax> PrepareStatements { get; }
 }
 
 /// <summary>
@@ -308,7 +345,7 @@ public interface IRoslynXamlMarkupExtensionReceiverProfile
         out StatementSyntax statement);
 }
 
-public sealed class WinUiXamlProfile : IRoslynXamlFrameworkProfile, IRoslynXamlContextualMarkupExpressionProfile, IRoslynXamlObjectExpressionProfile, IRoslynXamlCompiledResourceProfile, IRoslynXamlResourceAssignmentProfile, IRoslynXamlDeferredContentProfile, IRoslynXamlMarkupExtensionAssignmentProfile, IRoslynXamlCompiledBindingAssignmentProfile, IRoslynXamlCompiledBindingLifecycleProfile, IRoslynXamlDeferredCompiledBindingLifecycleProfile, IRoslynXamlCompiledEventBindingProfile, IRoslynXamlMarkupExtensionInvocationProfile, IXamlSchemaMetadataProvider, IXamlSyntheticSchemaProvider, IXamlDialectDirectiveProvider, IXamlTextValuePolicy, IXamlDictionaryKeyDirectivePolicy, ProGPU.Xaml.Binding.IXamlCompiledBindingPolicy
+public sealed class WinUiXamlProfile : IRoslynXamlFrameworkProfile, IRoslynXamlContextualMarkupExpressionProfile, IRoslynXamlObjectExpressionProfile, IRoslynXamlCompiledResourceProfile, IRoslynXamlResourceAssignmentProfile, IRoslynXamlDeferredContentProfile, IRoslynXamlMarkupExtensionAssignmentProfile, IRoslynXamlDeferredMarkupExtensionLifecycleProfile, IRoslynXamlCompiledBindingAssignmentProfile, IRoslynXamlCompiledBindingLifecycleProfile, IRoslynXamlDeferredCompiledBindingLifecycleProfile, IRoslynXamlCompiledEventBindingProfile, IRoslynXamlMarkupExtensionInvocationProfile, IXamlSchemaMetadataProvider, IXamlSyntheticSchemaProvider, IXamlDialectDirectiveProvider, IXamlTextValuePolicy, IXamlDictionaryKeyDirectivePolicy, ProGPU.Xaml.Binding.IXamlCompiledBindingPolicy
 {
     private static readonly string[] Extensions = { ".xaml" };
     private static readonly string[] PresentationNamespaces =
@@ -1124,9 +1161,12 @@ public sealed class WinUiXamlProfile : IRoslynXamlFrameworkProfile, IRoslynXamlC
         ExpressionSyntax? context,
         XamlTypeInfo? contextType,
         ExpressionSyntax lookupRoot,
-        out StatementSyntax statement)
+        ExpressionSyntax? deferredLifetimeOwner,
+        out StatementSyntax statement,
+        out bool usesDeferredLifetime)
     {
         statement = SyntaxFactory.EmptyStatement();
+        usesDeferredLifetime = false;
         var extensionName = extension.Type.RequestedName.LocalName;
         if (string.Equals(extensionName, "Binding", StringComparison.Ordinal) ||
             string.Equals(extensionName, "BindingExtension", StringComparison.Ordinal))
@@ -1140,14 +1180,24 @@ public sealed class WinUiXamlProfile : IRoslynXamlFrameworkProfile, IRoslynXamlC
                 (ExpressionSyntax)RoslynTypeSyntaxFactory.CreateGlobalName(
                     "Microsoft", "UI", "Xaml", "Data", "BindingOperations"),
                 SyntaxFactory.IdentifierName("SetBinding"));
+            var bindingArguments = deferredLifetimeOwner == null
+                ? Arguments(
+                    receiver,
+                    StringLiteral(member.Name),
+                    binding,
+                    context ?? SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression),
+                    lookupRoot)
+                : Arguments(
+                    receiver,
+                    StringLiteral(member.Name),
+                    binding,
+                    context ?? SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression),
+                    lookupRoot,
+                    deferredLifetimeOwner);
             statement = SyntaxFactory.ExpressionStatement(
                 SyntaxFactory.InvocationExpression(setBinding)
-                    .WithArgumentList(Arguments(
-                        receiver,
-                        StringLiteral(member.Name),
-                        binding,
-                        context ?? SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression),
-                        lookupRoot)));
+                    .WithArgumentList(bindingArguments));
+            usesDeferredLifetime = context != null;
             return true;
         }
 
@@ -1432,6 +1482,49 @@ public sealed class WinUiXamlProfile : IRoslynXamlFrameworkProfile, IRoslynXamlC
         lifecycle = new RoslynXamlDeferredCompiledBindingLifecycleSyntax(
             controller,
             ImmutableArray.Create<StatementSyntax>(declaration));
+        return true;
+    }
+
+    public bool TryCreateDeferredMarkupExtensionLifecycle(
+        ExpressionSyntax context,
+        string ownerIdentifier,
+        out RoslynXamlDeferredMarkupExtensionLifecycleSyntax lifecycle)
+    {
+        _ = context;
+        var owner = SyntaxFactory.IdentifierName(ownerIdentifier);
+        var begin = SyntaxFactory.InvocationExpression(
+            SyntaxFactory.MemberAccessExpression(
+                SyntaxKind.SimpleMemberAccessExpression,
+                (ExpressionSyntax)RoslynTypeSyntaxFactory.CreateGlobalName(
+                    "Microsoft", "UI", "Xaml", "Data", "BindingOperations"),
+                SyntaxFactory.IdentifierName("BeginBindings")));
+        var declaration = SyntaxFactory.LocalDeclarationStatement(
+            SyntaxFactory.VariableDeclaration(
+                    SyntaxFactory.IdentifierName("var"))
+                .AddVariables(
+                    SyntaxFactory.VariableDeclarator(ownerIdentifier)
+                        .WithInitializer(
+                            SyntaxFactory.EqualsValueClause(begin))));
+        lifecycle = new RoslynXamlDeferredMarkupExtensionLifecycleSyntax(
+            owner,
+            ImmutableArray.Create<StatementSyntax>(declaration));
+        return true;
+    }
+
+    public bool TryCreateDeferredMarkupExtensionFinalization(
+        ExpressionSyntax owner,
+        ExpressionSyntax root,
+        out ImmutableArray<StatementSyntax> statements)
+    {
+        var attach = SyntaxFactory.MemberAccessExpression(
+            SyntaxKind.SimpleMemberAccessExpression,
+            (ExpressionSyntax)RoslynTypeSyntaxFactory.CreateGlobalName(
+                "Microsoft", "UI", "Xaml", "Markup", "XamlTemplateFactory"),
+            SyntaxFactory.IdentifierName("AttachLifetime"));
+        statements = ImmutableArray.Create<StatementSyntax>(
+            SyntaxFactory.ExpressionStatement(
+                SyntaxFactory.InvocationExpression(attach)
+                    .WithArgumentList(Arguments(root, owner))));
         return true;
     }
 
