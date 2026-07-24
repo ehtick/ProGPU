@@ -1,0 +1,21 @@
+PORTING NOTICE
+
+This project was ported and adapted from:
+
+Repository: https://github.com/wieslawsoltes/Avalonia.git
+Branch: feature/progpu
+Commit: 5378af03f17a4d9d2845882229ffed7f67350037
+Original path: src/ProGpu/Avalonia.ProGpu
+
+Avalonia 11 compatibility fixes were also incorporated from:
+
+Repository: https://github.com/wieslawsoltes/ProGPU.Avalonia.git
+Branch: origin/v11
+Commit: e8439a25e54b850c854a8b322641d233a4f3f7f2
+Original path: src/ProGpu/Avalonia.ProGpu
+
+The code was adapted to use the ProGPU projects and SkiaSharp shim in this
+repository. Shared sources contain narrowly scoped AVALONIA11 conditionals so
+the Avalonia 11 project can compile the same implementation.
+
+No Git history or commits were imported from either source repository.

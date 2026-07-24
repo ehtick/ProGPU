@@ -1,0 +1,146 @@
+using System;
+using System.Linq;
+using System.Threading;
+using Avalonia.Platform;
+#if AVALONIA11
+using Avalonia.Controls.Platform.Surfaces;
+#else
+using Avalonia.Platform.Surfaces;
+#endif
+using ProGPU.Backend;
+
+namespace Avalonia.SilkNet
+{
+    internal interface ISilkNetFramebufferAddressProvider
+    {
+        IntPtr GetAddress(int requiredBufferSize);
+    }
+
+    public class SilkNetLockedFramebuffer : ILockedFramebuffer, IPlatformHandle, IDisposable
+    {
+        private readonly IntPtr _address;
+        private readonly ISilkNetFramebufferAddressProvider? _addressProvider;
+        private readonly int _requiredBufferSize;
+        private readonly Action _onDispose;
+        private readonly Silk.NET.Windowing.IWindow _window;
+        private IntPtr _resolvedAddress;
+        private int _disposed;
+
+        public SilkNetLockedFramebuffer(
+            IntPtr address,
+            PixelSize size,
+            int rowBytes,
+            Vector dpi,
+            PixelFormat format,
+            AlphaFormat alphaFormat,
+            Action onDispose,
+            Silk.NET.Windowing.IWindow window)
+        {
+            _address = address;
+            Size = size;
+            RowBytes = rowBytes;
+            Dpi = dpi;
+            Format = format;
+            AlphaFormat = alphaFormat;
+            _onDispose = onDispose;
+            _window = window;
+        }
+
+        internal SilkNetLockedFramebuffer(
+            ISilkNetFramebufferAddressProvider addressProvider,
+            int requiredBufferSize,
+            PixelSize size,
+            int rowBytes,
+            Vector dpi,
+            PixelFormat format,
+            AlphaFormat alphaFormat,
+            Action onDispose,
+            Silk.NET.Windowing.IWindow window)
+            : this(
+                IntPtr.Zero,
+                size,
+                rowBytes,
+                dpi,
+                format,
+                alphaFormat,
+                onDispose,
+                window)
+        {
+            _addressProvider = addressProvider ?? throw new ArgumentNullException(nameof(addressProvider));
+            _requiredBufferSize = requiredBufferSize;
+        }
+
+        public IntPtr Address
+        {
+            get
+            {
+                if (_resolvedAddress == IntPtr.Zero)
+                {
+                    _resolvedAddress = _addressProvider?.GetAddress(_requiredBufferSize) ?? _address;
+                }
+
+                return _resolvedAddress;
+            }
+        }
+        public PixelSize Size { get; }
+        public int RowBytes { get; }
+        public Vector Dpi { get; }
+        public PixelFormat Format { get; }
+        public AlphaFormat AlphaFormat { get; }
+        public IntPtr Handle => SurfacePointer;
+        public string HandleDescriptor => "WGPU_SURFACE";
+
+        public IntPtr SurfacePointer
+        {
+            get
+            {
+                unsafe
+                {
+                    var context = WgpuContext.ActiveContexts.FirstOrDefault(c => c.Window == _window);
+                    if (context != null && context.Surface != null)
+                    {
+                        return (IntPtr)context.Surface;
+                    }
+                    return IntPtr.Zero;
+                }
+            }
+        }
+
+        public IntPtr WindowPointer
+        {
+            get
+            {
+                var native = _window.Native;
+                if (native?.Win32 is { } win32)
+                    return win32.Hwnd;
+                if (native?.Cocoa is { } cocoa)
+                    return cocoa;
+                if (native?.X11 is { } x11)
+                    return (IntPtr)x11.Window;
+                if (native?.Wayland is { } wayland)
+                    return wayland.Surface;
+                return native?.Glfw ?? IntPtr.Zero;
+            }
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                try
+                {
+                    if (_resolvedAddress != IntPtr.Zero)
+                    {
+                        GpuFramebufferPresentationRegistry.TryPresent(
+                            _resolvedAddress,
+                            SurfacePointer);
+                    }
+                }
+                finally
+                {
+                    _onDispose();
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <AvaloniaAccessUnstablePrivateApis>true</AvaloniaAccessUnstablePrivateApis>
+    <Avalonia_I_Want_To_Use_Private_Apis_IN_NUGET_PACKAGE>true</Avalonia_I_Want_To_Use_Private_Apis_IN_NUGET_PACKAGE>
+    <Avalonia_I_Want_To_Use_Private_Apis_In_Nuget_Package_And_Promise_To_Pin_The_Exact_Avalonia_Version_In_Package_Dependency>true</Avalonia_I_Want_To_Use_Private_Apis_In_Nuget_Package_And_Promise_To_Pin_The_Exact_Avalonia_Version_In_Package_Dependency>
+    <PackageId>ProGPU.Avalonia.SilkNet</PackageId>
+    <Version>12.0.5-preview.19</Version>
+    <PackageVersion>12.0.5-preview.19</PackageVersion>
+    <Title>Silk.NET windowing platform for Avalonia and ProGPU</Title>
+    <Description>Cross-platform Silk.NET windowing platform for Avalonia applications using ProGPU or another Avalonia renderer.</Description>
+    <PackageTags>progpu;avalonia;windowing;silk.net;webgpu;desktop</PackageTags>
+    <PackageIcon>ProGpuAvaloniaIcon.png</PackageIcon>
+    <PackageReadmeFile>progpu-package-readme.md</PackageReadmeFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="..\..\build\Assets\ProGpuAvaloniaIcon.png" Pack="true" PackagePath="\" Visible="false" />
+    <None Include="..\..\build\Assets\ProGpuAvaloniaIcon.svg" Pack="true" PackagePath="\" Visible="false" />
+    <None Include="..\..\docs\progpu-package-readme.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\ProGPU.Backend\ProGPU.Backend.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" />
+    <PackageReference Include="Silk.NET.Windowing" />
+    <PackageReference Include="Silk.NET.Input" />
+    <PackageReference Include="Silk.NET.WebGPU" />
+    <PackageReference Include="Silk.NET.WebGPU.Native.WGPU" />
+    <PackageReference Include="SixLabors.ImageSharp" />
+  </ItemGroup>
+  <PropertyGroup Label="Warnings">
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+  </PropertyGroup>
+  <ItemGroup Label="InternalsVisibleTo">
+    <InternalsVisibleTo Include="Avalonia.IntegrationTests.SilkNet, PublicKey=$(ProGPUPublicKey)" />
+  </ItemGroup>
+</Project>
