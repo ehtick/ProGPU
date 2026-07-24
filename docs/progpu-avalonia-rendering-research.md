@@ -103,7 +103,7 @@ Validation is performed against the final source state:
   references for both Avalonia 12.0.5 and Avalonia 11.3.18.
 - The full `ProGPU.slnx` build succeeds, including both shared-source Avalonia
   lanes, the unchanged Skia backend, ControlCatalog, RenderDemo, and tests.
-- The existing ProGPU runtime suite passes 2,367 tests after the SkiaSharp
+- The existing ProGPU runtime suite passes 2,375 tests after the SkiaSharp
   surface-presentation change.
 - Native startup smoke checks kept ControlCatalog alive for more than five
   seconds with both direct ProGPU rendering and `--skiashim`; RenderDemo and
@@ -186,3 +186,68 @@ to 0.1682 ms and median compilation from 0.0325 ms to 0.0190 ms, with no
 compile frame over budget after the change. Release IL increased by 7,168
 bytes in `ProGPU.Vector` and 512 bytes in `ProGPU.Scene`; `ProGPU.Backend` was
 unchanged in size.
+
+## Cross-context images and Retina resize follow-up
+
+The Skia compatibility resize failure exposed a resource-domain boundary that
+the original startup smoke check did not exercise:
+
+- [Skia `SkImage`](https://api.skia.org/classSkImage.html) defines an immutable
+  image whose pixels may live in a raster bitmap, encoded data, or GPU memory,
+  and permits lazy allocation of additional storage when needed.
+- [Direct2D wrong-resource-domain diagnostics](https://learn.microsoft.com/en-us/windows/win32/direct2d/d1121)
+  require a bitmap used by a device context to belong to the same device
+  resource domain.
+- [WebGPU image-copy validation](https://www.w3.org/TR/webgpu/#abstract-opdef-validating-texture-copy-range)
+  validates copies between GPU textures owned by the active device rather than
+  defining an implicit cross-device copy.
+
+ProGPU adopts the same ownership split without a GPU readback. An immutable
+`SKImage` created from an `SKBitmap` retains one tightly packed RGBA snapshot
+and lazily uploads it once into each target `WgpuContext`; later draws reuse the
+context-local texture. Images which wrap borrowed or GPU-only textures retain
+strict resource-domain rejection because no portable CPU representation exists.
+The Silk window now pushes its exact stored context while invoking Avalonia's
+paint callback and disposes that same instance with the window. The portable
+snapshot costs four bytes per pixel for the lifetime of a bitmap-backed image;
+it avoids a synchronous readback and bounds context materialization to one
+upload per image and target context.
+
+Retina resizing also revealed that Avalonia can express a full-window rectangle
+as three explicit line segments plus the implicit closing edge. When that
+canonical sharp rectangle provably cannot fit the maximum atlas, the direct
+path recognizer emits two analytic triangles in O(1) time and storage,
+independent of framebuffer dimensions. Smaller sharp rectangles retain their
+existing atlas rasterization and antialiasing; fully rounded and arbitrary
+paths also continue through the PathAtlas. An arbitrary path that cannot fit
+after the single deterministic reset still fails explicitly. This removes the
+former 2,408x1,608 and 2,568x1,528 full-window atlas requests rather than
+increasing atlas size or reducing raster quality.
+
+### Resize and image performance validation
+
+A native ControlCatalog `--skiashim` run exercised four automated logical
+window sizes (1280x760, 1420x900, 1210x680, and 1360x820) on the Retina
+framebuffer. It completed without a cross-context exception, an oversized-path
+failure, or WebGPU validation output.
+
+A Release image harness compared the parent revision with the final source on
+the same Apple M3 Pro. Each process warmed 40 frames and measured 400 draws of
+a 128x128 bitmap-backed image into a 192x128 surface; the values below are
+medians from four processes.
+
+| Workload | Median frame time | Managed allocation/frame |
+| --- | ---: | ---: |
+| Parent, unchanged same-context draw | 1.4852 ms | 8,760 B |
+| Final, unchanged same-context draw | 1.4796 ms | 8,783 B |
+| Final, cached cross-context draw | 1.5415 ms | 8,718 B |
+
+The final same-context result differs by -0.4% in time and +23 bytes per frame,
+both within run-to-run noise. The first cross-context draw took a 17.8708 ms
+median to create and upload the target-context texture. Subsequent
+cross-context frames allocated no portable pixel buffer and ran within 4% of
+the parent same-context median, confirming that resize compatibility does not
+introduce a per-frame CPU upload. Direct rectangle regressions additionally
+assert zero PathAtlas entries when the canonical rectangle is oversized, normal
+atlas use when it fits, and preservation of the general oversized-path failure
+test.
