@@ -21,10 +21,10 @@ namespace Avalonia.ProGpu.UnitTests
             Assert.Contains("'$(MSBuildProjectName)' == 'Avalonia.SilkNet'", properties, StringComparison.Ordinal);
             Assert.Contains("<PackageId>ProGPU.Avalonia.Rendering</PackageId>", renderer, StringComparison.Ordinal);
             Assert.Contains("<PackageId>ProGPU.Avalonia.SilkNet</PackageId>", windowing, StringComparison.Ordinal);
-            Assert.Contains("<Version>12.0.5-preview.26</Version>", renderer, StringComparison.Ordinal);
-            Assert.Contains("<Version>12.0.5-preview.26</Version>", windowing, StringComparison.Ordinal);
-            Assert.Contains("<Version>11.3.18-preview.26</Version>", rendererV11, StringComparison.Ordinal);
-            Assert.Contains("<Version>11.3.18-preview.26</Version>", windowingV11, StringComparison.Ordinal);
+            Assert.Contains("<Version>12.0.5-preview.27</Version>", renderer, StringComparison.Ordinal);
+            Assert.Contains("<Version>12.0.5-preview.27</Version>", windowing, StringComparison.Ordinal);
+            Assert.Contains("<Version>11.3.18-preview.27</Version>", rendererV11, StringComparison.Ordinal);
+            Assert.Contains("<Version>11.3.18-preview.27</Version>", windowingV11, StringComparison.Ordinal);
             Assert.Contains("<DefineConstants>$(DefineConstants);AVALONIA11</DefineConstants>", rendererV11, StringComparison.Ordinal);
             Assert.Contains(@"..\ProGPU.Avalonia.Rendering\**\*.cs", rendererV11, StringComparison.Ordinal);
             Assert.Contains(@"..\ProGPU.Avalonia.SilkNet\**\*.cs", windowingV11, StringComparison.Ordinal);
@@ -146,6 +146,7 @@ namespace Avalonia.ProGpu.UnitTests
             var publish = ReadRepoFile("scripts", "progpu-publish.sh");
             var documentation = ReadRepoFile("docs", "progpu-packaging.md");
             var packageReadme = ReadRepoFile("docs", "progpu-package-readme.md");
+            var releaseWorkflow = ReadRepoFile(".github", "workflows", "release.yml");
 
             foreach (var packageId in new[] { "ProGPU.Avalonia.Rendering", "ProGPU.Avalonia.SilkNet" })
             {
@@ -155,13 +156,25 @@ namespace Avalonia.ProGpu.UnitTests
 
             Assert.Contains("ProGPU.Avalonia.Rendering.V11", packageList, StringComparison.Ordinal);
             Assert.Contains("ProGPU.Avalonia.SilkNet.V11", packageList, StringComparison.Ordinal);
-            Assert.Contains("11.3.18-preview.26", packageList, StringComparison.Ordinal);
-            Assert.Contains("12.0.5-preview.26", packageList, StringComparison.Ordinal);
+            Assert.Contains("11.3.18-preview.27", packageList, StringComparison.Ordinal);
+            Assert.Contains("12.0.5-preview.27", packageList, StringComparison.Ordinal);
             Assert.Contains("dotnet", pack, StringComparison.Ordinal);
             Assert.Contains("--output", pack, StringComparison.Ordinal);
             Assert.Contains("NUGET_API_KEY", publish, StringComparison.Ordinal);
             Assert.Contains("--skip-duplicate", publish, StringComparison.Ordinal);
             Assert.DoesNotContain(".snupkg", publish, StringComparison.Ordinal);
+            Assert.Contains("./scripts/progpu-pack.sh", releaseWorkflow, StringComparison.Ordinal);
+            Assert.Contains(
+                "progpu-avalonia-${{ env.PROGPU_PACKAGE_VERSION }}",
+                releaseWorkflow,
+                StringComparison.Ordinal);
+            Assert.True(
+                releaseWorkflow.IndexOf(
+                    "Publish runtime packages to NuGet.org",
+                    StringComparison.Ordinal) <
+                releaseWorkflow.IndexOf(
+                    "Publish Avalonia integration packages to NuGet.org",
+                    StringComparison.Ordinal));
             Assert.Contains(".WithInterFont()", documentation, StringComparison.Ordinal);
             Assert.Contains("IProGpuApiLeaseFeature", packageReadme, StringComparison.Ordinal);
             Assert.Contains("lease.CurrentTransform", packageReadme, StringComparison.Ordinal);

@@ -5,10 +5,12 @@ ProGPU is a high-performance, GPU-first UI framework and composition substrate f
 ## NuGet Packages
 
 ProGPU runtime packages are built from `eng/progpu-package-list.sh` by the
-`Release` GitHub Actions workflow. The Avalonia renderer and Silk.NET windowing
-packages use the separate versioned integration lane in
-`scripts/progpu-package-list.sh`. Samples, tests, diagnostics, and framework
-shim projects are intentionally not packed.
+`Release` GitHub Actions workflow. The same workflow builds the Avalonia
+renderer and Silk.NET windowing packages from the separate versioned
+integration lane in `scripts/progpu-package-list.sh`, publishes them after
+their ProGPU runtime dependencies, and attaches both lanes to the GitHub
+release. Samples, tests, diagnostics, and framework shim projects are
+intentionally not packed.
 
 | Package | Purpose | NuGet |
 | --- | --- | --- |
@@ -48,7 +50,7 @@ shim projects are intentionally not packed.
 Local package build:
 
 ```bash
-PROGPU_PACKAGE_VERSION=0.1.0-preview.26 ./eng/progpu-pack.sh
+PROGPU_PACKAGE_VERSION=0.1.0-preview.27 ./eng/progpu-pack.sh
 ```
 
 Pack both Avalonia integration lanes after the portable ProGPU runtime packages:
@@ -66,7 +68,7 @@ contracts. Until native binaries are distributed independently, applications set
 `ProGpuWgpuNativeAndroidRoot` or `ProGpuWgpuNativeXCFramework` to outputs from the
 repository's pinned wgpu-native build scripts before deployment.
 Packing the complete set requires macOS with the Android and iOS workloads;
-`PROGPU_PACKAGE_GROUP=portable` packs the 22 cross-platform packages on Linux.
+`PROGPU_PACKAGE_GROUP=portable` packs the 28 cross-platform packages on Linux.
 
 ## Native iPhone WebGPU sample
 
@@ -310,7 +312,7 @@ Without these headers, `Auto` uses the ordinary OffscreenCanvas worker when avai
 Local publishing reads the API key from `NUGET_API_KEY` without storing it in the repository:
 
 ```bash
-PROGPU_PACKAGE_VERSION=0.1.0-preview.26 ./eng/progpu-publish.sh
+PROGPU_PACKAGE_VERSION=0.1.0-preview.27 ./eng/progpu-publish.sh
 ```
 
 The release workflow validates docs, restores, builds, tests, packs `.nupkg`/`.snupkg` artifacts, and can publish to NuGet.org when `NUGET_API_KEY` is configured. See [docs/release.md](docs/release.md).
@@ -360,8 +362,8 @@ two NuGet package IDs and are distinguished by their package versions:
 
 | Avalonia | Rendering package | Silk.NET package |
 | --- | --- | --- |
-| 12.0.5 | `ProGPU.Avalonia.Rendering` `12.0.5-preview.26` | `ProGPU.Avalonia.SilkNet` `12.0.5-preview.26` |
-| 11.3.18 | `ProGPU.Avalonia.Rendering` `11.3.18-preview.26` | `ProGPU.Avalonia.SilkNet` `11.3.18-preview.26` |
+| 12.0.5 | `ProGPU.Avalonia.Rendering` `12.0.5-preview.27` | `ProGPU.Avalonia.SilkNet` `12.0.5-preview.27` |
+| 11.3.18 | `ProGPU.Avalonia.Rendering` `11.3.18-preview.27` | `ProGPU.Avalonia.SilkNet` `11.3.18-preview.27` |
 
 The Avalonia 12 artifacts are built from
 `src/ProGPU.Avalonia.Rendering` and `src/ProGPU.Avalonia.SilkNet`. The Avalonia
@@ -373,11 +375,11 @@ projects, which source-link the shared implementation and define
 Install the Avalonia 12 packages with:
 
 ```bash
-dotnet add package ProGPU.Avalonia.Rendering --version 12.0.5-preview.26
-dotnet add package ProGPU.Avalonia.SilkNet --version 12.0.5-preview.26
+dotnet add package ProGPU.Avalonia.Rendering --version 12.0.5-preview.27
+dotnet add package ProGPU.Avalonia.SilkNet --version 12.0.5-preview.27
 ```
 
-For Avalonia 11, use the same package IDs with `11.3.18-preview.26` and pin all
+For Avalonia 11, use the same package IDs with `11.3.18-preview.27` and pin all
 Avalonia packages to `11.3.18`. Configure the application with
 `UseSilkNet().UseProGpu()` before starting the desktop lifetime. Complete
 startup, API-lease, local packaging, and package-only validation instructions
