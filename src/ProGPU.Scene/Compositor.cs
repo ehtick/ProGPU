@@ -5324,7 +5324,39 @@ SceneStateUploadComplete:
         outer = default;
         inner = default;
         hasInner = false;
-        if (path.IsCombined || path.Figures.Count is < 1 or > 2 ||
+        if (path.IsCombined)
+        {
+            if (path.Op != 0 ||
+                path.PathA is not { IsCombined: false, Figures.Count: 1 } pathA ||
+                path.PathB is not { IsCombined: false, Figures.Count: 1 } pathB ||
+                !TryReadDirectRoundedRectangleContour(pathA.Figures[0], out outer) ||
+                !TryReadDirectRoundedRectangleContour(pathB.Figures[0], out inner))
+            {
+                return false;
+            }
+
+            float combinedTolerance = GetDirectRoundedTolerance(outer.Width, outer.Height);
+            if (!HasPartialRoundedCorners(outer) ||
+                inner.Left < outer.Left - combinedTolerance ||
+                inner.Top < outer.Top - combinedTolerance ||
+                inner.Right > outer.Right + combinedTolerance ||
+                inner.Bottom > outer.Bottom + combinedTolerance ||
+                inner.Width <= combinedTolerance ||
+                inner.Height <= combinedTolerance ||
+                inner.Width >= outer.Width - combinedTolerance &&
+                inner.Height >= outer.Height - combinedTolerance ||
+                !DirectRoundedRectangleContainsContour(outer, inner, combinedTolerance))
+            {
+                outer = default;
+                inner = default;
+                return false;
+            }
+
+            hasInner = true;
+            return true;
+        }
+
+        if (path.Figures.Count is < 1 or > 2 ||
             !TryReadDirectRoundedRectangleContour(path.Figures[0], out DirectRoundedRectangleContour first))
         {
             return false;

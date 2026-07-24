@@ -43,6 +43,32 @@ public class PathAtlasFillCompilerTests
         AssertOnlyFilledFigure(records, segments, minX, minY, maxX, maxY);
     }
 
+    [Fact]
+    public void ContainedRoundedRectangleDifferencePreservesExactEvenOddContours()
+    {
+        PathGeometry outer = CreateTopRoundedRectangle(
+            0f,
+            0f,
+            120f,
+            24f,
+            new Vector2(5f, 6f));
+        PathGeometry inner = CreateTopRoundedRectangle(
+            1f,
+            1f,
+            119f,
+            24f,
+            new Vector2(4f, 5f));
+
+        PathGeometry result = PathOpGeometrySolver.Combine(outer, inner, op: 0);
+
+        Assert.Equal(FillRule.EvenOdd, result.FillRule);
+        Assert.Equal(2, result.Figures.Count);
+        Assert.Equal(outer.Figures[0].Segments.Count, result.Figures[0].Segments.Count);
+        Assert.Equal(inner.Figures[0].Segments.Count, result.Figures[1].Segments.Count);
+        Assert.IsType<ArcSegment>(result.Figures[0].Segments[1]);
+        Assert.IsType<ArcSegment>(result.Figures[1].Segments[1]);
+    }
+
     private static PathGeometry CreateOpenRectangle()
     {
         var path = new PathGeometry { FillRule = FillRule.EvenOdd };
@@ -64,6 +90,35 @@ public class PathAtlasFillCompilerTests
         unfilledFigure.Segments.Add(new LineSegment(new Vector2(120f, 100f)));
         unfilledFigure.Segments.Add(new LineSegment(new Vector2(100f, 120f)));
         path.Figures.Add(unfilledFigure);
+        return path;
+    }
+
+    private static PathGeometry CreateTopRoundedRectangle(
+        float left,
+        float top,
+        float right,
+        float bottom,
+        Vector2 radius)
+    {
+        var path = new PathGeometry();
+        var figure = new PathFigure(new Vector2(left + radius.X, top), isClosed: true);
+        figure.Segments.Add(new LineSegment(new Vector2(right - radius.X, top)));
+        figure.Segments.Add(new ArcSegment(
+            new Vector2(right, top + radius.Y),
+            radius,
+            rotationAngle: 0f,
+            isLargeArc: false,
+            SweepDirection.Clockwise));
+        figure.Segments.Add(new LineSegment(new Vector2(right, bottom)));
+        figure.Segments.Add(new LineSegment(new Vector2(left, bottom)));
+        figure.Segments.Add(new LineSegment(new Vector2(left, top + radius.Y)));
+        figure.Segments.Add(new ArcSegment(
+            new Vector2(left + radius.X, top),
+            radius,
+            rotationAngle: 0f,
+            isLargeArc: false,
+            SweepDirection.Clockwise));
+        path.Figures.Add(figure);
         return path;
     }
 

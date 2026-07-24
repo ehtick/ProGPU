@@ -83,6 +83,97 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
     }
 
     [Fact]
+    public void PathAtlasRejectsSingleRasterLargerThanMaximumBeforeUpload()
+    {
+        using var atlas = new PathAtlas(HeadlessWindow.Shared.Context, atlasSize: 64);
+        var path = PrimitivePathGeometry.CreateRectangle(0f, 0f, 61f, 8f);
+
+        PathAtlas.PathInfo info = atlas.GetOrCreatePath(path, scale: 1f);
+
+        Assert.True(atlas.CapacityExceeded);
+        Assert.Equal(0u, info.Width);
+        Assert.Equal(0u, info.Height);
+        Assert.Equal(Vector2.Zero, info.TexCoordMin);
+        Assert.Equal(Vector2.Zero, info.TexCoordMax);
+
+        atlas.RasterizePendingPaths();
+    }
+
+    [Fact]
+    public unsafe void CoverageUploadRejectsOutOfRangeCopiesBeforeEncoding()
+    {
+        WgpuContext context = HeadlessWindow.Shared.Context;
+        using var source = new GpuBuffer(
+            context,
+            256,
+            BufferUsage.CopySrc,
+            "Coverage Upload Range Test");
+        using var destination = new GpuTexture(
+            context,
+            8,
+            8,
+            TextureFormat.R8Unorm,
+            TextureUsage.CopyDst,
+            "Coverage Upload Range Test");
+        var descriptor = new CommandEncoderDescriptor();
+        CommandEncoder* encoder = context.Api.DeviceCreateCommandEncoder(context.Device, &descriptor);
+        Assert.NotEqual(IntPtr.Zero, (IntPtr)encoder);
+
+        try
+        {
+            ArgumentOutOfRangeException? destinationException = null;
+            try
+            {
+                GpuCoverageUpload.RecordCopy(
+                    context,
+                    encoder,
+                    source,
+                    sourceOffset: 0,
+                    bytesPerRow: 256,
+                    destination,
+                    destinationX: 2,
+                    destinationY: 0,
+                    width: 7,
+                    height: 1);
+            }
+            catch (ArgumentOutOfRangeException exception)
+            {
+                destinationException = exception;
+            }
+
+            Assert.NotNull(destinationException);
+            Assert.Equal("width", destinationException.ParamName);
+
+            ArgumentOutOfRangeException? sourceException = null;
+            try
+            {
+                GpuCoverageUpload.RecordCopy(
+                    context,
+                    encoder,
+                    source,
+                    sourceOffset: 0,
+                    bytesPerRow: 256,
+                    destination,
+                    destinationX: 0,
+                    destinationY: 0,
+                    width: 8,
+                    height: 2);
+            }
+            catch (ArgumentOutOfRangeException exception)
+            {
+                sourceException = exception;
+            }
+
+            Assert.NotNull(sourceException);
+            Assert.Equal("sourceOffset", sourceException.ParamName);
+        }
+        finally
+        {
+            context.Api.CommandEncoderRelease(encoder);
+        }
+    }
+
+    [Fact]
     public void PathAtlasCachesAndSamplesSubpixelTranslationPhase()
     {
         using var atlas = new PathAtlas(HeadlessWindow.Shared.Context, atlasSize: 256);
@@ -755,6 +846,30 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
         Assert.True(redPixels > 100, $"Expected a visible red border, found {redPixels} red pixels.");
         int centerOffset = (48 * 128 + 64) * 4;
         Assert.True(pixels[centerOffset + 2] > 180, "The even-odd inner hole should preserve the blue background.");
+    }
+
+    [Fact]
+    public void CombinedPartialRoundedRectangleBorderFillBypassesPathOperationAndAtlas()
+    {
+        using var window = new HeadlessWindow(
+            128,
+            96,
+            CompositorOptions.Default with { PathAtlasSize = 64 });
+        window.Content = new CombinedPartialRoundedBorderVisual();
+
+        window.Render();
+
+        Assert.False(window.Compositor.PathAtlas.CapacityExceeded);
+        Assert.Equal(0, window.Compositor.PathAtlas.CachedPathCount);
+        Assert.True(
+            window.Compositor.VectorVertices.Count(vertex => MathF.Abs(vertex.ShapeType - 13f) < 0.01f) > 0,
+            "Expected the contained rounded-rectangle difference to use direct triangle-SDF vertices.");
+
+        byte[] pixels = window.ReadPixels();
+        Assert.True(pixels[(8 * 128 + 64) * 4] > 140, "The top border should remain visible.");
+        Assert.True(pixels[(48 * 128 + 8) * 4] > 140, "The left border should remain visible.");
+        Assert.True(pixels[(48 * 128 + 64) * 4 + 2] > 180, "The inner hole should preserve the blue background.");
+        Assert.True(pixels[(88 * 128 + 64) * 4 + 2] > 180, "The zero-width bottom border should remain transparent.");
     }
 
     [Fact]
@@ -5601,6 +5716,63 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
                 isLargeArc: false,
                 SweepDirection.Clockwise));
             return figure;
+        }
+    }
+
+    private sealed class CombinedPartialRoundedBorderVisual : FrameworkElement
+    {
+        public CombinedPartialRoundedBorderVisual()
+        {
+            Width = 128f;
+            Height = 96f;
+        }
+
+        public override void OnRender(DrawingContext context)
+        {
+            context.DrawRectangle(
+                new SolidColorBrush(new Vector4(0f, 0f, 1f, 1f)),
+                null,
+                new Rect(0f, 0f, 128f, 96f));
+            context.DrawPath(
+                new SolidColorBrush(new Vector4(1f, 0f, 0f, 1f)),
+                null,
+                new PathGeometry
+                {
+                    IsCombined = true,
+                    Op = 0,
+                    PathA = CreateContourPath(8f, 8f, 120f, 88f, 9f, 9f),
+                    PathB = CreateContourPath(9f, 9f, 119f, 88f, 8f, 8f)
+                });
+        }
+
+        private static PathGeometry CreateContourPath(
+            float left,
+            float top,
+            float right,
+            float bottom,
+            float topLeftRadius,
+            float topRightRadius)
+        {
+            var path = new PathGeometry();
+            var figure = new PathFigure(new Vector2(left + topLeftRadius, top), isClosed: true);
+            figure.Segments.Add(new LineSegment(new Vector2(right - topRightRadius, top)));
+            figure.Segments.Add(new ArcSegment(
+                new Vector2(right, top + topRightRadius),
+                new Vector2(topRightRadius),
+                rotationAngle: 0f,
+                isLargeArc: false,
+                SweepDirection.Clockwise));
+            figure.Segments.Add(new LineSegment(new Vector2(right, bottom)));
+            figure.Segments.Add(new LineSegment(new Vector2(left, bottom)));
+            figure.Segments.Add(new LineSegment(new Vector2(left, top + topLeftRadius)));
+            figure.Segments.Add(new ArcSegment(
+                new Vector2(left + topLeftRadius, top),
+                new Vector2(topLeftRadius),
+                rotationAngle: 0f,
+                isLargeArc: false,
+                SweepDirection.Clockwise));
+            path.Figures.Add(figure);
+            return path;
         }
     }
 
