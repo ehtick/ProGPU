@@ -922,7 +922,7 @@ namespace Microsoft.UI.Xaml.Controls
 
 
 
-        public float FontSize
+        public new float FontSize
         {
             get => _fontSize;
             set { _fontSize = value; _blockView.FontSize = value; Invalidate(); }
@@ -4213,7 +4213,7 @@ namespace Microsoft.UI.Xaml.Controls
             // Draw soft 3D elevation shadows (ambient & penumbra layers)
             if (IsEnabled)
             {
-                float shadowR = CornerRadius;
+                float shadowR = CornerRadius.RenderingRadius;
 
                 // Ambient shadow (offset Y=2, very soft, low opacity)
                 var ambientRect = new Rect(0, 2, Size.X, Size.Y);
@@ -4224,7 +4224,7 @@ namespace Microsoft.UI.Xaml.Controls
                 context.DrawRoundedRectangle(PenumbraShadowBrush, null, penumbraRect, shadowR);
             }
 
-            context.DrawRoundedRectangle(bg, borderPen, new Rect(Vector2.Zero, Size), CornerRadius);
+            context.DrawRoundedRectangle(bg, borderPen, new Rect(Vector2.Zero, Size), CornerRadius.RenderingRadius);
 
             base.OnRender(context);
 

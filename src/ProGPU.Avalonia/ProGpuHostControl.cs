@@ -29,6 +29,7 @@ using WinuiCompositor = ProGPU.Scene.Compositor;
 using AvaloniaDrawingContext = Avalonia.Media.DrawingContext;
 using GpuBuffer = Silk.NET.WebGPU.Buffer;
 using AvaloniaVector = Avalonia.Vector;
+using AvaloniaCornerRadius = Avalonia.CornerRadius;
 using PointerDeviceType = Windows.Devices.Input.PointerDeviceType;
 
 namespace ProGPU.Avalonia;
@@ -147,10 +148,10 @@ public class ProGpuHostControl : Control
         set => SetValue(WinuiRootProperty, value);
     }
 
-    public static readonly StyledProperty<CornerRadius> CornerRadiusProperty =
-        AvaloniaProperty.Register<ProGpuHostControl, CornerRadius>(nameof(CornerRadius));
+    public static readonly StyledProperty<AvaloniaCornerRadius> CornerRadiusProperty =
+        AvaloniaProperty.Register<ProGpuHostControl, AvaloniaCornerRadius>(nameof(CornerRadius));
 
-    public CornerRadius CornerRadius
+    public AvaloniaCornerRadius CornerRadius
     {
         get => GetValue(CornerRadiusProperty);
         set => SetValue(CornerRadiusProperty, value);
@@ -1395,7 +1396,7 @@ public class ProGpuHostControl : Control
         }
     }
 
-    private static Geometry CreateRoundedRectangleClipGeometry(AvaloniaRect bounds, CornerRadius cornerRadius)
+    private static Geometry CreateRoundedRectangleClipGeometry(AvaloniaRect bounds, AvaloniaCornerRadius cornerRadius)
     {
         var width = Math.Max(0.0, bounds.Width);
         var height = Math.Max(0.0, bounds.Height);
@@ -1499,7 +1500,7 @@ public unsafe class ProGpuCustomVisualHandler : CompositionCustomVisualHandler, 
     private Microsoft.UI.Xaml.FrameworkElement? _winuiRoot;
     private CompositorHostFrame _hostFrame;
     private bool _resourcesDirty;
-    private CornerRadius _cornerRadius;
+    private AvaloniaCornerRadius _cornerRadius;
 
     public ProGpuCustomVisualHandler(
         WgpuContext? wgpuContext,
@@ -1581,7 +1582,7 @@ public unsafe class ProGpuCustomVisualHandler : CompositionCustomVisualHandler, 
         Microsoft.UI.Xaml.FrameworkElement? localRoot;
         CompositorHostFrame hostFrame;
         bool resourcesDirty;
-        CornerRadius cornerRadius;
+        AvaloniaCornerRadius cornerRadius;
 
         lock (_stateLock)
         {
@@ -1669,5 +1670,5 @@ public struct RenderState
 {
     public Microsoft.UI.Xaml.FrameworkElement? WinuiRoot;
     public CompositorHostFrame HostFrame;
-    public CornerRadius CornerRadius;
+    public AvaloniaCornerRadius CornerRadius;
 }

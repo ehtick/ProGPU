@@ -7,10 +7,15 @@ using System;
 
 namespace Microsoft.UI.Xaml.Controls;
 
-public class ControlTemplate
+public class ControlTemplate : FrameworkTemplate
 {
     public Type TargetType { get; set; }
-    public Func<Control, FrameworkElement> Factory { get; set; }
+    public Func<Control, FrameworkElement>? Factory { get; set; }
+
+    public ControlTemplate()
+    {
+        TargetType = typeof(Control);
+    }
 
     public ControlTemplate(Type targetType, Func<Control, FrameworkElement> factory)
     {

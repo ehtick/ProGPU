@@ -17,8 +17,14 @@ progpu_portable_package_ids=(
   ProGPU.Layout
   ProGPU.Virtualization
   ProGPU.WinUI
+  ProGPU.WinUI.Themes.Fluent
   ProGPU.WinUI.Charts
   ProGPU.WinUI.Designer
+  ProGPU.Xaml
+  ProGPU.Xaml.Roslyn
+  ProGPU.Xaml.SourceGenerator
+  ProGPU.Xaml.Workspaces
+  ProGPU.Xaml.Cli
   ProGPU.Avalonia
   ProGPU.Uno
   ProGPU.Dxf
@@ -42,8 +48,14 @@ progpu_portable_package_projects=(
   src/ProGPU.Layout/ProGPU.Layout.csproj
   src/ProGPU.Virtualization/ProGPU.Virtualization.csproj
   src/ProGPU.WinUI/ProGPU.WinUI.csproj
+  src/ProGPU.WinUI.Themes.Fluent/ProGPU.WinUI.Themes.Fluent.csproj
   src/ProGPU.WinUI.Charts/ProGPU.WinUI.Charts.csproj
   src/ProGPU.WinUI.Designer/ProGPU.WinUI.Designer.csproj
+  src/ProGPU.Xaml/ProGPU.Xaml.csproj
+  src/ProGPU.Xaml.Roslyn/ProGPU.Xaml.Roslyn.csproj
+  src/ProGPU.Xaml.SourceGenerator/ProGPU.Xaml.SourceGenerator.csproj
+  src/ProGPU.Xaml.Workspaces/ProGPU.Xaml.Workspaces.csproj
+  tools/ProGPU.Xaml.Cli/ProGPU.Xaml.Cli.csproj
   src/ProGPU.Avalonia/ProGPU.Avalonia.csproj
   src/ProGPU.Uno/ProGPU.Uno.csproj
   src/ProGPU.Dxf/ProGPU.Dxf.csproj
@@ -67,8 +79,14 @@ progpu_portable_package_purposes=(
   "Measure/arrange layout substrate shared by higher-level UI adapters."
   "Virtualization helpers for large retained visual and item surfaces."
   "WinUI-shaped controls and app model implemented on ProGPU."
+  "Source-generated unchanged WinUI Fluent theme resources and inspectable XAML content."
   "Chart controls and chart rendering primitives for the WinUI-shaped layer."
   "Designer/editor controls and diagnostics for ProGPU WinUI surfaces."
+  "Framework-neutral XAML syntax, schema, diagnostics, and compiler contracts."
+  "Roslyn symbol type system and structured C# emitter for the XAML compiler."
+  "Incremental XAML source generator plus transitive MSBuild integration."
+  "Roslyn Workspace editing, formatting, and bidirectional XAML services."
+  "Standalone XAML compiler and Roslyn/MSBuild workspace command-line tool."
   "Avalonia integration and compositor backend adapter."
   "Uno/WinUI integration and compositor backend adapter."
   "DXF import/rendering support for ProGPU vector scenes."
@@ -109,6 +127,7 @@ progpu_nonshipping_projects=(
   src/ProGPU.Samples/ProGPU.Samples.csproj
   src/ProGPU.Tests.Headless/ProGPU.Tests.Headless.csproj
   src/ProGPU.Tests/ProGPU.Tests.csproj
+  src/ProGPU.Xaml.Tests/ProGPU.Xaml.Tests.csproj
   src/WindowsBase/WindowsBase.csproj
 )
 
@@ -123,6 +142,7 @@ progpu_nonshipping_reasons=(
   "Shared sample gallery."
   "Headless test project."
   "Test project."
+  "XAML compiler and source-generator test project."
   "Framework implementation shim; shipped through consuming compatibility packages."
 )
 

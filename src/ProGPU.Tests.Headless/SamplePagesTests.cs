@@ -80,6 +80,98 @@ public class SamplePagesTests : IDisposable
         AppState.GenerateLogItems();
     }
 
+    [Fact]
+    public async Task Test_XamlPlayground_LivePreviewRequiresPermissionAndPublishesAcceptedProgram()
+    {
+        var root = Assert.IsType<Microsoft.UI.Xaml.Controls.StackPanel>(
+            XamlPlaygroundPage.Create());
+        var pivot = Assert.Single(root.Children.OfType<Pivot>());
+        var livePreviewItem = Assert.Single(
+            pivot.Items,
+            item => Equals(item.Header, "Live Preview"));
+        var generatedItem = Assert.Single(
+            pivot.Items,
+            item => Equals(item.Header, "Generated C#"));
+        var generated = Assert.IsType<TextBox>(
+            generatedItem.Content);
+        var panel = Assert.IsType<Microsoft.UI.Xaml.Controls.StackPanel>(
+            livePreviewItem.Content);
+        var status = Assert.IsType<TextBlock>(panel.Children[0]);
+        var permission = Assert.IsType<Button>(panel.Children[1]);
+        var previewHost = Assert.IsType<ContentControl>(
+            panel.Children[2]);
+
+        Assert.Contains("disabled", status.Text);
+        Assert.NotNull(previewHost.Content);
+
+        var onClick = typeof(Button).GetMethod(
+            "OnClick",
+            System.Reflection.BindingFlags.NonPublic |
+            System.Reflection.BindingFlags.Instance);
+        Assert.NotNull(onClick);
+        onClick.Invoke(permission, null);
+
+        for (var attempt = 0;
+             attempt < 400 &&
+             !status.Text.Contains(
+                 "Preview updated",
+                 StringComparison.Ordinal) &&
+             !status.Text.Contains(
+                 "failed",
+                 StringComparison.OrdinalIgnoreCase);
+             attempt++)
+        {
+            Microsoft.UI.Xaml.UIThread.RunPending();
+            await Task.Delay(25);
+        }
+
+        var inspectionStatus = root.Children
+            .OfType<TextBlock>()
+            .Last();
+        Assert.True(
+            status.Text.Contains(
+                "Preview updated",
+                StringComparison.Ordinal),
+            "Preview status: " + status.Text +
+            Environment.NewLine +
+            "Inspection status: " + inspectionStatus.Text +
+            Environment.NewLine +
+            "Generated:" + Environment.NewLine +
+            generated.Text);
+        Assert.Equal(
+            "ProGPU.Samples.Playground.Document",
+            Assert.IsAssignableFrom<FrameworkElement>(
+                previewHost.Content).GetType().FullName);
+
+        var editor = root.Children
+            .OfType<TextBox>()
+            .First();
+        editor.Text = editor.Text.Replace(
+            "ProGPU.Samples.Playground.Document",
+            "ProGPU.Samples.Playground.EditedDocument",
+            StringComparison.Ordinal);
+        for (var attempt = 0;
+             attempt < 400 &&
+             !string.Equals(
+                 (previewHost.Content as FrameworkElement)?
+                    .GetType().FullName,
+                 "ProGPU.Samples.Playground.EditedDocument",
+                 StringComparison.Ordinal);
+             attempt++)
+        {
+            Microsoft.UI.Xaml.UIThread.RunPending();
+            await Task.Delay(25);
+        }
+
+        Assert.Equal(
+            "ProGPU.Samples.Playground.EditedDocument",
+            Assert.IsAssignableFrom<FrameworkElement>(
+                previewHost.Content).GetType().FullName);
+
+        onClick.Invoke(permission, null);
+        Assert.Contains("disabled", status.Text);
+    }
+
     private void RunPageTest(
         FrameworkElement page,
         string pageName,
@@ -243,7 +335,7 @@ public class SamplePagesTests : IDisposable
         Assert.False(itemsControl.IsPointerOver);
 
         var activeVisualsField = typeof(UniformVirtualizingGridPanel).GetField("_activeVisuals", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-        var activeVisuals = (System.Collections.IDictionary?)activeVisualsField?.GetValue(itemsControl.ItemsPanel);
+        var activeVisuals = (System.Collections.IDictionary?)activeVisualsField?.GetValue(itemsControl.ItemsHost);
         Assert.NotNull(activeVisuals);
         Assert.NotEmpty(activeVisuals);
 
@@ -2114,13 +2206,13 @@ public class SamplePagesTests : IDisposable
         FindTranspileBtn(page);
         Assert.NotNull(transpileBtn);
 
-        // 3. Trigger Click on transpile button via reflection
-        var clickField = typeof(Button).GetField("Click", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-        Assert.NotNull(clickField);
-        var clickDelegate = (EventHandler?)clickField.GetValue(transpileBtn);
-        Assert.NotNull(clickDelegate);
-
-        clickDelegate.Invoke(transpileBtn, EventArgs.Empty);
+        // 3. Trigger the same protected click path used by button input.
+        var onClick = typeof(Button).GetMethod(
+            "OnClick",
+            System.Reflection.BindingFlags.NonPublic |
+            System.Reflection.BindingFlags.Instance);
+        Assert.NotNull(onClick);
+        onClick.Invoke(transpileBtn, null);
 
         // 4. Verify that editor content is translated to WGSL (which uses `fn mainImage` instead of `void mainImage`)
         string translatedText = editor.Text;

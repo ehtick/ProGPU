@@ -154,9 +154,9 @@ public class VirtualizingPanel : Panel, IScrollViewportAware
         var item = GetItemAt(index);
         if (item == null) return null;
 
-        if (ic.ItemTemplate != null)
+        if (ic.ItemVisualFactory != null)
         {
-            var container = ic.ItemTemplate();
+            var container = ic.ItemVisualFactory();
             return container;
         }
 

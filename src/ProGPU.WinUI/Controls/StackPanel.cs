@@ -7,11 +7,50 @@ using System;
 using System.Numerics;
 using ProGPU.Layout;
 using ProGPU.Scene;
+using ProGPU.Vector;
 
 namespace Microsoft.UI.Xaml.Controls;
 
 public class StackPanel : Panel
 {
+    public static readonly DependencyProperty BorderBrushProperty =
+        DependencyProperty.Register(
+            nameof(BorderBrush), typeof(Brush), typeof(StackPanel),
+            new PropertyMetadata(null) { AffectsRender = true });
+
+    public static readonly DependencyProperty BorderThicknessProperty =
+        DependencyProperty.Register(
+            nameof(BorderThickness), typeof(Thickness), typeof(StackPanel),
+            new PropertyMetadata(default(Thickness))
+            {
+                AffectsMeasure = true,
+                AffectsArrange = true,
+                AffectsRender = true
+            });
+
+    public static readonly DependencyProperty CornerRadiusProperty =
+        DependencyProperty.Register(
+            nameof(CornerRadius), typeof(CornerRadius), typeof(StackPanel),
+            new PropertyMetadata(default(CornerRadius)) { AffectsRender = true });
+
+    public Brush? BorderBrush
+    {
+        get => GetValue(BorderBrushProperty) as Brush;
+        set => SetValue(BorderBrushProperty, value);
+    }
+
+    public Thickness BorderThickness
+    {
+        get => (Thickness)(GetValue(BorderThicknessProperty) ?? default(Thickness));
+        set => SetValue(BorderThicknessProperty, value);
+    }
+
+    public CornerRadius CornerRadius
+    {
+        get => (CornerRadius)(GetValue(CornerRadiusProperty) ?? default(CornerRadius));
+        set => SetValue(CornerRadiusProperty, value);
+    }
+
     public static readonly DependencyProperty OrientationProperty =
         DependencyProperty.Register(
             "Orientation",

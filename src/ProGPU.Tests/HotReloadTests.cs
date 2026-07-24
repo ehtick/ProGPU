@@ -1,9 +1,16 @@
 using System.Reflection.Metadata;
 using System.Runtime.CompilerServices;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.HotReload;
 using Microsoft.UI.Xaml.Input;
+using ProGPU.WinUI.Designer;
+using ProGPU.Xaml.Roslyn;
+using ProGPU.Xaml.Schema;
+using ProGPU.Xaml.Workspaces;
 using Xunit;
 
 namespace ProGPU.Tests;
@@ -146,6 +153,28 @@ public sealed class HotReloadTests : IDisposable
         Assert.Equal(1, element.ReloadCount);
         Assert.Equal(1, HotReloadManager.LastResult.ReloadedElements);
         Assert.Equal(0, HotReloadManager.LastResult.ReplacedElements);
+    }
+
+    [Fact]
+    public void FailedInPlaceReloadRestoresCapturedStateAndFocus()
+    {
+        var element = new FailingInPlaceElement();
+        element.Editor.Text = "user value";
+        element.Editor.CaretIndex = 3;
+        var root = new Grid();
+        root.AddChild(element);
+        InputSystem.SetFocus(element.Editor);
+        using var rootRegistration = HotReloadManager.RegisterRoot(root);
+
+        HotReloadManager.RequestUpdate(typeof(FailingInPlaceElement));
+        UIThread.RunPending();
+
+        Assert.Same(element, Assert.Single(root.Children));
+        Assert.Equal("user value", element.Editor.Text);
+        Assert.Equal(3, element.Editor.CaretIndex);
+        Assert.Same(element.Editor, InputSystem.FocusedElement);
+        Assert.Equal(0, HotReloadManager.LastResult.ReloadedElements);
+        Assert.Equal(1, HotReloadManager.LastResult.FailedElements);
     }
 
     [Fact]
@@ -324,6 +353,253 @@ public sealed class HotReloadTests : IDisposable
         }
     }
 
+    [Fact]
+    public void EmbeddedReloadUsesCanonicalStateTransferAndRetainsOldTreeOnFactoryFailure()
+    {
+        FrameworkElement content = new Grid();
+        var oldRoot = (Grid)content;
+        oldRoot.AddChild(new TextBox
+        {
+            Name = "editor",
+            Text = "preserved"
+        });
+
+        var replaced = HotReloadManager.ReloadElement(
+            oldRoot,
+            () =>
+            {
+                var replacement = new Grid();
+                replacement.AddChild(new TextBox
+                {
+                    Name = "editor",
+                    Text = "default"
+                });
+                return replacement;
+            },
+            replacement => content = replacement);
+
+        Assert.True(replaced);
+        var replacementRoot = Assert.IsType<Grid>(content);
+        Assert.NotSame(oldRoot, replacementRoot);
+        Assert.Equal(
+            "preserved",
+            Assert.IsType<TextBox>(
+                FindByName(replacementRoot, "editor")).Text);
+
+        replaced = HotReloadManager.ReloadElement(
+            replacementRoot,
+            () => throw new InvalidOperationException("activation failed"),
+            replacement => content = replacement);
+
+        Assert.False(replaced);
+        Assert.Same(replacementRoot, content);
+    }
+
+    [Fact]
+    public void LivePreviewSessionTransfersStateAndRetainsLastGoodAssembly()
+    {
+        Assert.True(WinUiXamlLivePreviewSession.IsRuntimeSupported);
+        var image = File.ReadAllBytes(
+            typeof(HotReloadTests).Assembly.Location);
+        FrameworkElement? published = null;
+        using var session = new WinUiXamlLivePreviewSession();
+
+        var first = session.TryUpdate(
+            image,
+            typeof(PreviewRoot).FullName!,
+            replacement => published = replacement);
+
+        Assert.True(first.Success, first.Message);
+        var firstRoot = Assert.IsAssignableFrom<FrameworkElement>(published);
+        var firstEditor = Assert.IsType<TextBox>(
+            FindByName(firstRoot, "editor"));
+        firstEditor.Text = "user value";
+
+        var second = session.TryUpdate(
+            image,
+            typeof(PreviewRoot).FullName!,
+            replacement => published = replacement);
+
+        Assert.True(second.Success, second.Message);
+        var secondRoot = Assert.IsAssignableFrom<FrameworkElement>(published);
+        Assert.NotSame(firstRoot, secondRoot);
+        Assert.Equal(
+            "user value",
+            Assert.IsType<TextBox>(
+                FindByName(secondRoot, "editor")).Text);
+
+        var failed = session.TryUpdate(
+            image,
+            "ProGPU.Tests.MissingPreviewRoot",
+            replacement => published = replacement);
+
+        Assert.False(failed.Success);
+        Assert.Same(secondRoot, published);
+        Assert.Same(secondRoot, session.CurrentRoot);
+
+        published = null;
+        session.Reset();
+    }
+
+    [Fact]
+    public async Task LivePreviewSessionAppliesAcceptedProjectDeltaAfterMetadataCoordination()
+    {
+        const string baselineXaml = """
+<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="DeltaPreview.Root">
+  <TextBox x:Name="editor" Text="baseline" />
+</Grid>
+""";
+        const string changedXaml = """
+<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      x:Class="DeltaPreview.Root">
+  <TextBox x:Name="editor" Text="changed" />
+</Grid>
+""";
+        using var fixture =
+            CreateDeltaPreviewProject(baselineXaml);
+        var coordinator =
+            CreateDeltaPreviewCoordinator();
+        var baselineUpdate =
+            await coordinator.PrepareAsync(
+                fixture.Project,
+                fixture.XamlDocumentId);
+        var changedProject = fixture.Project.Solution
+            .WithAdditionalDocumentText(
+                fixture.XamlDocumentId,
+                SourceText.From(changedXaml),
+                PreservationMode.PreserveIdentity)
+            .GetProject(fixture.Project.Id)!;
+        FrameworkElement? published = null;
+        using var session =
+            new WinUiXamlLivePreviewSession();
+        var initial =
+            await session.ApplyProjectUpdateAsync(
+                coordinator,
+                baselineUpdate,
+                replacement =>
+                    published = replacement);
+        Assert.Equal(
+            RoslynXamlProjectCommitResult.Accepted,
+            initial);
+        var originalRoot =
+            Assert.IsAssignableFrom<FrameworkElement>(
+                published);
+        Assert.IsType<TextBox>(
+                FindByName(originalRoot, "editor"))
+            .Text = "user state";
+
+        var changedUpdate =
+            await coordinator.PrepareAsync(
+                changedProject,
+                fixture.XamlDocumentId);
+        var xamlPlan = changedUpdate.Delta!;
+        Assert.Equal(
+            RoslynXamlReloadAction.ReplaceTarget,
+            xamlPlan.Action);
+        var applied =
+            await session.ApplyProjectUpdateAsync(
+                coordinator,
+                changedUpdate,
+                replacement =>
+                    published = replacement);
+        Assert.Equal(
+            RoslynXamlProjectCommitResult.Accepted,
+            applied);
+        var xamlReplacement =
+            Assert.IsAssignableFrom<FrameworkElement>(
+                published);
+        Assert.NotSame(originalRoot, xamlReplacement);
+        Assert.Equal(
+            "user state",
+            Assert.IsType<TextBox>(
+                    FindByName(
+                        xamlReplacement,
+                        "editor"))
+                .Text);
+
+        var codeDocument = changedProject.GetDocument(
+            fixture.CodeDocumentId)!;
+        var code = await codeDocument.GetTextAsync();
+        var metadataProject = changedProject.Solution
+            .WithDocumentText(
+                codeDocument.Id,
+                code.WithChanges(
+                    new TextChange(
+                        new TextSpan(code.Length, 0),
+                        Environment.NewLine +
+                        "public sealed class MetadataMarker { }" +
+                        Environment.NewLine)))
+            .GetProject(changedProject.Id)!;
+        var metadataUpdate =
+            await coordinator.PrepareAsync(
+                metadataProject,
+                fixture.XamlDocumentId);
+        var metadataPlan = metadataUpdate.Delta!;
+        Assert.Equal(
+            RoslynXamlReloadAction
+                .CoordinateMetadataAndReplaceTarget,
+            metadataPlan.Action);
+
+        var missingCoordinator =
+            await session.ApplyProjectUpdateAsync(
+                coordinator,
+                metadataUpdate,
+                replacement => published = replacement);
+        Assert.Equal(
+            RoslynXamlProjectCommitResult
+                .RejectedPublication,
+            missingCoordinator);
+        Assert.Same(xamlReplacement, published);
+
+        var coordinatorCalled = false;
+        var failedCoordinator =
+            await session.ApplyProjectUpdateAsync(
+                coordinator,
+                metadataUpdate,
+                replacement => published = replacement,
+                () =>
+                {
+                    coordinatorCalled = true;
+                    throw new InvalidOperationException(
+                        "metadata rejected");
+                });
+        Assert.True(coordinatorCalled);
+        Assert.Equal(
+            RoslynXamlProjectCommitResult
+                .RejectedPublication,
+            failedCoordinator);
+        Assert.Same(xamlReplacement, published);
+
+        var successfulCoordinationCount = 0;
+        var metadataApplied =
+            await session.ApplyProjectUpdateAsync(
+                coordinator,
+                metadataUpdate,
+                replacement => published = replacement,
+                () =>
+                    successfulCoordinationCount++);
+        Assert.Equal(
+            RoslynXamlProjectCommitResult.Accepted,
+            metadataApplied);
+        Assert.Equal(1, successfulCoordinationCount);
+        Assert.Equal(3, coordinator.Generation);
+        Assert.NotSame(xamlReplacement, published);
+        Assert.Equal(
+            "user state",
+            Assert.IsType<TextBox>(
+                    FindByName(
+                        Assert.IsAssignableFrom<
+                            FrameworkElement>(published),
+                        "editor"))
+                .Text);
+
+        published = null;
+        session.Reset();
+    }
+
     public void Dispose()
     {
         DrainDispatcher();
@@ -348,6 +624,110 @@ public sealed class HotReloadTests : IDisposable
     {
         UIThread.RunPending();
         UIThread.RunPending();
+    }
+
+    private static DeltaPreviewProjectFixture
+        CreateDeltaPreviewProject(string xaml)
+    {
+        const string code = """
+namespace DeltaPreview;
+
+public partial class Root : global::Microsoft.UI.Xaml.Controls.Grid
+{
+    public Root()
+    {
+        InitializeComponent();
+    }
+}
+""";
+        var workspace = new AdhocWorkspace();
+        var projectId = ProjectId.CreateNewId();
+        var codeDocumentId =
+            DocumentId.CreateNewId(projectId);
+        var xamlDocumentId =
+            DocumentId.CreateNewId(projectId);
+        var references = ((string?)AppContext.GetData(
+                "TRUSTED_PLATFORM_ASSEMBLIES") ??
+            string.Empty)
+            .Split(
+                Path.PathSeparator,
+                StringSplitOptions.RemoveEmptyEntries)
+            .Append(
+                typeof(FrameworkElement).Assembly.Location)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(
+                static path =>
+                    MetadataReference.CreateFromFile(path));
+        var solution = workspace.CurrentSolution
+            .AddProject(
+                ProjectInfo.Create(
+                    projectId,
+                    VersionStamp.Create(),
+                    "DeltaPreview",
+                    "DeltaPreview",
+                    LanguageNames.CSharp,
+                    compilationOptions:
+                        new CSharpCompilationOptions(
+                            OutputKind
+                                .DynamicallyLinkedLibrary),
+                    parseOptions:
+                        new CSharpParseOptions(
+                            LanguageVersion.Preview)))
+            .AddMetadataReferences(projectId, references)
+            .AddDocument(
+                codeDocumentId,
+                "Root.cs",
+                SourceText.From(code))
+            .AddAdditionalDocument(
+                xamlDocumentId,
+                "Root.xaml",
+                SourceText.From(xaml),
+                folders: new[] { "Views" });
+        return new DeltaPreviewProjectFixture(
+            workspace,
+            solution.GetProject(projectId)!,
+            codeDocumentId,
+            xamlDocumentId);
+    }
+
+    private static RoslynXamlProjectPreviewCoordinator
+        CreateDeltaPreviewCoordinator() =>
+        new RoslynXamlProjectPreviewCoordinator(
+            new WinUiXamlProfile(),
+            new RoslynXamlProjectPreviewOptions
+            {
+                InspectionOptions =
+                    new RoslynXamlCompilationInspectionOptions
+                    {
+                        CompilerOptions =
+                            new XamlCompilerOptions
+                            {
+                                Strict = true
+                            }
+                    }
+            });
+
+    private sealed class DeltaPreviewProjectFixture :
+        IDisposable
+    {
+        public DeltaPreviewProjectFixture(
+            AdhocWorkspace workspace,
+            Project project,
+            DocumentId codeDocumentId,
+            DocumentId xamlDocumentId)
+        {
+            Workspace = workspace;
+            Project = project;
+            CodeDocumentId = codeDocumentId;
+            XamlDocumentId = xamlDocumentId;
+        }
+
+        public AdhocWorkspace Workspace { get; }
+        public Project Project { get; }
+        public DocumentId CodeDocumentId { get; }
+        public DocumentId XamlDocumentId { get; }
+
+        public void Dispose() => Workspace.Dispose();
     }
 
     private sealed class FactoryElement : Grid, IHotReloadStateful
@@ -378,6 +758,18 @@ public sealed class HotReloadTests : IDisposable
         }
     }
 
+    public sealed class PreviewRoot : Grid
+    {
+        public PreviewRoot()
+        {
+            AddChild(new TextBox
+            {
+                Name = "editor",
+                Text = "default"
+            });
+        }
+    }
+
     private sealed class InPlaceElement : Grid, IHotReloadable
     {
         public int ReloadCount { get; private set; }
@@ -394,6 +786,24 @@ public sealed class HotReloadTests : IDisposable
     private sealed class RequiredConstructorElement(string marker) : Grid
     {
         public string Marker { get; } = marker;
+    }
+
+    private sealed class FailingInPlaceElement : Grid, IHotReloadable
+    {
+        public FailingInPlaceElement()
+        {
+            Editor = new TextBox { Name = "editor" };
+            AddChild(Editor);
+        }
+
+        public TextBox Editor { get; }
+
+        public void Reload(HotReloadContext context)
+        {
+            Editor.Text = "transient reload value";
+            Editor.CaretIndex = 0;
+            throw new InvalidOperationException("Expected reload failure.");
+        }
     }
 
     private sealed class EmbeddedRootOriginal : Grid

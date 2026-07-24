@@ -206,13 +206,13 @@ public class TabViewItem : ContentControl
         }
         else
         {
-            if (CornerRadius <= 0f)
+            if (CornerRadius.RenderingRadius <= 0f)
             {
                 context.DrawRectangle(bg, borderPen, tabRect);
             }
             else
             {
-                var path = CreateTabShapePath(tabRect, CornerRadius);
+                var path = CreateTabShapePath(tabRect, CornerRadius.RenderingRadius);
                 context.DrawPath(bg, borderPen, path);
             }
         }

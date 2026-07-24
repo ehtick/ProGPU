@@ -35,6 +35,13 @@ public class Canvas : Panel
             typeof(Canvas),
             new PropertyMetadata(0f, OnLeftTopChanged));
 
+    public static readonly DependencyProperty ZIndexProperty =
+        DependencyProperty.RegisterAttached(
+            "ZIndex",
+            typeof(int),
+            typeof(Canvas),
+            new PropertyMetadata(-1, OnZIndexChanged));
+
     private static void OnLeftTopChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is Visual child && child.Parent is Canvas canvas)
@@ -43,6 +50,18 @@ public class Canvas : Panel
             canvas.Invalidate();
         }
     }
+
+    private static void OnZIndexChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is Visual child && child.Parent is Canvas canvas)
+            canvas.Invalidate();
+    }
+
+    public static void SetZIndex(DependencyObject element, int value) =>
+        element.SetValue(ZIndexProperty, Math.Clamp(value, -1_000_000, 1_000_000));
+
+    public static int GetZIndex(DependencyObject element) =>
+        (int)(element.GetValue(ZIndexProperty) ?? -1);
 
     public static void SetLeft(Visual child, float left)
     {

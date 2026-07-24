@@ -8,10 +8,11 @@ using System.Numerics;
 using ProGPU.Layout;
 using ProGPU.Scene;
 using ProGPU.Vector;
+using Microsoft.UI.Xaml.Controls.Primitives;
 
 namespace Microsoft.UI.Xaml.Controls;
 
-public class HyperlinkButton : Button
+public class HyperlinkButton : ButtonBase
 {
     public new FrameworkElement? Content
     {

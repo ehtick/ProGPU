@@ -10,6 +10,11 @@ namespace Microsoft.UI.Xaml.Controls;
 
 public class VirtualizingStackPanel : VirtualizingPanel
 {
+    public static readonly DependencyProperty AreScrollSnapPointsRegularProperty =
+        DependencyProperty.Register(
+            nameof(AreScrollSnapPointsRegular), typeof(bool), typeof(VirtualizingStackPanel),
+            new PropertyMetadata(false));
+
     private int _itemsCount = 0;
     private float _itemWidth = 300f;
     private float _itemHeight = 40f;
@@ -22,6 +27,12 @@ public class VirtualizingStackPanel : VirtualizingPanel
     private float _indexedEstimate = -1f;
     private float _indexedWidth = -1f;
     private bool _isUpdatingViewport;
+
+    public bool AreScrollSnapPointsRegular
+    {
+        get => (bool)(GetValue(AreScrollSnapPointsRegularProperty) ?? false);
+        set => SetValue(AreScrollSnapPointsRegularProperty, value);
+    }
 
     public VirtualizingStackPanel()
     {
@@ -39,7 +50,7 @@ public class VirtualizingStackPanel : VirtualizingPanel
 
     public Func<Visual>? CreateVisualFactory
     {
-        get => ItemsControlOwner != null ? ItemsControlOwner.ItemTemplate : _createVisualFactory;
+        get => ItemsControlOwner != null ? ItemsControlOwner.ItemVisualFactory : _createVisualFactory;
         set => _createVisualFactory = value;
     }
 

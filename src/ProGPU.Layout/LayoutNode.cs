@@ -120,6 +120,10 @@ namespace ProGPU.Layout
         private bool _isRightToLeftLayout;
         private float? _widthConstraint;
         private float? _heightConstraint;
+        private float _minimumWidthConstraint;
+        private float _minimumHeightConstraint;
+        private float _maximumWidthConstraint = float.PositiveInfinity;
+        private float _maximumHeightConstraint = float.PositiveInfinity;
         private bool _isCollapsed = false;
 
         private bool _isMeasureValid;
@@ -261,6 +265,54 @@ namespace ProGPU.Layout
             }
         }
 
+        public float MinimumWidthConstraint
+        {
+            get => _minimumWidthConstraint;
+            set
+            {
+                if (_minimumWidthConstraint == value) return;
+                _minimumWidthConstraint = value;
+                InvalidateMeasure();
+                Invalidate();
+            }
+        }
+
+        public float MinimumHeightConstraint
+        {
+            get => _minimumHeightConstraint;
+            set
+            {
+                if (_minimumHeightConstraint == value) return;
+                _minimumHeightConstraint = value;
+                InvalidateMeasure();
+                Invalidate();
+            }
+        }
+
+        public float MaximumWidthConstraint
+        {
+            get => _maximumWidthConstraint;
+            set
+            {
+                if (_maximumWidthConstraint == value) return;
+                _maximumWidthConstraint = value;
+                InvalidateMeasure();
+                Invalidate();
+            }
+        }
+
+        public float MaximumHeightConstraint
+        {
+            get => _maximumHeightConstraint;
+            set
+            {
+                if (_maximumHeightConstraint == value) return;
+                _maximumHeightConstraint = value;
+                InvalidateMeasure();
+                Invalidate();
+            }
+        }
+
         public Vector2 DesiredSize { get; protected set; }
 
         public void InvalidateMeasure()
@@ -340,6 +392,10 @@ namespace ProGPU.Layout
             // 4. Re-apply explicit dimensions constraints
             if (WidthConstraint.HasValue) desired.X = WidthConstraint.Value;
             if (HeightConstraint.HasValue) desired.Y = HeightConstraint.Value;
+            desired.X = Math.Clamp(desired.X, MinimumWidthConstraint,
+                Math.Max(MinimumWidthConstraint, MaximumWidthConstraint));
+            desired.Y = Math.Clamp(desired.Y, MinimumHeightConstraint,
+                Math.Max(MinimumHeightConstraint, MaximumHeightConstraint));
 
             // Add margin back to desired size
             desired.X += marginH;

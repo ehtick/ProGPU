@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <DevelopmentDependency>true</DevelopmentDependency>
+    <Description>Incremental Roslyn XAML source generator, build assets, and WinUI compiler profile for ProGPU.</Description>
+    <PackageDescription>Incremental Roslyn XAML source generator, build assets, and WinUI compiler profile for ProGPU.</PackageDescription>
+    <PackageTags>progpu;xaml;source-generator;roslyn;winui</PackageTags>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\ProGPU.Xaml\ProGPU.Xaml.csproj" PrivateAssets="all" />
+    <ProjectReference Include="..\ProGPU.Xaml.Roslyn\ProGPU.Xaml.Roslyn.csproj" PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="$(OutputPath)$(AssemblyName).dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+    <None Include="$(OutputPath)ProGPU.Xaml.dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+    <None Include="$(OutputPath)ProGPU.Xaml.Roslyn.dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+    <None Include="$(OutputPath)$(AssemblyName).pdb" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+    <None Include="$(OutputPath)ProGPU.Xaml.pdb" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+    <None Include="$(OutputPath)ProGPU.Xaml.Roslyn.pdb" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+    <None Include="build\ProGPU.Xaml.SourceGenerator.props" Pack="true" PackagePath="build" />
+    <None Include="buildTransitive\ProGPU.Xaml.SourceGenerator.props" Pack="true" PackagePath="buildTransitive" />
+    <None Include="buildTransitive\ProGPU.Xaml.SourceGenerator.targets" Pack="true" PackagePath="buildTransitive" />
+  </ItemGroup>
+</Project>

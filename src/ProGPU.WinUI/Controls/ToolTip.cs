@@ -9,24 +9,21 @@ using ProGPU.Layout;
 using ProGPU.Scene;
 using ProGPU.Vector;
 using ProGPU.Text;
+using Microsoft.UI.Xaml.Controls.Primitives;
 
 namespace Microsoft.UI.Xaml.Controls;
 
-public class ToolTip : Control
+[ContentProperty(Name = nameof(Content))]
+public class ToolTip : ContentControl
 {
-    private object? _content;
+    public static readonly DependencyProperty PlacementProperty = DependencyProperty.Register(
+        nameof(Placement), typeof(PlacementMode), typeof(ToolTip),
+        new PropertyMetadata(PlacementMode.Top));
 
-    public object? Content
+    public PlacementMode Placement
     {
-        get => _content;
-        set
-        {
-            if (_content != value)
-            {
-                _content = value;
-                Invalidate();
-            }
-        }
+        get => (PlacementMode)(GetValue(PlacementProperty) ?? PlacementMode.Top);
+        set => SetValue(PlacementProperty, value);
     }
 
     public ToolTip()
@@ -95,13 +92,13 @@ public class ToolTip : Control
         var rect = new Rect(Vector2.Zero, Size);
         
         // Soft ambient and shadow overlays
-        context.FillRoundedRectangle(new SolidColorBrush(0x0000002A), new Rect(rect.X, rect.Y + 2f, rect.Width, rect.Height), CornerRadius);
+        context.FillRoundedRectangle(new SolidColorBrush(0x0000002A), new Rect(rect.X, rect.Y + 2f, rect.Width, rect.Height), CornerRadius.RenderingRadius);
         
         Brush? bg = Background ?? ThemeManager.GetBrush("ToolTipBackground");
         Brush? borderBrush = BorderBrush ?? ThemeManager.GetBrush("ToolTipBorderBrush");
         Pen pen = new Pen(borderBrush ?? ThemeManager.GetBrush("ControlBorder"), BorderThickness.Left > 0 ? BorderThickness.Left : 1f);
         
-        context.DrawRoundedRectangle(bg, pen, rect, CornerRadius);
+        context.DrawRoundedRectangle(bg, pen, rect, CornerRadius.RenderingRadius);
 
         // 2. Render content
         if (Content != null)

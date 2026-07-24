@@ -1,8 +1,10 @@
 using System.Collections.ObjectModel;
-using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Numerics;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Data;
+using Microsoft.UI.Xaml.Markup;
+using Microsoft.UI.Xaml.Media.Animation;
 using ProGPU.Scene;
 
 namespace Microsoft.UI.Xaml;
@@ -21,11 +23,13 @@ public sealed class AdaptiveTrigger : StateTriggerBase
         windowWidth >= MinWindowWidth && windowHeight >= MinWindowHeight;
 }
 
-public sealed class VisualState
+[ContentProperty(Name = nameof(Storyboard))]
+public sealed class VisualState : DependencyObject
 {
     public string Name { get; set; } = string.Empty;
     public Collection<Setter> Setters { get; } = new();
     public Collection<StateTriggerBase> StateTriggers { get; } = new();
+    public Storyboard? Storyboard { get; set; }
 }
 
 public sealed class VisualStateChangedEventArgs : EventArgs
@@ -40,20 +44,125 @@ public sealed class VisualStateChangedEventArgs : EventArgs
     public VisualState? NewState { get; }
 }
 
+[ContentProperty(Name = nameof(Storyboard))]
+public class VisualTransition : DependencyObject
+{
+    public string From { get; set; } = string.Empty;
+    public string To { get; set; } = string.Empty;
+    public Duration GeneratedDuration { get; set; } = Duration.Automatic;
+    public object? GeneratedEasingFunction { get; set; }
+    public Storyboard? Storyboard { get; set; }
+}
+
+[ContentProperty(Name = nameof(States))]
 public sealed class VisualStateGroup
 {
     public string Name { get; set; } = string.Empty;
     public Collection<VisualState> States { get; } = new();
+    public Collection<VisualTransition> Transitions { get; } = new();
     public VisualState? CurrentState { get; internal set; }
     public event EventHandler<VisualStateChangedEventArgs>? CurrentStateChanged;
 
-    internal List<SetterSnapshot> Snapshots { get; } = new();
+    internal List<VisualStateAppliedProperty> AppliedProperties { get; } = new();
+    internal List<VisualStateBindingRegistration> BindingRegistrations { get; } = new();
 
     internal void RaiseCurrentStateChanged(VisualState? oldState, VisualState? newState) =>
         CurrentStateChanged?.Invoke(this, new VisualStateChangedEventArgs(oldState, newState));
 }
 
-internal readonly record struct SetterSnapshot(DependencyObject Target, DependencyProperty Property, bool HadLocalValue, object? Value);
+internal readonly record struct VisualStateAssignment(DependencyObject Target, DependencyProperty Property, object? Value);
+internal readonly record struct VisualStateAppliedProperty(
+    DependencyObject Target,
+    DependencyProperty Property);
+
+internal sealed class VisualStateBindingProxy : DependencyObject
+{
+    public static readonly DependencyProperty ValueProperty =
+        DependencyProperty.Register(
+            nameof(Value),
+            typeof(object),
+            typeof(VisualStateBindingProxy),
+            new PropertyMetadata(
+                null,
+                static (dependencyObject, args) =>
+                    ((VisualStateBindingProxy)dependencyObject)
+                    .ValueChanged(args.NewValue)));
+
+    private readonly Action<object?> _valueChanged;
+
+    public VisualStateBindingProxy(Action<object?> valueChanged) =>
+        _valueChanged = valueChanged;
+
+    public object? Value
+    {
+        get => GetValue(ValueProperty);
+        set => SetValue(ValueProperty, value);
+    }
+
+    public void PublishCurrentValue() =>
+        _valueChanged(GetValue(ValueProperty));
+
+    private void ValueChanged(object? value) =>
+        _valueChanged(value);
+}
+
+internal sealed class VisualStateBindingRegistration : IDisposable
+{
+    private readonly FrameworkElement _root;
+    private readonly object? _context;
+    private readonly DependencyObject _target;
+    private readonly DependencyProperty _property;
+    private readonly Binding _binding;
+    private readonly VisualStateBindingProxy _proxy;
+    private bool _disposed;
+
+    private VisualStateBindingRegistration(
+        FrameworkElement root,
+        object? context,
+        DependencyObject target,
+        DependencyProperty property,
+        Binding binding)
+    {
+        _root = root;
+        _context = context;
+        _target = target;
+        _property = property;
+        _binding = binding;
+        _proxy = new VisualStateBindingProxy(
+            value => VisualStateManager.SetAnimatedXamlValue(
+                _target,
+                _property,
+                value));
+        BindingOperations.SetBinding(
+            _proxy,
+            VisualStateBindingProxy.ValueProperty,
+            binding,
+            context,
+            lookupRoot: root);
+        _proxy.PublishCurrentValue();
+    }
+
+    public static VisualStateBindingRegistration Create(
+        FrameworkElement root,
+        object? context,
+        DependencyObject target,
+        DependencyProperty property,
+        Binding binding) =>
+        new(root, context, target, property, binding);
+
+    public VisualStateBindingRegistration Recreate() =>
+        Create(_root, _context, _target, _property, _binding);
+
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+        _disposed = true;
+        BindingOperations.ClearBinding(
+            _proxy,
+            VisualStateBindingProxy.ValueProperty);
+    }
+}
 
 public static class VisualStateManager
 {
@@ -69,14 +178,10 @@ public static class VisualStateManager
     {
         ArgumentNullException.ThrowIfNull(control);
         ArgumentException.ThrowIfNullOrWhiteSpace(stateName);
-        foreach (var group in GetVisualStateGroups(control))
+        if (TryFindState(control, stateName, out var stateRoot, out var group, out var state))
         {
-            var state = group.States.FirstOrDefault(item => string.Equals(item.Name, stateName, StringComparison.Ordinal));
-            if (state != null)
-            {
-                ApplyState(control, group, state);
-                return true;
-            }
+            ApplyState(stateRoot, group, state);
+            return true;
         }
         return false;
     }
@@ -126,47 +231,780 @@ public static class VisualStateManager
     private static void ApplyState(FrameworkElement root, VisualStateGroup group, VisualState? state)
     {
         if (ReferenceEquals(group.CurrentState, state)) return;
-        foreach (var snapshot in group.Snapshots)
-        {
-            if (snapshot.HadLocalValue) snapshot.Target.SetValue(snapshot.Property, snapshot.Value);
-            else snapshot.Target.ClearValue(snapshot.Property);
-        }
-        group.Snapshots.Clear();
 
-        var oldState = group.CurrentState;
-        group.CurrentState = state;
+        var assignments = new List<VisualStateAssignment>();
         if (state != null)
         {
             foreach (var setter in state.Setters)
             {
-                if (!TryResolveSetter(root, setter, out var target, out var property)) continue;
-                group.Snapshots.Add(new SetterSnapshot(target, property, target.IsPropertySetLocally(property), target.GetValue(property)));
-                target.SetValue(property, ConvertValue(property.PropertyType, setter.Value));
+                if (!TryResolveSetter(root, setter, out var target, out var property))
+                {
+                    throw new InvalidOperationException(
+                        $"Visual-state setter target '{setter.Target?.Path?.Path ?? setter.Property}' " +
+                        $"could not be resolved from '{root.GetType().FullName}'.");
+                }
+                assignments.Add(new VisualStateAssignment(target, property, setter.Value));
+            }
+            if (state.Storyboard != null)
+                CollectStoryboardAssignments(root, state.Storyboard, assignments);
+        }
+        assignments = KeepLastAssignmentPerProperty(assignments);
+
+        var oldState = group.CurrentState;
+        var bindingContext =
+            XamlTemplateFactory.FindTemplateContext(root) ??
+            root;
+        var oldProperties = group.AppliedProperties.ToArray();
+        var oldValues = new object?[oldProperties.Length];
+        for (int index = 0; index < oldProperties.Length; index++)
+        {
+            var oldProperty = oldProperties[index];
+            oldValues[index] =
+                oldProperty.Target.GetAnimatedXamlValue(oldProperty.Property);
+        }
+        var oldBindings = group.BindingRegistrations.ToArray();
+        DisposeBindings(oldBindings);
+        ClearAnimatedValues(oldProperties);
+        group.AppliedProperties.Clear();
+        group.BindingRegistrations.Clear();
+
+        var applied = new HashSet<(DependencyObject Target, DependencyProperty Property)>();
+        try
+        {
+            foreach (var assignment in assignments)
+            {
+                var key = (assignment.Target, assignment.Property);
+                if (applied.Add(key))
+                {
+                    group.AppliedProperties.Add(new VisualStateAppliedProperty(
+                        assignment.Target,
+                        assignment.Property));
+                }
+                if (assignment.Value is Binding binding)
+                {
+                    group.BindingRegistrations.Add(
+                        VisualStateBindingRegistration.Create(
+                            root,
+                            bindingContext,
+                            assignment.Target,
+                            assignment.Property,
+                            binding));
+                }
+                else
+                {
+                    SetAnimatedXamlValue(
+                        assignment.Target,
+                        assignment.Property,
+                        assignment.Value);
+                }
             }
         }
+        catch
+        {
+            DisposeBindings(group.BindingRegistrations);
+            ClearAnimatedValues(group.AppliedProperties);
+            group.BindingRegistrations.Clear();
+            group.AppliedProperties.Clear();
+            for (int index = 0; index < oldProperties.Length; index++)
+            {
+                var oldProperty = oldProperties[index];
+                SetAnimatedXamlValue(
+                    oldProperty.Target,
+                    oldProperty.Property,
+                    oldValues[index]);
+                group.AppliedProperties.Add(oldProperty);
+            }
+            for (int index = 0; index < oldBindings.Length; index++)
+                group.BindingRegistrations.Add(oldBindings[index].Recreate());
+            throw;
+        }
+
+        group.CurrentState = state;
         group.RaiseCurrentStateChanged(oldState, state);
     }
 
-    private static bool TryResolveSetter(FrameworkElement root, Setter setter, out DependencyObject target, out DependencyProperty property)
+    private static List<VisualStateAssignment> KeepLastAssignmentPerProperty(
+        List<VisualStateAssignment> assignments)
+    {
+        if (assignments.Count < 2)
+            return assignments;
+
+        var result = new List<VisualStateAssignment>(assignments.Count);
+        var indexes =
+            new Dictionary<
+                (DependencyObject Target, DependencyProperty Property),
+                int>();
+        for (int index = 0; index < assignments.Count; index++)
+        {
+            var assignment = assignments[index];
+            var key = (assignment.Target, assignment.Property);
+            if (indexes.TryGetValue(key, out var resultIndex))
+                result[resultIndex] = assignment;
+            else
+            {
+                indexes.Add(key, result.Count);
+                result.Add(assignment);
+            }
+        }
+        return result;
+    }
+
+    private static void ClearAnimatedValues(
+        IReadOnlyList<VisualStateAppliedProperty> properties)
+    {
+        for (int index = properties.Count - 1; index >= 0; index--)
+        {
+            var property = properties[index];
+            property.Target.ClearAnimatedValue(property.Property);
+        }
+    }
+
+    private static void DisposeBindings(
+        IReadOnlyList<VisualStateBindingRegistration> registrations)
+    {
+        for (int index = registrations.Count - 1; index >= 0; index--)
+            registrations[index].Dispose();
+    }
+
+    internal static void SetAnimatedXamlValue(
+        DependencyObject target,
+        DependencyProperty property,
+        object? value)
+    {
+        try
+        {
+            if (value is ThemeResource or ProGPU.Vector.ThemeResourceBrush)
+            {
+                target.SetAnimatedValue(property, value);
+                return;
+            }
+
+            target.SetAnimatedValue(
+                property,
+                XamlValueConverter.ConvertTo(property.PropertyType, value));
+        }
+        catch (Exception exception)
+        {
+            throw new InvalidOperationException(
+                $"Visual-state value '{value}' ({value?.GetType().FullName ?? "null"}) could not be assigned to " +
+                $"'{target.GetType().FullName}.{property.Name}' ({property.PropertyType.FullName}).",
+                exception);
+        }
+    }
+
+    private static bool TryFindState(
+        FrameworkElement root,
+        string stateName,
+        out FrameworkElement stateRoot,
+        out VisualStateGroup group,
+        out VisualState state)
+    {
+        if (Groups.TryGetValue(root, out var groups))
+        {
+            foreach (var candidateGroup in groups)
+            {
+                var candidateState = candidateGroup.States.FirstOrDefault(
+                    item => string.Equals(item.Name, stateName, StringComparison.Ordinal));
+                if (candidateState != null)
+                {
+                    stateRoot = root;
+                    group = candidateGroup;
+                    state = candidateState;
+                    return true;
+                }
+            }
+        }
+
+        if (root is ContainerVisual container)
+        {
+            IReadOnlyList<Visual> children = container.Children;
+            for (int index = 0; index < children.Count; index++)
+            {
+                if (children[index] is FrameworkElement child &&
+                    TryFindState(child, stateName, out stateRoot, out group, out state))
+                {
+                    return true;
+                }
+            }
+        }
+
+        stateRoot = null!;
+        group = null!;
+        state = null!;
+        return false;
+    }
+
+    private static void CollectStoryboardAssignments(
+        FrameworkElement root,
+        Storyboard storyboard,
+        List<VisualStateAssignment> assignments)
+    {
+        foreach (var timeline in storyboard.Children)
+        {
+            if (timeline is Storyboard nested)
+            {
+                CollectStoryboardAssignments(root, nested, assignments);
+                continue;
+            }
+
+            switch (timeline)
+            {
+                case ObjectAnimationUsingKeyFrames objectAnimation:
+                {
+                    ResolveTimelineTargetOrThrow(
+                        root,
+                        timeline,
+                        out var target,
+                        out var property);
+                    var frame = GetLastKeyFrame(objectAnimation.KeyFrames);
+                    if (frame != null)
+                    {
+                        assignments.Add(new VisualStateAssignment(
+                            target,
+                            property,
+                            frame.GetLocalOrEffectiveXamlValue(ObjectKeyFrame.ValueProperty)));
+                    }
+                    break;
+                }
+                case DoubleAnimation doubleAnimation:
+                {
+                    if (!TryResolveTimelineTarget(
+                            root,
+                            timeline,
+                            out var target,
+                            out var property))
+                    {
+                        if (IsSystemFocusVisualCompatibilityTarget(
+                                root,
+                                timeline))
+                        {
+                            break;
+                        }
+                        ResolveTimelineTargetOrThrow(
+                            root,
+                            timeline,
+                            out target,
+                            out property);
+                    }
+                    object? value = GetDoubleAnimationFinalValue(target, property, doubleAnimation);
+                    if (value != null)
+                        assignments.Add(new VisualStateAssignment(target, property, value));
+                    break;
+                }
+                case DoubleAnimationUsingKeyFrames keyFrameAnimation:
+                {
+                    ResolveTimelineTargetOrThrow(
+                        root,
+                        timeline,
+                        out var target,
+                        out var property);
+                    var frame = GetLastKeyFrame(keyFrameAnimation.KeyFrames);
+                    if (frame != null)
+                        assignments.Add(new VisualStateAssignment(target, property, frame.Value));
+                    break;
+                }
+                case ColorAnimation colorAnimation:
+                {
+                    object? value = GetColorAnimationFinalValue(colorAnimation);
+                    if (value == null)
+                        break;
+                    if (TryResolveTimelineTarget(
+                            root,
+                            timeline,
+                            out var target,
+                            out var property))
+                    {
+                        assignments.Add(new VisualStateAssignment(target, property, value));
+                        break;
+                    }
+                    if (TryResolveSolidColorBrushTarget(
+                            root,
+                            timeline,
+                            value,
+                            out target,
+                            out property,
+                            out var brushValue))
+                    {
+                        assignments.Add(
+                            new VisualStateAssignment(
+                                target,
+                                property,
+                                brushValue));
+                        break;
+                    }
+                    ResolveTimelineTargetOrThrow(
+                        root,
+                        timeline,
+                        out _,
+                        out _);
+                    break;
+                }
+                case FadeInThemeAnimation fadeIn:
+                    CollectFadeAssignment(root, fadeIn, 1d, assignments);
+                    break;
+                case FadeOutThemeAnimation fadeOut:
+                    CollectFadeAssignment(root, fadeOut, 0d, assignments);
+                    break;
+                case PointerDownThemeAnimation pointerDown:
+                    ValidateThemeTarget(root, pointerDown, pointerDown.TargetName);
+                    break;
+                case PointerUpThemeAnimation pointerUp:
+                    ValidateThemeTarget(root, pointerUp, pointerUp.TargetName);
+                    break;
+                case DragItemThemeAnimation dragItem:
+                    ValidateThemeTarget(root, dragItem, dragItem.TargetName);
+                    break;
+                case DropTargetItemThemeAnimation dropTarget:
+                    ValidateThemeTarget(root, dropTarget, dropTarget.TargetName);
+                    break;
+                case DragOverThemeAnimation dragOver:
+                    ValidateThemeTarget(root, dragOver, dragOver.TargetName);
+                    break;
+                case RepositionThemeAnimation reposition:
+                    ValidateThemeTarget(root, reposition, reposition.TargetName);
+                    break;
+                case SplitOpenThemeAnimation splitOpen:
+                    ValidateSplitTargets(root, splitOpen);
+                    break;
+                case SplitCloseThemeAnimation splitClose:
+                    ValidateSplitTargets(root, splitClose);
+                    break;
+                default:
+                    throw new NotSupportedException(
+                        $"Visual-state timeline '{timeline.GetType().FullName}' is not supported.");
+            }
+        }
+    }
+
+    private static void ResolveTimelineTargetOrThrow(
+        FrameworkElement root,
+        Timeline timeline,
+        out DependencyObject target,
+        out DependencyProperty property)
+    {
+        if (TryResolveTimelineTarget(root, timeline, out target, out property))
+            return;
+        throw new InvalidOperationException(
+            $"Storyboard target '{Storyboard.GetTargetName(timeline)}' and property path " +
+            $"'{Storyboard.GetTargetProperty(timeline)}' on '{timeline.GetType().FullName}' " +
+            $"could not be resolved from '{root.GetType().FullName}'.");
+    }
+
+    private static bool IsSystemFocusVisualCompatibilityTarget(
+        FrameworkElement root,
+        Timeline timeline)
+    {
+        if (XamlTemplateFactory.FindTemplateContext(root) is not Control
+            {
+                UseSystemFocusVisuals: true
+            })
+        {
+            return false;
+        }
+
+        string targetName = Storyboard.GetTargetName(timeline);
+        if (!string.Equals(
+                targetName,
+                "FocusVisualWhite",
+                StringComparison.Ordinal) &&
+            !string.Equals(
+                targetName,
+                "FocusVisualBlack",
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return string.Equals(
+            Storyboard.GetTargetProperty(timeline).Trim(),
+            nameof(UIElement.Opacity),
+            StringComparison.Ordinal);
+    }
+
+    private static void CollectFadeAssignment<TFade>(
+        FrameworkElement root,
+        TFade timeline,
+        double opacity,
+        List<VisualStateAssignment> assignments)
+        where TFade : Timeline
+    {
+        string targetName = timeline switch
+        {
+            FadeInThemeAnimation fadeIn => fadeIn.TargetName,
+            FadeOutThemeAnimation fadeOut => fadeOut.TargetName,
+            _ => string.Empty
+        };
+        var target = ValidateThemeTarget(root, timeline, targetName);
+        if (target is not UIElement)
+        {
+            throw new InvalidOperationException(
+                $"Theme animation target '{targetName}' is not a UIElement and cannot animate Opacity.");
+        }
+        assignments.Add(
+            new VisualStateAssignment(
+                target,
+                UIElement.OpacityProperty,
+                opacity));
+    }
+
+    private static DependencyObject ValidateThemeTarget(
+        FrameworkElement root,
+        Timeline timeline,
+        string declaredTargetName)
+    {
+        string targetName = string.IsNullOrWhiteSpace(declaredTargetName)
+            ? Storyboard.GetTargetName(timeline)
+            : declaredTargetName;
+        if (string.IsNullOrWhiteSpace(targetName))
+            return root;
+        if (FindName(root, targetName) is DependencyObject target)
+            return target;
+        throw new InvalidOperationException(
+            $"Theme-animation target '{targetName}' on '{timeline.GetType().FullName}' " +
+            $"could not be resolved from '{root.GetType().FullName}'.");
+    }
+
+    private static void ValidateSplitTargets(
+        FrameworkElement root,
+        SplitOpenThemeAnimation animation)
+    {
+        _ = animation.OpenedTarget ??
+            ValidateThemeTarget(root, animation, animation.OpenedTargetName);
+        _ = animation.ClosedTarget ??
+            ValidateThemeTarget(root, animation, animation.ClosedTargetName);
+        if (animation.ContentTarget != null ||
+            !string.IsNullOrWhiteSpace(animation.ContentTargetName))
+        {
+            _ = animation.ContentTarget ??
+                ValidateThemeTarget(root, animation, animation.ContentTargetName);
+        }
+    }
+
+    private static void ValidateSplitTargets(
+        FrameworkElement root,
+        SplitCloseThemeAnimation animation)
+    {
+        _ = animation.OpenedTarget ??
+            ValidateThemeTarget(root, animation, animation.OpenedTargetName);
+        _ = animation.ClosedTarget ??
+            ValidateThemeTarget(root, animation, animation.ClosedTargetName);
+        if (animation.ContentTarget != null ||
+            !string.IsNullOrWhiteSpace(animation.ContentTargetName))
+        {
+            _ = animation.ContentTarget ??
+                ValidateThemeTarget(root, animation, animation.ContentTargetName);
+        }
+    }
+
+    private static object? GetDoubleAnimationFinalValue(
+        DependencyObject target,
+        DependencyProperty property,
+        DoubleAnimation animation)
+    {
+        if (animation.IsPropertySetLocally(DoubleAnimation.ToProperty))
+            return animation.GetLocalXamlValue(DoubleAnimation.ToProperty);
+        if (animation.By is double by)
+        {
+            object? currentValue = target.GetValue(property);
+            double current;
+            try
+            {
+                current = Convert.ToDouble(
+                    currentValue ?? 0d,
+                    System.Globalization.CultureInfo.InvariantCulture);
+            }
+            catch (Exception exception)
+            {
+                throw new InvalidOperationException(
+                    $"The current value '{currentValue}' ({currentValue?.GetType().FullName ?? "null"}) of " +
+                    $"'{target.GetType().FullName}.{property.Name}' cannot be used as a DoubleAnimation base value.",
+                    exception);
+            }
+            return current + by;
+        }
+        return animation.From;
+    }
+
+    private static object? GetColorAnimationFinalValue(ColorAnimation animation)
+    {
+        if (animation.IsPropertySetLocally(ColorAnimation.ToProperty))
+            return animation.GetLocalXamlValue(ColorAnimation.ToProperty);
+        return animation.From ?? animation.By;
+    }
+
+    private static bool TryResolveSolidColorBrushTarget(
+        FrameworkElement root,
+        Timeline timeline,
+        object colorValue,
+        out DependencyObject target,
+        out DependencyProperty property,
+        out object brushValue)
+    {
+        target = null!;
+        property = null!;
+        brushValue = null!;
+        string path = Storyboard.GetTargetProperty(timeline).Trim();
+        var segments = path.Split(
+            new[] { ").(" },
+            StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length != 2)
+            return false;
+
+        var colorSegment = segments[1].Trim().Trim('(', ')');
+        var colorSeparator = colorSegment.LastIndexOf('.');
+        if (colorSeparator <= 0 ||
+            !string.Equals(
+                colorSegment[(colorSeparator + 1)..],
+                nameof(ProGPU.Vector.SolidColorBrush.Color),
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                colorSegment[..colorSeparator],
+                nameof(ProGPU.Vector.SolidColorBrush),
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        string targetName = Storyboard.GetTargetName(timeline);
+        var resolvedTarget = string.IsNullOrWhiteSpace(targetName)
+            ? root
+            : FindName(root, targetName) as DependencyObject;
+        if (resolvedTarget == null)
+            return false;
+        target = resolvedTarget;
+
+        var brushSegment = segments[0].Trim().Trim('(', ')');
+        var brushSeparator = brushSegment.LastIndexOf('.');
+        var owner = brushSeparator < 0
+            ? null
+            : brushSegment[..brushSeparator];
+        var name = brushSeparator < 0
+            ? brushSegment
+            : brushSegment[(brushSeparator + 1)..];
+        property =
+            DependencyProperty.Lookup(target.GetType(), name) ??
+            (owner == null
+                ? null
+                : DependencyProperty.LookupRegisteredOwner(owner, name))!;
+        if (property == null ||
+            target.GetValue(property) is not ProGPU.Vector.SolidColorBrush currentBrush)
+        {
+            return false;
+        }
+
+        if (colorValue is ThemeResource themeResource)
+        {
+            brushValue = new ThemeColorBrushResource(
+                themeResource.LookupRoot,
+                themeResource.ResourceKey,
+                currentBrush.Opacity);
+            return true;
+        }
+
+        if (colorValue is ProGPU.Vector.ThemeResourceBrush themeBrush)
+        {
+            brushValue = new ThemeColorBrushResource(
+                themeBrush.LookupRoot,
+                themeBrush.ResourceKey,
+                currentBrush.Opacity);
+            return true;
+        }
+
+        var color = (System.Numerics.Vector4)
+            XamlValueConverter.ConvertTo(
+                typeof(System.Numerics.Vector4),
+                colorValue)!;
+        brushValue = new ProGPU.Vector.SolidColorBrush(color)
+        {
+            Opacity = currentBrush.Opacity
+        };
+        return true;
+    }
+
+    private static TFrame? GetLastKeyFrame<TFrame>(IList<TFrame> frames)
+        where TFrame : DependencyObject
+    {
+        TFrame? result = null;
+        TimeSpan resultTime = TimeSpan.MinValue;
+        foreach (var frame in frames)
+        {
+            TimeSpan time = frame switch
+            {
+                ObjectKeyFrame objectFrame => objectFrame.KeyTime.TimeSpan,
+                DoubleKeyFrame doubleFrame => doubleFrame.KeyTime.TimeSpan,
+                _ => TimeSpan.Zero
+            };
+            if (result == null || time >= resultTime)
+            {
+                result = frame;
+                resultTime = time;
+            }
+        }
+        return result;
+    }
+
+    private static bool TryResolveTimelineTarget(
+        FrameworkElement root,
+        Timeline timeline,
+        out DependencyObject target,
+        out DependencyProperty property)
+    {
+        string targetName = Storyboard.GetTargetName(timeline);
+        var resolvedTarget = string.IsNullOrEmpty(targetName)
+            ? root
+            : FindName(root, targetName) as DependencyObject;
+        if (resolvedTarget == null)
+        {
+            target = null!;
+            property = null!;
+            return false;
+        }
+        target = resolvedTarget;
+
+        string path = Storyboard.GetTargetProperty(timeline);
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            property = null!;
+            return false;
+        }
+
+        return TryResolvePropertyPath(
+            target,
+            path,
+            out target,
+            out property);
+    }
+
+    private static bool TryResolvePropertyPath(
+        DependencyObject initialTarget,
+        string path,
+        out DependencyObject target,
+        out DependencyProperty property)
+    {
+        string normalized = path.Trim();
+        target = initialTarget;
+        property = null!;
+        if (normalized.Length == 0)
+            return false;
+
+        var segments = normalized.IndexOf(").(", StringComparison.Ordinal) >= 0
+            ? normalized.Split(
+                new[] { ").(" },
+                StringSplitOptions.RemoveEmptyEntries)
+            : new[] { normalized };
+        for (var index = 0; index < segments.Length; index++)
+        {
+            var segment = segments[index].Trim().Trim('(', ')');
+            var separator = segment.LastIndexOf('.');
+            var owner = separator < 0
+                ? null
+                : segment.Substring(0, separator).Trim('(', ')');
+            var name = separator < 0
+                ? segment
+                : segment.Substring(separator + 1).Trim('(', ')');
+            var resolved =
+                DependencyProperty.Lookup(target.GetType(), name) ??
+                (owner == null
+                    ? null
+                    : DependencyProperty.LookupRegisteredOwner(owner, name));
+            if (resolved == null)
+                return false;
+
+            if (index == segments.Length - 1)
+            {
+                property = resolved;
+                return true;
+            }
+
+            if (target.GetValue(resolved) is not DependencyObject next)
+                return false;
+            target = next;
+        }
+
+        return false;
+    }
+
+    private static bool TryResolveSetter(
+        FrameworkElement root,
+        Setter setter,
+        out DependencyObject target,
+        out DependencyProperty property)
     {
         target = root;
         property = null!;
-        if (string.IsNullOrWhiteSpace(setter.Property)) return false;
-        var separator = setter.Property.LastIndexOf('.');
-        var propertyName = separator < 0 ? setter.Property : setter.Property[(separator + 1)..];
-        if (separator > 0)
+        var setterPath = setter.Target?.Path?.Path ?? setter.Property;
+        if (string.IsNullOrWhiteSpace(setterPath))
+            return false;
+        var propertyPath = setterPath.Trim();
+        if (setter.Target != null)
         {
-            var targetName = setter.Property[..separator];
-            var named = FindName(root, targetName);
-            if (named == null) return false;
-            target = named;
+            if (setter.Target.Target is DependencyObject directTarget)
+            {
+                target = directTarget;
+            }
+            else
+            {
+                var separator = FindTopLevelSeparator(propertyPath);
+                if (separator <= 0)
+                    return false;
+                var targetName = propertyPath[..separator];
+                var named = FindName(root, targetName) as DependencyObject;
+                if (named == null)
+                {
+                    var templateContext =
+                        XamlTemplateFactory.FindTemplateContext(root);
+                    if (templateContext is not DependencyObject templateOwner ||
+                        !IsTypeName(templateOwner.GetType(), targetName))
+                    {
+                        return false;
+                    }
+                    named = templateOwner;
+                }
+                target = named;
+                propertyPath = propertyPath[(separator + 1)..];
+            }
         }
-        property = DependencyProperty.Lookup(target.GetType(), propertyName)!;
-        return property != null;
+        return TryResolvePropertyPath(
+            target,
+            propertyPath,
+            out target,
+            out property);
     }
 
-    private static FrameworkElement? FindName(FrameworkElement root, string name)
+    private static bool IsTypeName(Type type, string candidate) =>
+        string.Equals(type.Name, candidate, StringComparison.Ordinal) ||
+        string.Equals(type.FullName, candidate, StringComparison.Ordinal);
+
+    private static int FindTopLevelSeparator(string path)
     {
+        var parenthesisDepth = 0;
+        for (var index = 0; index < path.Length; index++)
+        {
+            switch (path[index])
+            {
+                case '(':
+                    parenthesisDepth++;
+                    break;
+                case ')':
+                    if (parenthesisDepth > 0)
+                        parenthesisDepth--;
+                    break;
+                case '.' when parenthesisDepth == 0:
+                    return index;
+            }
+        }
+        return -1;
+    }
+
+    private static object? FindName(FrameworkElement root, string name)
+    {
+        if (Microsoft.UI.Xaml.Markup.XamlTemplateFactory.TryFindNameInNearestScope(
+                root,
+                name,
+                out var scopedValue))
+        {
+            return scopedValue;
+        }
         if (string.Equals(root.Name, name, StringComparison.Ordinal)) return root;
         if (root is not ContainerVisual container) return null;
         IReadOnlyList<Visual> children = container.Children;
@@ -179,11 +1017,4 @@ public static class VisualStateManager
         return null;
     }
 
-    private static object? ConvertValue(Type targetType, object? value)
-    {
-        if (value == null || targetType.IsInstanceOfType(value)) return value;
-        if (targetType.IsEnum && value is string enumValue) return Enum.Parse(targetType, enumValue, ignoreCase: true);
-        if (targetType == typeof(Thickness) && value is string thickness) return Thickness.Parse(thickness);
-        return Convert.ChangeType(value, targetType, CultureInfo.InvariantCulture);
-    }
 }

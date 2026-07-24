@@ -14,18 +14,22 @@ using ProGPU.Vector;
 using ProGPU.Scene;
 using ProGPU.Text;
 using ProGPU.Text.Shaping;
+using Microsoft.UI.Xaml.Media;
+using Windows.UI.Text;
 
 namespace Microsoft.UI.Xaml.Controls
 {
     using Microsoft.UI.Xaml.Documents;
 
+    [ContentProperty(Name = nameof(Inlines))]
     public class RichTextBlock : FrameworkElement, IScrollViewportAware, IOwnedRenderCommandCache
     {
         private static readonly SolidColorBrush HyperlinkBrush = new SolidColorBrush(0x0078D4FF);
         private static readonly SolidColorBrush HoveredHyperlinkBrush = new SolidColorBrush(0x005A9EFF);
 
         private float _fontSize = 14f;
-        private TextWrapping _textWrapping = TextWrapping.Wrap;
+        private FontFamily _fontFamily = FontFamily.XamlAutoFontFamily;
+        private FontWeight _fontWeight = Microsoft.UI.Text.FontWeights.Normal;
         private readonly List<PositionedRichChar> _positionedChars = new();
         private readonly List<TableVisualDecoration> _tableDecorations = new();
         private readonly List<RichLogicalCaretAnchor> _emptyParagraphCaretAnchors = new();
@@ -186,33 +190,191 @@ namespace Microsoft.UI.Xaml.Controls
 
         private TtfFont? ActiveFont => GetActiveFont();
 
+        public static readonly DependencyProperty FontSizeProperty =
+            DependencyProperty.Register(
+                nameof(FontSize),
+                typeof(float),
+                typeof(RichTextBlock),
+                new PropertyMetadata(14f, OnTypographyPropertyChanged)
+                {
+                    AffectsMeasure = true,
+                    AffectsRender = true
+                });
+
         public float FontSize
         {
-            get => _fontSize;
+            get => (float)(GetValue(FontSizeProperty) ?? 14f);
+            set => SetValue(FontSizeProperty, value);
+        }
+
+        public static readonly DependencyProperty FontFamilyProperty =
+            DependencyProperty.Register(
+                nameof(FontFamily),
+                typeof(FontFamily),
+                typeof(RichTextBlock),
+                new PropertyMetadata(FontFamily.XamlAutoFontFamily, OnTypographyPropertyChanged)
+                {
+                    AffectsMeasure = true,
+                    AffectsRender = true
+                });
+
+        public FontFamily FontFamily
+        {
+            get => (FontFamily)(GetValue(FontFamilyProperty) ?? FontFamily.XamlAutoFontFamily);
+            set => SetValue(FontFamilyProperty, value ?? throw new ArgumentNullException(nameof(value)));
+        }
+
+        public static readonly DependencyProperty FontWeightProperty =
+            DependencyProperty.Register(
+                nameof(FontWeight),
+                typeof(FontWeight),
+                typeof(RichTextBlock),
+                new PropertyMetadata(Microsoft.UI.Text.FontWeights.Normal, OnTypographyPropertyChanged)
+                {
+                    AffectsMeasure = true,
+                    AffectsRender = true
+                });
+
+        public FontWeight FontWeight
+        {
+            get => (FontWeight)(GetValue(FontWeightProperty) ?? Microsoft.UI.Text.FontWeights.Normal);
+            set => SetValue(FontWeightProperty, value);
+        }
+
+        private static void OnTypographyPropertyChanged(
+            DependencyObject dependencyObject,
+            DependencyPropertyChangedEventArgs args)
+        {
+            var text = (RichTextBlock)dependencyObject;
+            if (args.Property == FontSizeProperty)
+                text._fontSize = (float)(args.NewValue ?? 14f);
+            else if (args.Property == FontFamilyProperty)
+                text._fontFamily = (FontFamily)(args.NewValue ?? FontFamily.XamlAutoFontFamily);
+            else if (args.Property == FontWeightProperty)
+                text._fontWeight = (FontWeight)(args.NewValue ?? Microsoft.UI.Text.FontWeights.Normal);
+            text.InvalidateLayout();
+        }
+
+        public static readonly DependencyProperty FontStyleProperty =
+            DependencyProperty.Register(
+                nameof(FontStyle),
+                typeof(Windows.UI.Text.FontStyle),
+                typeof(RichTextBlock),
+                new PropertyMetadata(Windows.UI.Text.FontStyle.Normal, OnTextLayoutPropertyChanged)
+                {
+                    AffectsMeasure = true,
+                    AffectsRender = true
+                });
+
+        public Windows.UI.Text.FontStyle FontStyle
+        {
+            get => (Windows.UI.Text.FontStyle)(GetValue(FontStyleProperty) ?? Windows.UI.Text.FontStyle.Normal);
+            set => SetValue(FontStyleProperty, value);
+        }
+
+        public static readonly DependencyProperty IsTextScaleFactorEnabledProperty =
+            DependencyProperty.Register(
+                nameof(IsTextScaleFactorEnabled),
+                typeof(bool),
+                typeof(RichTextBlock),
+                new PropertyMetadata(true, OnTextLayoutPropertyChanged)
+                {
+                    AffectsMeasure = true,
+                    AffectsRender = true
+                });
+
+        public bool IsTextScaleFactorEnabled
+        {
+            get => (bool)(GetValue(IsTextScaleFactorEnabledProperty) ?? true);
+            set => SetValue(IsTextScaleFactorEnabledProperty, value);
+        }
+
+        public static readonly DependencyProperty MaxLinesProperty =
+            DependencyProperty.Register(
+                nameof(MaxLines),
+                typeof(int),
+                typeof(RichTextBlock),
+                new PropertyMetadata(0, OnTextLayoutPropertyChanged)
+                {
+                    AffectsMeasure = true,
+                    AffectsArrange = true,
+                    AffectsRender = true
+                });
+
+        public int MaxLines
+        {
+            get => (int)(GetValue(MaxLinesProperty) ?? 0);
             set
             {
-                if (_fontSize != value)
+                if (value < 0)
                 {
-                    _fontSize = value;
-                    _isLayoutDirty = true;
-                    Invalidate();
+                    throw new ArgumentOutOfRangeException(nameof(value), value, "MaxLines cannot be negative.");
                 }
+                SetValue(MaxLinesProperty, value);
             }
         }
 
-        private Brush? _foreground;
+        public static readonly DependencyProperty OpticalMarginAlignmentProperty =
+            DependencyProperty.Register(
+                nameof(OpticalMarginAlignment),
+                typeof(OpticalMarginAlignment),
+                typeof(RichTextBlock),
+                new PropertyMetadata(OpticalMarginAlignment.None, OnTextLayoutPropertyChanged)
+                {
+                    AffectsMeasure = true,
+                    AffectsRender = true
+                });
+
+        public OpticalMarginAlignment OpticalMarginAlignment
+        {
+            get => (OpticalMarginAlignment)(GetValue(OpticalMarginAlignmentProperty) ?? OpticalMarginAlignment.None);
+            set => SetValue(OpticalMarginAlignmentProperty, value);
+        }
+
+        public static readonly DependencyProperty TextTrimmingProperty =
+            DependencyProperty.Register(
+                nameof(TextTrimming),
+                typeof(TextTrimming),
+                typeof(RichTextBlock),
+                new PropertyMetadata(TextTrimming.None, OnTextLayoutPropertyChanged)
+                {
+                    AffectsMeasure = true,
+                    AffectsRender = true
+                });
+
+        public TextTrimming TextTrimming
+        {
+            get => (TextTrimming)(GetValue(TextTrimmingProperty) ?? TextTrimming.None);
+            set => SetValue(TextTrimmingProperty, value);
+        }
+
+        private static void OnTextLayoutPropertyChanged(
+            DependencyObject dependencyObject,
+            DependencyPropertyChangedEventArgs args)
+        {
+            _ = args;
+            ((RichTextBlock)dependencyObject).InvalidateLayout();
+        }
+
+        public static readonly DependencyProperty ForegroundProperty =
+            DependencyProperty.Register(
+                nameof(Foreground),
+                typeof(Brush),
+                typeof(RichTextBlock),
+                new PropertyMetadata(null, static (dependencyObject, _) =>
+                {
+                    var textBlock = (RichTextBlock)dependencyObject;
+                    textBlock._isLayoutDirty = true;
+                    textBlock.Invalidate();
+                })
+                {
+                    AffectsRender = true
+                });
+
         public Brush? Foreground
         {
-            get => _foreground;
-            set
-            {
-                if (_foreground != value)
-                {
-                    _foreground = value;
-                    _isLayoutDirty = true;
-                    Invalidate();
-                }
-            }
+            get => GetValue(ForegroundProperty) as Brush;
+            set => SetValue(ForegroundProperty, value);
         }
 
         public static readonly DependencyProperty TextAlignmentProperty =
@@ -288,16 +450,21 @@ namespace Microsoft.UI.Xaml.Controls
             set => SetValue(TextReadingOrderProperty, value);
         }
 
+        public static readonly DependencyProperty TextWrappingProperty =
+            DependencyProperty.Register(
+                nameof(TextWrapping),
+                typeof(TextWrapping),
+                typeof(RichTextBlock),
+                new PropertyMetadata(TextWrapping.Wrap, OnTextLayoutPropertyChanged)
+                {
+                    AffectsMeasure = true,
+                    AffectsRender = true
+                });
+
         public TextWrapping TextWrapping
         {
-            get => _textWrapping;
-            set
-            {
-                if (_textWrapping == value) return;
-                _textWrapping = value;
-                _isLayoutDirty = true;
-                Invalidate();
-            }
+            get => (TextWrapping)(GetValue(TextWrappingProperty) ?? TextWrapping.Wrap);
+            set => SetValue(TextWrappingProperty, value);
         }
 
         public List<PositionedRichChar> PositionedChars => _positionedChars;
@@ -512,15 +679,84 @@ namespace Microsoft.UI.Xaml.Controls
                     FlowDirection,
                     _layoutSession,
                     AlignmentIncludesTrailingWhitespace,
-                    IgnoreTrailingCharacterSpacing);
+                    IgnoreTrailingCharacterSpacing,
+                    FontStyle is Windows.UI.Text.FontStyle.Italic or Windows.UI.Text.FontStyle.Oblique);
             }
             finally
             {
                 _isPerformingLayout = false;
             }
+            ApplyMaxLines();
             _layoutSession.CollectEmptyParagraphCaretAnchors(activeBlocks, _emptyParagraphCaretAnchors);
             GetScrollViewport(out _lastLayoutScrollY, out _);
             InvalidateAllRenderCommandCaches();
+        }
+
+        private void ApplyMaxLines()
+        {
+            if (MaxLines <= 0 || _positionedChars.Count == 0)
+            {
+                return;
+            }
+
+            const float lineTolerance = 0.01f;
+            var lineCount = 0;
+            var previousLineY = float.NaN;
+            var maximumLineY = float.PositiveInfinity;
+
+            for (var index = 0; index < _positionedChars.Count; index++)
+            {
+                var lineY = _positionedChars[index].Position.Y;
+                if (!float.IsNaN(previousLineY) && Math.Abs(lineY - previousLineY) <= lineTolerance)
+                {
+                    continue;
+                }
+
+                previousLineY = lineY;
+                lineCount++;
+                if (lineCount == MaxLines)
+                {
+                    maximumLineY = lineY;
+                }
+                else if (lineCount > MaxLines)
+                {
+                    break;
+                }
+            }
+
+            if (lineCount <= MaxLines)
+            {
+                return;
+            }
+
+            var measuredBottom = 0f;
+            for (var index = _positionedChars.Count - 1; index >= 0; index--)
+            {
+                var character = _positionedChars[index];
+                if (character.Position.Y > maximumLineY + lineTolerance)
+                {
+                    if (character.Info.EmbeddedElement is { } embeddedElement)
+                    {
+                        RemoveChild(embeddedElement);
+                    }
+                    _positionedChars.RemoveAt(index);
+                    continue;
+                }
+
+                measuredBottom = Math.Max(
+                    measuredBottom,
+                    character.Position.Y + character.Info.FontSize + Padding.Bottom);
+            }
+
+            for (var index = _tableDecorations.Count - 1; index >= 0; index--)
+            {
+                if (_tableDecorations[index].Rect.Y > maximumLineY + lineTolerance)
+                {
+                    _tableDecorations.RemoveAt(index);
+                }
+            }
+
+            _layoutHeight = Math.Min(_layoutHeight, measuredBottom);
         }
 
         public void OnScrollViewportChanged()

@@ -14,7 +14,7 @@ public class FontIcon : IconElement
     private readonly ushort[] _singleGlyphIndex = new ushort[1];
     private readonly Vector2[] _singleGlyphPosition = new Vector2[1];
 
-    public static readonly DependencyProperty FontSizeProperty =
+    public new static readonly DependencyProperty FontSizeProperty =
         DependencyProperty.Register(
             "FontSize",
             typeof(float),
@@ -25,7 +25,7 @@ public class FontIcon : IconElement
                 fi.Invalidate();
             }));
 
-    public float FontSize
+    public new float FontSize
     {
         get => (float)(GetValue(FontSizeProperty) ?? 20.0f);
         set => SetValue(FontSizeProperty, value);
@@ -63,6 +63,19 @@ public class FontIcon : IconElement
     {
         get => (ushort?)(GetValue(GlyphIndexProperty));
         set => SetValue(GlyphIndexProperty, value);
+    }
+
+    public static readonly DependencyProperty MirroredWhenRightToLeftProperty =
+        DependencyProperty.Register(
+            nameof(MirroredWhenRightToLeft),
+            typeof(bool),
+            typeof(FontIcon),
+            new PropertyMetadata(false) { AffectsRender = true });
+
+    public bool MirroredWhenRightToLeft
+    {
+        get => (bool)(GetValue(MirroredWhenRightToLeftProperty) ?? false);
+        set => SetValue(MirroredWhenRightToLeftProperty, value);
     }
 
     /// <summary>
@@ -108,6 +121,9 @@ public class FontIcon : IconElement
         if (activeFont == null) return;
 
         var brush = GetCurrentForeground() ?? ThemeManager.GetBrush("TextPrimary");
+        var iconTransform = MirroredWhenRightToLeft && FlowDirection == FlowDirection.RightToLeft
+            ? Matrix4x4.CreateScale(-1f, 1f, 1f) * Matrix4x4.CreateTranslation(Size.X, 0f, 0f)
+            : Matrix4x4.Identity;
 
         if (GlyphIndex.HasValue)
         {
@@ -127,6 +143,7 @@ public class FontIcon : IconElement
                     FontSize,
                     brush,
                     new Vector2(offsetX, offsetY),
+                    transform: iconTransform,
                     preferGlyphAtlas: true,
                     useLogicalGlyphAtlasResolution: false);
             }
@@ -137,7 +154,7 @@ public class FontIcon : IconElement
                 {
                     var transform = Matrix4x4.CreateScale(scaleVal, -scaleVal, 1f) *
                         Matrix4x4.CreateTranslation(offsetX, offsetY, 0f);
-                    context.DrawPath(brush, null, rawOutline, transform);
+                    context.DrawPath(brush, null, rawOutline, transform * iconTransform);
                 }
             }
         }
@@ -150,7 +167,14 @@ public class FontIcon : IconElement
             float offsetX = (Size.X - advance) / 2f;
             float offsetY = (Size.Y - fontHeight) / 2f;
 
-            context.DrawText(Glyph, activeFont, FontSize, brush, new Vector2(offsetX, offsetY));
+            context.DrawText(
+                Glyph,
+                activeFont,
+                FontSize,
+                brush,
+                new Vector2(offsetX, offsetY),
+                iconTransform,
+                useVectorGlyphRendering: UseVectorGlyphRendering);
         }
     }
 

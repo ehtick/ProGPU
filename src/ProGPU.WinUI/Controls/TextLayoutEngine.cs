@@ -41,7 +41,7 @@ namespace Microsoft.UI.Xaml.Controls
             Brush fg = inline.Foreground ?? defaultFg;
             if (fg is ThemeResourceBrush trBrush)
             {
-                fg = ThemeManager.GetBrush(trBrush.ResourceKey, theme);
+                fg = XamlResourceResolver.ResolveThemeBrush(trBrush, target: null, theme) ?? defaultFg;
             }
             float size = inline.FontSize ?? defaultSize;
             TtfFont? font = inline.Font ?? parentFont;
@@ -222,7 +222,8 @@ namespace Microsoft.UI.Xaml.Controls
             FlowDirection flowDirection = FlowDirection.LeftToRight,
             RichDocumentLayoutSession? layoutSession = null,
             bool alignmentIncludesTrailingWhitespace = false,
-            bool ignoreTrailingCharacterSpacing = false)
+            bool ignoreTrailingCharacterSpacing = false,
+            bool defaultIsItalic = false)
         {
             var blocks = new List<Block>
             {
@@ -251,7 +252,8 @@ namespace Microsoft.UI.Xaml.Controls
                 flowDirection,
                 layoutSession,
                 alignmentIncludesTrailingWhitespace,
-                ignoreTrailingCharacterSpacing);
+                ignoreTrailingCharacterSpacing,
+                defaultIsItalic);
         }
 
         private static int GetInlinesLength(IEnumerable<Inline> inlines)
@@ -857,7 +859,8 @@ namespace Microsoft.UI.Xaml.Controls
             TextReadingOrder textReadingOrder,
             FlowDirection flowDirection,
             bool alignmentIncludesTrailingWhitespace,
-            bool ignoreTrailingCharacterSpacing)
+            bool ignoreTrailingCharacterSpacing,
+            bool defaultIsItalic)
         {
             layoutSession.ReleaseCharacters(blockChars);
             blockDecorations.Clear();
@@ -916,20 +919,20 @@ namespace Microsoft.UI.Xaml.Controls
             {
                 foreach (var inline in paragraph.Inlines)
                 {
-                    AccumulateInlines(inline, charList, resolvedFg, baseFontSize, false, false, false, theme, null, 0f);
+                    AccumulateInlines(inline, charList, resolvedFg, baseFontSize, false, defaultIsItalic, false, theme, null, 0f);
                 }
             }
             else if (block is Inline inlineBlock)
             {
-                AccumulateInlines(inlineBlock, charList, resolvedFg, baseFontSize, false, false, false, theme, null, 0f);
+                AccumulateInlines(inlineBlock, charList, resolvedFg, baseFontSize, false, defaultIsItalic, false, theme, null, 0f);
             }
             else if (block is ListBlock listBlock)
             {
-                AccumulateInlines(listBlock, charList, resolvedFg, baseFontSize, false, false, false, theme, null, 0f);
+                AccumulateInlines(listBlock, charList, resolvedFg, baseFontSize, false, defaultIsItalic, false, theme, null, 0f);
             }
             else if (block is Table tableBlock)
             {
-                AccumulateInlines(tableBlock, charList, resolvedFg, baseFontSize, false, false, false, theme, null, 0f);
+                AccumulateInlines(tableBlock, charList, resolvedFg, baseFontSize, false, defaultIsItalic, false, theme, null, 0f);
             }
 
             if (charList.Count == 0)
@@ -1339,7 +1342,7 @@ namespace Microsoft.UI.Xaml.Controls
 
         private static Brush? ResolveTableBrush(Brush? brush, ElementTheme theme) =>
             brush is ThemeResourceBrush resource
-                ? ThemeManager.GetBrush(resource.ResourceKey, theme)
+                ? XamlResourceResolver.ResolveThemeBrush(resource, target: null, theme) ?? resource
                 : brush;
 
         private static float ResolveParagraphLineHeight(Paragraph? paragraph, float naturalHeight)
@@ -1589,7 +1592,8 @@ namespace Microsoft.UI.Xaml.Controls
             FlowDirection flowDirection = FlowDirection.LeftToRight,
             RichDocumentLayoutSession? layoutSession = null,
             bool alignmentIncludesTrailingWhitespace = false,
-            bool ignoreTrailingCharacterSpacing = false)
+            bool ignoreTrailingCharacterSpacing = false,
+            bool defaultIsItalic = false)
         {
             positionedChars.Clear();
             tableDecorations.Clear();
@@ -1632,7 +1636,8 @@ namespace Microsoft.UI.Xaml.Controls
                         textReadingOrder,
                         flowDirection,
                         alignmentIncludesTrailingWhitespace,
-                        ignoreTrailingCharacterSpacing))
+                        ignoreTrailingCharacterSpacing,
+                        defaultIsItalic))
                 {
                     cache.IsLayoutValid = false;
                     cache.Height = -1f;
@@ -1731,14 +1736,15 @@ namespace Microsoft.UI.Xaml.Controls
                             textReadingOrder,
                             flowDirection,
                             alignmentIncludesTrailingWhitespace,
-                            ignoreTrailingCharacterSpacing);
+                            ignoreTrailingCharacterSpacing,
+                            defaultIsItalic);
 
                         if (!isCacheValid)
                         {
-                            LayoutBlock(block, cache, cursorY, maxWidth, padding, activeFont, baseFontSize, resolvedFg, alignment, theme, parent, addChild, encounteredChildren, layoutSession, cache.Characters, cache.Decorations, textWrapping, textReadingOrder, flowDirection, alignmentIncludesTrailingWhitespace, ignoreTrailingCharacterSpacing);
+                            LayoutBlock(block, cache, cursorY, maxWidth, padding, activeFont, baseFontSize, resolvedFg, alignment, theme, parent, addChild, encounteredChildren, layoutSession, cache.Characters, cache.Decorations, textWrapping, textReadingOrder, flowDirection, alignmentIncludesTrailingWhitespace, ignoreTrailingCharacterSpacing, defaultIsItalic);
                             cache.LogicalTextOffset = 0;
                             RebaseBlockCharacters(cache, logicalTextOffset);
-                            cache.SetKey(maxWidth, padding, activeFont, baseFontSize, defaultFg, alignment, theme, textWrapping, textReadingOrder, flowDirection, alignmentIncludesTrailingWhitespace, ignoreTrailingCharacterSpacing);
+                            cache.SetKey(maxWidth, padding, activeFont, baseFontSize, defaultFg, alignment, theme, textWrapping, textReadingOrder, flowDirection, alignmentIncludesTrailingWhitespace, ignoreTrailingCharacterSpacing, defaultIsItalic);
                         }
                         else
                         {
@@ -1800,12 +1806,12 @@ namespace Microsoft.UI.Xaml.Controls
                 bool intersects = (absoluteBottom >= visibleTop) && (absoluteTop <= visibleBottom);
                 if (intersects)
                 {
-                    if (!cache.Matches(maxWidth, padding, activeFont, baseFontSize, defaultFg, alignment, theme, textWrapping, textReadingOrder, flowDirection, alignmentIncludesTrailingWhitespace, ignoreTrailingCharacterSpacing))
+                    if (!cache.Matches(maxWidth, padding, activeFont, baseFontSize, defaultFg, alignment, theme, textWrapping, textReadingOrder, flowDirection, alignmentIncludesTrailingWhitespace, ignoreTrailingCharacterSpacing, defaultIsItalic))
                     {
-                        LayoutBlock(block, cache, blockTop, maxWidth, padding, activeFont, baseFontSize, resolvedFg, alignment, theme, parent, addChild, encounteredChildren, layoutSession, cache.Characters, cache.Decorations, textWrapping, textReadingOrder, flowDirection, alignmentIncludesTrailingWhitespace, ignoreTrailingCharacterSpacing);
+                        LayoutBlock(block, cache, blockTop, maxWidth, padding, activeFont, baseFontSize, resolvedFg, alignment, theme, parent, addChild, encounteredChildren, layoutSession, cache.Characters, cache.Decorations, textWrapping, textReadingOrder, flowDirection, alignmentIncludesTrailingWhitespace, ignoreTrailingCharacterSpacing, defaultIsItalic);
                         cache.LogicalTextOffset = 0;
                         RebaseBlockCharacters(cache, gatheredLogicalTextOffset);
-                        cache.SetKey(maxWidth, padding, activeFont, baseFontSize, defaultFg, alignment, theme, textWrapping, textReadingOrder, flowDirection, alignmentIncludesTrailingWhitespace, ignoreTrailingCharacterSpacing);
+                        cache.SetKey(maxWidth, padding, activeFont, baseFontSize, defaultFg, alignment, theme, textWrapping, textReadingOrder, flowDirection, alignmentIncludesTrailingWhitespace, ignoreTrailingCharacterSpacing, defaultIsItalic);
                     }
                     else
                     {
@@ -2167,7 +2173,9 @@ namespace Microsoft.UI.Xaml.Controls
 
             Brush? borderBrush = table.BorderBrush;
             if (borderBrush is ThemeResourceBrush borderThemeBrush)
-                borderBrush = ThemeManager.GetBrush(borderThemeBrush.ResourceKey, theme);
+                borderBrush =
+                    XamlResourceResolver.ResolveThemeBrush(borderThemeBrush, target: null, theme) ??
+                    borderThemeBrush;
 
             foreach (MeasuredTableCell cell in layout.Cells)
             {
@@ -2179,7 +2187,9 @@ namespace Microsoft.UI.Xaml.Controls
                 float height = rowOffsets[cell.Row + cell.RowSpan] - rowOffsets[cell.Row];
                 Brush? background = cell.Cell.Background;
                 if (background is ThemeResourceBrush backgroundThemeBrush)
-                    background = ThemeManager.GetBrush(backgroundThemeBrush.ResourceKey, theme);
+                    background =
+                        XamlResourceResolver.ResolveThemeBrush(backgroundThemeBrush, target: null, theme) ??
+                        backgroundThemeBrush;
                 tableDecorations.Add(new TableVisualDecoration
                 {
                     Rect = new Rect(x, y, cell.Width, height),

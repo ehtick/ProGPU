@@ -9,18 +9,12 @@ using System.Numerics;
 using ProGPU.Layout;
 using ProGPU.Vector;
 using ProGPU.Scene;
+using Microsoft.UI.Xaml.Controls.Primitives;
 
 namespace Microsoft.UI.Xaml.Controls;
 
-public class RadioButton : ContentControl
+public class RadioButton : ToggleButton
 {
-    public static readonly DependencyProperty IsCheckedProperty =
-        DependencyProperty.Register(
-            "IsChecked",
-            typeof(bool),
-            typeof(RadioButton),
-            new PropertyMetadata(false, (d, e) => ((RadioButton)d).OnCheckedChanged()));
-
     public static readonly DependencyProperty GroupNameProperty =
         DependencyProperty.Register(
             "GroupName",
@@ -28,21 +22,11 @@ public class RadioButton : ContentControl
             typeof(RadioButton),
             new PropertyMetadata(string.Empty, (d, e) => ((RadioButton)d).OnGroupNameChanged()));
 
-    public bool IsChecked
-    {
-        get => (bool)(GetValue(IsCheckedProperty) ?? false);
-        set => SetValue(IsCheckedProperty, value);
-    }
-
     public string GroupName
     {
         get => (string)(GetValue(GroupNameProperty) ?? string.Empty);
         set => SetValue(GroupNameProperty, value);
     }
-
-    public event EventHandler? Checked;
-    public event EventHandler? Unchecked;
-    public event EventHandler? CheckedChanged;
 
     public RadioButton()
     {
@@ -53,18 +37,13 @@ public class RadioButton : ContentControl
         }
     }
 
-    private void OnCheckedChanged()
+    protected override void OnIsCheckedChanged(bool oldValue, bool newValue)
     {
         if (IsChecked)
         {
             UpdateSiblingRadioButtons();
-            Checked?.Invoke(this, EventArgs.Empty);
         }
-        else
-        {
-            Unchecked?.Invoke(this, EventArgs.Empty);
-        }
-        CheckedChanged?.Invoke(this, EventArgs.Empty);
+        base.OnIsCheckedChanged(oldValue, newValue);
         UpdateGroupTabStops();
     }
 
@@ -214,16 +193,10 @@ public class RadioButton : ContentControl
         }
     }
 
-    public override void OnPointerReleased(PointerRoutedEventArgs e)
+    protected override void OnClick()
     {
-        if (IsEnabled && IsPointerPressed && IsPointerOver)
-        {
-            if (!IsChecked)
-            {
-                IsChecked = true;
-            }
-        }
-        base.OnPointerReleased(e);
+        if (!IsChecked) IsChecked = true;
+        RaiseClick();
     }
 
     public override void OnKeyDown(KeyRoutedEventArgs e)

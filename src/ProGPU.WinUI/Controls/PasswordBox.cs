@@ -18,6 +18,27 @@ namespace Microsoft.UI.Xaml.Controls;
 
 public class PasswordBox : Control, ITextInputClient
 {
+    public static readonly DependencyProperty HeaderProperty =
+        DependencyProperty.Register(
+            nameof(Header),
+            typeof(object),
+            typeof(PasswordBox),
+            new PropertyMetadata(null) { AffectsMeasure = true, AffectsRender = true });
+
+    public static readonly DependencyProperty HeaderTemplateProperty =
+        DependencyProperty.Register(
+            nameof(HeaderTemplate),
+            typeof(DataTemplate),
+            typeof(PasswordBox),
+            new PropertyMetadata(null) { AffectsMeasure = true, AffectsRender = true });
+
+    public static readonly DependencyProperty DescriptionProperty =
+        DependencyProperty.Register(
+            nameof(Description),
+            typeof(object),
+            typeof(PasswordBox),
+            new PropertyMetadata(null) { AffectsMeasure = true, AffectsRender = true });
+
     public static readonly DependencyProperty PasswordProperty =
         DependencyProperty.Register(
             "Password",
@@ -63,6 +84,24 @@ public class PasswordBox : Control, ITextInputClient
     {
         get => (string)(GetValue(PasswordProperty) ?? string.Empty);
         set => SetValue(PasswordProperty, value ?? string.Empty);
+    }
+
+    public object? Header
+    {
+        get => GetValue(HeaderProperty);
+        set => SetValue(HeaderProperty, value);
+    }
+
+    public DataTemplate? HeaderTemplate
+    {
+        get => GetValue(HeaderTemplateProperty) as DataTemplate;
+        set => SetValue(HeaderTemplateProperty, value);
+    }
+
+    public object? Description
+    {
+        get => GetValue(DescriptionProperty);
+        set => SetValue(DescriptionProperty, value);
     }
 
     public string PlaceholderText
@@ -192,7 +231,7 @@ public class PasswordBox : Control, ITextInputClient
         }
     }
 
-    public float FontSize
+    public new float FontSize
     {
         get => _fontSize;
         set { if (_fontSize != value) { _fontSize = value; Invalidate(); } }
@@ -896,7 +935,7 @@ public class PasswordBox : Control, ITextInputClient
             // Draw ambient & penumbra soft card elevation shadows
             if (IsEnabled && ActualThemeFamily != VisualThemeFamily.macOS)
             {
-                float shadowR = CornerRadius;
+                float shadowR = CornerRadius.RenderingRadius;
                 var ambientRect = new Rect(0, 2, Size.X, Size.Y);
                 context.DrawRoundedRectangle(ThemeManager.GetBrush("ButtonAmbientShadow"), null, ambientRect, shadowR);
 
@@ -904,7 +943,7 @@ public class PasswordBox : Control, ITextInputClient
                 context.DrawRoundedRectangle(ThemeManager.GetBrush("ButtonPenumbraShadow"), null, penumbraRect, shadowR);
             }
 
-            context.DrawRoundedRectangle(bg, borderPen, new Rect(Vector2.Zero, Size), CornerRadius);
+            context.DrawRoundedRectangle(bg, borderPen, new Rect(Vector2.Zero, Size), CornerRadius.RenderingRadius);
 
             if (IsFocused && IsEnabled && ActualThemeFamily == VisualThemeFamily.macOS)
             {
@@ -912,7 +951,7 @@ public class PasswordBox : Control, ITextInputClient
                 var accentVec = (accentColor as SolidColorBrush)?.Color ?? new Vector4(0f, 0.478f, 1f, 1f);
                 var focusPen = new Pen(new SolidColorBrush(new Vector4(accentVec.X, accentVec.Y, accentVec.Z, 0.5f)), 2f);
                 Rect focusRect = new Rect(-2.5f, -2.5f, Size.X + 5f, Size.Y + 5f);
-                context.DrawRoundedRectangle(null, focusPen, focusRect, CornerRadius + 2.5f);
+                context.DrawRoundedRectangle(null, focusPen, focusRect, CornerRadius.RenderingRadius + 2.5f);
             }
         }
 

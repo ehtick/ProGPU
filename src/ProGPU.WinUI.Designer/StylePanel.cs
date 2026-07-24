@@ -183,21 +183,25 @@ public class StylePanel : Border
         _cmbHorizontalAlignment.Items.Add(new ComboBoxItem("Left"));
         _cmbHorizontalAlignment.Items.Add(new ComboBoxItem("Center"));
         _cmbHorizontalAlignment.Items.Add(new ComboBoxItem("Right"));
-        _cmbHorizontalAlignment.SelectedItem = _cmbHorizontalAlignment.Items[0];
+        _cmbHorizontalAlignment.SelectedItem =
+            (ComboBoxItem)_cmbHorizontalAlignment.Items[0];
 
         _cmbVerticalAlignment = new ComboBox { HeightConstraint = 26f, FontSize = 10f, WidthConstraint = 105f };
         _cmbVerticalAlignment.Items.Add(new ComboBoxItem("Stretch"));
         _cmbVerticalAlignment.Items.Add(new ComboBoxItem("Top"));
         _cmbVerticalAlignment.Items.Add(new ComboBoxItem("Center"));
         _cmbVerticalAlignment.Items.Add(new ComboBoxItem("Bottom"));
-        _cmbVerticalAlignment.SelectedItem = _cmbVerticalAlignment.Items[0];
+        _cmbVerticalAlignment.SelectedItem =
+            (ComboBoxItem)_cmbVerticalAlignment.Items[0];
 
         _txtWidth.TextChanged += (s, e) => UpdateWidthFromUi();
         _txtHeight.TextChanged += (s, e) => UpdateHeightFromUi();
 
         _cmbHorizontalAlignment.SelectionChanged += (s, e) => {
             if (_isUpdatingFields || _selectedElement == null) return;
-            if (Enum.TryParse<HorizontalAlignment>(_cmbHorizontalAlignment.SelectedItem?.Text, out var hAlign))
+            if (Enum.TryParse<HorizontalAlignment>(
+                    (_cmbHorizontalAlignment.SelectedItem as ComboBoxItem)?.Text,
+                    out var hAlign))
             {
                 _selectedElement.HorizontalAlignment = hAlign;
                 NotifyChanged();
@@ -206,7 +210,9 @@ public class StylePanel : Border
 
         _cmbVerticalAlignment.SelectionChanged += (s, e) => {
             if (_isUpdatingFields || _selectedElement == null) return;
-            if (Enum.TryParse<VerticalAlignment>(_cmbVerticalAlignment.SelectedItem?.Text, out var vAlign))
+            if (Enum.TryParse<VerticalAlignment>(
+                    (_cmbVerticalAlignment.SelectedItem as ComboBoxItem)?.Text,
+                    out var vAlign))
             {
                 _selectedElement.VerticalAlignment = vAlign;
                 NotifyChanged();
@@ -241,7 +247,7 @@ public class StylePanel : Border
         _cmbVisibility = new ComboBox { HeightConstraint = 26f, FontSize = 10f, WidthConstraint = 105f };
         _cmbVisibility.Items.Add(new ComboBoxItem("Visible"));
         _cmbVisibility.Items.Add(new ComboBoxItem("Collapsed"));
-        _cmbVisibility.SelectedItem = _cmbVisibility.Items[0];
+        _cmbVisibility.SelectedItem = (ComboBoxItem)_cmbVisibility.Items[0];
 
         _txtBgColor.TextChanged += (s, e) => {
             if (_isUpdatingFields || _selectedElement == null) return;
@@ -288,7 +294,9 @@ public class StylePanel : Border
 
         _cmbVisibility.SelectionChanged += (s, e) => {
             if (_isUpdatingFields || _selectedElement == null) return;
-            if (Enum.TryParse<Visibility>(_cmbVisibility.SelectedItem?.Text, out var vis))
+            if (Enum.TryParse<Visibility>(
+                    (_cmbVisibility.SelectedItem as ComboBoxItem)?.Text,
+                    out var vis))
             {
                 _selectedElement.Visibility = vis;
                 NotifyChanged();
@@ -598,9 +606,10 @@ public class StylePanel : Border
     {
         foreach (var item in combo.Items)
         {
-            if (item.Text.Equals(text, StringComparison.OrdinalIgnoreCase))
+            if (item is ComboBoxItem comboItem &&
+                comboItem.Text.Equals(text, StringComparison.OrdinalIgnoreCase))
             {
-                return item;
+                return comboItem;
             }
         }
         return null;
@@ -738,7 +747,7 @@ public class StylePanel : Border
     private string GetBrushString(Brush? brush)
     {
         if (brush == null) return "";
-        if (brush is ThemeResourceBrush tr) return tr.ResourceKey;
+        if (brush is ThemeResourceBrush tr) return tr.ResourceKey.ToString() ?? string.Empty;
         if (brush is SolidColorBrush scb)
         {
             var col = scb.Color;

@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Description>Roslyn symbol type system and C# emitter for the framework-agnostic ProGPU XAML compiler.</Description>
+    <PackageTags>progpu;xaml;roslyn;compiler</PackageTags>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\ProGPU.Xaml\ProGPU.Xaml.csproj" />
+  </ItemGroup>
+</Project>

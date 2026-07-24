@@ -141,9 +141,9 @@ public static class DesignerSerializer
         sb.AppendLine($"{indent}    Width = {FormatFloat(width)}f,");
         sb.AppendLine($"{indent}    Height = {FormatFloat(height)}f,");
 
-        if (element.Opacity != 1.0f)
+        if (element.Opacity != 1.0d)
         {
-            sb.AppendLine($"{indent}    Opacity = {FormatFloat(element.Opacity)}f,");
+            sb.AppendLine($"{indent}    Opacity = {FormatDouble(element.Opacity)},");
         }
 
         if (element.Rotation != 0f)
@@ -304,22 +304,22 @@ public static class DesignerSerializer
         {
             foreach (var colDef in gridFe.ColumnDefinitions)
             {
-                if (colDef.UnitType == GridUnitType.Auto)
+                if (colDef.Width.UnitType == GridUnitType.Auto)
                     sb.AppendLine($"{indent}{varName}.ColumnDefinitions.Add(GridLength.Auto);");
-                else if (colDef.UnitType == GridUnitType.Star)
-                    sb.AppendLine($"{indent}{varName}.ColumnDefinitions.Add(GridLength.Star({FormatFloat(colDef.Value)}f));");
+                else if (colDef.Width.UnitType == GridUnitType.Star)
+                    sb.AppendLine($"{indent}{varName}.ColumnDefinitions.Add(GridLength.Star({FormatFloat(colDef.Width.Value)}f));");
                 else
-                    sb.AppendLine($"{indent}{varName}.ColumnDefinitions.Add(new GridLength({FormatFloat(colDef.Value)}f, GridUnitType.Absolute));");
+                    sb.AppendLine($"{indent}{varName}.ColumnDefinitions.Add(new GridLength({FormatFloat(colDef.Width.Value)}f, GridUnitType.Absolute));");
             }
 
             foreach (var rowDef in gridFe.RowDefinitions)
             {
-                if (rowDef.UnitType == GridUnitType.Auto)
+                if (rowDef.Height.UnitType == GridUnitType.Auto)
                     sb.AppendLine($"{indent}{varName}.RowDefinitions.Add(GridLength.Auto);");
-                else if (rowDef.UnitType == GridUnitType.Star)
-                    sb.AppendLine($"{indent}{varName}.RowDefinitions.Add(GridLength.Star({FormatFloat(rowDef.Value)}f));");
+                else if (rowDef.Height.UnitType == GridUnitType.Star)
+                    sb.AppendLine($"{indent}{varName}.RowDefinitions.Add(GridLength.Star({FormatFloat(rowDef.Height.Value)}f));");
                 else
-                    sb.AppendLine($"{indent}{varName}.RowDefinitions.Add(new GridLength({FormatFloat(rowDef.Value)}f, GridUnitType.Absolute));");
+                    sb.AppendLine($"{indent}{varName}.RowDefinitions.Add(new GridLength({FormatFloat(rowDef.Height.Value)}f, GridUnitType.Absolute));");
             }
         }
 
@@ -464,13 +464,13 @@ public static class DesignerSerializer
         switch (name)
         {
             case "Value" when element is ProgressBar progressBar:
-                value = progressBar.Value;
+                value = (float)progressBar.Value;
                 return true;
             case "Minimum" when element is ProgressBar progressBar:
-                value = progressBar.Minimum;
+                value = (float)progressBar.Minimum;
                 return true;
             case "Maximum" when element is ProgressBar progressBar:
-                value = progressBar.Maximum;
+                value = (float)progressBar.Maximum;
                 return true;
             default:
                 value = default;
@@ -604,5 +604,10 @@ public static class DesignerSerializer
     private static string FormatFloat(float value)
     {
         return value.ToString("G", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static string FormatDouble(double value)
+    {
+        return value.ToString("G17", System.Globalization.CultureInfo.InvariantCulture);
     }
 }

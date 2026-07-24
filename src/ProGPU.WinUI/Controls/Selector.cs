@@ -1,7 +1,8 @@
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
 using System;
 
-namespace Microsoft.UI.Xaml.Controls;
+namespace Microsoft.UI.Xaml.Controls.Primitives;
 
 public class Selector : ItemsControl
 {
@@ -85,5 +86,28 @@ public class Selector : ItemsControl
         {
             _isSelectionUpdating = false;
         }
+    }
+}
+
+public class SelectorItem : ContentControl
+{
+    public static readonly DependencyProperty IsSelectedProperty = DependencyProperty.Register(
+        nameof(IsSelected), typeof(bool), typeof(SelectorItem),
+        new PropertyMetadata(false, static (dependencyObject, args) =>
+            ((SelectorItem)dependencyObject).OnIsSelectedChanged(
+                (bool)(args.OldValue ?? false),
+                (bool)(args.NewValue ?? false)))
+        {
+            AffectsRender = true
+        });
+
+    public bool IsSelected
+    {
+        get => (bool)(GetValue(IsSelectedProperty) ?? false);
+        set => SetValue(IsSelectedProperty, value);
+    }
+
+    protected virtual void OnIsSelectedChanged(bool oldValue, bool newValue)
+    {
     }
 }

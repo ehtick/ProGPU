@@ -17,6 +17,7 @@ using ProGPU.Text.Shaping;
 
 namespace Microsoft.UI.Xaml.Documents {
 
+[ContentProperty(Name = nameof(Text))]
 public class Run : Inline
 {
     private string _text = string.Empty;

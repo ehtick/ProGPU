@@ -35,7 +35,15 @@ public class Application
 {
     public static Application Current { get; internal set; } = null!;
 
+    public Application()
+    {
+        Resources.Changed += OnResourcesChanged;
+    }
+
     public ResourceDictionary Resources { get; } = new();
+
+    private static void OnResourcesChanged(object? sender, ResourceDictionaryChangedEventArgs args) =>
+        ThemeManager.NotifyResourcesChanged();
 
     public event UnhandledExceptionEventHandler? UnhandledException;
     public event SuspendingEventHandler? Suspending;

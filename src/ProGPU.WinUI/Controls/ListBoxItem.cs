@@ -1,5 +1,6 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Documents;
@@ -11,29 +12,9 @@ using ProGPU.Scene;
 
 namespace Microsoft.UI.Xaml.Controls;
 
-public class ListBoxItem : ContentControl
+public class ListBoxItem : SelectorItem
 {
-    public static readonly DependencyProperty IsSelectedProperty =
-        DependencyProperty.Register(
-            "IsSelected",
-            typeof(bool),
-            typeof(ListBoxItem),
-            new PropertyMetadata(false, (d, e) => {
-                var item = (ListBoxItem)d;
-                item.Invalidate();
-                if (e.NewValue is bool isSelected && isSelected)
-                {
-                    item.Selected?.Invoke(item, EventArgs.Empty);
-                }
-            }));
-
     private string _text = string.Empty;
-
-    public bool IsSelected
-    {
-        get => (bool)(GetValue(IsSelectedProperty) ?? false);
-        set => SetValue(IsSelectedProperty, value);
-    }
 
     public string Text
     {
@@ -60,6 +41,12 @@ public class ListBoxItem : ContentControl
     public object? Person { get; set; }
 
     public event EventHandler? Selected;
+
+    protected override void OnIsSelectedChanged(bool oldValue, bool newValue)
+    {
+        base.OnIsSelectedChanged(oldValue, newValue);
+        if (newValue) Selected?.Invoke(this, EventArgs.Empty);
+    }
 
     public ListBoxItem()
     {
@@ -173,7 +160,7 @@ public class ListBoxItem : ContentControl
 
         if (bg != null)
         {
-            context.DrawRoundedRectangle(bg, pen, new Rect(Vector2.Zero, Size), CornerRadius);
+            context.DrawRoundedRectangle(bg, pen, new Rect(Vector2.Zero, Size), CornerRadius.RenderingRadius);
         }
 
         base.OnRender(context);

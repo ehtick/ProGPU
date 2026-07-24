@@ -25,6 +25,7 @@ internal sealed class RichBlockLayoutCache
     public FlowDirection FlowDirection;
     public bool AlignmentIncludesTrailingWhitespace;
     public bool IgnoreTrailingCharacterSpacing;
+    public bool DefaultIsItalic;
     public int LogicalTextOffset;
     // Computed once per retained block and reset with content invalidation so
     // viewport refresh does not enumerate every inline in the document twice.
@@ -107,7 +108,8 @@ internal sealed class RichBlockLayoutCache
         TextReadingOrder textReadingOrder,
         FlowDirection flowDirection,
         bool alignmentIncludesTrailingWhitespace,
-        bool ignoreTrailingCharacterSpacing) =>
+        bool ignoreTrailingCharacterSpacing,
+        bool defaultIsItalic) =>
         IsLayoutValid &&
         Math.Abs(WidthConstraint - width) < 0.01f &&
         Padding.Equals(padding) &&
@@ -120,7 +122,8 @@ internal sealed class RichBlockLayoutCache
         TextReadingOrder == textReadingOrder &&
         FlowDirection == flowDirection &&
         AlignmentIncludesTrailingWhitespace == alignmentIncludesTrailingWhitespace &&
-        IgnoreTrailingCharacterSpacing == ignoreTrailingCharacterSpacing;
+        IgnoreTrailingCharacterSpacing == ignoreTrailingCharacterSpacing &&
+        DefaultIsItalic == defaultIsItalic;
 
     public void SetKey(
         float width,
@@ -134,7 +137,8 @@ internal sealed class RichBlockLayoutCache
         TextReadingOrder textReadingOrder,
         FlowDirection flowDirection,
         bool alignmentIncludesTrailingWhitespace,
-        bool ignoreTrailingCharacterSpacing)
+        bool ignoreTrailingCharacterSpacing,
+        bool defaultIsItalic)
     {
         WidthConstraint = width;
         Padding = padding;
@@ -148,6 +152,7 @@ internal sealed class RichBlockLayoutCache
         FlowDirection = flowDirection;
         AlignmentIncludesTrailingWhitespace = alignmentIncludesTrailingWhitespace;
         IgnoreTrailingCharacterSpacing = ignoreTrailingCharacterSpacing;
+        DefaultIsItalic = defaultIsItalic;
         IsLayoutValid = true;
     }
 }

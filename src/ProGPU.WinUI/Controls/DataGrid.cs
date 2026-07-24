@@ -102,7 +102,7 @@ public class DataGrid : Control
         }
     }
 
-    public float FontSize
+    public new float FontSize
     {
         get => _fontSize;
         set { _fontSize = value; InvalidateRowMeasurements(); Invalidate(); }
@@ -1391,9 +1391,10 @@ public class DataGrid : Control
             }
             foreach (var itemNode in combo.Items)
             {
-                if (itemNode.Text.Equals(val, StringComparison.OrdinalIgnoreCase))
+                if (itemNode is ComboBoxItem selectedComboItem &&
+                    selectedComboItem.Text.Equals(val, StringComparison.OrdinalIgnoreCase))
                 {
-                    combo.SelectedItem = itemNode;
+                    combo.SelectedItem = selectedComboItem;
                     break;
                 }
             }
@@ -1401,7 +1402,7 @@ public class DataGrid : Control
             {
                 if (combo.SelectedItem != null)
                 {
-                    CommitValue(combo.SelectedItem.Text);
+                    CommitValue(((ComboBoxItem)combo.SelectedItem).Text);
                 }
             };
             _cellEditor = combo;
@@ -1448,9 +1449,10 @@ public class DataGrid : Control
             {
                 foreach (var item in combo.Items)
                 {
-                    if (item.Text.Equals(val, StringComparison.OrdinalIgnoreCase))
+                    if (item is ComboBoxItem comboItem &&
+                        comboItem.Text.Equals(val, StringComparison.OrdinalIgnoreCase))
                     {
-                        combo.SelectedItem = item;
+                        combo.SelectedItem = comboItem;
                         break;
                     }
                 }
@@ -1479,7 +1481,7 @@ public class DataGrid : Control
             }
             else if (_cellEditor is ComboBox combo)
             {
-                newValueText = combo.SelectedItem?.Text ?? "";
+                newValueText = (combo.SelectedItem as ComboBoxItem)?.Text ?? "";
             }
             else if (_cellEditor is BrushCellEditor bce)
             {
@@ -1710,9 +1712,11 @@ public class DataGrid : Control
         public override void OnVisualStateChanged()
         {
             base.OnVisualStateChanged();
-            if (!IsFocused && _owner._editingRow != -1)
+            // TextBox construction can apply its default style and invoke this virtual
+            // callback before this derived constructor assigns the owner.
+            if (!IsFocused && _owner is { _editingRow: not -1 } owner)
             {
-                _owner.CancelEdit();
+                owner.CancelEdit();
             }
         }
     }

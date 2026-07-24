@@ -166,7 +166,7 @@ public class ComboBoxItem : ContentControl
 
         if (bg != null)
         {
-            context.DrawRoundedRectangle(bg, pen, new Rect(Vector2.Zero, Size), CornerRadius);
+            context.DrawRoundedRectangle(bg, pen, new Rect(Vector2.Zero, Size), CornerRadius.RenderingRadius);
         }
 
         base.OnRender(context);

@@ -17,6 +17,7 @@ using ProGPU.Text.Shaping;
 
 namespace Microsoft.UI.Xaml.Documents {
 
+[ContentProperty(Name = nameof(Inlines))]
 public class Span : Inline
 {
     public RichElementCollection<Inline> Inlines { get; }

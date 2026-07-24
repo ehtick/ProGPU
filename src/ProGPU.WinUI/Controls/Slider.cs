@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Documents;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using System;
 using System.Numerics;
 using ProGPU.Layout;
@@ -11,76 +12,55 @@ using ProGPU.Scene;
 
 namespace Microsoft.UI.Xaml.Controls;
 
-public class Slider : Control
+public class Slider : RangeBase
 {
     private bool _isDragging;
 
-    public static readonly DependencyProperty MinimumProperty =
+    public static readonly DependencyProperty HeaderProperty =
         DependencyProperty.Register(
-            "Minimum",
-            typeof(float),
+            nameof(Header),
+            typeof(object),
             typeof(Slider),
-            new PropertyMetadata(0f, (d, e) => ((Slider)d).OnMinimumChanged((float)(e.NewValue ?? 0f))));
+            new PropertyMetadata(null) { AffectsMeasure = true, AffectsRender = true });
 
-    public float Minimum
+    public static readonly DependencyProperty HeaderTemplateProperty =
+        DependencyProperty.Register(
+            nameof(HeaderTemplate),
+            typeof(DataTemplate),
+            typeof(Slider),
+            new PropertyMetadata(null) { AffectsMeasure = true, AffectsRender = true });
+
+    public static readonly DependencyProperty IsThumbToolTipEnabledProperty =
+        DependencyProperty.Register(
+            nameof(IsThumbToolTipEnabled), typeof(bool), typeof(Slider),
+            new PropertyMetadata(true));
+
+    public bool IsThumbToolTipEnabled
     {
-        get => (float)(GetValue(MinimumProperty) ?? 0f);
-        set => SetValue(MinimumProperty, value);
+        get => (bool)(GetValue(IsThumbToolTipEnabledProperty) ?? true);
+        set => SetValue(IsThumbToolTipEnabledProperty, value);
     }
 
-    public static readonly DependencyProperty MaximumProperty =
-        DependencyProperty.Register(
-            "Maximum",
-            typeof(float),
-            typeof(Slider),
-            new PropertyMetadata(100f, (d, e) => ((Slider)d).OnMaximumChanged((float)(e.NewValue ?? 100f))));
-
-    public float Maximum
+    public object? Header
     {
-        get => (float)(GetValue(MaximumProperty) ?? 100f);
-        set => SetValue(MaximumProperty, value);
+        get => GetValue(HeaderProperty);
+        set => SetValue(HeaderProperty, value);
     }
 
-    public static readonly DependencyProperty ValueProperty =
-        DependencyProperty.Register(
-            "Value",
-            typeof(float),
-            typeof(Slider),
-            new PropertyMetadata(0f, (d, e) => ((Slider)d).OnValueChanged((float)(e.NewValue ?? 0f))));
-
-    public float Value
+    public DataTemplate? HeaderTemplate
     {
-        get => (float)(GetValue(ValueProperty) ?? 0f);
-        set => SetValue(ValueProperty, Math.Clamp(value, Minimum, Maximum));
+        get => GetValue(HeaderTemplateProperty) as DataTemplate;
+        set => SetValue(HeaderTemplateProperty, value);
     }
-
-    public event EventHandler? ValueChanged;
 
     public Slider()
     {
+        Maximum = 100d;
         var defaultStyle = ThemeManager.GetDefaultStyle(GetType());
         if (defaultStyle != null)
         {
             SetDefaultStyle(defaultStyle);
         }
-    }
-
-    private void OnMinimumChanged(float newMin)
-    {
-        Value = Math.Clamp(Value, newMin, Maximum);
-        OnPropertyChanged(nameof(Minimum));
-    }
-
-    private void OnMaximumChanged(float newMax)
-    {
-        Value = Math.Clamp(Value, Minimum, newMax);
-        OnPropertyChanged(nameof(Maximum));
-    }
-
-    private void OnValueChanged(float newValue)
-    {
-        ValueChanged?.Invoke(this, EventArgs.Empty);
-        OnPropertyChanged(nameof(Value));
     }
 
     public override void OnPointerPressed(PointerRoutedEventArgs e)

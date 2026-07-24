@@ -3,6 +3,7 @@ namespace ProGPU.WinUI.Designer;
 using System;
 using System.Text;
 using System.Collections.Generic;
+using System.Linq;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
@@ -577,7 +578,7 @@ public class PropertyGrid : Border
         // Grid Definition Editing
         if (_selectedElement is Grid selectedGrid)
         {
-            string colStr = GetGridLengthsString(selectedGrid.ColumnDefinitions);
+            string colStr = GetGridLengthsString(selectedGrid.ColumnDefinitions.Select(static definition => definition.Width));
             _dataGrid.AddItem(new PropertyItem("ColumnDefinitions", colStr, val =>
             {
                 selectedGrid.ColumnDefinitions.Clear();
@@ -591,7 +592,7 @@ public class PropertyGrid : Border
                 PropertyChanged?.Invoke();
             }));
 
-            string rowStr = GetGridLengthsString(selectedGrid.RowDefinitions);
+            string rowStr = GetGridLengthsString(selectedGrid.RowDefinitions.Select(static definition => definition.Height));
             _dataGrid.AddItem(new PropertyItem("RowDefinitions", rowStr, val =>
             {
                 selectedGrid.RowDefinitions.Clear();
@@ -730,7 +731,7 @@ public class PropertyGrid : Border
     private string GetBrushString(Brush? brush)
     {
         if (brush == null) return "";
-        if (brush is ThemeResourceBrush tr) return tr.ResourceKey;
+        if (brush is ThemeResourceBrush tr) return tr.ResourceKey.ToString() ?? string.Empty;
         if (brush is SolidColorBrush scb)
         {
             var col = scb.Color;
@@ -772,9 +773,10 @@ public class PropertyGrid : Border
         return new ThemeResourceBrush(val);
     }
 
-    private string GetGridLengthsString(List<GridLength> list)
+    private string GetGridLengthsString(IEnumerable<GridLength> values)
     {
-        if (list == null || list.Count == 0) return "";
+        var list = values as IReadOnlyList<GridLength> ?? values.ToArray();
+        if (list.Count == 0) return "";
         var sb = new StringBuilder();
         for (int i = 0; i < list.Count; i++)
         {

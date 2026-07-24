@@ -56,14 +56,27 @@ public class Border : FrameworkElement
     public static readonly DependencyProperty CornerRadiusProperty =
         DependencyProperty.Register(
             "CornerRadius",
-            typeof(float),
+            typeof(CornerRadius),
             typeof(Border),
-            new PropertyMetadata(0f) { AffectsRender = true });
+            new PropertyMetadata(default(CornerRadius)) { AffectsRender = true });
 
-    public float CornerRadius
+    public CornerRadius CornerRadius
     {
-        get => (float)(GetValue(CornerRadiusProperty) ?? 0f);
+        get => (CornerRadius)(GetValue(CornerRadiusProperty) ?? default(CornerRadius));
         set => SetValue(CornerRadiusProperty, value);
+    }
+
+    public static readonly DependencyProperty BackgroundSizingProperty =
+        DependencyProperty.Register(
+            nameof(BackgroundSizing),
+            typeof(BackgroundSizing),
+            typeof(Border),
+            new PropertyMetadata(BackgroundSizing.InnerBorderEdge) { AffectsRender = true });
+
+    public BackgroundSizing BackgroundSizing
+    {
+        get => (BackgroundSizing)(GetValue(BackgroundSizingProperty) ?? BackgroundSizing.InnerBorderEdge);
+        set => SetValue(BackgroundSizingProperty, value);
     }
 
     public static readonly DependencyProperty ChildProperty =
@@ -224,10 +237,10 @@ public class Border : FrameworkElement
             if (activeTheme == ElementTheme.Light && isEnabled)
             {
                 var shadowColor = ThemeManager.GetBrush("ButtonAmbientShadow", activeTheme, activeFamily);
-                context.FillRoundedRectangle(shadowColor, new Rect(0f, 1f, Size.X, Size.Y), CornerRadius);
+                context.FillRoundedRectangle(shadowColor, new Rect(0f, 1f, Size.X, Size.Y), CornerRadius.RenderingRadius);
             }
 
-            context.DrawRoundedRectangle(bg, pen, new Rect(Vector2.Zero, Size), CornerRadius);
+            context.DrawRoundedRectangle(bg, pen, new Rect(Vector2.Zero, Size), (float)CornerRadius.TopLeft);
         }
         else if (parentCombo != null && activeFamily == VisualThemeFamily.macOS)
         {
@@ -277,23 +290,23 @@ public class Border : FrameworkElement
             if (activeTheme == ElementTheme.Light && isEnabled)
             {
                 var shadowColor = ThemeManager.GetBrush("ButtonAmbientShadow", activeTheme, activeFamily);
-                context.FillRoundedRectangle(shadowColor, new Rect(0f, 1f, Size.X, Size.Y), CornerRadius);
+                context.FillRoundedRectangle(shadowColor, new Rect(0f, 1f, Size.X, Size.Y), CornerRadius.RenderingRadius);
             }
 
-            context.DrawRoundedRectangle(bg, pen, new Rect(Vector2.Zero, Size), CornerRadius);
+            context.DrawRoundedRectangle(bg, pen, new Rect(Vector2.Zero, Size), CornerRadius.RenderingRadius);
         }
         else if (Parent is Control control)
         {
             if (IsEnabled && control is Button)
             {
-                context.FillRoundedRectangle(ThemeManager.GetBrush("ButtonAmbientShadow", activeTheme, activeFamily), new Rect(0, 2, Size.X, Size.Y), CornerRadius);
-                context.FillRoundedRectangle(ThemeManager.GetBrush("ButtonPenumbraShadow", activeTheme, activeFamily), new Rect(0, 1, Size.X, Size.Y), CornerRadius);
+                context.FillRoundedRectangle(ThemeManager.GetBrush("ButtonAmbientShadow", activeTheme, activeFamily), new Rect(0, 2, Size.X, Size.Y), CornerRadius.RenderingRadius);
+                context.FillRoundedRectangle(ThemeManager.GetBrush("ButtonPenumbraShadow", activeTheme, activeFamily), new Rect(0, 1, Size.X, Size.Y), CornerRadius.RenderingRadius);
             }
 
             Brush? bg = control.GetCurrentBackground() ?? Background;
             var borderBrush = control.GetCurrentBorderBrush() ?? BorderBrush;
             Pen? pen = borderBrush != null && BorderThickness.Left > 0 ? new Pen(borderBrush, BorderThickness.Left) : null;
-            context.DrawRoundedRectangle(bg, pen, new Rect(Vector2.Zero, Size), CornerRadius);
+            context.DrawRoundedRectangle(bg, pen, new Rect(Vector2.Zero, Size), CornerRadius.RenderingRadius);
         }
         else
         {
@@ -301,7 +314,27 @@ public class Border : FrameworkElement
             if (Background != null || (BorderBrush != null && BorderThickness.Left > 0))
             {
                 var pen = BorderBrush != null && BorderThickness.Left > 0 ? new Pen(BorderBrush, BorderThickness.Left) : null;
-                context.DrawRoundedRectangle(Background, pen, new Rect(Vector2.Zero, Size), CornerRadius);
+                var outerRect = new Rect(Vector2.Zero, Size);
+                if (Background != null && BackgroundSizing == BackgroundSizing.InnerBorderEdge)
+                {
+                    var innerRect = new Rect(
+                        BorderThickness.Left,
+                        BorderThickness.Top,
+                        Math.Max(0f, Size.X - BorderThickness.Horizontal),
+                        Math.Max(0f, Size.Y - BorderThickness.Vertical));
+                    var radiusInset = Math.Max(
+                        Math.Max(BorderThickness.Left, BorderThickness.Top),
+                        Math.Max(BorderThickness.Right, BorderThickness.Bottom));
+                    context.FillRoundedRectangle(Background, innerRect, Math.Max(0f, CornerRadius.RenderingRadius - radiusInset));
+                    if (pen is not null)
+                    {
+                        context.DrawRoundedRectangle(null, pen, outerRect, CornerRadius.RenderingRadius);
+                    }
+                }
+                else
+                {
+                    context.DrawRoundedRectangle(Background, pen, outerRect, CornerRadius.RenderingRadius);
+                }
             }
         }
 
@@ -315,7 +348,7 @@ public class Border : FrameworkElement
                 var accentVec = (accentColor as SolidColorBrush)?.Color ?? new Vector4(0f, 0.478f, 1f, 1f);
                 var focusPen = new Pen(new SolidColorBrush(new Vector4(accentVec.X, accentVec.Y, accentVec.Z, 0.5f)), 2f);
                 Rect focusRect = new Rect(-2.5f, -2.5f, Size.X + 5f, Size.Y + 5f);
-                context.DrawRoundedRectangle(null, focusPen, focusRect, CornerRadius + 2.5f);
+                context.DrawRoundedRectangle(null, focusPen, focusRect, CornerRadius.RenderingRadius + 2.5f);
             }
             else
             {
@@ -323,7 +356,7 @@ public class Border : FrameworkElement
                 var focusPen = new Pen(accentColor, 1.5f);
                 float inset = 1.5f;
                 var focusRect = new Rect(inset, inset, Size.X - 2 * inset, Size.Y - 2 * inset);
-                context.DrawRoundedRectangle(null, focusPen, focusRect, Math.Max(0f, CornerRadius - inset));
+                context.DrawRoundedRectangle(null, focusPen, focusRect, Math.Max(0f, CornerRadius.RenderingRadius - inset));
             }
         }
 

@@ -608,7 +608,8 @@ namespace Microsoft.UI.Xaml.Controls
                                     Brush? activeBrush = diffuse.Brush;
                                     if (diffuse.Brush is ThemeResourceBrush themeRes)
                                     {
-                                        activeBrush = ThemeManager.GetBrush(themeRes.ResourceKey, ActualTheme, ActualThemeFamily);
+                                        activeBrush = XamlResourceResolver.ResolveThemeBrush(
+                                            themeRes, this, ActualTheme, ActualThemeFamily);
                                     }
 
                                     if (activeBrush is SolidColorBrush solid)
@@ -655,7 +656,8 @@ namespace Microsoft.UI.Xaml.Controls
                                     Brush? activeBackBrush = backDiffuse.Brush;
                                     if (backDiffuse.Brush is ThemeResourceBrush themeResBack)
                                     {
-                                        activeBackBrush = ThemeManager.GetBrush(themeResBack.ResourceKey, ActualTheme, ActualThemeFamily);
+                                        activeBackBrush = XamlResourceResolver.ResolveThemeBrush(
+                                            themeResBack, this, ActualTheme, ActualThemeFamily);
                                     }
 
                                     if (activeBackBrush is SolidColorBrush solidBack)

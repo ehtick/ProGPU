@@ -1,5 +1,6 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Documents;
@@ -30,7 +31,24 @@ public static class ThemeManager
 {
     private static ElementTheme _currentTheme = ElementTheme.Dark;
     private static VisualThemeFamily _currentThemeFamily = VisualThemeFamily.WinUI;
+    private static bool _isHighContrast;
     public static event Action? ThemeChanged;
+
+    internal static void NotifyResourcesChanged() => ThemeChanged?.Invoke();
+
+    internal static void NotifyPlatformResourcesChanged(bool isHighContrast)
+    {
+        _isHighContrast = isHighContrast;
+        ClearResourceCaches();
+        ThemeChanged?.Invoke();
+    }
+
+    private static void ClearResourceCaches()
+    {
+        DarkBrushCache.Clear();
+        LightBrushCache.Clear();
+        PenCache.Clear();
+    }
 
     private static bool _isWindowActive = true;
     public static bool IsWindowActive
@@ -41,9 +59,7 @@ public static class ThemeManager
             if (_isWindowActive != value)
             {
                 _isWindowActive = value;
-                DarkBrushCache.Clear();
-                LightBrushCache.Clear();
-                PenCache.Clear();
+                ClearResourceCaches();
                 ThemeChanged?.Invoke();
             }
         }
@@ -67,6 +83,22 @@ public static class ThemeManager
         }
     }
 
+    public static bool IsHighContrast
+    {
+        get => _isHighContrast;
+        set
+        {
+            if (_isHighContrast == value)
+            {
+                return;
+            }
+
+            _isHighContrast = value;
+            ClearResourceCaches();
+            ThemeChanged?.Invoke();
+        }
+    }
+
     public static VisualThemeFamily CurrentThemeFamily
     {
         get => _currentThemeFamily;
@@ -76,9 +108,7 @@ public static class ThemeManager
             {
                 _currentThemeFamily = value;
                 NativeDefaultStyles.Clear();
-                DarkBrushCache.Clear();
-                LightBrushCache.Clear();
-                PenCache.Clear();
+                ClearResourceCaches();
                 ThemeChanged?.Invoke();
             }
         }
@@ -580,6 +610,16 @@ public static class ThemeManager
             cache[cacheKey] = newBrush;
             return newBrush;
         }
+        if (TryGetPlatformColor(key, actualTheme, actualFamily, out colorVal))
+        {
+            var cache = (actualTheme == ElementTheme.Light) ? LightBrushCache : DarkBrushCache;
+            var cacheKey = (key, actualFamily);
+            if (cache.TryGetValue(cacheKey, out var cachedBrush))
+                return cachedBrush;
+            var newBrush = new SolidColorBrush(colorVal);
+            cache[cacheKey] = newBrush;
+            return newBrush;
+        }
 
         return null;
     }
@@ -678,7 +718,75 @@ public static class ThemeManager
         {
             return valHex;
         }
+        if (TryGetPlatformColor(key, actualTheme, actualFamily, out valHex))
+            return valHex;
         return new Vector4(1f, 1f, 1f, 1f); // Default White
+    }
+
+    internal static bool TryGetPlatformColor(
+        string key,
+        ElementTheme theme,
+        VisualThemeFamily themeFamily,
+        out Vector4 value)
+    {
+        var actualTheme = theme == ElementTheme.Default ? CurrentTheme : theme;
+        var actualFamily = themeFamily == VisualThemeFamily.Default
+            ? CurrentThemeFamily
+            : themeFamily;
+        var context = new XamlPlatformResourceContext(
+            actualTheme,
+            actualFamily,
+            IsHighContrast);
+        if (XamlPlatformResources.TryGetResource(key, context, out var resource))
+        {
+            if (resource is Color color)
+            {
+                value = color;
+                return true;
+            }
+            if (resource is Vector4 vector)
+            {
+                value = vector;
+                return true;
+            }
+        }
+
+        return TryGetBuiltInPlatformColor(key, actualTheme, out value);
+    }
+
+    internal static bool TryGetBuiltInPlatformColor(
+        string key,
+        ElementTheme theme,
+        out Vector4 value)
+    {
+        var actualTheme = theme == ElementTheme.Default ? CurrentTheme : theme;
+        var isLight = !IsHighContrast && actualTheme == ElementTheme.Light;
+        switch (key)
+        {
+            case "SystemColorButtonTextColor":
+            case "SystemColorWindowTextColor":
+                value = isLight ? new Vector4(0f, 0f, 0f, 1f) : new Vector4(1f, 1f, 1f, 1f);
+                return true;
+            case "SystemColorButtonFaceColor":
+            case "SystemColorWindowColor":
+                value = isLight ? new Vector4(1f, 1f, 1f, 1f) : new Vector4(0f, 0f, 0f, 1f);
+                return true;
+            case "SystemColorGrayTextColor":
+                value = isLight
+                    ? new Vector4(0.43f, 0.43f, 0.43f, 1f)
+                    : new Vector4(0.67f, 0.67f, 0.67f, 1f);
+                return true;
+            case "SystemColorHighlightColor":
+            case "SystemColorHotlightColor":
+                value = new Vector4(0f, 0.47f, 0.83f, 1f);
+                return true;
+            case "SystemColorHighlightTextColor":
+                value = new Vector4(1f, 1f, 1f, 1f);
+                return true;
+            default:
+                value = default;
+                return false;
+        }
     }
 
     public static Style? GetDefaultStyle(Type controlType) => GetDefaultStyle(controlType, CurrentThemeFamily);
@@ -719,18 +827,6 @@ public static class ThemeManager
 
         var style = new Style(controlType);
 
-        if (typeof(ToggleButton).IsAssignableFrom(controlType))
-        {
-            BuildToggleButtonDefaultStyle(style, themeFamily);
-            return style;
-        }
-
-        if (typeof(Button).IsAssignableFrom(controlType) || typeof(RepeatButton).IsAssignableFrom(controlType))
-        {
-            BuildButtonDefaultStyle(style, themeFamily);
-            return style;
-        }
-
         if (typeof(CheckBox).IsAssignableFrom(controlType))
         {
             BuildCheckBoxDefaultStyle(style, themeFamily);
@@ -740,6 +836,18 @@ public static class ThemeManager
         if (typeof(RadioButton).IsAssignableFrom(controlType))
         {
             BuildRadioButtonDefaultStyle(style, themeFamily);
+            return style;
+        }
+
+        if (typeof(ToggleButton).IsAssignableFrom(controlType))
+        {
+            BuildToggleButtonDefaultStyle(style, themeFamily);
+            return style;
+        }
+
+        if (typeof(Button).IsAssignableFrom(controlType) || typeof(RepeatButton).IsAssignableFrom(controlType))
+        {
+            BuildButtonDefaultStyle(style, themeFamily);
             return style;
         }
 
@@ -986,7 +1094,7 @@ public static class ThemeManager
             new Setter(nameof(Control.BorderThickness), new Thickness(1f)),
             new Setter(nameof(Control.CornerRadius), family == VisualThemeFamily.macOS ? 6f : 4f),
             new Setter(nameof(Control.Padding), new Thickness(10f, 6f)),
-            new Setter(nameof(Control.Template), new ControlTemplate(style.TargetType, (parent) =>
+            new Setter(nameof(Control.Template), new ControlTemplate(style.TargetType ?? typeof(TextBox), (parent) =>
             {
                 var border = new Border();
                 TemplateBinding.Bind(border, Border.BackgroundProperty, parent, Control.BackgroundProperty);

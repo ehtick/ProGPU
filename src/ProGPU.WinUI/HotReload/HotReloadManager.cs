@@ -199,22 +199,48 @@ public static class HotReloadManager
             return true;
         }
 
-        FrameworkElement newContent;
+        return ReloadElement(
+            oldContent,
+            contentFactory,
+            replacement => window.Content = replacement);
+    }
+
+    /// <summary>
+    /// Rebuilds content owned by an embedded host through the canonical state-transfer,
+    /// focus, lifecycle, invalidation, and diagnostic pipeline. The replacement factory
+    /// is evaluated before the live tree is changed, so activation failures retain the
+    /// last good content.
+    /// </summary>
+    public static bool ReloadElement(
+        FrameworkElement oldElement,
+        Func<FrameworkElement> replacementFactory,
+        Action<FrameworkElement> replaceElement)
+    {
+        ArgumentNullException.ThrowIfNull(oldElement);
+        ArgumentNullException.ThrowIfNull(replacementFactory);
+        ArgumentNullException.ThrowIfNull(replaceElement);
+
+        FrameworkElement newElement;
         try
         {
-            newContent = contentFactory() ?? throw new InvalidOperationException("The window content factory returned null.");
+            newElement = replacementFactory() ??
+                throw new InvalidOperationException("The element replacement factory returned null.");
         }
         catch (Exception exception)
         {
             Report(new HotReloadDiagnostic(
                 HotReloadDiagnosticSeverity.Error,
-                "The window content factory failed. Existing content was retained.",
+                "The element replacement factory failed. Existing content was retained.",
                 exception));
             return false;
         }
 
         var counters = _activeCounters ?? new UpdateCounters();
-        return TryReplaceElement(oldContent, newContent, replacement => window.Content = replacement, counters);
+        return TryReplaceElement(
+            oldElement,
+            newElement,
+            replaceElement,
+            counters);
     }
 
     private static void QueueUpdate(Type[]? updatedTypes, bool clearCaches, bool allTypes)
@@ -394,9 +420,14 @@ public static class HotReloadManager
         {
             if (element is IHotReloadable reloadable)
             {
+                HotReloadStateSnapshot? state = null;
                 try
                 {
+                    state = HotReloadStateSnapshot.Capture(element, Report);
+                    state.ReleaseFocusBeforeReplacement();
                     reloadable.Reload(context);
+                    state.RestoreImmediate(element, Report);
+                    UIThread.Post(() => state.RestoreDeferred(element, Report));
                     element.InvalidateMeasure();
                     element.InvalidateArrange();
                     element.Invalidate();
@@ -404,6 +435,8 @@ public static class HotReloadManager
                 }
                 catch (Exception exception)
                 {
+                    state?.RestoreImmediate(element, Report);
+                    state?.RestoreDeferred(element, Report);
                     counters.Failed++;
                     Report(new HotReloadDiagnostic(
                         HotReloadDiagnosticSeverity.Error,
@@ -459,11 +492,13 @@ public static class HotReloadManager
         }
 
         HotReloadStateSnapshot? state = null;
+        var replacementAttempted = false;
         try
         {
             CopyParentOwnedState(oldElement, newElement);
             state = HotReloadStateSnapshot.Capture(oldElement, Report);
             state.ReleaseFocusBeforeReplacement();
+            replacementAttempted = true;
             replaceElement(newElement);
             FireUnloaded(oldElement);
             state.RestoreImmediate(newElement, Report);
@@ -477,6 +512,21 @@ public static class HotReloadManager
         }
         catch (Exception exception)
         {
+            if (replacementAttempted)
+            {
+                try
+                {
+                    replaceElement(oldElement);
+                    state?.RestoreImmediate(oldElement, Report);
+                }
+                catch (Exception rollbackException)
+                {
+                    Report(new HotReloadDiagnostic(
+                        HotReloadDiagnosticSeverity.Error,
+                        $"Could not roll back the failed replacement of '{oldElement.GetType().FullName}'.",
+                        rollbackException));
+                }
+            }
             if (state != null)
             {
                 state.RestoreDeferred(oldElement, Report);

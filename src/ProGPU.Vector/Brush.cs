@@ -37,6 +37,10 @@ public class SolidColorBrush : Brush
 {
     public Vector4 Color { get; set; }
 
+    public SolidColorBrush()
+    {
+    }
+
     public SolidColorBrush(Vector4 color)
     {
         Color = color;

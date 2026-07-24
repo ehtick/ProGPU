@@ -18,8 +18,58 @@ namespace Microsoft.UI.Xaml.Controls;
 
 public class TextBox : Control, ITextInputClient
 {
+    public static readonly DependencyProperty TextProperty =
+        DependencyProperty.Register(
+            nameof(Text),
+            typeof(string),
+            typeof(TextBox),
+            new PropertyMetadata(string.Empty, OnTextChanged)
+            {
+                AffectsMeasure = true,
+                AffectsRender = true
+            });
+
+    public static readonly DependencyProperty HeaderProperty =
+        DependencyProperty.Register(
+            nameof(Header), typeof(object), typeof(TextBox),
+            new PropertyMetadata(null) { AffectsMeasure = true, AffectsArrange = true, AffectsRender = true });
+
+    public static readonly DependencyProperty HeaderTemplateProperty =
+        DependencyProperty.Register(
+            nameof(HeaderTemplate), typeof(DataTemplate), typeof(TextBox),
+            new PropertyMetadata(null) { AffectsMeasure = true, AffectsArrange = true, AffectsRender = true });
+
+    public static readonly DependencyProperty DescriptionProperty =
+        DependencyProperty.Register(
+            nameof(Description), typeof(object), typeof(TextBox),
+            new PropertyMetadata(null) { AffectsMeasure = true, AffectsArrange = true, AffectsRender = true });
+
+    public static readonly DependencyProperty DesiredCandidateWindowAlignmentProperty =
+        DependencyProperty.Register(
+            nameof(DesiredCandidateWindowAlignment), typeof(CandidateWindowAlignment), typeof(TextBox),
+            new PropertyMetadata(CandidateWindowAlignment.Default));
+
+    public static readonly DependencyProperty PlaceholderTextProperty =
+        DependencyProperty.Register(
+            nameof(PlaceholderText), typeof(string), typeof(TextBox),
+            new PropertyMetadata(string.Empty) { AffectsRender = true });
+
+    public static readonly DependencyProperty PlaceholderForegroundProperty =
+        DependencyProperty.Register(
+            nameof(PlaceholderForeground), typeof(Brush), typeof(TextBox),
+            new PropertyMetadata(null) { AffectsRender = true });
+
+    public static readonly DependencyProperty TextWrappingProperty =
+        DependencyProperty.Register(
+            nameof(TextWrapping), typeof(TextWrapping), typeof(TextBox),
+            new PropertyMetadata(TextWrapping.NoWrap, static (dependencyObject, _) =>
+                ((TextBox)dependencyObject).InvalidateTextLayout())
+            {
+                AffectsMeasure = true,
+                AffectsRender = true
+            });
+
     private string _text = string.Empty;
-    private string _placeholderText = "Enter text...";
     private int _caretIndex;
     private float _fontSize = 14f;
     private TextLayout? _textLayout;
@@ -41,6 +91,30 @@ public class TextBox : Control, ITextInputClient
     public string AutoCapitalization { get; set; } = "sentences";
     public bool IsSpellCheckEnabled { get; set; } = true;
     public bool AcceptsReturn { get; set; }
+
+    public object? Header
+    {
+        get => GetValue(HeaderProperty);
+        set => SetValue(HeaderProperty, value);
+    }
+
+    public DataTemplate? HeaderTemplate
+    {
+        get => GetValue(HeaderTemplateProperty) as DataTemplate;
+        set => SetValue(HeaderTemplateProperty, value);
+    }
+
+    public object? Description
+    {
+        get => GetValue(DescriptionProperty);
+        set => SetValue(DescriptionProperty, value);
+    }
+
+    public CandidateWindowAlignment DesiredCandidateWindowAlignment
+    {
+        get => (CandidateWindowAlignment)(GetValue(DesiredCandidateWindowAlignmentProperty) ?? CandidateWindowAlignment.Default);
+        set => SetValue(DesiredCandidateWindowAlignmentProperty, value);
+    }
 
     public static readonly DependencyProperty TextAlignmentProperty =
         DependencyProperty.Register(
@@ -139,27 +213,48 @@ public class TextBox : Control, ITextInputClient
 
     public string Text
     {
-        get => _text;
-        set
-        {
-            var newVal = value ?? string.Empty;
-            if (_text != newVal)
-            {
-                _text = newVal;
-                CaretIndex = Math.Clamp(CaretIndex, 0, _text.Length);
-                SelectionStart = Math.Clamp(SelectionStart, 0, _text.Length);
-                SelectionLength = Math.Clamp(SelectionLength, -SelectionStart, _text.Length - SelectionStart);
-                InvalidateTextLayout();
-                Invalidate();
-                TextChanged?.Invoke(this, EventArgs.Empty);
-            }
-        }
+        get => GetValue(TextProperty) as string ?? string.Empty;
+        set => SetValue(TextProperty, value ?? string.Empty);
+    }
+
+    private static void OnTextChanged(
+        DependencyObject dependencyObject,
+        DependencyPropertyChangedEventArgs args)
+    {
+        var textBox = (TextBox)dependencyObject;
+        textBox._text = args.NewValue as string ?? string.Empty;
+        textBox.CaretIndex = Math.Clamp(
+            textBox.CaretIndex,
+            0,
+            textBox._text.Length);
+        textBox.SelectionStart = Math.Clamp(
+            textBox.SelectionStart,
+            0,
+            textBox._text.Length);
+        textBox.SelectionLength = Math.Clamp(
+            textBox.SelectionLength,
+            -textBox.SelectionStart,
+            textBox._text.Length - textBox.SelectionStart);
+        textBox.InvalidateTextLayout();
+        textBox.TextChanged?.Invoke(textBox, EventArgs.Empty);
     }
 
     public string PlaceholderText
     {
-        get => _placeholderText;
-        set { if (_placeholderText != value) { _placeholderText = value; Invalidate(); } }
+        get => GetValue(PlaceholderTextProperty) as string ?? string.Empty;
+        set => SetValue(PlaceholderTextProperty, value ?? string.Empty);
+    }
+
+    public Brush? PlaceholderForeground
+    {
+        get => GetValue(PlaceholderForegroundProperty) as Brush;
+        set => SetValue(PlaceholderForegroundProperty, value);
+    }
+
+    public TextWrapping TextWrapping
+    {
+        get => (TextWrapping)(GetValue(TextWrappingProperty) ?? TextWrapping.NoWrap);
+        set => SetValue(TextWrappingProperty, value);
     }
 
     public int CaretIndex
@@ -217,7 +312,7 @@ public class TextBox : Control, ITextInputClient
         }
     }
 
-    public float FontSize
+    public new float FontSize
     {
         get => _fontSize;
         set { if (_fontSize != value) { _fontSize = value; InvalidateTextLayout(); } }
@@ -285,12 +380,11 @@ public class TextBox : Control, ITextInputClient
 
     private void ApplyUndoState(UndoState state)
     {
-        _text = state.Text;
+        SetValue(TextProperty, state.Text);
         _caretIndex = Math.Clamp(state.CaretIndex, 0, _text.Length);
         _selectionStart = Math.Clamp(state.SelectionStart, 0, _text.Length);
         _selectionLength = Math.Clamp(state.SelectionLength, -_selectionStart, _text.Length - _selectionStart);
         Invalidate();
-        TextChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private void DeleteSelection()
@@ -967,7 +1061,7 @@ public class TextBox : Control, ITextInputClient
             // Draw soft 3D elevation shadows (ambient & penumbra layers)
             if (IsEnabled && ActualThemeFamily != VisualThemeFamily.macOS)
             {
-                float shadowR = CornerRadius;
+                float shadowR = CornerRadius.RenderingRadius;
                 
                 // Ambient shadow (offset Y=2, very soft, low opacity)
                 var ambientRect = new Rect(0, 2, Size.X, Size.Y);
@@ -978,7 +1072,7 @@ public class TextBox : Control, ITextInputClient
                 context.DrawRoundedRectangle(ThemeManager.GetBrush("ButtonPenumbraShadow"), null, penumbraRect, shadowR);
             }
 
-            context.DrawRoundedRectangle(bg, borderPen, new Rect(Vector2.Zero, Size), CornerRadius);
+            context.DrawRoundedRectangle(bg, borderPen, new Rect(Vector2.Zero, Size), CornerRadius.RenderingRadius);
 
             if (IsFocused && IsEnabled && ActualThemeFamily == VisualThemeFamily.macOS)
             {
@@ -986,7 +1080,7 @@ public class TextBox : Control, ITextInputClient
                 var accentVec = (accentColor as SolidColorBrush)?.Color ?? new Vector4(0f, 0.478f, 1f, 1f);
                 var focusPen = new Pen(new SolidColorBrush(new Vector4(accentVec.X, accentVec.Y, accentVec.Z, 0.5f)), 2f);
                 Rect focusRect = new Rect(-2.5f, -2.5f, Size.X + 5f, Size.Y + 5f);
-                context.DrawRoundedRectangle(null, focusPen, focusRect, CornerRadius + 2.5f);
+                context.DrawRoundedRectangle(null, focusPen, focusRect, CornerRadius.RenderingRadius + 2.5f);
             }
         }
 

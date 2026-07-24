@@ -39,9 +39,55 @@ namespace Microsoft.UI.Xaml
         WrapWholeWords = 3
     }
 
-    public class UIElement : DependencyObject
+    public enum TextTrimming
+    {
+        None = 0,
+        CharacterEllipsis = 1,
+        WordEllipsis = 2,
+        Clip = 3
+    }
+
+    public enum OpticalMarginAlignment
+    {
+        None = 0,
+        TrimSideBearings = 1
+    }
+
+    public enum ElementSoundMode
+    {
+        Default = 0,
+        FocusOnly = 1,
+        Off = 2
+    }
+
+    public partial class UIElement : DependencyObject
     {
         private Automation.Peers.AutomationPeer? _automationPeer;
+
+        public static readonly DependencyProperty UseSystemFocusVisualsProperty = DependencyProperty.Register(
+            nameof(UseSystemFocusVisuals), typeof(bool), typeof(UIElement), new PropertyMetadata(false));
+
+        public bool UseSystemFocusVisuals
+        {
+            get => (bool)(GetValue(UseSystemFocusVisualsProperty) ?? false);
+            set => SetValue(UseSystemFocusVisualsProperty, value);
+        }
+
+        public static readonly DependencyProperty RenderTransformProperty = DependencyProperty.Register(
+            nameof(RenderTransform),
+            typeof(Media.Transform),
+            typeof(UIElement),
+            new PropertyMetadata(null, static (d, e) =>
+            {
+                var element = (UIElement)d;
+                element.Transform = (e.NewValue as Media.Transform)?.Value ?? System.Numerics.Matrix4x4.Identity;
+            }) { AffectsRender = true });
+
+        public Media.Transform? RenderTransform
+        {
+            get => GetValue(RenderTransformProperty) as Media.Transform;
+            set => SetValue(RenderTransformProperty, value);
+        }
 
         protected virtual Automation.Peers.AutomationPeer? OnCreateAutomationPeer() => null;
 

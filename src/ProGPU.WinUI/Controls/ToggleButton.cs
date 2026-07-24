@@ -7,16 +7,18 @@ using System.Numerics;
 using ProGPU.Layout;
 using ProGPU.Vector;
 
-namespace Microsoft.UI.Xaml.Controls;
+namespace Microsoft.UI.Xaml.Controls.Primitives;
 
-public class ToggleButton : Button
+public class ToggleButton : ButtonBase
 {
     public static readonly DependencyProperty IsCheckedProperty =
         DependencyProperty.Register(
             "IsChecked",
             typeof(bool),
             typeof(ToggleButton),
-            new PropertyMetadata(false, (d, e) => ((ToggleButton)d).OnCheckedChanged()));
+            new PropertyMetadata(false, (d, e) => ((ToggleButton)d).OnIsCheckedChanged(
+                (bool)(e.OldValue ?? false),
+                (bool)(e.NewValue ?? false))));
 
     public bool IsChecked
     {
@@ -35,13 +37,12 @@ public class ToggleButton : Button
         {
             SetDefaultStyle(defaultStyle);
         }
-        UpdateForeground();
     }
 
-    private void OnCheckedChanged()
+    protected virtual void OnIsCheckedChanged(bool oldValue, bool newValue)
     {
         Invalidate();
-        UpdateForeground();
+        OnVisualStateChanged();
         CheckedChanged?.Invoke(this, EventArgs.Empty);
         if (IsChecked)
         {
@@ -53,24 +54,31 @@ public class ToggleButton : Button
         }
     }
 
-    private void UpdateForeground()
+    public override void OnVisualStateChanged()
     {
-        if (IsChecked)
+        base.OnVisualStateChanged();
+
+        string checkState = IsChecked ? "Checked" : "Unchecked";
+        string interactionState = !IsEnabled
+            ? "Disabled"
+            : IsPointerPressed && IsPointerOver
+                ? "Pressed"
+                : IsPointerOver
+                    ? "PointerOver"
+                    : "Normal";
+
+        if (!VisualStateManager.GoToState(
+                this,
+                checkState + interactionState,
+                useTransitions: true))
         {
-            Foreground = new ThemeResourceBrush("AccentButtonForeground");
-        }
-        else
-        {
-            Foreground = new ThemeResourceBrush("ButtonForeground");
+            VisualStateManager.GoToState(this, checkState, useTransitions: true);
         }
     }
 
-    public override void OnPointerReleased(PointerRoutedEventArgs e)
+    protected override void OnClick()
     {
-        if (IsEnabled && IsPointerPressed && IsPointerOver)
-        {
-            IsChecked = !IsChecked;
-        }
-        base.OnPointerReleased(e);
+        IsChecked = !IsChecked;
+        base.OnClick();
     }
 }
