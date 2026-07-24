@@ -5,10 +5,10 @@ Avalonia 11 version lanes:
 
 | Avalonia lane | Package | Assembly | Purpose |
 | --- | --- | --- | --- |
-| 12.0.5 | `ProGPU.Avalonia.Rendering` `12.0.5-preview.19` | `Avalonia.ProGpu` | ProGPU/WebGPU rendering backend |
-| 12.0.5 | `ProGPU.Avalonia.SilkNet` `12.0.5-preview.19` | `Avalonia.SilkNet` | Cross-platform Silk.NET windowing backend |
-| 11.3.18 | `ProGPU.Avalonia.Rendering` `11.3.18-preview.1` | `Avalonia.ProGpu` | Shared-source ProGPU/WebGPU rendering backend |
-| 11.3.18 | `ProGPU.Avalonia.SilkNet` `11.3.18-preview.1` | `Avalonia.SilkNet` | Shared-source Silk.NET windowing backend |
+| 12.0.5 | `ProGPU.Avalonia.Rendering` `12.0.5-preview.26` | `Avalonia.ProGpu` | ProGPU/WebGPU rendering backend |
+| 12.0.5 | `ProGPU.Avalonia.SilkNet` `12.0.5-preview.26` | `Avalonia.SilkNet` | Cross-platform Silk.NET windowing backend |
+| 11.3.18 | `ProGPU.Avalonia.Rendering` `11.3.18-preview.26` | `Avalonia.ProGpu` | Shared-source ProGPU/WebGPU rendering backend |
+| 11.3.18 | `ProGPU.Avalonia.SilkNet` `11.3.18-preview.26` | `Avalonia.SilkNet` | Shared-source Silk.NET windowing backend |
 
 The Avalonia 12 packages are built against exactly Avalonia `12.0.5`; the
 Avalonia 11 packages are built against exactly Avalonia `11.3.18`. Both lanes
@@ -94,8 +94,8 @@ Release order:
 1. Tag and publish ProGPU `0.1.0-preview.26`.
 2. Confirm the required ProGPU packages are available from NuGet.org.
 3. Pack and test both Avalonia integration lanes.
-4. Publish the two `12.0.5-preview.19` packages and the two
-   `11.3.18-preview.1` packages.
+4. Publish the two `12.0.5-preview.26` packages and the two
+   `11.3.18-preview.26` packages.
 
 ## Consume the packages
 
@@ -104,8 +104,8 @@ Release order:
   <PackageReference Include="Avalonia" Version="12.0.5" />
   <PackageReference Include="Avalonia.Fonts.Inter" Version="12.0.5" />
   <PackageReference Include="Avalonia.HarfBuzz" Version="12.0.5" />
-  <PackageReference Include="ProGPU.Avalonia.Rendering" Version="12.0.5-preview.19" />
-  <PackageReference Include="ProGPU.Avalonia.SilkNet" Version="12.0.5-preview.19" />
+  <PackageReference Include="ProGPU.Avalonia.Rendering" Version="12.0.5-preview.26" />
+  <PackageReference Include="ProGPU.Avalonia.SilkNet" Version="12.0.5-preview.26" />
 </ItemGroup>
 ```
 
@@ -131,7 +131,7 @@ public static AppBuilder BuildAvaloniaApp() =>
 Use `IProGpuApiLeaseFeature` from `ICustomDrawOperation.Render` for scoped access to the ProGPU scene command recorder and active `WgpuContext`. The complete vector drawing and WGSL ShaderToy examples, plus the lease lifetime rules, are in `docs/progpu-package-readme.md` and `integration/ProGpuPackageApp/ProGpuLeaseView.cs`.
 
 For Avalonia 11 applications, use the same package IDs with
-`11.3.18-preview.1` and pin the Avalonia packages to `11.3.18`.
+`11.3.18-preview.26` and pin the Avalonia packages to `11.3.18`.
 
 The cross-engine design review and validation evidence are recorded in
 `docs/progpu-avalonia-rendering-research.md`.

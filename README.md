@@ -360,8 +360,8 @@ two NuGet package IDs and are distinguished by their package versions:
 
 | Avalonia | Rendering package | Silk.NET package |
 | --- | --- | --- |
-| 12.0.5 | `ProGPU.Avalonia.Rendering` `12.0.5-preview.19` | `ProGPU.Avalonia.SilkNet` `12.0.5-preview.19` |
-| 11.3.18 | `ProGPU.Avalonia.Rendering` `11.3.18-preview.1` | `ProGPU.Avalonia.SilkNet` `11.3.18-preview.1` |
+| 12.0.5 | `ProGPU.Avalonia.Rendering` `12.0.5-preview.26` | `ProGPU.Avalonia.SilkNet` `12.0.5-preview.26` |
+| 11.3.18 | `ProGPU.Avalonia.Rendering` `11.3.18-preview.26` | `ProGPU.Avalonia.SilkNet` `11.3.18-preview.26` |
 
 The Avalonia 12 artifacts are built from
 `src/ProGPU.Avalonia.Rendering` and `src/ProGPU.Avalonia.SilkNet`. The Avalonia
@@ -373,11 +373,11 @@ projects, which source-link the shared implementation and define
 Install the Avalonia 12 packages with:
 
 ```bash
-dotnet add package ProGPU.Avalonia.Rendering --version 12.0.5-preview.19
-dotnet add package ProGPU.Avalonia.SilkNet --version 12.0.5-preview.19
+dotnet add package ProGPU.Avalonia.Rendering --version 12.0.5-preview.26
+dotnet add package ProGPU.Avalonia.SilkNet --version 12.0.5-preview.26
 ```
 
-For Avalonia 11, use the same package IDs with `11.3.18-preview.1` and pin all
+For Avalonia 11, use the same package IDs with `11.3.18-preview.26` and pin all
 Avalonia packages to `11.3.18`. Configure the application with
 `UseSilkNet().UseProGpu()` before starting the desktop lifetime. Complete
 startup, API-lease, local packaging, and package-only validation instructions

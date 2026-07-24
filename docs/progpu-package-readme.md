@@ -7,9 +7,9 @@ These packages run Avalonia 12 on the ProGPU/WebGPU renderer with Silk.NET windo
 | `ProGPU.Avalonia.Rendering` | Avalonia renderer backed by ProGPU and WebGPU |
 | `ProGPU.Avalonia.SilkNet` | Cross-platform Silk.NET desktop windowing backend |
 
-Version `12.0.5-preview.19` is built against exactly Avalonia `12.0.5` and
+Version `12.0.5-preview.26` is built against exactly Avalonia `12.0.5` and
 ProGPU `0.1.0-preview.26` on .NET 10. Avalonia 11 applications use the same
-package IDs at `11.3.18-preview.1`, built against exactly Avalonia `11.3.18`.
+package IDs at `11.3.18-preview.26`, built against exactly Avalonia `11.3.18`.
 
 ## Install
 
@@ -20,8 +20,8 @@ Reference the renderer, windowing backend, text shaper, and font package:
   <PackageReference Include="Avalonia" Version="12.0.5" />
   <PackageReference Include="Avalonia.Fonts.Inter" Version="12.0.5" />
   <PackageReference Include="Avalonia.HarfBuzz" Version="12.0.5" />
-  <PackageReference Include="ProGPU.Avalonia.Rendering" Version="12.0.5-preview.19" />
-  <PackageReference Include="ProGPU.Avalonia.SilkNet" Version="12.0.5-preview.19" />
+  <PackageReference Include="ProGPU.Avalonia.Rendering" Version="12.0.5-preview.26" />
+  <PackageReference Include="ProGPU.Avalonia.SilkNet" Version="12.0.5-preview.26" />
 </ItemGroup>
 ```
 
@@ -211,7 +211,7 @@ For the Avalonia 11 lane, set both versions:
 
 ```bash
 PROGPU_AVALONIA_PACKAGE_VERSION=11.3.18 \
-PROGPU_INTEGRATION_PACKAGE_VERSION=11.3.18-preview.1 \
+PROGPU_INTEGRATION_PACKAGE_VERSION=11.3.18-preview.26 \
 PROGPU_INTEGRATION_BUILD_ONLY=1 \
   ./integration/ProGpuPackageApp/run.sh local
 ```

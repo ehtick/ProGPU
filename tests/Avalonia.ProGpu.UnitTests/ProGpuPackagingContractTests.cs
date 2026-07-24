@@ -20,10 +20,10 @@ namespace Avalonia.ProGpu.UnitTests
             Assert.Contains("'$(MSBuildProjectName)' == 'Avalonia.SilkNet'", properties, StringComparison.Ordinal);
             Assert.Contains("<PackageId>ProGPU.Avalonia.Rendering</PackageId>", renderer, StringComparison.Ordinal);
             Assert.Contains("<PackageId>ProGPU.Avalonia.SilkNet</PackageId>", windowing, StringComparison.Ordinal);
-            Assert.Contains("<Version>12.0.5-preview.19</Version>", renderer, StringComparison.Ordinal);
-            Assert.Contains("<Version>12.0.5-preview.19</Version>", windowing, StringComparison.Ordinal);
-            Assert.Contains("<Version>11.3.18-preview.1</Version>", rendererV11, StringComparison.Ordinal);
-            Assert.Contains("<Version>11.3.18-preview.1</Version>", windowingV11, StringComparison.Ordinal);
+            Assert.Contains("<Version>12.0.5-preview.26</Version>", renderer, StringComparison.Ordinal);
+            Assert.Contains("<Version>12.0.5-preview.26</Version>", windowing, StringComparison.Ordinal);
+            Assert.Contains("<Version>11.3.18-preview.26</Version>", rendererV11, StringComparison.Ordinal);
+            Assert.Contains("<Version>11.3.18-preview.26</Version>", windowingV11, StringComparison.Ordinal);
             Assert.Contains("<DefineConstants>$(DefineConstants);AVALONIA11</DefineConstants>", rendererV11, StringComparison.Ordinal);
             Assert.Contains(@"..\ProGPU.Avalonia.Rendering\**\*.cs", rendererV11, StringComparison.Ordinal);
             Assert.Contains(@"..\ProGPU.Avalonia.SilkNet\**\*.cs", windowingV11, StringComparison.Ordinal);
@@ -96,8 +96,8 @@ namespace Avalonia.ProGpu.UnitTests
 
             Assert.Contains("ProGPU.Avalonia.Rendering.V11", packageList, StringComparison.Ordinal);
             Assert.Contains("ProGPU.Avalonia.SilkNet.V11", packageList, StringComparison.Ordinal);
-            Assert.Contains("11.3.18-preview.1", packageList, StringComparison.Ordinal);
-            Assert.Contains("12.0.5-preview.19", packageList, StringComparison.Ordinal);
+            Assert.Contains("11.3.18-preview.26", packageList, StringComparison.Ordinal);
+            Assert.Contains("12.0.5-preview.26", packageList, StringComparison.Ordinal);
             Assert.Contains("dotnet", pack, StringComparison.Ordinal);
             Assert.Contains("--output", pack, StringComparison.Ordinal);
             Assert.Contains("NUGET_API_KEY", publish, StringComparison.Ordinal);

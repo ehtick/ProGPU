@@ -16,10 +16,10 @@ progpu_avalonia_package_projects=(
 )
 
 progpu_avalonia_package_versions=(
-  "12.0.5-preview.19"
-  "12.0.5-preview.19"
-  "11.3.18-preview.1"
-  "11.3.18-preview.1"
+  "12.0.5-preview.26"
+  "12.0.5-preview.26"
+  "11.3.18-preview.26"
+  "11.3.18-preview.26"
 )
 
 if [[ "${#progpu_avalonia_package_ids[@]}" -ne "${#progpu_avalonia_package_projects[@]}" ||
