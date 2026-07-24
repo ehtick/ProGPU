@@ -1,0 +1,13 @@
+PORTING NOTICE
+
+This project was ported and decoupled from:
+
+Repository: https://github.com/wieslawsoltes/Avalonia.git
+Branch: feature/progpu
+Commit: 5378af03f17a4d9d2845882229ffed7f67350037
+Original path: samples/ProGpuSandbox
+
+It was adapted to reference the local ProGPU renderer and Silk.NET backend
+outside the Avalonia source tree.
+
+No Git history or commits were imported from the source repository.

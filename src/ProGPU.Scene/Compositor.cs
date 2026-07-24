@@ -4936,13 +4936,21 @@ SceneStateUploadComplete:
             return false;
         }
 
-        // Algorithm: recognize the typed line/arc topology of a partial-corner
-        // rounded rectangle, sample each quarter arc to a bounded device-space
-        // chord error, then emit a balanced convex triangulation or an outer/inner
-        // triangle band. Each triangle uses the existing analytic edge-distance
-        // shader with deterministic ownership for shared edges, so page-sized
-        // Border geometry does not reserve or rasterize a PathAtlas tile. Time
-        // and temporary space are O(C), where C is the bounded contour size.
+        if (!hasInner &&
+            !HasAnyRoundedCorners(outer) &&
+            !DirectRectangleExceedsPathAtlas(outer, transform))
+        {
+            return false;
+        }
+
+        // Algorithm: recognize the typed line/arc topology of a canonical
+        // rectangle or partial-corner rounded rectangle, sample each quarter
+        // arc to a bounded device-space chord error, then emit a balanced convex
+        // triangulation or an outer/inner triangle band. Each triangle uses the
+        // existing analytic edge-distance shader with deterministic ownership
+        // for shared edges, so page-sized geometry does not reserve or rasterize
+        // a PathAtlas tile. Time and temporary space are O(C), where C is the
+        // bounded contour size.
         int cornerSegmentCount = GetDirectRoundedCornerSegmentCount(outer, inner, hasInner, transform);
         int contourPointCount = 4 * (cornerSegmentCount + 1);
         Span<Vector2> outerPoints = stackalloc Vector2[contourPointCount];
@@ -5324,7 +5332,39 @@ SceneStateUploadComplete:
         outer = default;
         inner = default;
         hasInner = false;
-        if (path.IsCombined || path.Figures.Count is < 1 or > 2 ||
+        if (path.IsCombined)
+        {
+            if (path.Op != 0 ||
+                path.PathA is not { IsCombined: false, Figures.Count: 1 } pathA ||
+                path.PathB is not { IsCombined: false, Figures.Count: 1 } pathB ||
+                !TryReadDirectRoundedRectangleContour(pathA.Figures[0], out outer) ||
+                !TryReadDirectRoundedRectangleContour(pathB.Figures[0], out inner))
+            {
+                return false;
+            }
+
+            float combinedTolerance = GetDirectRoundedTolerance(outer.Width, outer.Height);
+            if (!HasPartialRoundedCorners(outer) ||
+                inner.Left < outer.Left - combinedTolerance ||
+                inner.Top < outer.Top - combinedTolerance ||
+                inner.Right > outer.Right + combinedTolerance ||
+                inner.Bottom > outer.Bottom + combinedTolerance ||
+                inner.Width <= combinedTolerance ||
+                inner.Height <= combinedTolerance ||
+                inner.Width >= outer.Width - combinedTolerance &&
+                inner.Height >= outer.Height - combinedTolerance ||
+                !DirectRoundedRectangleContainsContour(outer, inner, combinedTolerance))
+            {
+                outer = default;
+                inner = default;
+                return false;
+            }
+
+            hasInner = true;
+            return true;
+        }
+
+        if (path.Figures.Count is < 1 or > 2 ||
             !TryReadDirectRoundedRectangleContour(path.Figures[0], out DirectRoundedRectangleContour first))
         {
             return false;
@@ -5332,7 +5372,8 @@ SceneStateUploadComplete:
 
         if (path.Figures.Count == 1)
         {
-            if (!HasPartialRoundedCorners(first))
+            if (!HasPartialRoundedCorners(first) &&
+                HasAnyRoundedCorners(first))
             {
                 return false;
             }
@@ -5447,7 +5488,7 @@ SceneStateUploadComplete:
         out DirectRoundedRectangleContour contour)
     {
         contour = default;
-        if (!figure.IsClosed || !figure.IsFilled || figure.Segments.Count is < 4 or > 12 ||
+        if (!figure.IsClosed || !figure.IsFilled || figure.Segments.Count is < 3 or > 12 ||
             !IsFinite(figure.StartPoint))
         {
             return false;
@@ -5581,12 +5622,21 @@ SceneStateUploadComplete:
             MatchOptionalArc(radii.Z, new Vector2(right - radii.Z, bottom)) &&
             MatchLine(new Vector2(left + radii.W, bottom)) &&
             MatchOptionalArc(radii.W, new Vector2(left, bottom - radii.W)) &&
-            MatchLine(new Vector2(left, top + radii.X)) &&
+            MatchLine(
+                new Vector2(left, top + radii.X),
+                allowImplicitClosingEdge: radii.X <= tolerance) &&
             MatchOptionalArc(radii.X, figure.StartPoint) &&
             segmentIndex == segments.Count;
 
-        bool MatchLine(Vector2 expectedEnd)
+        bool MatchLine(Vector2 expectedEnd, bool allowImplicitClosingEdge = false)
         {
+            if (allowImplicitClosingEdge &&
+                segmentIndex == segments.Count &&
+                DirectRoundedPointsEqual(expectedEnd, figure.StartPoint, tolerance))
+            {
+                return true;
+            }
+
             if (segmentIndex >= segments.Count ||
                 segments[segmentIndex++] is not LineSegment line)
             {
@@ -5698,6 +5748,33 @@ SceneStateUploadComplete:
         if (contour.CornerRadii.Z > 0f) roundedCornerCount++;
         if (contour.CornerRadii.W > 0f) roundedCornerCount++;
         return roundedCornerCount is > 0 and < 4;
+    }
+
+    private static bool HasAnyRoundedCorners(DirectRoundedRectangleContour contour) =>
+        contour.CornerRadii.X > 0f ||
+        contour.CornerRadii.Y > 0f ||
+        contour.CornerRadii.Z > 0f ||
+        contour.CornerRadii.W > 0f;
+
+    private bool DirectRectangleExceedsPathAtlas(
+        DirectRoundedRectangleContour contour,
+        Matrix4x4 transform)
+    {
+        Vector2 topLeft = Vector2.Transform(new Vector2(contour.Left, contour.Top), transform);
+        Vector2 topRight = Vector2.Transform(new Vector2(contour.Right, contour.Top), transform);
+        Vector2 bottomRight = Vector2.Transform(new Vector2(contour.Right, contour.Bottom), transform);
+        Vector2 bottomLeft = Vector2.Transform(new Vector2(contour.Left, contour.Bottom), transform);
+        float minX = MathF.Min(MathF.Min(topLeft.X, topRight.X), MathF.Min(bottomRight.X, bottomLeft.X));
+        float minY = MathF.Min(MathF.Min(topLeft.Y, topRight.Y), MathF.Min(bottomRight.Y, bottomLeft.Y));
+        float maxX = MathF.Max(MathF.Max(topLeft.X, topRight.X), MathF.Max(bottomRight.X, bottomLeft.X));
+        float maxY = MathF.Max(MathF.Max(topLeft.Y, topRight.Y), MathF.Max(bottomRight.Y, bottomLeft.Y));
+
+        // PathAtlas adds four pixels on each side of the raster bounds and
+        // requires another two-pixel guard on each side while packing.
+        float packedWidth = MathF.Ceiling(maxX) - MathF.Floor(minX) + 12f;
+        float packedHeight = MathF.Ceiling(maxY) - MathF.Floor(minY) + 12f;
+        return packedWidth > _pathAtlas.MaxAtlasSize ||
+            packedHeight > _pathAtlas.MaxAtlasSize;
     }
 
     private void CompilePathCommand(

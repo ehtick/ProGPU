@@ -1,0 +1,13 @@
+PORTING NOTICE
+
+This package-consumer project was ported and expanded from:
+
+Repository: https://github.com/wieslawsoltes/ProGPU.Avalonia.git
+Branch: origin/v11
+Commit: e8439a25e54b850c854a8b322641d233a4f3f7f2
+Original path: integration/ProGpuPackageApp
+
+It was generalized to validate isolated package-only consumption for both
+Avalonia 11.3.18 and Avalonia 12.0.5 without project references.
+
+No Git history or commits were imported from the source repository.

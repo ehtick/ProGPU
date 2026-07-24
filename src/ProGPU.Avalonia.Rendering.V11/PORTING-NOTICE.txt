@@ -1,0 +1,17 @@
+PORTING NOTICE
+
+This Avalonia 11 project wrapper was derived from the project configuration in:
+
+Repository: https://github.com/wieslawsoltes/ProGPU.Avalonia.git
+Branch: origin/v11
+Commit: e8439a25e54b850c854a8b322641d233a4f3f7f2
+Original path: src/ProGpu/Avalonia.ProGpu
+
+The wrapper is intentionally thin. It source-links the implementation from
+../ProGPU.Avalonia.Rendering and defines AVALONIA11 for API differences rather
+than maintaining a second source copy.
+
+The shared implementation's additional provenance is documented in
+../ProGPU.Avalonia.Rendering/PORTING-NOTICE.txt.
+
+No Git history or commits were imported from the source repository.

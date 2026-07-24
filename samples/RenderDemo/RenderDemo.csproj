@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    <AvaloniaForkRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\external\Avalonia'))</AvaloniaForkRoot>
+    <AvaloniaRenderDemoSourceRoot>$(AvaloniaForkRoot)\samples\RenderDemo</AvaloniaRenderDemoSourceRoot>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(AvaloniaRenderDemoSourceRoot)\**\*.cs"
+             Exclude="$(AvaloniaRenderDemoSourceRoot)\App.xaml.cs;$(AvaloniaRenderDemoSourceRoot)\Controls\LineBoundsDemoControl.cs;$(AvaloniaRenderDemoSourceRoot)\MainWindow.xaml.cs;$(AvaloniaRenderDemoSourceRoot)\Pages\AnimationsPage.xaml.cs;$(AvaloniaRenderDemoSourceRoot)\Pages\BrushesPage.axaml.cs;$(AvaloniaRenderDemoSourceRoot)\Pages\ClippingPage.xaml.cs;$(AvaloniaRenderDemoSourceRoot)\Pages\CustomAnimatorPage.xaml.cs;$(AvaloniaRenderDemoSourceRoot)\Pages\DrawingPage.xaml.cs;$(AvaloniaRenderDemoSourceRoot)\Pages\FormattedTextPage.axaml.cs;$(AvaloniaRenderDemoSourceRoot)\Pages\GlyphRunPage.xaml.cs;$(AvaloniaRenderDemoSourceRoot)\Pages\LineBoundsPage.xaml.cs;$(AvaloniaRenderDemoSourceRoot)\Pages\SpringAnimationsPage.xaml.cs;$(AvaloniaRenderDemoSourceRoot)\Pages\TextFormatterPage.axaml.cs;$(AvaloniaRenderDemoSourceRoot)\Pages\Transform3DPage.axaml.cs;$(AvaloniaRenderDemoSourceRoot)\Pages\TransitionsPage.xaml.cs">
+      <Link>%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </Compile>
+    <AvaloniaXaml Include="$(AvaloniaRenderDemoSourceRoot)\**\*.xaml;$(AvaloniaRenderDemoSourceRoot)\**\*.axaml">
+      <Link>%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <SubType>Designer</SubType>
+    </AvaloniaXaml>
+    <Compile Update="Pages\TextFormatterPage.axaml.cs">
+      <DependentUpon>TextFormatterPage.axaml</DependentUpon>
+      <SubType>Code</SubType>
+    </Compile>
+    <None Include="$(AvaloniaRenderDemoSourceRoot)\App.config" Link="App.config" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" />
+    <PackageReference Include="Avalonia.Fonts.Inter" />
+    <PackageReference Include="Avalonia.HarfBuzz" />
+    <PackageReference Include="Avalonia.Themes.Fluent" />
+    <PackageReference Include="System.Reactive" />
+    <ProjectReference Include="..\MiniMvvm\MiniMvvm.csproj" />
+    <ProjectReference Include="..\SampleControls\ControlSamples.csproj" />
+    <ProjectReference Include="..\..\src\ProGPU.Avalonia.Rendering\Avalonia.ProGpu.csproj" />
+    <ProjectReference Include="..\..\src\ProGPU.Avalonia.SilkNet\Avalonia.SilkNet.csproj" />
+    <ProjectReference Include="..\..\src\ProGPU.Avalonia.SkiaShim\Avalonia.Skia.csproj" />
+  </ItemGroup>
+  <Target Name="ValidateAvaloniaForkSources" BeforeTargets="PrepareForBuild">
+    <Error Condition="!Exists('$(AvaloniaRenderDemoSourceRoot)\App.xaml.cs')"
+           Text="The pinned Avalonia source submodule is missing. Run 'git submodule update --init external/Avalonia'." />
+  </Target>
+</Project>

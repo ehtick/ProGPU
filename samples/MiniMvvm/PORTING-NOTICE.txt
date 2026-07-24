@@ -1,0 +1,12 @@
+PORTING NOTICE
+
+This project was ported from:
+
+Repository: https://github.com/wieslawsoltes/Avalonia.git
+Branch: feature/progpu
+Commit: 5378af03f17a4d9d2845882229ffed7f67350037
+Original path: samples/MiniMvvm
+
+It was adapted for standalone use by the imported samples in this repository.
+
+No Git history or commits were imported from the source repository.

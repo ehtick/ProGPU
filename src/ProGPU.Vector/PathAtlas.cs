@@ -2216,6 +2216,36 @@ public unsafe class PathAtlas : IDisposable
         {
         }
 
+        if (gW + 4 > _atlasSize || gH + 4 > _atlasSize)
+        {
+            PathFigure? firstFigure = path.Figures.Count > 0 ? path.Figures[0] : null;
+            ProGpuVectorDiagnostics.WriteLine(
+                $"[PathAtlas] Warning: Path raster {gW}x{gH} cannot fit in the {_atlasSize}x{_atlasSize} atlas " +
+                $"(combined={path.IsCombined}, figures={path.Figures.Count}, firstClosed={firstFigure?.IsClosed}, " +
+                $"firstFilled={firstFigure?.IsFilled}, firstSegments={firstFigure?.Segments.Count}).");
+            CapacityExceeded = true;
+            info = new PathInfo
+            {
+                Key = key,
+                Geometry = path,
+                UnscaledMinX = unscaledMinX,
+                UnscaledMinY = unscaledMinY,
+                UnscaledMaxX = unscaledMaxX,
+                UnscaledMaxY = unscaledMaxY,
+                X = 0,
+                Y = 0,
+                Width = 0,
+                Height = 0,
+                TexCoordMin = Vector2.Zero,
+                TexCoordMax = Vector2.Zero,
+                MinX = 0f,
+                MinY = 0f,
+                LastUsedFrame = _frameNumber
+            };
+            _paths[key] = info;
+            return info;
+        }
+
         if (_recoveryFreeRectangles != null)
         {
             info = new PathInfo

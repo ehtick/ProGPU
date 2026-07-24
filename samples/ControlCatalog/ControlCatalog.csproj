@@ -1,0 +1,60 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    <AvaloniaForkRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\external\Avalonia'))</AvaloniaForkRoot>
+    <AvaloniaControlCatalogSourceRoot>$(AvaloniaForkRoot)\samples\ControlCatalog</AvaloniaControlCatalogSourceRoot>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Update="**\*.xaml.cs">
+      <DependentUpon>%(Filename)</DependentUpon>
+    </Compile>
+    <Compile Include="$(AvaloniaControlCatalogSourceRoot)\**\*.cs"
+             Exclude="$(AvaloniaControlCatalogSourceRoot)\Pages\DialogsPage.xaml.cs;$(AvaloniaControlCatalogSourceRoot)\ViewModels\PlatformInformationViewModel.cs">
+      <Link>%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </Compile>
+    <Compile Update="$(AvaloniaControlCatalogSourceRoot)\**\*.xaml.cs">
+      <DependentUpon>%(Filename)</DependentUpon>
+    </Compile>
+    <AvaloniaXaml Include="$(AvaloniaControlCatalogSourceRoot)\**\*.xaml;$(AvaloniaControlCatalogSourceRoot)\**\*.axaml">
+      <Link>%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <SubType>Designer</SubType>
+    </AvaloniaXaml>
+    <AvaloniaResource Include="$(AvaloniaControlCatalogSourceRoot)\Assets\**\*">
+      <Link>Assets\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </AvaloniaResource>
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="$(AvaloniaControlCatalogSourceRoot)\Assets\Fonts\SourceSansPro-Bold.ttf"
+                      Link="Assets\Fonts\SourceSansPro-Bold.ttf" />
+    <EmbeddedResource Include="$(AvaloniaControlCatalogSourceRoot)\Assets\Fonts\SourceSansPro-BoldItalic.ttf"
+                      Link="Assets\Fonts\SourceSansPro-BoldItalic.ttf" />
+    <EmbeddedResource Include="$(AvaloniaControlCatalogSourceRoot)\Assets\Fonts\SourceSansPro-Italic.ttf"
+                      Link="Assets\Fonts\SourceSansPro-Italic.ttf" />
+    <EmbeddedResource Include="$(AvaloniaControlCatalogSourceRoot)\Assets\Fonts\SourceSansPro-Regular.ttf"
+                      Link="Assets\Fonts\SourceSansPro-Regular.ttf" />
+    <EmbeddedResource Include="$(AvaloniaControlCatalogSourceRoot)\Pages\teapot.bin"
+                      Link="Pages\teapot.bin" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" />
+    <PackageReference Include="Avalonia.Controls.ColorPicker" />
+    <PackageReference Include="Avalonia.Themes.Simple" />
+    <PackageReference Include="Avalonia.Themes.Fluent" />
+    <PackageReference Include="Avalonia.Fonts.Inter" />
+    <ProjectReference Include="..\..\src\ProGPU.Avalonia.SkiaShim\Avalonia.Skia.csproj" />
+    <ProjectReference Include="..\MiniMvvm\MiniMvvm.csproj" />
+    <ProjectReference Include="..\SampleControls\ControlSamples.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <AvaloniaXaml Update="$(AvaloniaControlCatalogSourceRoot)\NavHeaderItem.xaml">
+      <Generator>MSBuild:Compile</Generator>
+    </AvaloniaXaml>
+  </ItemGroup>
+  <Target Name="ValidateAvaloniaForkSources" BeforeTargets="PrepareForBuild">
+    <Error Condition="!Exists('$(AvaloniaControlCatalogSourceRoot)\App.xaml.cs')"
+           Text="The pinned Avalonia source submodule is missing. Run 'git submodule update --init external/Avalonia'." />
+  </Target>
+</Project>

@@ -137,7 +137,9 @@ namespace ProGPU.Vector
         private static bool TryCreateImmediateResult(PathGeometry pathA, PathGeometry pathB, int op, out PathGeometry result)
         {
             result = new PathGeometry { FillRule = GetOutputFillRule(pathA, pathB, op) };
-            if (op == 0 && IsContainedAxisAlignedRectangle(pathA, pathB))
+            if (op == 0 &&
+                (IsContainedAxisAlignedRectangle(pathA, pathB) ||
+                 IsContainedCanonicalRoundedRectangle(pathA, pathB)))
             {
                 result.FillRule = FillRule.EvenOdd;
                 CopyFigures(pathA.Figures, result.Figures);
@@ -167,6 +169,25 @@ namespace ProGPU.Vector
                 return true;
             }
             return false;
+        }
+
+        private static bool IsContainedCanonicalRoundedRectangle(
+            PathGeometry outer,
+            PathGeometry inner)
+        {
+            if (outer.IsCombined || inner.IsCombined ||
+                outer.Figures.Count != 1 || inner.Figures.Count != 1 ||
+                !RoundedRectanglePathGeometry.TryReadCanonicalContour(
+                    outer.Figures[0],
+                    out RoundedRectanglePathContour outerContour) ||
+                !RoundedRectanglePathGeometry.TryReadCanonicalContour(
+                    inner.Figures[0],
+                    out RoundedRectanglePathContour innerContour))
+            {
+                return false;
+            }
+
+            return RoundedRectanglePathGeometry.Contains(outerContour, innerContour);
         }
 
         private static PathOpGpuWork? CreateGpuWork(PathGeometry pathA, PathGeometry pathB, int op, PathGeometry result)

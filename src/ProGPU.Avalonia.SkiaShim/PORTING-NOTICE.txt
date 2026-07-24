@@ -1,0 +1,17 @@
+PORTING NOTICE
+
+This project source-links the Avalonia Skia backend from:
+
+Repository: https://github.com/wieslawsoltes/Avalonia.git
+Tag: progpu-avalonia-v12.0.5-preview.19
+Commit: 5378af03f17a4d9d2845882229ffed7f67350037
+Submodule path: external/Avalonia
+Original path: src/Skia/Avalonia.Skia
+
+Only GlyphRunImpl.cs is kept locally. It overrides the file changed by that
+fork tag with the byte-identical Avalonia 12.0.5 original from commit
+fee9c561ce036e8a3e8cee2397c75ca599b4790d.
+
+The local project file is an integration adapter that builds the effective
+unchanged Avalonia 12.0.5 sources against the ProGPU SkiaSharp shim.
+AVALONIA-SOURCE.md contains the detailed integrity and licensing record.
