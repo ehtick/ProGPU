@@ -1,0 +1,14 @@
+PORTING NOTICE
+
+This project was ported and decoupled from:
+
+Repository: https://github.com/wieslawsoltes/Avalonia.git
+Branch: feature/progpu
+Commit: 5378af03f17a4d9d2845882229ffed7f67350037
+Original path: samples/ControlCatalog.Desktop
+
+It was adapted to launch the standalone ControlCatalog with the local ProGPU
+renderer and Silk.NET backend. The --skiashim option exercises the unchanged
+Avalonia Skia backend against the ProGPU SkiaSharp shim.
+
+No Git history or commits were imported from the source repository.

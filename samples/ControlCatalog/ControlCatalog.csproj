@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Update="**\*.xaml.cs">
+      <DependentUpon>%(Filename)</DependentUpon>
+    </Compile>
+    <AvaloniaXaml Include="**\*.xaml">
+      <SubType>Designer</SubType>
+    </AvaloniaXaml>
+    <AvaloniaResource Include="Assets\**\*" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Remove="Assets\Icon.png" />
+    <None Remove="Assets\image1.jpg" />
+    <None Remove="Assets\image2.jpg" />
+    <None Remove="Assets\image3.jpg" />
+    <None Remove="Assets\image4.jpg" />
+    <None Remove="Assets\image5.jpg" />
+    <None Remove="Assets\image6.jpg" />
+    <None Remove="Assets\image7.jpg" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\Fonts\SourceSansPro-Bold.ttf" />
+    <EmbeddedResource Include="Assets\Fonts\SourceSansPro-BoldItalic.ttf" />
+    <EmbeddedResource Include="Assets\Fonts\SourceSansPro-Italic.ttf" />
+    <EmbeddedResource Include="Assets\Fonts\SourceSansPro-Regular.ttf" />
+    <EmbeddedResource Include="Pages\teapot.bin" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" />
+    <PackageReference Include="Avalonia.Controls.ColorPicker" />
+    <PackageReference Include="Avalonia.Themes.Simple" />
+    <PackageReference Include="Avalonia.Themes.Fluent" />
+    <PackageReference Include="Avalonia.Fonts.Inter" />
+    <ProjectReference Include="..\..\src\ProGPU.Avalonia.SkiaShim\Avalonia.Skia.csproj" />
+    <ProjectReference Include="..\MiniMvvm\MiniMvvm.csproj" />
+    <ProjectReference Include="..\SampleControls\ControlSamples.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <AvaloniaXaml Update="NavHeaderItem.xaml">
+      <Generator>MSBuild:Compile</Generator>
+    </AvaloniaXaml>
+  </ItemGroup>
+</Project>

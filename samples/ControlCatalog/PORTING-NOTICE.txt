@@ -1,0 +1,13 @@
+PORTING NOTICE
+
+This project was ported and decoupled from:
+
+Repository: https://github.com/wieslawsoltes/Avalonia.git
+Branch: feature/progpu
+Commit: 5378af03f17a4d9d2845882229ffed7f67350037
+Original path: samples/ControlCatalog
+
+It was converted from an Avalonia source-tree sample into a standalone project
+using package and local ProGPU integration references.
+
+No Git history or commits were imported from the source repository.

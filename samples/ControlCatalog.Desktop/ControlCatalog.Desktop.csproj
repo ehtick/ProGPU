@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <TargetLatestRuntimePatch>true</TargetLatestRuntimePatch>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <DefineConstants>$(DefineConstants);AVALONIA_SKIA_SHIM</DefineConstants>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="NativeControls\Gtk\GtkHelper.cs" />
+    <Compile Remove="NativeControls\Mac\MacHelper.cs" />
+    <Content Include="NativeControls\Gtk\nodes.mp4">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\ControlCatalog\ControlCatalog.csproj" />
+    <ProjectReference Include="..\..\src\ProGPU.Avalonia.Rendering\Avalonia.ProGpu.csproj" />
+    <ProjectReference Include="..\..\src\ProGPU.Avalonia.SilkNet\Avalonia.SilkNet.csproj" />
+    <ProjectReference Include="..\..\src\ProGPU.Avalonia.SkiaShim\Avalonia.Skia.csproj" />
+    <PackageReference Include="Avalonia" />
+    <PackageReference Include="Avalonia.Fonts.Inter" />
+    <PackageReference Include="Avalonia.HarfBuzz" />
+  </ItemGroup>
+</Project>
