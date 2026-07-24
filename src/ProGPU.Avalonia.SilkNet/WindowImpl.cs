@@ -47,6 +47,7 @@ namespace Avalonia.SilkNet
         private char? _pendingHighSurrogate;
         private SilkNetCursorImpl? _cursor;
         private IWindowIconImpl? _icon;
+        private WgpuContext? _wgpuContext;
         private readonly SilkWindowController _windowController;
         private bool _canResize = true;
         private bool _canMinimize = true;
@@ -137,8 +138,8 @@ namespace Avalonia.SilkNet
                 Resized?.Invoke(_clientSize, WindowResizeReason.Layout);
             }
 
-            var wgpuContext = new WgpuContext();
-            wgpuContext.Initialize(_silkWindow);
+            _wgpuContext = new WgpuContext();
+            _wgpuContext.Initialize(_silkWindow);
 
             _inputContext = _silkWindow.CreateInput();
             foreach (var keyboard in _inputContext.Keyboards)
@@ -209,6 +210,7 @@ namespace Avalonia.SilkNet
         {
             _paintQueued = false;
             _paintGeneration++;
+            using var currentContext = WgpuContext.PushCurrent(_wgpuContext);
             Paint?.Invoke(new Rect(0, 0, ClientSize.Width, ClientSize.Height));
         }
 
@@ -938,7 +940,9 @@ namespace Avalonia.SilkNet
 
             var windowToDispose = _silkWindow;
             var inputContextToDispose = _inputContext;
+            var wgpuContextToDispose = _wgpuContext;
             _inputContext = null;
+            _wgpuContext = null;
 
             var tcs = _disposedTcs;
             Dispatcher.UIThread.Post(() =>
@@ -947,11 +951,7 @@ namespace Avalonia.SilkNet
                 {
                     try
                     {
-                        var context = WgpuContext.ActiveContexts.FirstOrDefault(c => c.Window == windowToDispose);
-                        if (context != null)
-                        {
-                            context.Dispose();
-                        }
+                        wgpuContextToDispose?.Dispose();
                     }
                     catch {}
 
