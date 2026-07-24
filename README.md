@@ -42,7 +42,7 @@ ProGPU release packages are built from `eng/progpu-package-list.sh` by the `Rele
 Local package build:
 
 ```bash
-PROGPU_PACKAGE_VERSION=0.1.0-preview.25 ./eng/progpu-pack.sh
+PROGPU_PACKAGE_VERSION=0.1.0-preview.26 ./eng/progpu-pack.sh
 ```
 
 The mobile packages contain the managed hosts and `buildTransitive` native-link
@@ -294,7 +294,7 @@ Without these headers, `Auto` uses the ordinary OffscreenCanvas worker when avai
 Local publishing reads the API key from `NUGET_API_KEY` without storing it in the repository:
 
 ```bash
-PROGPU_PACKAGE_VERSION=0.1.0-preview.25 ./eng/progpu-publish.sh
+PROGPU_PACKAGE_VERSION=0.1.0-preview.26 ./eng/progpu-publish.sh
 ```
 
 The release workflow validates docs, restores, builds, tests, packs `.nupkg`/`.snupkg` artifacts, and can publish to NuGet.org when `NUGET_API_KEY` is configured. See [docs/release.md](docs/release.md).

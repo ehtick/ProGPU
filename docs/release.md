@@ -39,7 +39,7 @@ The release workflow does not pack samples, tests, diagnostic tools, or framewor
 ## Local Package Build
 
 ```bash
-PROGPU_PACKAGE_VERSION=0.1.0-preview.25 ./eng/progpu-pack.sh
+PROGPU_PACKAGE_VERSION=0.1.0-preview.26 ./eng/progpu-pack.sh
 ```
 
 The script writes packages and symbol packages to `artifacts/packages/Release` by default.
@@ -56,7 +56,7 @@ release workflow combines and re-verifies both outputs before publishing.
 ```bash
 read -rsp "NuGet API key: " NUGET_API_KEY
 export NUGET_API_KEY
-PROGPU_PACKAGE_VERSION=0.1.0-preview.25 ./eng/progpu-publish.sh
+PROGPU_PACKAGE_VERSION=0.1.0-preview.26 ./eng/progpu-publish.sh
 unset NUGET_API_KEY
 ```
 
@@ -70,7 +70,7 @@ The target defaults to NuGet.org. Set `NUGET_SOURCE` to publish to another v3-co
 - `Release` validates and packs portable packages on Linux, packs mobile packages on macOS, verifies the combined dependency closure, then publishes and creates a tag-driven GitHub Release.
 
 Manual releases use `workflow_dispatch` with a package version. Tag releases use tags named `v*`,
-for example `v0.1.0-preview.25`.
+for example `v0.1.0-preview.26`.
 
 ## NuGet Publishing
 
