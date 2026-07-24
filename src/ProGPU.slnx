@@ -22,6 +22,13 @@
   <Project Path="ProGPU.WinUI.Charts/ProGPU.WinUI.Charts.csproj" />
   <Project Path="ProGPU.WinUI.Designer/ProGPU.WinUI.Designer.csproj" />
   <Project Path="ProGPU.Avalonia/ProGPU.Avalonia.csproj" />
+  <Project Path="ProGPU.Avalonia.Rendering/Avalonia.ProGpu.csproj" />
+  <Project Path="ProGPU.Avalonia.SilkNet/Avalonia.SilkNet.csproj" />
+  <Project Path="ProGPU.Avalonia.SkiaShim/Avalonia.Skia.csproj" />
+  <Folder Name="/Avalonia 11/">
+    <Project Path="ProGPU.Avalonia.Rendering.V11/Avalonia.ProGpu.csproj" />
+    <Project Path="ProGPU.Avalonia.SilkNet.V11/Avalonia.SilkNet.csproj" />
+  </Folder>
   <Project Path="ProGPU.Uno/ProGPU.Uno.csproj" />
   <Project Path="ProGPU.Samples/ProGPU.Samples.csproj" />
   <Project Path="ProGPU.Samples.Desktop/ProGPU.Samples.Desktop.csproj" />
@@ -29,9 +36,19 @@
   <Project Path="ProGPU.Samples.Android/ProGPU.Samples.Android.csproj" />
   <Project Path="ProGPU.Samples.Avalonia/ProGPU.Samples.Avalonia.csproj" />
   <Project Path="ProGPU.Samples.Uno/ProGPU.Samples.Uno/ProGPU.Samples.Uno.csproj" />
+  <Project Path="../samples/MiniMvvm/MiniMvvm.csproj" />
+  <Project Path="../samples/SampleControls/ControlSamples.csproj" />
+  <Project Path="../samples/ControlCatalog/ControlCatalog.csproj" />
+  <Project Path="../samples/ControlCatalog.Desktop/ControlCatalog.Desktop.csproj" />
+  <Project Path="../samples/ProGpuSandbox/ProGpuSandbox.csproj" />
+  <Project Path="../samples/RenderDemo/RenderDemo.csproj" />
   <Project Path="ProGPU.Dxf/ProGPU.Dxf.csproj" />
   <Project Path="ProGPU.Tests.Headless/ProGPU.Tests.Headless.csproj" />
   <Project Path="ProGPU.Tests/ProGPU.Tests.csproj" />
+  <Project Path="../tests/Avalonia.ProGpu.UnitTests/Avalonia.ProGpu.UnitTests.csproj" />
+  <Project Path="../tests/Avalonia.ProGpu.RenderTests/Avalonia.ProGpu.RenderTests.csproj" />
+  <Project Path="../tests/Avalonia.SkiaShim.RenderTests/Avalonia.SkiaShim.RenderTests.csproj" />
+  <Project Path="../tests/Avalonia.IntegrationTests.SilkNet/Avalonia.IntegrationTests.SilkNet.csproj" />
   <Project Path="ProGPU.Xaml/ProGPU.Xaml.csproj" />
   <Project Path="ProGPU.Xaml.Roslyn/ProGPU.Xaml.Roslyn.csproj" />
   <Project Path="ProGPU.Xaml.SourceGenerator/ProGPU.Xaml.SourceGenerator.csproj" />
