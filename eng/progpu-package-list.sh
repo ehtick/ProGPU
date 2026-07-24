@@ -118,6 +118,7 @@ progpu_package_purposes=("${progpu_portable_package_purposes[@]}" "${progpu_mobi
 # non-shipping. The verifier fails when a newly added project is omitted.
 progpu_nonshipping_projects=(
   src/PresentationCore/PresentationCore.csproj
+  src/ProGPU.Avalonia.SkiaShim/Avalonia.Skia.csproj
   src/ProGPU.Samples.Android/ProGPU.Samples.Android.csproj
   src/ProGPU.Samples.Avalonia/ProGPU.Samples.Avalonia.csproj
   src/ProGPU.Samples.Browser/ProGPU.Samples.Browser.csproj
@@ -133,6 +134,7 @@ progpu_nonshipping_projects=(
 
 progpu_nonshipping_reasons=(
   "Framework implementation shim; shipped through consuming compatibility packages."
+  "Internal Avalonia Skia compatibility backend used by samples and migration tests."
   "Android sample application."
   "Avalonia sample application."
   "Browser sample application."
@@ -144,6 +146,23 @@ progpu_nonshipping_reasons=(
   "Test project."
   "XAML compiler and source-generator test project."
   "Framework implementation shim; shipped through consuming compatibility packages."
+)
+
+# These packable projects are intentionally owned by scripts/progpu-*.sh rather
+# than the runtime package lane above. The v11 and v12 projects share package
+# IDs but publish distinct, exact Avalonia-compatible versions.
+progpu_integration_lane_projects=(
+  src/ProGPU.Avalonia.Rendering/Avalonia.ProGpu.csproj
+  src/ProGPU.Avalonia.Rendering.V11/Avalonia.ProGpu.csproj
+  src/ProGPU.Avalonia.SilkNet/Avalonia.SilkNet.csproj
+  src/ProGPU.Avalonia.SilkNet.V11/Avalonia.SilkNet.csproj
+)
+
+progpu_integration_lane_reasons=(
+  "Avalonia 12 renderer package."
+  "Avalonia 11 shared-source renderer package."
+  "Avalonia 12 Silk.NET package."
+  "Avalonia 11 shared-source Silk.NET package."
 )
 
 validate_parallel_arrays() {
@@ -164,5 +183,10 @@ validate_parallel_arrays complete "${#progpu_package_ids[@]}" "${#progpu_package
 
 if [[ "${#progpu_nonshipping_projects[@]}" -ne "${#progpu_nonshipping_reasons[@]}" ]]; then
   echo "ProGPU non-shipping project arrays must have the same length." >&2
+  exit 1
+fi
+
+if [[ "${#progpu_integration_lane_projects[@]}" -ne "${#progpu_integration_lane_reasons[@]}" ]]; then
+  echo "ProGPU integration-lane project arrays must have the same length." >&2
   exit 1
 fi
