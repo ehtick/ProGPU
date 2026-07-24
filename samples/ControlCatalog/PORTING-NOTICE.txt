@@ -1,13 +1,17 @@
 PORTING NOTICE
 
-This project was ported and decoupled from:
+This project source-links its unchanged files from:
 
 Repository: https://github.com/wieslawsoltes/Avalonia.git
-Branch: feature/progpu
+Tag: progpu-avalonia-v12.0.5-preview.19
 Commit: 5378af03f17a4d9d2845882229ffed7f67350037
+Submodule path: external/Avalonia
 Original path: samples/ControlCatalog
 
-It was converted from an Avalonia source-tree sample into a standalone project
-using package and local ProGPU integration references.
+Only the following source overrides are kept locally:
 
-No Git history or commits were imported from the source repository.
+- Pages/DialogsPage.xaml.cs
+- ViewModels/PlatformInformationViewModel.cs
+
+The local project file converts the Avalonia source-tree sample into a
+standalone project using package and local ProGPU integration references.

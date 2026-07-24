@@ -1,13 +1,30 @@
 PORTING NOTICE
 
-This project was ported and decoupled from:
+This project source-links its unchanged files from:
 
 Repository: https://github.com/wieslawsoltes/Avalonia.git
-Branch: feature/progpu
+Tag: progpu-avalonia-v12.0.5-preview.19
 Commit: 5378af03f17a4d9d2845882229ffed7f67350037
+Submodule path: external/Avalonia
 Original path: samples/RenderDemo
 
-It was adapted into a standalone application and integrated with the local
-ProGPU renderer, Silk.NET backend, and optional Avalonia Skia shim.
+Only files changed for the standalone ProGPU integration are kept locally:
 
-No Git history or commits were imported from the source repository.
+- App.xaml.cs
+- Controls/LineBoundsDemoControl.cs
+- MainWindow.xaml.cs
+- Pages/AnimationsPage.xaml.cs
+- Pages/BrushesPage.axaml.cs
+- Pages/ClippingPage.xaml.cs
+- Pages/CustomAnimatorPage.xaml.cs
+- Pages/DrawingPage.xaml.cs
+- Pages/FormattedTextPage.axaml.cs
+- Pages/GlyphRunPage.xaml.cs
+- Pages/LineBoundsPage.xaml.cs
+- Pages/SpringAnimationsPage.xaml.cs
+- Pages/TextFormatterPage.axaml.cs
+- Pages/Transform3DPage.axaml.cs
+- Pages/TransitionsPage.xaml.cs
+
+The local project file integrates those sources with the ProGPU renderer,
+Silk.NET backend, and optional Avalonia Skia shim.

@@ -9,9 +9,16 @@
     <AssemblyOriginatorKeyFile>..\..\eng\Avalonia.snk</AssemblyOriginatorKeyFile>
     <AvaloniaAccessUnstablePrivateApis>true</AvaloniaAccessUnstablePrivateApis>
     <Avalonia_I_Want_To_Use_Private_Apis_IN_NUGET_PACKAGE>true</Avalonia_I_Want_To_Use_Private_Apis_IN_NUGET_PACKAGE>
+    <AvaloniaForkRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\external\Avalonia'))</AvaloniaForkRoot>
+    <AvaloniaSkiaSourceRoot>$(AvaloniaForkRoot)\src\Skia\Avalonia.Skia</AvaloniaSkiaSourceRoot>
   </PropertyGroup>
   <ItemGroup>
-    <EmbeddedResource Include="Assets\NoiseAsset_256X256_PNG.png" />
+    <Compile Include="$(AvaloniaSkiaSourceRoot)\**\*.cs"
+             Exclude="$(AvaloniaSkiaSourceRoot)\GlyphRunImpl.cs">
+      <Link>%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </Compile>
+    <EmbeddedResource Include="$(AvaloniaSkiaSourceRoot)\Assets\NoiseAsset_256X256_PNG.png"
+                      Link="Assets\NoiseAsset_256X256_PNG.png" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\SkiaSharp\SkiaSharp.csproj" />
@@ -20,4 +27,8 @@
   <ItemGroup Label="InternalsVisibleTo">
     <InternalsVisibleTo Include="Avalonia.SkiaShim.RenderTests, PublicKey=$(ProGPUPublicKey)" />
   </ItemGroup>
+  <Target Name="ValidateAvaloniaForkSources" BeforeTargets="PrepareForBuild">
+    <Error Condition="!Exists('$(AvaloniaSkiaSourceRoot)\DrawingContextImpl.cs')"
+           Text="The pinned Avalonia source submodule is missing. Run 'git submodule update --init external/Avalonia'." />
+  </Target>
 </Project>
